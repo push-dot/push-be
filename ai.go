@@ -198,7 +198,7 @@ func (s *Server) callAI(ctx context.Context, job AIJob, key string) (string, int
 	case "GEMINI":
 		endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + url.PathEscape(job.AI.Model) + ":generateContent"
 		headers = map[string]string{"Content-Type": "application/json", "x-goog-api-key": key}
-		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": job.UserPrompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": job.MaxOutput}}
+		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": job.Prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": job.MaxOutput}}
 	}
 	b, _ := json.Marshal(body)
 	v, e := s.providerRequest(ctx, "POST", endpoint, bytes.NewReader(b), headers)

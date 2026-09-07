@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,32 @@ func TestCancelledQueuedAIIsNeverDispatched(t *testing.T) {
 	op := data(request(t, s, "GET", "/operations/"+id(queued), nil, 200))
 	if op["status"] != "CANCELLED" {
 		t.Fatal("cancelled operation changed", op)
+	}
+}
+func TestGeminiReceivesGroundingContext(t *testing.T) {
+	s := testApp(t)
+	received := ""
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Contents []struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"contents"`
+		}
+		if e := json.NewDecoder(r.Body).Decode(&payload); e != nil {
+			t.Error(e)
+		}
+		received = payload.Contents[0].Parts[0].Text
+		json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": "Grounded answer"}}}}}, "usageMetadata": map[string]any{"promptTokenCount": 20, "candidatesTokenCount": 4}})
+	}))
+	defer provider.Close()
+	s.HTTP = &http.Client{Transport: redirectTransport{target: provider.Listener.Addr().String()}}
+	_, _, _, e := s.callAI(context.Background(), AIJob{AI: AiOptions{Provider: "GEMINI", Model: "test"}, UserPrompt: "Rewrite", Prompt: "Never invent experience.\nEVIDENCE: reduced latency by 20%\nRewrite", MaxOutput: 512}, "test-key")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(received, "EVIDENCE: reduced latency by 20%") || !strings.Contains(received, "Never invent experience") {
+		t.Fatalf("grounding context omitted: %q", received)
 	}
 }
