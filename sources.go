@@ -134,7 +134,28 @@ func (s *Server) sourceRoutes(g *echo.Group) {
 				return invalid("원본 파일 해시가 다릅니다")
 			}
 		}
-		if in.Text == "" {
+		if in.Text == "" && in.SourceID != "" {
+			source, e := s.get(c, "sources", in.SourceID)
+			if e != nil {
+				return e
+			}
+			var raw []byte
+			if e = s.q(c).QueryRow(c.Request().Context(), "SELECT content FROM source_files WHERE owner_id=$1 AND id=$2", owner(c), in.SourceID).Scan(&raw); e != nil {
+				return e
+			}
+			in.Text, e = extractFile(c.Request().Context(), str(source, "mimeType"), raw)
+			if e != nil {
+				return e
+			}
+		}
+		if in.Text == "" && in.Format == "GITHUB" {
+			var e error
+			in.Text, e = s.githubSource(c, in.SourceURL)
+			if e != nil {
+				return e
+			}
+		}
+		if strings.TrimSpace(in.Text) == "" {
 			v, e := s.create(c, "operations", "", map[string]any{"type": "EVIDENCE_IMPORT", "applicationId": nil, "status": "NEEDS_INPUT", "progress": nil, "result": nil, "error": nil, "inputRequest": map[string]any{"code": "TEXT_REQUIRED", "message": "읽을 수 있는 원문 텍스트가 필요합니다", "fields": []any{map[string]string{"name": "text", "label": "추출된 원문", "type": "TEXT"}}}, "sourceId": nullable(in.SourceID)})
 			if e != nil {
 				return e
@@ -192,17 +213,52 @@ func (s *Server) sourceRoutes(g *echo.Group) {
 		return ok(c, 200, op)
 	})
 }
-func (s *Server) importText(c echo.Context, text, source, url string) ([]any, error) {
+func (s *Server) importText(c echo.Context, text, source, sourceURL string) ([]any, error) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if source == "" {
+		v, e := s.create(c, "sources", "", map[string]any{"fileName": "imported-source.txt", "mimeType": "text/plain", "size": len(text), "sha256": hash(text), "status": "EXTRACTED"})
+		if e != nil {
+			return nil, e
+		}
+		source = str(v, "id")
+		if _, e = s.q(c).Exec(c.Request().Context(), "INSERT INTO source_files(id,owner_id,content,extracted_text) VALUES($1,$2,$3,$4)", source, owner(c), []byte(text), text); e != nil {
+			return nil, e
+		}
+	} else {
+		tag, e := s.q(c).Exec(c.Request().Context(), "UPDATE source_files SET extracted_text=$3 WHERE id=$1 AND owner_id=$2 AND (extracted_text IS NULL OR extracted_text=$3)", source, owner(c), text)
+		if e != nil {
+			return nil, e
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, conflict("이미 인용된 원본 추출문은 변경할 수 없습니다. 새 원본을 등록하세요")
+		}
+	}
 	out := []any{}
-	for _, paragraph := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n") {
+	position := 0
+	kind := "RESUME"
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		start := position
+		end := start + len([]rune(paragraph))
+		position = end + 2
 		if !nonempty(paragraph) {
 			continue
+		}
+		heading := strings.Trim(strings.ToLower(strings.Split(paragraph, "\n")[0]), "# *\t")
+		switch heading {
+		case "경력", "경력 사항", "experience", "work experience", "성과", "achievements":
+			kind = "CAREER"
+		case "학력", "education":
+			kind = "EDUCATION"
+		case "프로젝트", "projects":
+			kind = "PROJECT"
+		case "기술", "기술 스택", "skills":
+			kind = "SKILL"
 		}
 		title := []rune(strings.Split(paragraph, "\n")[0])
 		if len(title) > 200 {
 			title = title[:200]
 		}
-		v, e := s.create(c, "career-evidence", "", map[string]any{"kind": "RESUME", "title": string(title), "sourceText": paragraph, "sourceUrl": nullable(url), "skills": []string{}, "verificationStatus": "USER_PROVIDED", "archived": false, "supersedesId": nil, "provenance": map[string]any{"sourceId": nullable(source), "projectEvidenceId": nil, "contentHash": hash(paragraph)}})
+		v, e := s.create(c, "career-evidence", "", map[string]any{"kind": kind, "title": string(title), "sourceText": paragraph, "sourceUrl": nullable(sourceURL), "skills": []string{}, "verificationStatus": "USER_PROVIDED", "archived": false, "supersedesId": nil, "provenance": map[string]any{"sourceId": source, "projectEvidenceId": nil, "contentHash": hash(paragraph), "sourceLocation": map[string]any{"start": start, "end": end, "unit": "CODE_POINT"}}})
 		if e != nil {
 			return nil, e
 		}

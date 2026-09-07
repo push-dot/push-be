@@ -85,6 +85,17 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 		var last int64
 		e = tx.QueryRow(c.Request().Context(), "SELECT owner_id,credits,active,last_event_time FROM billing WHERE customer_id=$1 FOR UPDATE", customer).Scan(&user, &balance, &active, &last)
 		if e == nil {
+			if event.Created >= last {
+				period := number(obj, "current_period_end")
+				if period == 0 {
+					period = number(obj, "period_end")
+				}
+				if period > 0 {
+					if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET period_ends_at=$2 WHERE owner_id=$1", user, time.Unix(int64(period), 0).UTC()); e != nil {
+						return e
+					}
+				}
+			}
 			switch event.Type {
 			case "invoice.paid":
 				if str(obj, "subscription") == "" {
@@ -160,15 +171,20 @@ func (s *Server) billingRoutes(g *echo.Group) {
 	g.GET("/billing", func(c echo.Context) error {
 		var active bool
 		var balance, reserved int64
-		e := s.q(c).QueryRow(c.Request().Context(), "SELECT active,credits,reserved FROM billing WHERE owner_id=$1", owner(c)).Scan(&active, &balance, &reserved)
+		var period *time.Time
+		e := s.q(c).QueryRow(c.Request().Context(), "SELECT active,credits,reserved,period_ends_at FROM billing WHERE owner_id=$1", owner(c)).Scan(&active, &balance, &reserved, &period)
 		if e != nil && e.Error() != "no rows in result set" {
 			return e
+		}
+		if period != nil {
+			utc := period.UTC()
+			period = &utc
 		}
 		status := "INACTIVE"
 		if active {
 			status = "ACTIVE"
 		}
-		return ok(c, 200, map[string]any{"subscriptionStatus": status, "plan": nullable(s.Config.StripePriceID), "periodEndsAt": nil, "balanceMicroCredits": balance, "reservedMicroCredits": reserved})
+		return ok(c, 200, map[string]any{"subscriptionStatus": status, "plan": nullable(s.Config.StripePriceID), "periodEndsAt": period, "balanceMicroCredits": balance, "reservedMicroCredits": reserved})
 	})
 	g.GET("/billing/ledger", func(c echo.Context) error {
 		v, e := s.list(c, "ledger", "")
@@ -235,4 +251,13 @@ func (s *Server) billingRoutes(g *echo.Group) {
 		}
 		return ok(c, 200, map[string]any{"url": v["url"]})
 	})
+}
+
+func (s *Server) recordLedger(c echo.Context, kind string, amount int64, reference string) error {
+	var balance int64
+	if e := s.q(c).QueryRow(c.Request().Context(), "SELECT credits FROM billing WHERE owner_id=$1", owner(c)).Scan(&balance); e != nil {
+		return e
+	}
+	_, e := s.create(c, "ledger", "", map[string]any{"type": kind, "amountMicroCredits": amount, "balanceAfter": balance, "referenceId": reference})
+	return e
 }

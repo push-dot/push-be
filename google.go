@@ -151,6 +151,10 @@ func (s *Server) googleRoutes(g *echo.Group) {
 			if k == "calendar-events" {
 				items = filter(items, "source", "GOOGLE")
 			}
+			items, e = filterRequested(c, k, items)
+			if e != nil {
+				return e
+			}
 			return page(c, items)
 		})
 	}
@@ -332,6 +336,23 @@ func (s *Server) syncGoogle(c echo.Context) error {
 				if oneOf(key, "subject", "from", "date") {
 					metadata[key] = header["value"]
 				}
+			}
+
+			relevant := false
+			subject := strings.ToLower(str(metadata, "subject"))
+			for _, word := range []string{"지원", "면접", "채용", "서류", "interview", "application", "recruit", "job offer", "coding assessment"} {
+				if strings.Contains(subject, word) {
+					relevant = true
+					break
+				}
+			}
+			if !relevant {
+				if e = s.q(c).QueryRow(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM resources WHERE owner_id=$1 AND kind='google-messages' AND (body->>'externalId'=$2 OR (body->>'threadId'=$3 AND $3<>'')))", owner(c), id, str(metadata, "threadId")).Scan(&relevant); e != nil {
+					return e
+				}
+			}
+			if !relevant {
+				continue
 			}
 			if _, e = s.upsertExternal(c, "google-messages", id, metadata); e != nil {
 				return e

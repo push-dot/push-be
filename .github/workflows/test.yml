@@ -24,6 +24,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - run: go build -trimpath -o /tmp/push-api .
+      - run: docker build -t push-api:ci .

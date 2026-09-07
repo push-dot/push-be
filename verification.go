@@ -163,7 +163,7 @@ func (s *Server) verifyProject(c echo.Context, v map[string]any, expected int) e
 		}
 	}
 	source := report.Summary + "\n\nCI command: " + report.Command + "\n" + report.Output + "\nMetrics: " + stringJSON(report.Metrics)
-	career, e := s.create(c, "career-evidence", "", map[string]any{"kind": "PROJECT", "title": p["title"], "sourceText": source, "sourceUrl": v["commitUrl"], "skills": p["skills"], "verificationStatus": "VERIFIED", "archived": false, "provenance": map[string]any{"sourceId": nil, "projectEvidenceId": v["id"], "contentHash": hash(source)}})
+	career, e := s.create(c, "career-evidence", "", map[string]any{"kind": "PROJECT", "title": p["title"], "sourceText": source, "sourceUrl": v["commitUrl"], "skills": p["skills"], "verificationStatus": "VERIFIED", "archived": false, "provenance": map[string]any{"sourceId": nil, "projectEvidenceId": v["id"], "contentHash": hash(source), "sourceLocation": nil}})
 	if e != nil {
 		return e
 	}

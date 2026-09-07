@@ -40,6 +40,9 @@ func main() {
 	}
 	go func() {
 		for {
+			if e := s.RecoverWork(context.Background()); e != nil {
+				log.Print("background recovery failed")
+			}
 			if e := s.ProcessOne(context.Background()); e != nil {
 				log.Print("background operation processing failed")
 			}

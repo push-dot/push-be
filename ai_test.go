@@ -93,3 +93,75 @@ func TestGeminiReceivesGroundingContext(t *testing.T) {
 		t.Fatalf("grounding context omitted: %q", received)
 	}
 }
+func TestOperationEventsReplayAfterCursor(t *testing.T) {
+	s := testApp(t)
+	_, a := jobApp(t, s)
+	s.Config.Models = []ModelConfig{{Provider: "OPENAI", Model: "test-model"}}
+	request(t, s, "PUT", "/ai/keys/OPENAI", map[string]any{"key": "sk-secret-123456789"}, 200)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "Answer"}}}, "usage": map[string]any{"prompt_tokens": 8, "completion_tokens": 2}})
+	}))
+	defer provider.Close()
+	s.HTTP = &http.Client{Transport: redirectTransport{target: provider.Listener.Addr().String()}}
+	queued := data(request(t, s, "POST", "/ai/generate", map[string]any{"ai": map[string]any{"provider": "OPENAI", "model": "test-model", "credentialMode": "BYOK", "effort": "LOW"}, "prompt": "test", "applicationId": id(a), "evidenceIds": []string{}}, 202))
+	if e := s.ProcessOne(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	req := httptest.NewRequest("GET", "/api/v1/operations/"+id(queued)+"/events", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	req.Header.Set("Last-Event-ID", id(queued)+":1")
+	w := httptest.NewRecorder()
+	s.Echo.ServeHTTP(w, req)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "id: "+id(queued)+":1\n") || !strings.Contains(w.Body.String(), "event: result") || !strings.Contains(w.Body.String(), "event: progress") {
+		t.Fatalf("missing replayed progress/result: %d %s", w.Code, w.Body.String())
+	}
+}
+func TestManagedUsageHasBalancedLedger(t *testing.T) {
+	s := testApp(t)
+	_, a := jobApp(t, s)
+	s.Config.Models = []ModelConfig{{Provider: "OPENAI", Model: "managed-test", Managed: true, InputRate: 2, OutputRate: 3}}
+	s.Config.OpenAIKey = "managed-key"
+	_, e := s.DB.Exec(context.Background(), "INSERT INTO billing(owner_id,active,credits) VALUES('00000000-0000-4000-8000-000000000001',true,100000)")
+	if e != nil {
+		t.Fatal(e)
+	}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "Answer"}}}, "usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 8}})
+	}))
+	defer provider.Close()
+	s.HTTP = &http.Client{Transport: redirectTransport{target: provider.Listener.Addr().String()}}
+	request(t, s, "POST", "/ai/generate", map[string]any{"ai": map[string]any{"provider": "OPENAI", "model": "managed-test", "credentialMode": "MANAGED", "effort": "LOW"}, "prompt": "test", "applicationId": id(a), "evidenceIds": []string{}}, 202)
+	if e = s.ProcessOne(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	var balance, reserved, total int64
+	var count int
+	s.DB.QueryRow(context.Background(), "SELECT credits,reserved FROM billing").Scan(&balance, &reserved)
+	s.DB.QueryRow(context.Background(), "SELECT count(*),COALESCE(sum((body->>'amountMicroCredits')::bigint),0) FROM resources WHERE kind='ledger'").Scan(&count, &total)
+	if balance != 99936 || reserved != 0 || count != 2 || total != -64 {
+		t.Fatalf("ledger missing or unbalanced: balance=%d reserved=%d count=%d delta=%d", balance, reserved, count, total)
+	}
+}
+func TestRecoveryDoesNotBlindlyRetryDispatchedWork(t *testing.T) {
+	s := testApp(t)
+	_, a := jobApp(t, s)
+	s.Config.Models = []ModelConfig{{Provider: "OPENAI", Model: "test-model"}}
+	request(t, s, "PUT", "/ai/keys/OPENAI", map[string]any{"key": "sk-secret-123456789"}, 200)
+	ops := []string{}
+	for i := 0; i < 2; i++ {
+		v := data(request(t, s, "POST", "/ai/generate", map[string]any{"ai": map[string]any{"provider": "OPENAI", "model": "test-model", "credentialMode": "BYOK", "effort": "LOW"}, "prompt": "recover", "applicationId": id(a), "evidenceIds": []string{}}, 202))
+		ops = append(ops, id(v))
+		_, e := s.DB.Exec(context.Background(), "UPDATE work_queue SET state='RUNNING',started_at=now()-interval '10 minutes',lease_until=now()-interval '1 minute',dispatch_started_at=CASE WHEN $2 THEN now()-interval '9 minutes' ELSE NULL END WHERE operation_id=$1", id(v), i == 1)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := s.RecoverWork(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	safe := data(request(t, s, "GET", "/operations/"+ops[0], nil, 200))
+	unknown := data(request(t, s, "GET", "/operations/"+ops[1], nil, 200))
+	if safe["status"] != "QUEUED" || unknown["status"] != "FAILED" || unknown["error"].(map[string]any)["code"] != "PROVIDER_RESULT_UNKNOWN" {
+		t.Fatal("unsafe restart recovery", safe, unknown)
+	}
+}

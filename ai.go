@@ -105,6 +105,11 @@ func (s *Server) queueAI(c echo.Context, kind, app string, job AIJob) error {
 	if e != nil {
 		return e
 	}
+	if job.AI.CredentialMode == "MANAGED" {
+		if e = s.recordLedger(c, "AI_RESERVE", -job.Reservation, str(op, "id")); e != nil {
+			return e
+		}
+	}
 	raw, _ := json.Marshal(job)
 	if _, e = s.q(c).Exec(c.Request().Context(), "INSERT INTO work_queue(operation_id,owner_id,kind,application_id,input) VALUES($1,$2,$3,$4,$5)", op["id"], owner(c), kind, app, raw); e != nil {
 		return e
@@ -131,6 +136,10 @@ func (s *Server) aiRoutes(g *echo.Group) {
 	})
 	g.GET("/ai/usage", func(c echo.Context) error {
 		v, e := s.list(c, "ai-usage", "")
+		if e != nil {
+			return e
+		}
+		v, e = filterRequested(c, "ai-usage", v)
 		if e != nil {
 			return e
 		}
@@ -250,7 +259,7 @@ func (s *Server) callAI(ctx context.Context, job AIJob, key string) (string, int
 func (s *Server) ProcessOne(ctx context.Context) error {
 	var opID, user, kind, app string
 	var raw []byte
-	e := s.DB.QueryRow(ctx, "UPDATE work_queue SET state='RUNNING',started_at=now() WHERE operation_id=(SELECT operation_id FROM work_queue WHERE state='QUEUED' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING operation_id,owner_id,kind,application_id,input").Scan(&opID, &user, &kind, &app, &raw)
+	e := s.DB.QueryRow(ctx, "UPDATE work_queue SET state='RUNNING',started_at=now(),lease_until=now()+interval '5 minutes' WHERE operation_id=(SELECT operation_id FROM work_queue WHERE state='QUEUED' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING operation_id,owner_id,kind,application_id,input").Scan(&opID, &user, &kind, &app, &raw)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return nil
 	}
@@ -276,6 +285,13 @@ func (s *Server) ProcessOne(ctx context.Context) error {
 	}
 	text, input, output := "", 0, 0
 	if e == nil {
+		tag, err := s.DB.Exec(ctx, "UPDATE work_queue SET dispatch_started_at=now() WHERE operation_id=$1 AND state='RUNNING'", opID)
+		e = err
+		if e == nil && tag.RowsAffected() != 1 {
+			return nil
+		}
+	}
+	if e == nil {
 		text, input, output, e = s.callAI(ctx, job, key)
 	}
 	tx, txErr := s.DB.Begin(ctx)
@@ -291,6 +307,18 @@ func (s *Server) ProcessOne(ctx context.Context) error {
 	if txErr != nil {
 		return txErr
 	}
+	var queueState string
+	if err := tx.QueryRow(ctx, "SELECT state FROM work_queue WHERE operation_id=$1 FOR UPDATE", opID).Scan(&queueState); err != nil {
+		return err
+	}
+	if queueState != "RUNNING" {
+		return nil
+	}
+	if e == nil {
+		if _, err := tx.Exec(ctx, "INSERT INTO operation_events(operation_id,owner_id,sequence,event_type,payload) SELECT $1,$2,COALESCE(MAX(sequence),0)+1,'delta',jsonb_build_object('text',$3::text) FROM operation_events WHERE operation_id=$1", opID, user, text); err != nil {
+			return err
+		}
+	}
 	op["progress"] = 100
 	op["status"] = "FAILED"
 	op["error"] = map[string]any{"code": "PROVIDER_ERROR", "message": "제공자 결과를 확인하지 못했습니다. 재실행 전에 사용량을 확인하세요.", "retryable": false}
@@ -305,6 +333,11 @@ func (s *Server) ProcessOne(ctx context.Context) error {
 			}
 		}
 		if e == nil {
+			if job.AI.CredentialMode == "MANAGED" {
+				if txErr = s.recordLedger(c, "AI_SETTLE", job.Reservation-cost, opID); txErr != nil {
+					return txErr
+				}
+			}
 			var usageID string
 			var usageRaw []byte
 			var at time.Time
@@ -315,7 +348,7 @@ func (s *Server) ProcessOne(ctx context.Context) error {
 			var usage map[string]any
 			json.Unmarshal(usageRaw, &usage)
 			usage["id"] = usageID
-			usage["createdAt"] = at
+			usage["createdAt"] = at.UTC()
 			var value any = map[string]any{"text": text, "citations": []any{}, "usage": usage}
 			savepoint, beginErr := tx.Begin(ctx)
 			if beginErr != nil {

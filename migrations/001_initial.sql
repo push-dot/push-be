@@ -51,3 +51,24 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS resources_timeline ON resources;
 CREATE TRIGGER resources_timeline AFTER INSERT OR UPDATE ON resources FOR EACH ROW EXECUTE FUNCTION record_timeline();
+CREATE TABLE IF NOT EXISTS operation_events(operation_id uuid NOT NULL,owner_id uuid NOT NULL,sequence bigint NOT NULL,event_type text NOT NULL,payload jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(operation_id,sequence));
+CREATE INDEX IF NOT EXISTS operation_events_owner ON operation_events(owner_id,operation_id,sequence);
+CREATE OR REPLACE FUNCTION record_operation_event() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE event_name text;event_payload jsonb;next_sequence bigint;
+BEGIN
+ IF NEW.kind<>'operations' THEN RETURN NEW;END IF;
+ IF TG_OP='UPDATE' AND NEW.body->'status' IS NOT DISTINCT FROM OLD.body->'status' AND NEW.body->'progress' IS NOT DISTINCT FROM OLD.body->'progress' AND NEW.body->'result' IS NOT DISTINCT FROM OLD.body->'result' AND NEW.body->'error' IS NOT DISTINCT FROM OLD.body->'error' THEN RETURN NEW;END IF;
+ event_name:=CASE NEW.body->>'status' WHEN 'SUCCEEDED' THEN 'result' WHEN 'FAILED' THEN 'error' ELSE 'progress' END;
+ event_payload:=CASE event_name WHEN 'result' THEN NEW.body->'result' WHEN 'error' THEN NEW.body->'error' ELSE jsonb_build_object('status',NEW.body->'status','progress',NEW.body->'progress','step',NEW.body->'type') END;
+ SELECT COALESCE(MAX(sequence),0)+1 INTO next_sequence FROM operation_events WHERE operation_id=NEW.id;
+ INSERT INTO operation_events(operation_id,owner_id,sequence,event_type,payload) VALUES(NEW.id,NEW.owner_id,next_sequence,event_name,event_payload);
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS resources_operation_events ON resources;
+CREATE TRIGGER resources_operation_events AFTER INSERT OR UPDATE ON resources FOR EACH ROW EXECUTE FUNCTION record_operation_event();
+ALTER TABLE work_queue ADD COLUMN IF NOT EXISTS dispatch_started_at timestamptz;
+ALTER TABLE work_queue ADD COLUMN IF NOT EXISTS lease_until timestamptz;
+ALTER TABLE source_files ADD COLUMN IF NOT EXISTS extracted_text text;
+CREATE TABLE IF NOT EXISTS github_connections(owner_id uuid PRIMARY KEY,ciphertext bytea NOT NULL);
+
+ALTER TABLE billing ADD COLUMN IF NOT EXISTS period_ends_at timestamptz;

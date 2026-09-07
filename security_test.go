@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,7 +68,7 @@ func TestStripeSignatureIdempotencyAndCreditGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := []byte(`{"id":"evt_paid","type":"invoice.paid","data":{"object":{"customer":"cus_test","subscription":"sub_test","amount_paid":1000,"currency":"usd"}}}`)
+	payload := []byte(`{"id":"evt_paid","type":"invoice.paid","data":{"object":{"customer":"cus_test","subscription":"sub_test","amount_paid":1000,"currency":"usd","period_end":1800000000}}}`)
 	send := func(stamp int64, signature string, want int) {
 		t.Helper()
 		r := httptest.NewRequest("POST", "/api/v1/billing/webhook", bytes.NewReader(payload))
@@ -93,7 +95,46 @@ func TestStripeSignatureIdempotencyAndCreditGrant(t *testing.T) {
 	if err = s.DB.QueryRow(context.Background(), "SELECT credits,active FROM billing WHERE owner_id=$1", user).Scan(&credits, &active); err != nil {
 		t.Fatal(err)
 	}
+	billing := data(request(t, s, "GET", "/billing", nil, 200))
+	if billing["periodEndsAt"] != time.Unix(1800000000, 0).UTC().Format(time.RFC3339) {
+		t.Fatal(billing)
+	}
 	if credits != 10000000 || !active {
 		t.Fatalf("duplicate grant or missed active subscription: %d %v", credits, active)
+	}
+}
+func TestOAuthProfilePersistsIntoSession(t *testing.T) {
+	s := testApp(t)
+	s.Config.GoogleClientID = "client-test"
+	s.Config.GoogleClientSecret = "secret-test"
+	s.Config.PublicURL = "https://api.example.test"
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "provider-token"})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{"sub": "subject-1", "name": "테스트 사용자", "locale": "en-US"})
+		}
+	}))
+	defer provider.Close()
+	s.HTTP = &http.Client{Transport: redirectTransport{target: provider.Listener.Addr().String()}}
+	verifier := strings.Repeat("v", 43)
+	_, e := s.DB.Exec(context.Background(), "INSERT INTO oauth_states(state_hash,provider,challenge,redirect_uri,verifier,expires_at) VALUES($1,'google',$2,'push://auth/callback','server-verifier',now()+interval '10 minutes')", hash("profile-state"), challenge(verifier))
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := httptest.NewRequest("GET", "/api/v1/auth/google/callback?state=profile-state&code=code", nil)
+	w := httptest.NewRecorder()
+	s.Echo.ServeHTTP(w, r)
+	if w.Code != 302 {
+		t.Fatal(w.Code, w.Body)
+	}
+	location, e := url.Parse(w.Header().Get("Location"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	session := data(publicRequest(t, s, "/auth/exchange", map[string]any{"code": location.Query().Get("code"), "codeVerifier": verifier}, 200))
+	user := session["user"].(map[string]any)
+	if user["displayName"] != "테스트 사용자" || user["locale"] != "en" {
+		t.Fatal("provider profile lost", user)
 	}
 }

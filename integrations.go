@@ -17,7 +17,7 @@ func (s *Server) integrationRoutes(g *echo.Group) {
 		if e != nil {
 			return e
 		}
-		return ok(c, 200, map[string]any{"id": owner(c), "displayName": name, "locale": locale, "createdAt": at})
+		return ok(c, 200, map[string]any{"id": owner(c), "displayName": name, "locale": locale, "createdAt": at.UTC()})
 	})
 	g.PUT("/ai/keys/:provider", func(c echo.Context) error {
 		p := c.Param("provider")

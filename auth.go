@@ -138,15 +138,31 @@ func (s *Server) authRoutes() {
 		if err != nil {
 			return err
 		}
-		if p == "google" && s.Config.GoogleBeta && str(result, "refresh_token") != "" {
-			encrypted, e := s.encrypt([]byte(str(result, "refresh_token")), user+":google")
+		displayName := str(identity, "name")
+		if displayName == "" {
+			displayName = str(identity, "login")
+		}
+		if runes := []rune(displayName); len(runes) > 200 {
+			displayName = string(runes[:200])
+		}
+		locale := "ko"
+		providedLocale := str(identity, "locale")
+		if strings.HasPrefix(strings.ToLower(providedLocale), "en") {
+			locale = "en"
+		}
+		if _, err = tx.Exec(c.Request().Context(), "INSERT INTO user_profiles(id,display_name,locale) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET display_name=CASE WHEN $2<>'' THEN $2 ELSE user_profiles.display_name END,locale=CASE WHEN $4 THEN $3 ELSE user_profiles.locale END", user, displayName, locale, providedLocale != ""); err != nil {
+			return err
+		}
+		if p == "github" {
+			encrypted, e := s.encrypt([]byte(access), user+":github")
 			if e != nil {
 				return e
 			}
-			if _, e = tx.Exec(c.Request().Context(), "INSERT INTO google_connections(owner_id,ciphertext) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET ciphertext=$2", user, encrypted); e != nil {
+			if _, e = tx.Exec(c.Request().Context(), "INSERT INTO github_connections(owner_id,ciphertext) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET ciphertext=$2", user, encrypted); e != nil {
 				return e
 			}
 		}
+
 		code := token()
 		_, err = tx.Exec(c.Request().Context(), "INSERT INTO auth_codes(code_hash,user_id,challenge,expires_at) VALUES($1,$2,$3,now()+interval '60 seconds')", hash(code), user, ch)
 		if err != nil {
@@ -238,5 +254,12 @@ func (s *Server) issueTokens(c echo.Context, tx pgx.Tx, user string) (map[string
 	if e != nil {
 		return nil, e
 	}
-	return map[string]any{"accessToken": access, "refreshToken": refresh, "expiresIn": 900, "user": map[string]string{"id": user, "displayName": "", "locale": "ko"}}, nil
+	if _, e = tx.Exec(c.Request().Context(), "INSERT INTO user_profiles(id) VALUES($1) ON CONFLICT DO NOTHING", user); e != nil {
+		return nil, e
+	}
+	var name, locale string
+	if e = tx.QueryRow(c.Request().Context(), "SELECT display_name,locale FROM user_profiles WHERE id=$1", user).Scan(&name, &locale); e != nil {
+		return nil, e
+	}
+	return map[string]any{"accessToken": access, "refreshToken": refresh, "expiresIn": 900, "user": map[string]string{"id": user, "displayName": name, "locale": locale}}, nil
 }

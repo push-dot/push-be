@@ -75,6 +75,10 @@ func (s *Server) contractRoutes(g *echo.Group) {
 					out = append(out, m)
 				}
 			}
+			out, e = filterRequested(c, k, out)
+			if e != nil {
+				return e
+			}
 			return page(c, out)
 		})
 		g.GET("/"+k+"/:id", func(c echo.Context) error {
@@ -136,6 +140,9 @@ func (s *Server) contractRoutes(g *echo.Group) {
 				if _, err = s.q(c).Exec(c.Request().Context(), "UPDATE billing SET credits=credits+$2,reserved=reserved-$2 WHERE owner_id=$1", owner(c), job.Reservation); err != nil {
 					return err
 				}
+				if err = s.recordLedger(c, "AI_RELEASE", job.Reservation, str(v, "id")); err != nil {
+					return err
+				}
 			}
 			if _, err = s.q(c).Exec(c.Request().Context(), "UPDATE resources SET body=body||'{\"status\":\"RELEASED\",\"costMicroCredits\":0}'::jsonb WHERE owner_id=$1 AND kind='ai-usage' AND body->>'operationId'=$2", owner(c), v["id"]); err != nil {
 				return err
@@ -151,26 +158,8 @@ func (s *Server) contractRoutes(g *echo.Group) {
 		delete(v, "revision")
 		return ok(c, 200, v)
 	})
-	g.GET("/operations/:id/events", func(c echo.Context) error {
-		v, e := s.get(c, "operations", c.Param("id"))
-		if e != nil {
-			return e
-		}
-		event := "progress"
-		var payload any = map[string]any{"status": v["status"], "progress": v["progress"], "step": v["type"]}
-		if str(v, "status") == "SUCCEEDED" {
-			event = "result"
-			payload = v["result"]
-		}
-		if str(v, "status") == "FAILED" {
-			event = "error"
-			payload = v["error"]
-		}
-		b, _ := json.Marshal(map[string]any{"operationId": v["id"], "sequence": 1, "payload": payload})
-		c.Response().Header().Set("Content-Type", "text/event-stream")
-		c.Response().Header().Set("Cache-Control", "no-cache")
-		return c.String(200, "id: "+str(v, "id")+":1\nevent: "+event+"\ndata: "+string(b)+"\n\n")
-	})
+	g.GET("/operations/:id/events", s.streamOperation)
+
 	g.POST("/career-evidence", func(c echo.Context) error {
 		var in struct {
 			Kind         string   `json:"kind"`
@@ -199,7 +188,7 @@ func (s *Server) contractRoutes(g *echo.Group) {
 		}
 		m["archived"] = false
 		m["verificationStatus"] = "USER_PROVIDED"
-		m["provenance"] = map[string]any{"sourceId": nil, "projectEvidenceId": nil, "contentHash": hash(in.SourceText)}
+		m["provenance"] = map[string]any{"sourceId": nil, "projectEvidenceId": nil, "contentHash": hash(in.SourceText), "sourceLocation": nil}
 		v, e := s.create(c, "career-evidence", "", m)
 		if e != nil {
 			return e
