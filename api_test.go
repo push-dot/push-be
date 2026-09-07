@@ -232,3 +232,28 @@ func TestSyncMutationAtomicIdempotentAndRestricted(t *testing.T) {
 		t.Fatal("offline submit allowed")
 	}
 }
+func TestCommitFailureNeverSendsSuccess(t *testing.T) {
+	s := testApp(t)
+	_, e := s.DB.Exec(context.Background(), `CREATE FUNCTION reject_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced commit failure'; END $$; CREATE CONSTRAINT TRIGGER force_commit_failure AFTER INSERT ON resources DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.body->>'title'='COMMIT_FAIL') EXECUTE FUNCTION reject_commit();`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	request(t, s, "POST", "/career-evidence", map[string]any{"kind": "SKILL", "title": "COMMIT_FAIL", "sourceText": "Go", "skills": []string{"Go"}}, 500)
+	var count int
+	s.DB.QueryRow(context.Background(), "SELECT count(*) FROM resources").Scan(&count)
+	if count != 0 {
+		t.Fatal("failed commit leaked records")
+	}
+}
+func TestCORSAllowsMutationHeaders(t *testing.T) {
+	s := testApp(t)
+	r := httptest.NewRequest("OPTIONS", "/api/v1/jobs", nil)
+	r.Header.Set("Origin", "http://localhost:5173")
+	r.Header.Set("Access-Control-Request-Method", "POST")
+	r.Header.Set("Access-Control-Request-Headers", "authorization,content-type,idempotency-key,if-match,last-event-id")
+	w := httptest.NewRecorder()
+	s.Echo.ServeHTTP(w, r)
+	if w.Code != 204 || !strings.Contains(strings.ToLower(w.Header().Get("Access-Control-Allow-Headers")), "idempotency-key") {
+		t.Fatal("mutation preflight blocked", w.Header())
+	}
+}

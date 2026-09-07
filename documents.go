@@ -357,7 +357,7 @@ func (s *Server) contractDocuments(g *echo.Group) {
 			}
 		}
 		if in.AI != nil {
-			return s.aiUnavailable(c, in.AI)
+			return s.queueAI(c, "DOCUMENT_GENERATE", str(d, "applicationId"), AIJob{AI: *in.AI, Prompt: "Draft a document using only the provided evidence. Preserve evidence text where possible. Return plain paragraphs.", EvidenceIDs: in.EvidenceIDs, DocumentID: str(d, "id"), Expected: in.Expected})
 		}
 		evs, e := s.evidenceFor(c, str(d, "applicationId"), in.EvidenceIDs, true)
 		if e != nil {
@@ -452,6 +452,7 @@ func (s *Server) contractDocuments(g *echo.Group) {
 		}
 		return ok(c, 200, map[string]any{"quality": v["quality"], "blocks": v["blocks"]})
 	})
+	s.revisionRoutes(g)
 	s.exportRoutes(g)
 	s.draftRoutes(g)
 }
@@ -617,14 +618,18 @@ func (s *Server) createWithID(c echo.Context, kind, app, id string, m map[string
 	if exists {
 		return nil, conflict("이미 존재하는 리소스 ID입니다")
 	}
-	v, e := s.create(c, kind, app, m)
+	raw, e := json.Marshal(m)
 	if e != nil {
 		return nil, e
 	}
-	if _, e = s.q(c).Exec(c.Request().Context(), "UPDATE resources SET id=$1 WHERE id=$2", id, v["id"]); e != nil {
+	var application any
+	if app != "" {
+		application = app
+	}
+	v, e := scanResource(s.q(c).QueryRow(c.Request().Context(), "INSERT INTO resources(id,owner_id,kind,application_id,body) VALUES($1,$2,$3,$4,$5) RETURNING id,body,revision,created_at,updated_at", id, owner(c), kind, application, raw))
+	if e != nil {
 		return nil, e
 	}
-	v["id"] = id
 	return v, nil
 }
 func decodeMap(m map[string]any, v any) error {

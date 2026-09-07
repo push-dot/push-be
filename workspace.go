@@ -123,7 +123,10 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 		if _, e = s.evidenceFor(c, str(conv, "applicationId"), in.Context.EvidenceIDs, true); e != nil {
 			return e
 		}
-		return s.aiUnavailable(c, in.AI)
+		if in.AI == nil {
+			return invalid("ai 설정이 필요합니다")
+		}
+		return s.queueAI(c, "CHAT_MESSAGE", str(conv, "applicationId"), AIJob{AI: *in.AI, Prompt: in.Text, EvidenceIDs: in.Context.EvidenceIDs, ConversationID: str(conv, "id")})
 	})
 	g.POST("/pins", func(c echo.Context) error {
 		var in struct {
@@ -270,7 +273,7 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 			return e
 		}
 		if in.AI != nil {
-			return s.aiUnavailable(c, in.AI)
+			return s.queueAI(c, "INTERVIEW_PREPARE", str(v, "applicationId"), AIJob{AI: *in.AI, Prompt: "Return only JSON {\"questions\":[{\"question\":string,\"requirement\":string,\"evidenceIds\":[string]}],\"starAnswers\":[{\"evidenceIds\":[string],\"situation\":string,\"task\":string,\"action\":string,\"result\":string,\"needsInput\":[string]}],\"research\":[]}. Answer fields must be exact evidence excerpts or empty. Keep unknown experience fields empty and name them in needsInput.", EvidenceIDs: stringsAt(v, "evidenceIds"), TargetID: str(v, "id"), Expected: in.Expected})
 		}
 		a, e := s.get(c, "applications", str(v, "applicationId"))
 		if e != nil {

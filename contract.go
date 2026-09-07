@@ -82,6 +82,27 @@ func (s *Server) contractRoutes(g *echo.Group) {
 			if e != nil {
 				return e
 			}
+			if k == "approvals" {
+				targetKind := map[string]string{"EVIDENCE_USE": "career-evidence", "DOCUMENT_FINALIZE": "versions", "APPLICATION_SUBMIT": "submission-drafts", "CLI_EXECUTE": "runs"}[str(v, "kind")]
+				target, e := s.get(c, targetKind, str(v, "targetId"))
+				if e != nil {
+					return e
+				}
+				summary := map[string]any{}
+				for _, field := range []string{"title", "sourceText", "text", "documentId", "number", "blocks", "documentVersionIds", "workingDirectory", "executable", "arguments", "prompt", "mode", "adapter", "confirmedSubmitted"} {
+					if value, exists := target[field]; exists {
+						summary[field] = value
+					}
+				}
+				app, e := s.get(c, "applications", str(v, "applicationId"))
+				if e != nil {
+					return e
+				}
+				summary["company"] = app["company"]
+				summary["applicationTitle"] = app["title"]
+				summary["applicationId"] = app["id"]
+				v["targetSummary"] = summary
+			}
 			return ok(c, 200, v)
 		})
 	}
@@ -292,37 +313,9 @@ func (s *Server) contractRoutes(g *echo.Group) {
 			return invalid("applicationId의 공고가 다릅니다")
 		}
 		if in.AI != nil {
-			return s.aiUnavailable(c, in.AI)
+			return s.queueAI(c, "JOB_ANALYSIS", in.ApplicationID, AIJob{AI: *in.AI, Prompt: "Analyze the job risks. Return only JSON {\"risks\":[string]}. Do not invent experience. JOB:\n" + str(j, "sourceText"), EvidenceIDs: in.EvidenceIDs, TargetID: str(j, "id"), Expected: in.Expected})
 		}
-		evs, e := s.evidenceFor(c, in.ApplicationID, in.EvidenceIDs, true)
-		if e != nil {
-			return e
-		}
-		matched := []any{}
-		missing, preferred := []string{}, []string{}
-		for _, r := range stringsAt(j, "requirements") {
-			ids := matching(evs, r)
-			if len(ids) > 0 {
-				matched = append(matched, map[string]any{"requirement": r, "evidenceIds": ids})
-			} else {
-				missing = append(missing, r)
-			}
-		}
-		for _, r := range stringsAt(j, "preferred") {
-			if len(matching(evs, r)) == 0 {
-				preferred = append(preferred, r)
-			}
-		}
-		var score any
-		requirements := stringsAt(j, "requirements")
-		if len(requirements) > 0 {
-			score = len(matched) * 100 / len(requirements)
-		}
-		m := map[string]any{"applicationId": in.ApplicationID, "jobId": j["id"], "jobRevision": j["revision"], "evidenceIds": in.EvidenceIDs, "matched": matched, "missing": missing, "preferredMissing": preferred, "risks": []string{}, "fitScore": score, "method": "RULE_BASED"}
-		if in.EvidenceIDs == nil {
-			m["evidenceIds"] = []string{}
-		}
-		v, e := s.create(c, "analyses", in.ApplicationID, m)
+		v, e := s.computeAnalysis(c, j, in.ApplicationID, in.EvidenceIDs, "RULE_BASED", []string{})
 		if e != nil {
 			return e
 		}
@@ -395,27 +388,35 @@ func (s *Server) evidenceFor(c echo.Context, app string, ids []string, approval 
 	}
 	return out, nil
 }
-func (s *Server) aiUnavailable(c echo.Context, ai *AiOptions) error {
-	if ai == nil || !oneOf(ai.Provider, "OPENAI", "CLAUDE", "GEMINI", "GROK") || !oneOf(ai.CredentialMode, "BYOK", "MANAGED") || !oneOf(ai.Effort, "LOW", "MEDIUM", "HIGH") || !length(ai.Model, 1, 100) {
-		return invalid("AI 설정이 유효하지 않습니다")
-	}
-	if ai.CredentialMode == "MANAGED" {
-		if ai.Provider != "OPENAI" {
-			return invalid("관리형은 OpenAI만 지원합니다")
-		}
-		return fail(503, "NOT_CONFIGURED", "관리형 AI 모델과 과금 구성이 필요합니다")
-	}
-	var exists bool
-	e := s.q(c).QueryRow(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE owner_id=$1 AND provider=$2)", owner(c), ai.Provider).Scan(&exists)
-	if e != nil {
-		return e
-	}
-	if !exists {
-		return fail(409, "INTEGRATION_REQUIRED", "BYOK 키를 등록하세요")
-	}
-	return fail(503, "NOT_CONFIGURED", "해당 AI 작업의 모델 구성이 필요합니다")
-}
 func (s *Server) applicationRoutes(g *echo.Group) {
+	g.POST("/applications/import", func(c echo.Context) error {
+		var in struct {
+			JobID     string `json:"jobId"`
+			Stage     string `json:"stage"`
+			AppliedAt string `json:"appliedAt"`
+			Notes     string `json:"notes"`
+			Confirmed bool   `json:"confirmed"`
+		}
+		if e := decode(c, &in); e != nil {
+			return e
+		}
+		at, e := time.Parse(time.RFC3339, in.AppliedAt)
+		if e != nil || at.After(time.Now()) || !in.Confirmed || !oneOf(in.Stage, "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN") {
+			return invalid("과거 지원일과 완료 확인이 필요합니다")
+		}
+		j, e := s.get(c, "jobs", in.JobID)
+		if e != nil {
+			return e
+		}
+		v, e := s.create(c, "applications", "", map[string]any{"jobId": in.JobID, "company": j["company"], "title": j["title"], "stage": in.Stage, "notes": in.Notes, "appliedAt": at.UTC(), "nextActionAt": nil, "imported": true})
+		if e != nil {
+			return e
+		}
+		if _, e = s.q(c).Exec(c.Request().Context(), "UPDATE resources SET application_id=id WHERE id=$1", v["id"]); e != nil {
+			return e
+		}
+		return ok(c, 201, v)
+	})
 	g.POST("/applications", func(c echo.Context) error {
 		var in struct {
 			JobID string `json:"jobId"`
@@ -596,7 +597,14 @@ func (s *Server) applicationRoutes(g *echo.Group) {
 		return ok(c, 200, map[string]any{"automationEnabled": false, "items": []any{map[string]any{"key": "review", "label": "공고와 지원 조건 검토", "completed": str(a, "stage") != "DISCOVERED"}, map[string]any{"key": "submit", "label": "채용 사이트에서 직접 제출하고 기록", "completed": a["appliedAt"] != nil}}})
 	})
 }
-func hashJSON(v any) string { b, _ := json.Marshal(v); return hash(string(b)) }
+func hashJSON(v any) string {
+	b, _ := json.Marshal(v)
+	var canonical any
+	if json.Unmarshal(b, &canonical) == nil {
+		b, _ = json.Marshal(canonical)
+	}
+	return hash(string(b))
+}
 func targetHash(v map[string]any) string {
 	m := map[string]any{}
 	for k, x := range v {
@@ -714,4 +722,40 @@ func validTime(value string) bool {
 	}
 	_, e := time.Parse(time.RFC3339, value)
 	return e == nil
+}
+
+func (s *Server) computeAnalysis(c echo.Context, j map[string]any, app string, ids []string, method string, risks []string) (map[string]any, error) {
+	evs, e := s.evidenceFor(c, app, ids, true)
+	if e != nil {
+		return nil, e
+	}
+	matched := []any{}
+	missing, preferred := []string{}, []string{}
+	for _, r := range stringsAt(j, "requirements") {
+		ids := matching(evs, r)
+		if len(ids) > 0 {
+			matched = append(matched, map[string]any{"requirement": r, "evidenceIds": ids})
+		} else {
+			missing = append(missing, r)
+		}
+	}
+	for _, r := range stringsAt(j, "preferred") {
+		if len(matching(evs, r)) == 0 {
+			preferred = append(preferred, r)
+		}
+	}
+	var score any
+	requirements := stringsAt(j, "requirements")
+	if len(requirements) > 0 {
+		score = len(matched) * 100 / len(requirements)
+	}
+	m := map[string]any{"applicationId": app, "jobId": j["id"], "jobRevision": j["revision"], "evidenceIds": ids, "matched": matched, "missing": missing, "preferredMissing": preferred, "risks": risks, "fitScore": score, "method": method}
+	if ids == nil {
+		m["evidenceIds"] = []string{}
+	}
+	v, e := s.create(c, "analyses", app, m)
+	if e != nil {
+		return nil, e
+	}
+	return v, nil
 }

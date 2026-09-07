@@ -20,13 +20,15 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
+	GitHubVerificationToken                                                                 string
+	GitHubWorkflowID                                                                        int
+	Models                                                                                  []ModelConfig
 	Environment, DevToken                                                                   string
 	AESKey                                                                                  []byte
 	PublicURL, GoogleClientID, GoogleClientSecret, GitHubClientID, GitHubClientSecret       string
@@ -62,14 +64,14 @@ func NewServer(db *pgxpool.Pool, c Config) (*Server, error) {
 	if c.Environment != "development" && c.DevToken != "" {
 		return nil, errors.New("DEV_AUTH_TOKEN is forbidden outside development")
 	}
-	schema, err := os.ReadFile("migrations/001_initial.sql")
-	if err != nil {
-		return nil, err
-	}
-	if _, err = db.Exec(context.Background(), string(schema)); err != nil {
+	if _, err := db.Exec(context.Background(), migrationSQL); err != nil {
 		return nil, err
 	}
 	s := &Server{DB: db, Echo: echo.New(), Config: c, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	s.Echo.Server.ReadHeaderTimeout = 5 * time.Second
+	s.Echo.Server.ReadTimeout = 30 * time.Second
+	s.Echo.Server.WriteTimeout = 60 * time.Second
+	s.Echo.Server.IdleTimeout = 60 * time.Second
 	s.Echo.HideBanner = true
 	s.Echo.HidePort = true
 	s.Echo.HTTPErrorHandler = func(err error, c echo.Context) {
@@ -86,7 +88,9 @@ func NewServer(db *pgxpool.Pool, c Config) (*Server, error) {
 		}
 		_ = c.JSON(e.Status, map[string]any{"error": map[string]any{"code": e.Code, "message": e.Message, "requestId": c.Response().Header().Get("X-Request-ID"), "details": errorDetails(c)}})
 	}
-	s.Echo.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimit("1M"), middleware.Secure(), middleware.CORSWithConfig(middleware.CORSConfig{AllowOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Authorization", "Content-Type", "Idempotency-Key", "If-Match", "Last-Event-ID"}}))
+	s.Echo.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimitWithConfig(middleware.BodyLimitConfig{Limit: "1M", Skipper: func(c echo.Context) bool {
+		return c.Request().URL.Path == "/api/v1/sources" && c.Request().Method == "POST"
+	}}), middleware.Secure(), middleware.CORSWithConfig(middleware.CORSConfig{AllowOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Authorization", "Content-Type", "Idempotency-Key", "If-Match", "Last-Event-ID"}}))
 	s.Echo.GET("/healthz", func(c echo.Context) error { return c.JSON(200, map[string]string{"status": "ok"}) })
 	s.Echo.GET("/readyz", func(c echo.Context) error {
 		if err := db.Ping(c.Request().Context()); err != nil {
@@ -161,11 +165,15 @@ func (s *Server) authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 			if !validID(idem) {
 				return invalid("Idempotency-Key UUID가 필요합니다")
 			}
-			raw, e := io.ReadAll(io.LimitReader(c.Request().Body, 1<<20+1))
+			maxBody := int64(1 << 20)
+			if c.Request().URL.Path == "/api/v1/sources" {
+				maxBody = 21 << 20
+			}
+			raw, e := io.ReadAll(io.LimitReader(c.Request().Body, maxBody+1))
 			if e != nil {
 				return e
 			}
-			if len(raw) > 1<<20 {
+			if int64(len(raw)) > maxBody {
 				return fail(413, "PAYLOAD_TOO_LARGE", "본문 크기를 초과했습니다")
 			}
 			c.Request().Body = io.NopCloser(bytes.NewReader(raw))
@@ -202,6 +210,9 @@ func (s *Server) authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 			return err
 		}
 		if status, ok := c.Get("responseStatus").(int); ok {
+			if status == 204 {
+				return c.NoContent(204)
+			}
 			return c.JSON(status, c.Get("responseBody"))
 		}
 		return nil
@@ -372,18 +383,6 @@ func (s *Server) update(c echo.Context, kind string, m map[string]any, expected 
 	}
 	return result, err
 }
-func (s *Server) approved(c echo.Context, kind, target string) bool {
-	var found bool
-	err := s.q(c).QueryRow(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM resources WHERE owner_id=$1 AND kind='approvals' AND body->>'kind'=$2 AND body->>'targetId'=$3 AND body->>'status'='APPROVED')", owner(c), kind, target).Scan(&found)
-	return err == nil && found
-}
-func (s *Server) requireApproval(c echo.Context, kind, target string) error {
-	if !s.approved(c, kind, target) {
-		return fail(409, "APPROVAL_REQUIRED", "사용자 승인이 필요합니다")
-	}
-	return nil
-}
-
 func empty(c echo.Context) error {
 	if c.Get("tx") != nil {
 		c.Set("responseStatus", 204)

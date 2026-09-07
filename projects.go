@@ -30,7 +30,11 @@ func (s *Server) contractProjects(g *echo.Group) {
 			return invalid("다른 지원 분석입니다")
 		}
 		if in.AI != nil {
-			return s.aiUnavailable(c, in.AI)
+			j, e := s.get(c, "jobs", str(a, "jobId"))
+			if e != nil {
+				return e
+			}
+			return s.queueAI(c, "PROJECT_BLUEPRINTS", in.ApplicationID, AIJob{AI: *in.AI, Prompt: "Return only JSON {\"projects\":[4 objects with title,skills,problem,solution,tasks:[{title,description,acceptance:[string]}],completionCriteria:[string],metrics:[{name,unit,measurement,target:number|null}],estimatedEffort:{minHours,maxHours}]}. Use only job skills; no completed experience claims. JOB:\n" + str(j, "sourceText"), EvidenceIDs: stringsAt(analysis, "evidenceIds"), TargetID: in.AnalysisID})
 		}
 		j, e := s.get(c, "jobs", str(a, "jobId"))
 		if e != nil {
@@ -328,7 +332,7 @@ func (s *Server) contractProjects(g *echo.Group) {
 		if e = s.checkRevision(c, v, in.Expected); e != nil {
 			return e
 		}
-		return s.operation(c, "PROJECT_VERIFY", str(v, "applicationId"), v)
+		return s.verifyProject(c, v, in.Expected)
 	})
 }
 

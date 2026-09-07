@@ -34,3 +34,20 @@ CREATE TRIGGER resources_changes AFTER INSERT OR UPDATE OR DELETE ON resources F
 CREATE TABLE IF NOT EXISTS source_files(id uuid PRIMARY KEY,owner_id uuid NOT NULL,content bytea NOT NULL);
 ALTER TABLE billing ADD COLUMN IF NOT EXISTS last_event_time bigint NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS stripe_refunds(charge_id text PRIMARY KEY,amount bigint NOT NULL);
+ALTER TABLE billing ADD COLUMN IF NOT EXISTS reserved bigint NOT NULL DEFAULT 0 CHECK(reserved>=0);
+CREATE TABLE IF NOT EXISTS work_queue(operation_id uuid PRIMARY KEY,owner_id uuid NOT NULL,kind text NOT NULL,application_id uuid NOT NULL,input jsonb NOT NULL,state text NOT NULL DEFAULT 'QUEUED',started_at timestamptz,created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE google_connections ADD COLUMN IF NOT EXISTS scopes jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE google_connections ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS owner_id uuid;
+CREATE TABLE IF NOT EXISTS integration_codes(code_hash text PRIMARY KEY,owner_id uuid NOT NULL,challenge text NOT NULL,ciphertext bytea NOT NULL,scopes jsonb NOT NULL,expires_at timestamptz NOT NULL);
+ALTER TABLE ai_keys ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE TABLE IF NOT EXISTS user_profiles(id uuid PRIMARY KEY,display_name text NOT NULL DEFAULT '',locale text NOT NULL DEFAULT 'ko',created_at timestamptz NOT NULL DEFAULT now());
+CREATE OR REPLACE FUNCTION record_timeline() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.application_id IS NOT NULL AND NEW.kind IN ('applications','documents','approvals','interviews','offers','submissions') THEN
+ INSERT INTO resources(id,owner_id,kind,application_id,body) VALUES(gen_random_uuid(),NEW.owner_id,'timeline',NEW.application_id,jsonb_build_object('applicationId',NEW.application_id,'resourceType',NEW.kind,'resourceId',NEW.id,'eventType',TG_OP,'resourceRevision',NEW.revision,'title',COALESCE(NEW.body->>'title',NEW.body->>'kind',NEW.kind),'stage',NEW.body->>'stage'));
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS resources_timeline ON resources;
+CREATE TRIGGER resources_timeline AFTER INSERT OR UPDATE ON resources FOR EACH ROW EXECUTE FUNCTION record_timeline();

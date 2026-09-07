@@ -159,8 +159,8 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 func (s *Server) billingRoutes(g *echo.Group) {
 	g.GET("/billing", func(c echo.Context) error {
 		var active bool
-		var balance int64
-		e := s.q(c).QueryRow(c.Request().Context(), "SELECT active,credits FROM billing WHERE owner_id=$1", owner(c)).Scan(&active, &balance)
+		var balance, reserved int64
+		e := s.q(c).QueryRow(c.Request().Context(), "SELECT active,credits,reserved FROM billing WHERE owner_id=$1", owner(c)).Scan(&active, &balance, &reserved)
 		if e != nil && e.Error() != "no rows in result set" {
 			return e
 		}
@@ -168,7 +168,7 @@ func (s *Server) billingRoutes(g *echo.Group) {
 		if active {
 			status = "ACTIVE"
 		}
-		return ok(c, 200, map[string]any{"subscriptionStatus": status, "plan": nullable(s.Config.StripePriceID), "periodEndsAt": nil, "balanceMicroCredits": balance, "reservedMicroCredits": 0})
+		return ok(c, 200, map[string]any{"subscriptionStatus": status, "plan": nullable(s.Config.StripePriceID), "periodEndsAt": nil, "balanceMicroCredits": balance, "reservedMicroCredits": reserved})
 	})
 	g.GET("/billing/ledger", func(c echo.Context) error {
 		v, e := s.list(c, "ledger", "")

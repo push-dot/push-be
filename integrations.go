@@ -2,10 +2,23 @@ package main
 
 import (
 	"github.com/labstack/echo/v4"
+	"time"
 )
 
 func (s *Server) integrationRoutes(g *echo.Group) {
-	g.GET("/auth/me", func(c echo.Context) error { return ok(c, 200, map[string]string{"id": owner(c)}) })
+	g.GET("/auth/me", func(c echo.Context) error {
+		var name, locale string
+		var at time.Time
+		_, e := s.q(c).Exec(c.Request().Context(), "INSERT INTO user_profiles(id) VALUES($1) ON CONFLICT DO NOTHING", owner(c))
+		if e != nil {
+			return e
+		}
+		e = s.q(c).QueryRow(c.Request().Context(), "SELECT display_name,locale,created_at FROM user_profiles WHERE id=$1", owner(c)).Scan(&name, &locale, &at)
+		if e != nil {
+			return e
+		}
+		return ok(c, 200, map[string]any{"id": owner(c), "displayName": name, "locale": locale, "createdAt": at})
+	})
 	g.PUT("/ai/keys/:provider", func(c echo.Context) error {
 		p := c.Param("provider")
 		if !oneOf(p, "OPENAI", "CLAUDE", "GEMINI", "GROK") {
@@ -20,18 +33,18 @@ func (s *Server) integrationRoutes(g *echo.Group) {
 		if len(in.Key) < 12 || len(in.Key) > 4096 {
 			return invalid("키 길이를 확인하세요")
 		}
-		b, e := s.encrypt([]byte(in.Key), owner(c)+":"+p)
+		b, e := s.encrypt([]byte(in.Key), owner(c)+":"+p+":v1")
 		if e != nil {
 			return e
 		}
-		_, e = s.q(c).Exec(c.Request().Context(), "INSERT INTO ai_keys(owner_id,provider,ciphertext,last_four) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,provider) DO UPDATE SET ciphertext=$3,last_four=$4", owner(c), p, b, in.Key[len(in.Key)-4:])
+		_, e = s.q(c).Exec(c.Request().Context(), "INSERT INTO ai_keys(owner_id,provider,ciphertext,last_four) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,provider) DO UPDATE SET ciphertext=$3,last_four=$4,updated_at=now()", owner(c), p, b, in.Key[len(in.Key)-4:])
 		if e != nil {
 			return e
 		}
-		return ok(c, 200, map[string]string{"provider": p, "lastFour": in.Key[len(in.Key)-4:]})
+		return ok(c, 200, map[string]any{"provider": p, "lastFour": in.Key[len(in.Key)-4:], "configured": true, "updatedAt": time.Now().UTC()})
 	})
 	g.GET("/ai/keys", func(c echo.Context) error {
-		rows, e := s.q(c).Query(c.Request().Context(), "SELECT provider,last_four FROM ai_keys WHERE owner_id=$1 ORDER BY provider", owner(c))
+		rows, e := s.q(c).Query(c.Request().Context(), "SELECT provider,last_four,updated_at FROM ai_keys WHERE owner_id=$1 ORDER BY provider", owner(c))
 		if e != nil {
 			return e
 		}
@@ -39,10 +52,11 @@ func (s *Server) integrationRoutes(g *echo.Group) {
 		out := []any{}
 		for rows.Next() {
 			var p, l string
-			if e = rows.Scan(&p, &l); e != nil {
+			var at time.Time
+			if e = rows.Scan(&p, &l, &at); e != nil {
 				return e
 			}
-			out = append(out, map[string]string{"provider": p, "lastFour": l})
+			out = append(out, map[string]any{"provider": p, "lastFour": l, "configured": true, "updatedAt": at})
 		}
 		if e = rows.Err(); e != nil {
 			return e
@@ -57,19 +71,15 @@ func (s *Server) integrationRoutes(g *echo.Group) {
 		if e != nil {
 			return e
 		}
-		return ok(c, 200, map[string]bool{"deleted": true})
+		return empty(c)
 	})
 	s.billingRoutes(g)
-	g.POST("/integrations/google/sync", func(c echo.Context) error {
-		if !s.Config.GoogleBeta {
-			return fail(403, "FORBIDDEN", "Google 연동 베타가 비활성화되어 있습니다")
-		}
-		return conflict("Google 계정을 연결하세요")
-	})
+	s.aiRoutes(g)
+	s.googleRoutes(g)
 	g.GET("/integrations/job-sites", func(c echo.Context) error {
 		out := []any{}
 		for _, p := range []string{"WANTED", "JUMPIT", "JOBKOREA"} {
-			out = append(out, map[string]any{"provider": p, "enabled": false, "mode": "MANUAL_CHECKLIST", "checklist": []string{"공고와 지원 조건 확인", "확정한 서류 첨부", "제출 내용 직접 검토", "사이트에서 직접 제출", "제출 완료를 Push에 기록"}})
+			out = append(out, map[string]any{"provider": p, "enabled": false, "permissionVerified": false, "supportedFields": []string{}, "mode": "MANUAL_CHECKLIST", "checklist": []string{"공고와 지원 조건 확인", "확정한 서류 첨부", "제출 내용 직접 검토", "사이트에서 직접 제출", "제출 완료를 Push에 기록"}})
 		}
 		return ok(c, 200, out)
 	})

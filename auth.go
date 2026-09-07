@@ -83,11 +83,7 @@ func (s *Server) authRoutes() {
 		q := url.Values{"client_id": {client}, "redirect_uri": {strings.TrimRight(s.Config.PublicURL, "/") + "/api/v1/auth/" + p + "/callback"}, "response_type": {"code"}, "state": {state}, "code_challenge": {challenge(verifier)}, "code_challenge_method": {"S256"}}
 		if p == "google" {
 			scope := "openid email profile"
-			if s.Config.GoogleBeta {
-				scope += " https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
-				q.Set("access_type", "offline")
-				q.Set("prompt", "consent")
-			}
+
 			q.Set("scope", scope)
 		} else {
 			q.Set("scope", "read:user")
@@ -234,6 +230,7 @@ func (s *Server) authRoutes() {
 		return empty(c)
 	})
 	s.Echo.POST("/api/v1/billing/webhook", s.stripeWebhook)
+	s.Echo.GET("/api/v1/integrations/google/callback", s.googleCallback)
 }
 func (s *Server) issueTokens(c echo.Context, tx pgx.Tx, user string) (map[string]any, error) {
 	access, refresh := token(), token()
