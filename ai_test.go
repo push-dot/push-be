@@ -44,3 +44,24 @@ func TestAIQueuedActualProviderUsageAndSecretIsolation(t *testing.T) {
 		t.Fatal(value)
 	}
 }
+func TestCancelledQueuedAIIsNeverDispatched(t *testing.T) {
+	s := testApp(t)
+	_, a := jobApp(t, s)
+	s.Config.Models = []ModelConfig{{Provider: "OPENAI", Model: "test-model"}}
+	request(t, s, "PUT", "/ai/keys/OPENAI", map[string]any{"key": "sk-secret-123456789"}, 200)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("cancelled request reached provider")
+		http.Error(w, "must not dispatch", 500)
+	}))
+	defer provider.Close()
+	s.HTTP = &http.Client{Transport: redirectTransport{target: provider.Listener.Addr().String()}}
+	queued := data(request(t, s, "POST", "/ai/generate", map[string]any{"ai": map[string]any{"provider": "OPENAI", "model": "test-model", "credentialMode": "BYOK", "effort": "LOW"}, "prompt": "cancel this", "applicationId": id(a), "evidenceIds": []string{}}, 202))
+	request(t, s, "POST", "/operations/"+id(queued)+"/cancel", map[string]any{}, 200)
+	if e := s.ProcessOne(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	op := data(request(t, s, "GET", "/operations/"+id(queued), nil, 200))
+	if op["status"] != "CANCELLED" {
+		t.Fatal("cancelled operation changed", op)
+	}
+}

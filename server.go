@@ -302,8 +302,8 @@ func (s *Server) create(c echo.Context, kind, application string, body any) (map
 	}
 	m["id"] = id
 	m["revision"] = float64(1)
-	m["createdAt"] = at
-	m["updatedAt"] = at
+	m["createdAt"] = at.UTC()
+	m["updatedAt"] = at.UTC()
 	if immutable(kind) {
 		delete(m, "revision")
 		delete(m, "updatedAt")
@@ -327,8 +327,8 @@ func scanResource(row pgx.Row) (map[string]any, error) {
 	}
 	m["id"] = id
 	m["revision"] = float64(rev)
-	m["createdAt"] = created
-	m["updatedAt"] = updated
+	m["createdAt"] = created.UTC()
+	m["updatedAt"] = updated.UTC()
 	return m, nil
 }
 func (s *Server) get(c echo.Context, kind, id string) (map[string]any, error) {

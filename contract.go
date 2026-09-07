@@ -119,6 +119,28 @@ func (s *Server) contractRoutes(g *echo.Group) {
 		if e != nil {
 			return e
 		}
+		if str(v, "status") == "RUNNING" {
+			return conflict("이미 공급자가 실행 중입니다. 결과를 확인하세요")
+		}
+		if str(v, "status") == "QUEUED" {
+			var raw []byte
+			err := s.q(c).QueryRow(c.Request().Context(), "UPDATE work_queue SET state='CANCELLED' WHERE operation_id=$1 AND owner_id=$2 AND state='QUEUED' RETURNING input", v["id"], owner(c)).Scan(&raw)
+			if err != nil {
+				return conflict("이미 실행을 시작했습니다")
+			}
+			var job AIJob
+			if err = json.Unmarshal(raw, &job); err != nil {
+				return err
+			}
+			if job.Reservation > 0 {
+				if _, err = s.q(c).Exec(c.Request().Context(), "UPDATE billing SET credits=credits+$2,reserved=reserved-$2 WHERE owner_id=$1", owner(c), job.Reservation); err != nil {
+					return err
+				}
+			}
+			if _, err = s.q(c).Exec(c.Request().Context(), "UPDATE resources SET body=body||'{\"status\":\"RELEASED\",\"costMicroCredits\":0}'::jsonb WHERE owner_id=$1 AND kind='ai-usage' AND body->>'operationId'=$2", owner(c), v["id"]); err != nil {
+				return err
+			}
+		}
 		if !oneOf(str(v, "status"), "SUCCEEDED", "FAILED", "CANCELLED") {
 			v["status"] = "CANCELLED"
 			v, e = s.update(c, "operations", v, number(v, "revision"))
