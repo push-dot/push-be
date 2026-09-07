@@ -109,7 +109,7 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 				}
 				grant := int64(amount) * 10000
 				balance += grant
-				if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET credits=$2,active=CASE WHEN $3>=last_event_time THEN true ELSE active END,last_event_time=GREATEST(last_event_time,$3) WHERE owner_id=$1", user, balance, event.Created); e != nil {
+				if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET credits=$2,active=CASE WHEN entitlement_event_time < 0 THEN true ELSE active END,last_event_time=GREATEST(last_event_time,$3) WHERE owner_id=$1", user, balance, event.Created); e != nil {
 					return e
 				}
 				c.Set("owner", user)
@@ -120,11 +120,17 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 				c.Set("tx", nil)
 			case "customer.subscription.deleted", "customer.subscription.updated", "invoice.payment_failed":
 				status := event.Type == "customer.subscription.updated" && oneOf(str(obj, "status"), "active", "trialing")
-				if event.Created >= last {
-					if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET active=$2,last_event_time=$3 WHERE owner_id=$1", user, status, event.Created); e != nil {
-						return e
-					}
+				priority := 0
+				if !status {
+					priority = 1
 				}
+				if event.Type == "customer.subscription.deleted" || str(obj, "status") == "canceled" {
+					priority = 2
+				}
+				if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET active=$2,entitlement_event_time=$3,entitlement_priority=$4,last_event_time=GREATEST(last_event_time,$3) WHERE owner_id=$1 AND ($3>entitlement_event_time OR ($3=entitlement_event_time AND $4>=entitlement_priority))", user, status, event.Created, priority); e != nil {
+					return e
+				}
+
 			case "charge.refunded":
 				if str(obj, "currency") != "usd" {
 					break

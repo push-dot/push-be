@@ -88,3 +88,42 @@ func TestNestedStripePeriod(t *testing.T) {
 		s.DB.Exec(context.Background(), "UPDATE billing SET period_ends_at=NULL")
 	}
 }
+
+func TestSameSecondCancellationNeverResurrectsFromPayment(t *testing.T) {
+	for _, paymentFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint(paymentFirst), func(t *testing.T) {
+			s := testApp(t)
+			_, e := s.DB.Exec(context.Background(), "INSERT INTO billing(owner_id,customer_id,active) VALUES('00000000-0000-4000-8000-000000000001','cus_test',true)")
+			if e != nil {
+				t.Fatal(e)
+			}
+			paid := map[string]any{"id": "evt_paid_equal", "type": "invoice.paid", "created": 1800000000, "data": map[string]any{"object": map[string]any{"id": "in_test", "customer": "cus_test", "subscription": "sub_test", "currency": "usd", "amount_paid": 100}}}
+			deleted := map[string]any{"id": "evt_deleted_equal", "type": "customer.subscription.deleted", "created": 1800000000, "data": map[string]any{"object": map[string]any{"id": "sub_test", "customer": "cus_test", "status": "canceled"}}}
+			if paymentFirst {
+				signedBillingEvent(t, s, paid)
+				signedBillingEvent(t, s, deleted)
+			} else {
+				signedBillingEvent(t, s, deleted)
+				signedBillingEvent(t, s, paid)
+			}
+			signedBillingEvent(t, s, paid)
+			result := data(request(t, s, "GET", "/billing", nil, 200))
+			if result["subscriptionStatus"] != "INACTIVE" || result["balanceMicroCredits"] != float64(1000000) {
+				t.Fatal(result)
+			}
+			active := map[string]any{"id": "evt_updated_equal", "type": "customer.subscription.updated", "created": 1800000000, "data": map[string]any{"object": map[string]any{"id": "sub_test", "customer": "cus_test", "status": "active"}}}
+			signedBillingEvent(t, s, active)
+			result = data(request(t, s, "GET", "/billing", nil, 200))
+			if result["subscriptionStatus"] != "INACTIVE" {
+				t.Fatal("same-second active update resurrected", result)
+			}
+			active["id"] = "evt_updated_newer"
+			active["created"] = 1800000001
+			signedBillingEvent(t, s, active)
+			result = data(request(t, s, "GET", "/billing", nil, 200))
+			if result["subscriptionStatus"] != "ACTIVE" {
+				t.Fatal("new subscription state ignored", result)
+			}
+		})
+	}
+}
