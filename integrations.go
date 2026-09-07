@@ -4,7 +4,6 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func (s *Server) authRoutes() {}
 func (s *Server) integrationRoutes(g *echo.Group) {
 	g.GET("/auth/me", func(c echo.Context) error { return ok(c, 200, map[string]string{"id": owner(c)}) })
 	g.PUT("/ai/keys/:provider", func(c echo.Context) error {
@@ -60,7 +59,7 @@ func (s *Server) integrationRoutes(g *echo.Group) {
 		}
 		return ok(c, 200, map[string]bool{"deleted": true})
 	})
-	g.POST("/billing/checkout", func(c echo.Context) error { return fail(503, "NOT_CONFIGURED", "Stripe 설정이 필요합니다") })
+	s.billingRoutes(g)
 	g.POST("/integrations/google/sync", func(c echo.Context) error {
 		if !s.Config.GoogleBeta {
 			return fail(403, "FORBIDDEN", "Google 연동 베타가 비활성화되어 있습니다")

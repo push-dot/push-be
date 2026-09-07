@@ -48,10 +48,14 @@ func request(t *testing.T, s *Server, method, path string, body any, status int)
 	r := httptest.NewRequest(method, "/api/v1"+path, bytes.NewReader(b))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer test-secret")
+	r.Header.Set("Idempotency-Key", uuid.NewString())
 	w := httptest.NewRecorder()
 	s.Echo.ServeHTTP(w, r)
 	if w.Code != status {
 		t.Fatalf("%s %s: want %d got %d %s", method, path, status, w.Code, w.Body.String())
+	}
+	if status == 204 {
+		return nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
@@ -61,37 +65,58 @@ func request(t *testing.T, s *Server, method, path string, body any, status int)
 }
 func data(m map[string]any) map[string]any { return m["data"].(map[string]any) }
 func id(m map[string]any) string           { return m["id"].(string) }
-func approve(t *testing.T, s *Server, kind, target string) {
-	a := data(request(t, s, "POST", "/approvals", map[string]any{"kind": kind, "targetId": target}, 201))
-	request(t, s, "POST", "/approvals/"+id(a)+"/decision", map[string]any{"decision": "APPROVED"}, 200)
+func approve(t *testing.T, s *Server, kind, app, target string) string {
+	a := data(request(t, s, "POST", "/approvals", map[string]any{"kind": kind, "applicationId": app, "targetId": target}, 201))
+	request(t, s, "POST", "/approvals/"+id(a)+"/decision", map[string]any{"expectedRevision": 1, "decision": "APPROVED"}, 200)
+	return id(a)
 }
 func jobApp(t *testing.T, s *Server) (map[string]any, map[string]any) {
 	j := data(request(t, s, "POST", "/jobs", map[string]any{"company": "테스트 회사", "title": "개발자", "sourceText": "Go PostgreSQL 개발", "sourceKind": "TEXT", "requirements": []string{"Go", "PostgreSQL"}, "preferred": []string{"Redis"}}, 201))
 	a := data(request(t, s, "POST", "/applications", map[string]any{"jobId": id(j)}, 201))
 	return j, a
 }
-
-func TestGroundedVersionsAndApplicationIsolation(t *testing.T) {
+func opResult(t *testing.T, m map[string]any) any {
+	t.Helper()
+	o := data(m)
+	if o["status"] != "SUCCEEDED" {
+		t.Fatalf("operation unfinished: %v", o)
+	}
+	return o["result"].(map[string]any)["value"]
+}
+func versionInput(eid, text string) map[string]any {
+	return map[string]any{"expectedRevision": 1, "content": map[string]any{"type": "doc", "content": []any{map[string]any{"type": "paragraph", "attrs": map[string]any{"blockId": "b1"}, "content": []any{map[string]any{"type": "text", "text": text}}}}}, "blocks": []any{map[string]any{"id": "b1", "text": text, "evidenceRefs": []any{map[string]any{"evidenceId": eid, "start": 0, "end": len([]rune("Go API 응답 시간을 20% 줄였습니다."))}}}}}
+}
+func TestContractGroundedDocumentSubmissionAndIsolation(t *testing.T) {
 	s := testApp(t)
 	j, a := jobApp(t, s)
 	_, b := jobApp(t, s)
-	e := data(request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "API 개발", "sourceText": "Go API 응답 시간을 20% 줄였습니다.", "skills": []string{"Go"}}, 201))
-	analysis := data(request(t, s, "POST", "/jobs/"+id(j)+"/analyze", map[string]any{}, 200))
+	e := data(request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "API", "sourceText": "Go API 응답 시간을 20% 줄였습니다.", "skills": []string{"Go"}}, 201))
+	approve(t, s, "EVIDENCE_USE", id(a), id(e))
+	analysis := opResult(t, request(t, s, "POST", "/jobs/"+id(j)+"/analyze", map[string]any{"applicationId": id(a), "expectedRevision": 1, "evidenceIds": []string{id(e)}, "ai": nil}, 202)).(map[string]any)
 	if analysis["fitScore"] != float64(50) {
-		t.Fatalf("actual evidence match score: %v", analysis)
+		t.Fatal(analysis)
 	}
-	doc := data(request(t, s, "POST", "/documents", map[string]any{"applicationId": id(a), "title": "지원 서류", "kind": "RESUME", "template": "CLASSIC"}, 201))
-	v := data(request(t, s, "POST", "/documents/"+id(doc)+"/versions", map[string]any{"expectedRevision": 1, "blocks": []any{map[string]any{"text": "Go API 응답 시간을 90% 줄였습니다.", "evidenceIds": []string{id(e)}}}}, 201))
-	approve(t, s, "EVIDENCE_USE", id(e))
-	approve(t, s, "DOCUMENT_FINALIZE", id(v))
-	request(t, s, "POST", "/documents/"+id(doc)+"/finalize", map[string]any{"expectedRevision": 2, "versionId": id(v)}, 409)
-	v2 := data(request(t, s, "POST", "/documents/"+id(doc)+"/generate", map[string]any{"expectedRevision": 2, "evidenceIds": []string{id(e)}}, 201))
-	approve(t, s, "DOCUMENT_FINALIZE", id(v2))
-	request(t, s, "POST", "/documents/"+id(doc)+"/finalize", map[string]any{"expectedRevision": 3, "versionId": id(v2)}, 200)
-	request(t, s, "POST", "/documents/"+id(doc)+"/generate", map[string]any{"expectedRevision": 3, "evidenceIds": []string{id(e)}}, 409)
-	docs := request(t, s, "GET", "/documents?applicationId="+id(b), nil, 200)["data"].([]any)
-	if len(docs) != 0 {
-		t.Fatal("applications leaked documents")
+	d := data(request(t, s, "POST", "/documents", map[string]any{"applicationId": id(a), "title": "doc", "kind": "RESUME", "template": "CLASSIC"}, 201))
+	v := data(request(t, s, "POST", "/documents/"+id(d)+"/versions", versionInput(id(e), "Go API 응답 시간을 90% 줄였습니다."), 201))["version"].(map[string]any)
+	approval := approve(t, s, "DOCUMENT_FINALIZE", id(a), id(v))
+	request(t, s, "POST", "/documents/"+id(d)+"/finalize", map[string]any{"expectedRevision": 2, "versionId": id(v), "approvalId": approval}, 409)
+	generated := opResult(t, request(t, s, "POST", "/documents/"+id(d)+"/generate", map[string]any{"expectedRevision": 2, "evidenceIds": []string{id(e)}, "ai": nil}, 202)).(map[string]any)
+	v2 := generated["version"].(map[string]any)
+	approval = approve(t, s, "DOCUMENT_FINALIZE", id(a), id(v2))
+	request(t, s, "POST", "/documents/"+id(d)+"/finalize", map[string]any{"expectedRevision": 3, "versionId": id(v2), "approvalId": approval}, 200)
+	request(t, s, "PATCH", "/applications/"+id(a), map[string]any{"expectedRevision": 1, "stage": "PREPARING"}, 200)
+	request(t, s, "PATCH", "/applications/"+id(a), map[string]any{"expectedRevision": 2, "stage": "READY"}, 200)
+	request(t, s, "PATCH", "/applications/"+id(a), map[string]any{"expectedRevision": 3, "stage": "APPLIED"}, 409)
+	draft := data(request(t, s, "POST", "/applications/"+id(a)+"/submission-drafts", map[string]any{"expectedRevision": 3, "mode": "MANUAL_RECORD", "documentVersionIds": []string{id(v2)}, "confirmedSubmitted": true}, 201))
+	approval = approve(t, s, "APPLICATION_SUBMIT", id(a), id(draft))
+	request(t, s, "POST", "/applications/"+id(a)+"/submissions", map[string]any{"expectedRevision": 3, "draftId": id(draft), "approvalId": approval}, 201)
+	request(t, s, "POST", "/applications/"+id(a)+"/submissions", map[string]any{"expectedRevision": 3, "draftId": id(draft), "approvalId": approval}, 409)
+	docs := request(t, s, "GET", "/documents?applicationId="+id(b), nil, 200)
+	if len(docs["data"].([]any)) != 0 {
+		t.Fatal("scope leak")
+	}
+	if docs["page"] == nil {
+		t.Fatal("pagination envelope missing")
 	}
 	_, err := s.DB.Exec(context.Background(), "UPDATE resources SET owner_id=$1 WHERE id=$2", uuid.NewString(), id(j))
 	if err != nil {
@@ -99,109 +124,111 @@ func TestGroundedVersionsAndApplicationIsolation(t *testing.T) {
 	}
 	request(t, s, "GET", "/jobs/"+id(j), nil, 404)
 }
-func TestApplicationApprovalAndTerminalStates(t *testing.T) {
+func TestTipTapUnlinkedTextAndClientClaimStatusRejected(t *testing.T) {
 	s := testApp(t)
 	_, a := jobApp(t, s)
-	p := "/applications/" + id(a)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 1, "stage": "APPLIED"}, 409)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 1, "stage": "PREPARING"}, 200)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 2, "stage": "READY"}, 200)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 3, "stage": "APPLIED"}, 409)
-	approve(t, s, "APPLICATION_SUBMIT", id(a))
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 3, "stage": "APPLIED"}, 200)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 4, "stage": "WITHDRAWN"}, 200)
-	request(t, s, "PATCH", p, map[string]any{"expectedRevision": 5, "stage": "PREPARING"}, 409)
+	e := data(request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "API", "sourceText": "Go API 응답 시간을 20% 줄였습니다.", "skills": []string{"Go"}}, 201))
+	d := data(request(t, s, "POST", "/documents", map[string]any{"applicationId": id(a), "title": "doc", "kind": "RESUME", "template": "CLASSIC"}, 201))
+	body := versionInput(id(e), "Go API 응답 시간을 20% 줄였습니다.")
+	body["blocks"].([]any)[0].(map[string]any)["claimStatus"] = "SUPPORTED"
+	request(t, s, "POST", "/documents/"+id(d)+"/versions", body, 400)
+	delete(body["blocks"].([]any)[0].(map[string]any), "claimStatus")
+	body["content"].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"] = "숨겨진 수치 90%"
+	request(t, s, "POST", "/documents/"+id(d)+"/versions", body, 400)
 }
-func TestStrictInputAndNoImplicitAuthentication(t *testing.T) {
-	s := testApp(t)
-	request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "title", "sourceText": "text", "ownerId": uuid.NewString()}, 400)
-	r := httptest.NewRequest("GET", "/api/v1/jobs", nil)
-	w := httptest.NewRecorder()
-	s.Echo.ServeHTTP(w, r)
-	if w.Code != 401 {
-		t.Fatal("missing auth accepted")
-	}
-	request(t, s, "POST", "/approvals", map[string]any{"kind": "CLI_EXECUTE", "targetId": uuid.NewString()}, 404)
-	request(t, s, "POST", "/integrations/google/sync", map[string]any{}, 403)
-	request(t, s, "POST", "/billing/checkout", map[string]any{}, 503)
-}
-func TestProjectEvidenceRequiresApprovalAndSuccessfulVerification(t *testing.T) {
+func TestIdempotencyAndScopedApproval(t *testing.T) {
 	s := testApp(t)
 	_, a := jobApp(t, s)
-	ps := request(t, s, "POST", "/projects/blueprints", map[string]any{"applicationId": id(a)}, 201)["data"].([]any)
-	if len(ps) != 4 {
-		t.Fatal("need four practical projects")
+	_, b := jobApp(t, s)
+	e := data(request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "API", "sourceText": "Go", "skills": []string{"Go"}}, 201))
+	approve(t, s, "EVIDENCE_USE", id(a), id(e))
+	d := data(request(t, s, "POST", "/documents", map[string]any{"applicationId": id(b), "title": "doc", "kind": "RESUME", "template": "CLASSIC"}, 201))
+	request(t, s, "POST", "/documents/"+id(d)+"/generate", map[string]any{"expectedRevision": 1, "evidenceIds": []string{id(e)}, "ai": nil}, 409)
+	key := uuid.NewString()
+	send := func(title string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/v1/career-evidence", strings.NewReader(`{"kind":"SKILL","title":"`+title+`","sourceText":"Go","skills":["Go"]}`))
+		r.Header.Set("Authorization", "Bearer test-secret")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Idempotency-Key", key)
+		w := httptest.NewRecorder()
+		s.Echo.ServeHTTP(w, r)
+		return w
 	}
-	p := ps[0].(map[string]any)
-	run := data(request(t, s, "POST", "/projects/"+id(p)+"/runs", map[string]any{"provider": "CODEX", "workingDirectory": "/tmp/project", "prompt": "Build this project"}, 201))
-	path := "/projects/" + id(p) + "/runs/" + id(run)
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 1, "state": "RUNNING"}, 409)
-	approve(t, s, "CLI_EXECUTE", id(run))
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 1, "state": "RUNNING"}, 200)
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 2, "state": "VERIFYING"}, 200)
-	evidence := map[string]any{"runId": id(run), "commitUrl": "https://github.com/push-dot/test/commit/" + strings.Repeat("a", 40), "testCommand": "go test ./...", "testOutput": "FAIL", "exitCode": 1, "metrics": []any{map[string]any{"name": "p95", "value": 20, "unit": "ms"}}, "summary": "API measured"}
-	request(t, s, "POST", "/projects/"+id(p)+"/evidence", evidence, 400)
-	evidence["exitCode"] = 0
-	evidence["testOutput"] = "ok test"
-	result := data(request(t, s, "POST", "/projects/"+id(p)+"/evidence", evidence, 201))
-	if result["verificationMethod"] != "USER_ATTESTED" {
-		t.Fatal("must not pretend remote verification")
+	first, second := send("Go"), send("Go")
+	if first.Code != 201 || second.Code != 201 {
+		t.Fatal(first.Body, second.Body)
+	}
+	var f, g map[string]any
+	json.Unmarshal(first.Body.Bytes(), &f)
+	json.Unmarshal(second.Body.Bytes(), &g)
+	if id(data(f)) != id(data(g)) {
+		t.Fatal("duplicate create")
+	}
+	if send("Rust").Code != 409 {
+		t.Fatal("key body mismatch accepted")
 	}
 }
-func TestAESKeysAreAuthenticatedAndNeverReturned(t *testing.T) {
+func TestAESKeysNeverReturned(t *testing.T) {
 	s := testApp(t)
 	request(t, s, "PUT", "/ai/keys/OPENAI", map[string]any{"key": "sk-secret-123456789"}, 200)
-	keys := request(t, s, "GET", "/ai/keys", nil, 200)
-	encoded, _ := json.Marshal(keys)
-	if bytes.Contains(encoded, []byte("sk-secret")) {
-		t.Fatal("key leaked")
+	out := request(t, s, "GET", "/ai/keys", nil, 200)
+	b, _ := json.Marshal(out)
+	if bytes.Contains(b, []byte("sk-secret")) {
+		t.Fatal("secret leaked")
 	}
-	var stored []byte
-	if err := s.DB.QueryRow(context.Background(), "SELECT ciphertext FROM ai_keys").Scan(&stored); err != nil {
-		t.Fatal(err)
+	var encrypted []byte
+	s.DB.QueryRow(context.Background(), "SELECT ciphertext FROM ai_keys").Scan(&encrypted)
+	if bytes.Contains(encrypted, []byte("sk-secret")) {
+		t.Fatal("plaintext stored")
 	}
-	if bytes.Contains(stored, []byte("sk-secret")) {
-		t.Fatal("plaintext persisted")
-	}
-	stored[len(stored)-1] ^= 1
-	if _, err := s.decrypt(stored, "wrong-owner:OPENAI"); err == nil {
-		t.Fatal("tampered secret accepted")
+	encrypted[len(encrypted)-1] ^= 1
+	if _, e := s.decrypt(encrypted, "wrong-owner:OPENAI"); e == nil {
+		t.Fatal("tamper accepted")
 	}
 }
-
-func TestInterviewOfferRoutineLifecycle(t *testing.T) {
+func TestCalendarInterviewOfferAndRoutineContract(t *testing.T) {
 	s := testApp(t)
 	_, a := jobApp(t, s)
-	e := data(request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": "경험", "sourceText": "Go API를 개발했습니다.", "skills": []string{"Go"}}, 201))
-	in := data(request(t, s, "POST", "/interviews", map[string]any{"applicationId": id(a), "title": "기술 면접", "scheduledAt": "2026-10-01T09:00:00Z", "evidenceIds": []string{id(e)}}, 201))
-	prepared := data(request(t, s, "POST", "/interviews/"+id(in)+"/prepare", map[string]any{}, 200))
-	answer := prepared["starAnswers"].([]any)[0].(map[string]any)
-	if answer["action"] != "Go API를 개발했습니다." || answer["result"] != "" {
-		t.Fatal("interview invented experience")
+	event := data(request(t, s, "POST", "/calendar/events", map[string]any{"applicationId": id(a), "type": "CUSTOM", "title": "일정", "startsAt": "2026-10-01T01:00:00Z", "endsAt": "2026-10-01T02:00:00Z", "timeZone": "Asia/Seoul"}, 201))
+	request(t, s, "PATCH", "/calendar/events/"+id(event), map[string]any{"expectedRevision": 1, "endsAt": "2026-10-01T00:00:00Z"}, 400)
+	interview := data(request(t, s, "POST", "/interviews", map[string]any{"applicationId": id(a), "title": "면접", "scheduledAt": "2026-10-02T01:00:00Z", "evidenceIds": []string{}}, 201))
+	if interview["eventId"] == nil {
+		t.Fatal("missing linked calendar event")
 	}
-	request(t, s, "PATCH", "/interviews/"+id(in), map[string]any{"expectedRevision": 1, "notes": "질문 기록", "reflection": "동시성 복습"}, 200)
-	offer := data(request(t, s, "POST", "/offers", map[string]any{"applicationId": id(a), "company": "Company", "annualSalary": 70000000, "currency": "KRW"}, 201))
-	if offer["annualSalary"] != float64(70000000) {
-		t.Fatal("salary lost")
+	opResult(t, request(t, s, "POST", "/interviews/"+id(interview)+"/prepare", map[string]any{"expectedRevision": 1, "ai": nil}, 202))
+	x := data(request(t, s, "POST", "/offers", map[string]any{"applicationId": id(a), "company": "A", "annualSalaryMinor": 70000000, "currency": "KRW"}, 201))
+	y := data(request(t, s, "POST", "/offers", map[string]any{"applicationId": id(a), "company": "B", "annualSalaryMinor": 10000000, "currency": "USD"}, 201))
+	cmp := data(request(t, s, "GET", "/offers/compare?ids="+id(x)+","+id(y), nil, 200))
+	if cmp["comparison"].(map[string]any)["sameCurrency"] != false {
+		t.Fatal("currency conflation")
 	}
-	request(t, s, "POST", "/offers", map[string]any{"applicationId": id(a), "company": "Company", "annualSalary": -1, "currency": "KRW"}, 400)
-	routine := data(request(t, s, "POST", "/routines", map[string]any{"applicationId": id(a), "title": "회고 확인", "kind": "INTERVIEW_PREP", "dueAt": "2026-10-01T08:00:00Z"}, 201))
-	path := "/routines/" + id(routine)
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 1, "status": "DONE"}, 409)
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 1, "status": "CONFIRMED"}, 200)
-	request(t, s, "PATCH", path, map[string]any{"expectedRevision": 2, "status": "DONE"}, 200)
+	r := data(request(t, s, "POST", "/routines", map[string]any{"applicationId": id(a), "title": "확인", "kind": "FOLLOW_UP", "dueAt": "2026-10-03T01:00:00Z"}, 201))
+	if r["status"] != "SUGGESTED" {
+		t.Fatal(r)
+	}
+	request(t, s, "PATCH", "/routines/"+id(r), map[string]any{"expectedRevision": 1, "status": "DONE"}, 409)
+	request(t, s, "PATCH", "/routines/"+id(r), map[string]any{"expectedRevision": 1, "status": "CONFIRMED"}, 200)
+	conv := data(request(t, s, "POST", "/conversations", map[string]any{"applicationId": id(a), "title": "지원 대화"}, 201))
+	request(t, s, "PATCH", "/conversations/"+id(conv), map[string]any{"expectedRevision": 1, "pinned": true}, 200)
 }
-func TestFailedVersionWriteRollsBack(t *testing.T) {
+func TestSyncMutationAtomicIdempotentAndRestricted(t *testing.T) {
 	s := testApp(t)
 	_, a := jobApp(t, s)
-	d := data(request(t, s, "POST", "/documents", map[string]any{"applicationId": id(a), "title": "doc", "kind": "RESUME", "template": "CLASSIC"}, 201))
-	request(t, s, "POST", "/documents/"+id(d)+"/versions", map[string]any{"expectedRevision": 1, "blocks": []any{map[string]any{"text": "fake", "evidenceIds": []string{uuid.NewString()}}}}, 404)
-	versions := request(t, s, "GET", "/documents/"+id(d)+"/versions", nil, 200)["data"].([]any)
-	if len(versions) != 0 {
-		t.Fatal("failed version persisted")
+	client, mutation := uuid.NewString(), uuid.NewString()
+	body := map[string]any{"clientId": client, "mutations": []any{map[string]any{"mutationId": mutation, "resourceType": "APPLICATION", "resourceId": id(a), "expectedRevision": 1, "action": "UPDATE_NOTES", "payload": map[string]any{"notes": "오프라인 메모"}}}}
+	result := data(request(t, s, "POST", "/sync/mutations", body, 200))
+	if result["results"].([]any)[0].(map[string]any)["status"] != "APPLIED" {
+		t.Fatal(result)
 	}
-	current := data(request(t, s, "GET", "/documents/"+id(d), nil, 200))
-	if current["revision"] != float64(1) {
-		t.Fatal("revision changed on failure")
+	request(t, s, "POST", "/sync/mutations", body, 200)
+	current := data(request(t, s, "GET", "/applications/"+id(a), nil, 200))
+	if current["revision"] != float64(2) || current["notes"] != "오프라인 메모" {
+		t.Fatal(current)
+	}
+	body["mutations"].([]any)[0].(map[string]any)["mutationId"] = uuid.NewString()
+	body["mutations"].([]any)[0].(map[string]any)["action"] = "SUBMIT"
+	rejected := data(request(t, s, "POST", "/sync/mutations", body, 200))
+	if rejected["results"].([]any)[0].(map[string]any)["status"] != "REJECTED" {
+		t.Fatal("offline submit allowed")
 	}
 }

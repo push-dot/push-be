@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -50,8 +53,8 @@ type apiError struct {
 
 func (e *apiError) Error() string                 { return e.Message }
 func fail(status int, code, message string) error { return &apiError{status, code, message} }
-func invalid(message string) error                { return fail(400, "VALIDATION", message) }
-func conflict(message string) error               { return fail(409, "CONFLICT", message) }
+func invalid(message string) error                { return fail(400, "VALIDATION_ERROR", message) }
+func conflict(message string) error               { return fail(409, "INVALID_TRANSITION", message) }
 func NewServer(db *pgxpool.Pool, c Config) (*Server, error) {
 	if len(c.AESKey) != 32 {
 		return nil, errors.New("AES_KEY must contain 32 bytes")
@@ -79,11 +82,11 @@ func NewServer(db *pgxpool.Pool, c Config) (*Server, error) {
 		if errors.As(err, &ae) {
 			e = ae
 		} else if errors.As(err, &he) {
-			e = &apiError{he.Code, http.StatusText(he.Code), http.StatusText(he.Code)}
+			e = &apiError{he.Code, httpErrorCode(he.Code), http.StatusText(he.Code)}
 		}
-		_ = c.JSON(e.Status, map[string]any{"error": map[string]string{"code": e.Code, "message": e.Message}})
+		_ = c.JSON(e.Status, map[string]any{"error": map[string]any{"code": e.Code, "message": e.Message, "requestId": c.Response().Header().Get("X-Request-ID"), "details": errorDetails(c)}})
 	}
-	s.Echo.Use(middleware.Recover(), middleware.BodyLimit("1M"), middleware.Secure(), middleware.CORSWithConfig(middleware.CORSConfig{AllowOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Authorization", "Content-Type"}}))
+	s.Echo.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimit("1M"), middleware.Secure(), middleware.CORSWithConfig(middleware.CORSConfig{AllowOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Authorization", "Content-Type", "Idempotency-Key", "If-Match", "Last-Event-ID"}}))
 	s.Echo.GET("/healthz", func(c echo.Context) error { return c.JSON(200, map[string]string{"status": "ok"}) })
 	s.Echo.GET("/readyz", func(c echo.Context) error {
 		if err := db.Ping(c.Request().Context()); err != nil {
@@ -93,7 +96,7 @@ func NewServer(db *pgxpool.Pool, c Config) (*Server, error) {
 	})
 	s.authRoutes()
 	g := s.Echo.Group("/api/v1", s.authenticate)
-	s.domainRoutes(g)
+	s.contractRoutes(g)
 	s.integrationRoutes(g)
 	return s, nil
 }
@@ -129,14 +132,14 @@ func (s *Server) authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := strings.TrimPrefix(c.Request().Header.Get("Authorization"), "Bearer ")
 		if token == "" || token == c.Request().Header.Get("Authorization") {
-			return fail(401, "UNAUTHORIZED", "로그인이 필요합니다")
+			return fail(401, "UNAUTHENTICATED", "로그인이 필요합니다")
 		}
 		user := ""
 		if s.Config.Environment == "development" && s.Config.DevToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.Config.DevToken)) == 1 {
 			user = "00000000-0000-4000-8000-000000000001"
 		} else {
 			if err := s.DB.QueryRow(c.Request().Context(), "SELECT user_id FROM sessions WHERE access_hash=$1 AND access_expires>now()", hash(token)).Scan(&user); err != nil {
-				return fail(401, "UNAUTHORIZED", "토큰이 만료되었거나 유효하지 않습니다")
+				return fail(401, "UNAUTHENTICATED", "토큰이 만료되었거나 유효하지 않습니다")
 			}
 		}
 		c.Set("owner", user)
@@ -152,9 +155,48 @@ func (s *Server) authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 			return err
 		}
 		c.Set("tx", tx)
+		idem := c.Request().Header.Get("Idempotency-Key")
+		digest := ""
+		if c.Request().Method == "POST" {
+			if !validID(idem) {
+				return invalid("Idempotency-Key UUID가 필요합니다")
+			}
+			raw, e := io.ReadAll(io.LimitReader(c.Request().Body, 1<<20+1))
+			if e != nil {
+				return e
+			}
+			if len(raw) > 1<<20 {
+				return fail(413, "PAYLOAD_TOO_LARGE", "본문 크기를 초과했습니다")
+			}
+			c.Request().Body = io.NopCloser(bytes.NewReader(raw))
+			digest = hash(string(raw))
+			var priorHash string
+			var response []byte
+			var status int
+			e = tx.QueryRow(c.Request().Context(), "SELECT body_hash,status,response FROM idempotency WHERE owner_id=$1 AND method=$2 AND path=$3 AND key=$4", user, c.Request().Method, c.Request().URL.Path, idem).Scan(&priorHash, &status, &response)
+			if e == nil {
+				if priorHash != digest {
+					return fail(409, "IDEMPOTENCY_CONFLICT", "같은 키로 다른 요청을 보낼 수 없습니다")
+				}
+				return c.Blob(status, "application/json", response)
+			}
+			if !errors.Is(e, pgx.ErrNoRows) {
+				return e
+			}
+		}
 		err = next(c)
 		if err != nil {
 			return err
+		}
+		if idem != "" && c.Request().Method == "POST" {
+			b, e := json.Marshal(c.Get("responseBody"))
+			if e != nil {
+				return e
+			}
+			status, _ := c.Get("responseStatus").(int)
+			if _, e = tx.Exec(c.Request().Context(), "INSERT INTO idempotency(owner_id,method,path,key,body_hash,status,response) VALUES($1,$2,$3,$4,$5,$6,$7)", user, c.Request().Method, c.Request().URL.Path, idem, digest, status, b); e != nil {
+				return e
+			}
 		}
 		if err = tx.Commit(c.Request().Context()); err != nil {
 			return err
@@ -251,6 +293,10 @@ func (s *Server) create(c echo.Context, kind, application string, body any) (map
 	m["revision"] = float64(1)
 	m["createdAt"] = at
 	m["updatedAt"] = at
+	if immutable(kind) {
+		delete(m, "revision")
+		delete(m, "updatedAt")
+	}
 	return m, nil
 }
 func scanResource(row pgx.Row) (map[string]any, error) {
@@ -278,13 +324,18 @@ func (s *Server) get(c echo.Context, kind, id string) (map[string]any, error) {
 	if !validID(id) {
 		return nil, fail(404, "NOT_FOUND", "리소스를 찾을 수 없습니다")
 	}
-	return scanResource(s.q(c).QueryRow(c.Request().Context(), "SELECT id,body,revision,created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2 AND kind=$3", id, owner(c), kind))
+	m, e := scanResource(s.q(c).QueryRow(c.Request().Context(), "SELECT id,body,revision,created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2 AND kind=$3", id, owner(c), kind))
+	if e == nil && immutable(kind) {
+		delete(m, "revision")
+		delete(m, "updatedAt")
+	}
+	return m, e
 }
 func (s *Server) list(c echo.Context, kind, application string) ([]any, error) {
 	if application != "" && !validID(application) {
 		return nil, invalid("applicationId가 유효하지 않습니다")
 	}
-	rows, err := s.q(c).Query(c.Request().Context(), "SELECT id,body,revision,created_at,updated_at FROM resources WHERE owner_id=$1 AND kind=$2 AND ($3='' OR application_id::text=$3) ORDER BY created_at,id LIMIT 1000", owner(c), kind, application)
+	rows, err := s.q(c).Query(c.Request().Context(), "SELECT id,body,revision,created_at,updated_at FROM resources WHERE owner_id=$1 AND kind=$2 AND ($3='' OR application_id::text=$3) ORDER BY created_at DESC,id DESC", owner(c), kind, application)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +345,10 @@ func (s *Server) list(c echo.Context, kind, application string) ([]any, error) {
 		m, err := scanResource(rows)
 		if err != nil {
 			return nil, err
+		}
+		if immutable(kind) {
+			delete(m, "revision")
+			delete(m, "updatedAt")
 		}
 		out = append(out, m)
 	}
@@ -313,7 +368,7 @@ func (s *Server) update(c echo.Context, kind string, m map[string]any, expected 
 	}
 	result, err := scanResource(s.q(c).QueryRow(c.Request().Context(), "UPDATE resources SET body=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_id=$3 AND kind=$4 AND revision=$5 RETURNING id,body,revision,created_at,updated_at", b, id, owner(c), kind, expected))
 	if ae, ok := err.(*apiError); ok && ae.Status == 404 {
-		return nil, conflict("다른 변경이 저장되었습니다. 최신 버전을 불러오세요")
+		return nil, fail(409, "REVISION_CONFLICT", "다른 변경이 저장되었습니다. 최신 버전을 불러오세요")
 	}
 	return result, err
 }
@@ -327,4 +382,87 @@ func (s *Server) requireApproval(c echo.Context, kind, target string) error {
 		return fail(409, "APPROVAL_REQUIRED", "사용자 승인이 필요합니다")
 	}
 	return nil
+}
+
+func empty(c echo.Context) error {
+	if c.Get("tx") != nil {
+		c.Set("responseStatus", 204)
+		c.Set("responseBody", nil)
+		return nil
+	}
+	return c.NoContent(204)
+}
+func page(c echo.Context, items []any) error {
+	limit := 50
+	if value := c.QueryParam("limit"); value != "" {
+		n, e := strconv.Atoi(value)
+		if e != nil || n < 1 || n > 100 {
+			return invalid("limit은 1~100입니다")
+		}
+		limit = n
+	}
+	start := 0
+	if cursor := c.QueryParam("cursor"); cursor != "" {
+		b, e := base64.RawURLEncoding.DecodeString(cursor)
+		if e != nil {
+			return invalid("cursor가 유효하지 않습니다")
+		}
+		found := false
+		for i, item := range items {
+			if str(item.(map[string]any), "id") == string(b) {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return invalid("cursor가 유효하지 않습니다")
+		}
+	}
+	end := start + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	var cursor any
+	if end < len(items) {
+		cursor = base64.RawURLEncoding.EncodeToString([]byte(str(items[end-1].(map[string]any), "id")))
+	}
+	payload := map[string]any{"data": items[start:end], "page": map[string]any{"nextCursor": cursor, "hasMore": end < len(items)}}
+	if c.Get("tx") != nil {
+		c.Set("responseStatus", 200)
+		c.Set("responseBody", payload)
+		return nil
+	}
+	return c.JSON(200, payload)
+}
+func (s *Server) operation(c echo.Context, kind, app string, result any) error {
+	v, e := s.create(c, "operations", app, map[string]any{"type": kind, "applicationId": nullable(app), "status": "SUCCEEDED", "progress": 100, "result": map[string]any{"kind": kind, "value": result}, "error": nil, "inputRequest": nil})
+	if e != nil {
+		return e
+	}
+	delete(v, "revision")
+	return ok(c, 202, v)
+}
+func nullable(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+func immutable(kind string) bool {
+	return oneOf(kind, "versions", "analyses", "submission-drafts", "messages", "ai-usage", "ledger")
+}
+
+func errorDetails(c echo.Context) any {
+	if v := c.Get("errorDetails"); v != nil {
+		return v
+	}
+	return map[string]any{}
+}
+
+func httpErrorCode(status int) string {
+	if code := map[int]string{400: "VALIDATION_ERROR", 401: "UNAUTHENTICATED", 403: "INSUFFICIENT_SCOPE", 404: "NOT_FOUND", 413: "PAYLOAD_TOO_LARGE", 429: "RATE_LIMITED", 503: "TEMPORARILY_UNAVAILABLE"}[status]; code != "" {
+		return code
+	}
+	return "INTERNAL"
 }
