@@ -86,10 +86,7 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 		e = tx.QueryRow(c.Request().Context(), "SELECT owner_id,credits,active,last_event_time FROM billing WHERE customer_id=$1 FOR UPDATE", customer).Scan(&user, &balance, &active, &last)
 		if e == nil {
 			if event.Created >= last {
-				period := number(obj, "current_period_end")
-				if period == 0 {
-					period = number(obj, "period_end")
-				}
+				period := stripePeriodEnd(obj)
 				if period > 0 {
 					if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET period_ends_at=$2 WHERE owner_id=$1", user, time.Unix(int64(period), 0).UTC()); e != nil {
 						return e
@@ -140,9 +137,6 @@ func (s *Server) stripeWebhook(c echo.Context) error {
 				_ = tx.QueryRow(c.Request().Context(), "SELECT amount FROM stripe_refunds WHERE charge_id=$1", str(obj, "id")).Scan(&prior)
 				if refunded > prior {
 					debit := (refunded - prior) * 10000
-					if debit > balance {
-						debit = balance
-					}
 					balance -= debit
 					if _, e = tx.Exec(c.Request().Context(), "UPDATE billing SET credits=$2 WHERE owner_id=$1", user, balance); e != nil {
 						return e
@@ -260,4 +254,27 @@ func (s *Server) recordLedger(c echo.Context, kind string, amount int64, referen
 	}
 	_, e := s.create(c, "ledger", "", map[string]any{"type": kind, "amountMicroCredits": amount, "balanceAfter": balance, "referenceId": reference})
 	return e
+}
+
+func stripePeriodEnd(object map[string]any) int {
+	period := number(object, "current_period_end")
+	if period == 0 {
+		period = number(object, "period_end")
+	}
+	for _, key := range []string{"items", "lines"} {
+		container, _ := object[key].(map[string]any)
+		items, _ := container["data"].([]any)
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			end := number(item, "current_period_end")
+			nested, _ := item["period"].(map[string]any)
+			if end == 0 {
+				end = number(nested, "end")
+			}
+			if end > period {
+				period = end
+			}
+		}
+	}
+	return period
 }

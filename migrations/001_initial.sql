@@ -72,3 +72,5 @@ ALTER TABLE source_files ADD COLUMN IF NOT EXISTS extracted_text text;
 CREATE TABLE IF NOT EXISTS github_connections(owner_id uuid PRIMARY KEY,ciphertext bytea NOT NULL);
 
 ALTER TABLE billing ADD COLUMN IF NOT EXISTS period_ends_at timestamptz;
+
+ALTER TABLE billing DROP CONSTRAINT IF EXISTS billing_credits_check;
