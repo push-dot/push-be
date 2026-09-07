@@ -176,7 +176,7 @@ func (s *Server) finishDomainAI(c echo.Context, kind, app string, job AIJob, tex
 		}
 	}
 	if len(in.Research) > 0 {
-		return nil, fail(422, "VERIFICATION_FAILED", "독립적으로 조회하지 않은 회사 조사를 허용하지 않습니다")
+		return nil, fail(422, "VERIFICATION_FAILED", "모델이 생성한 회사 조사 대신 저장된 출처 발췌만 사용합니다")
 	}
 	m := fields(in)
 	if in.Questions == nil {
@@ -185,6 +185,6 @@ func (s *Server) finishDomainAI(c echo.Context, kind, app string, job AIJob, tex
 	if in.Answers == nil {
 		m["starAnswers"] = []any{}
 	}
-	m["research"] = []any{}
+	m["research"] = companyResearch(job.CompanySources)
 	return m, nil
 }

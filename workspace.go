@@ -171,12 +171,13 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 	})
 	g.POST("/interviews", func(c echo.Context) error {
 		var in struct {
-			ApplicationID string   `json:"applicationId"`
-			Title         string   `json:"title"`
-			At            string   `json:"scheduledAt"`
-			Duration      int      `json:"durationMinutes"`
-			EvidenceIDs   []string `json:"evidenceIds"`
-			Notes         string   `json:"notes"`
+			ApplicationID  string          `json:"applicationId"`
+			Title          string          `json:"title"`
+			At             string          `json:"scheduledAt"`
+			Duration       int             `json:"durationMinutes"`
+			EvidenceIDs    []string        `json:"evidenceIds"`
+			CompanySources []CompanySource `json:"companySources"`
+			Notes          string          `json:"notes"`
 		}
 		if e := decode(c, &in); e != nil {
 			return e
@@ -186,6 +187,12 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 		}
 		if _, e := s.evidenceFor(c, in.ApplicationID, in.EvidenceIDs, false); e != nil {
 			return e
+		}
+		if e := validateCompanySources(in.CompanySources); e != nil {
+			return e
+		}
+		if in.CompanySources == nil {
+			in.CompanySources = []CompanySource{}
 		}
 		if in.Duration == 0 {
 			in.Duration = 60
@@ -201,7 +208,7 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 		if in.EvidenceIDs == nil {
 			in.EvidenceIDs = []string{}
 		}
-		v, e := s.create(c, "interviews", in.ApplicationID, map[string]any{"applicationId": in.ApplicationID, "title": in.Title, "scheduledAt": in.At, "durationMinutes": in.Duration, "eventId": event["id"], "evidenceIds": in.EvidenceIDs, "notes": in.Notes, "reflection": ""})
+		v, e := s.create(c, "interviews", in.ApplicationID, map[string]any{"applicationId": in.ApplicationID, "title": in.Title, "scheduledAt": in.At, "durationMinutes": in.Duration, "eventId": event["id"], "evidenceIds": in.EvidenceIDs, "companySources": in.CompanySources, "notes": in.Notes, "reflection": ""})
 		if e != nil {
 			return e
 		}
@@ -209,11 +216,12 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 	})
 	g.PATCH("/interviews/:id", func(c echo.Context) error {
 		var in struct {
-			Expected   int     `json:"expectedRevision"`
-			Title      *string `json:"title"`
-			At         *string `json:"scheduledAt"`
-			Notes      *string `json:"notes"`
-			Reflection *string `json:"reflection"`
+			Expected       int              `json:"expectedRevision"`
+			Title          *string          `json:"title"`
+			At             *string          `json:"scheduledAt"`
+			Notes          *string          `json:"notes"`
+			Reflection     *string          `json:"reflection"`
+			CompanySources *[]CompanySource `json:"companySources"`
 		}
 		if e := decode(c, &in); e != nil {
 			return e
@@ -249,6 +257,12 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 			v["notes"] = *in.Notes
 			event["notes"] = *in.Notes
 		}
+		if in.CompanySources != nil {
+			if e := validateCompanySources(*in.CompanySources); e != nil {
+				return e
+			}
+			v["companySources"] = *in.CompanySources
+		}
 		if in.Reflection != nil {
 			v["reflection"] = *in.Reflection
 		}
@@ -273,7 +287,7 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 			return e
 		}
 		if in.AI != nil {
-			return s.queueAI(c, "INTERVIEW_PREPARE", str(v, "applicationId"), AIJob{AI: *in.AI, Prompt: "Return only JSON {\"questions\":[{\"question\":string,\"requirement\":string,\"evidenceIds\":[string]}],\"starAnswers\":[{\"evidenceIds\":[string],\"situation\":string,\"task\":string,\"action\":string,\"result\":string,\"needsInput\":[string]}],\"research\":[]}. Answer fields must be exact evidence excerpts or empty. Keep unknown experience fields empty and name them in needsInput.", EvidenceIDs: stringsAt(v, "evidenceIds"), TargetID: str(v, "id"), Expected: in.Expected})
+			return s.queueAI(c, "INTERVIEW_PREPARE", str(v, "applicationId"), AIJob{AI: *in.AI, Prompt: "Return only JSON {\"questions\":[{\"question\":string,\"requirement\":string,\"evidenceIds\":[string]}],\"starAnswers\":[{\"evidenceIds\":[string],\"situation\":string,\"task\":string,\"action\":string,\"result\":string,\"needsInput\":[string]}],\"research\":[]}. Answer fields must be exact evidence excerpts or empty. Keep unknown experience fields empty and name them in needsInput.", CompanySources: companySources(v), EvidenceIDs: stringsAt(v, "evidenceIds"), TargetID: str(v, "id"), Expected: in.Expected})
 		}
 		a, e := s.get(c, "applications", str(v, "applicationId"))
 		if e != nil {
@@ -294,7 +308,7 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 		for _, ev := range evs {
 			answers = append(answers, map[string]any{"evidenceIds": []string{str(ev, "id")}, "situation": "", "task": "", "action": ev["sourceText"], "result": "", "needsInput": []string{"situation", "task", "result"}})
 		}
-		return s.operation(c, "INTERVIEW_PREPARE", str(v, "applicationId"), map[string]any{"questions": questions, "starAnswers": answers, "research": []any{}})
+		return s.operation(c, "INTERVIEW_PREPARE", str(v, "applicationId"), map[string]any{"questions": questions, "starAnswers": answers, "research": companyResearch(companySources(v))})
 	})
 	g.POST("/offers", func(c echo.Context) error {
 		var in OfferInput

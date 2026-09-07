@@ -78,3 +78,5 @@ ALTER TABLE billing DROP CONSTRAINT IF EXISTS billing_credits_check;
 ALTER TABLE billing ADD COLUMN IF NOT EXISTS entitlement_event_time bigint NOT NULL DEFAULT -1;
 ALTER TABLE billing ADD COLUMN IF NOT EXISTS entitlement_priority integer NOT NULL DEFAULT 0;
 UPDATE billing SET entitlement_event_time=last_event_time,entitlement_priority=CASE WHEN active THEN 0 ELSE 2 END WHERE entitlement_event_time=-1 AND last_event_time>0;
+
+UPDATE resources SET body=body||'{"companySources":[]}'::jsonb WHERE kind='interviews' AND NOT body ? 'companySources';
