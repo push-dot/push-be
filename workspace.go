@@ -126,7 +126,7 @@ func (s *Server) workspaceRoutes(g *echo.Group) {
 		if in.AI == nil {
 			return invalid("ai 설정이 필요합니다")
 		}
-		return s.queueAI(c, "CHAT_MESSAGE", str(conv, "applicationId"), AIJob{AI: *in.AI, Prompt: in.Text, EvidenceIDs: in.Context.EvidenceIDs, ConversationID: str(conv, "id")})
+		return s.queueAI(c, "CHAT_MESSAGE", str(conv, "applicationId"), AIJob{AI: *in.AI, Prompt: in.Text, EvidenceIDs: in.Context.EvidenceIDs, DocumentID: in.Context.DocumentID, VersionID: in.Context.VersionID, ConversationID: str(conv, "id")})
 	})
 	g.POST("/pins", func(c echo.Context) error {
 		var in struct {
