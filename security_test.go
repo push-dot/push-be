@@ -138,3 +138,26 @@ func TestOAuthProfilePersistsIntoSession(t *testing.T) {
 		t.Fatal("provider profile lost", user)
 	}
 }
+
+func TestSensitiveRequestDataNeverEntersLogs(t *testing.T) {
+	s := testApp(t)
+	var logs bytes.Buffer
+	s.Echo.Logger.SetOutput(&logs)
+	secrets := []string{"sk-private-key-sentinel-123456", "resume-private-sentinel", "mail-private-sentinel@example.invalid", "token-private-sentinel"}
+	request(t, s, "PUT", "/ai/keys/OPENAI", map[string]any{"key": secrets[0]}, 200)
+	request(t, s, "POST", "/career-evidence", map[string]any{"kind": "CAREER", "title": secrets[2], "sourceText": secrets[1], "skills": []string{}}, 201)
+	request(t, s, "POST", "/career-evidence", map[string]any{"kind": "INVALID", "sourceText": secrets[1]}, 400)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/career-evidence", strings.NewReader(`{"sourceText":"`+secrets[1]+`"}`))
+	r.Header.Set("Authorization", "Bearer "+secrets[3])
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Echo.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized request, got %d", w.Code)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatal("sensitive request content entered server logs")
+		}
+	}
+}
