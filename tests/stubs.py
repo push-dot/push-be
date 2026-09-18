@@ -125,11 +125,13 @@ class StubOperationStore:
 
 class StubChatCompleter:
     def __init__(self, text: str = "", in_tokens: int = 0,
-                 out_tokens: int = 0, err: Optional[Exception] = None):
+                 out_tokens: int = 0, err: Optional[Exception] = None,
+                 tokens: Optional[list] = None):
         self.text = text
         self.in_tokens = in_tokens
         self.out_tokens = out_tokens
         self.err = err
+        self.tokens = tokens if tokens is not None else [text]
         self.got = {}
 
     async def chat(self, api_key: str, model: str, system: str, user: str):
@@ -139,6 +141,17 @@ class StubChatCompleter:
                     "user": user}
         return ent.AICompletion(text=self.text, input_tokens=self.in_tokens,
                                 output_tokens=self.out_tokens)
+
+    async def chat_stream(self, api_key: str, model: str, system: str,
+                          user: str, usage: dict):
+        if self.err is not None:
+            raise self.err
+        self.got = {"key": api_key, "model": model, "system": system,
+                    "user": user}
+        for tok in self.tokens:
+            yield tok
+        usage["input_tokens"] = self.in_tokens
+        usage["output_tokens"] = self.out_tokens
 
 
 class StubCipher:

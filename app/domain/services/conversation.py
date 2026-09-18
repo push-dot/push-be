@@ -134,20 +134,43 @@ class ConversationService:
     async def post_message(self, user_id: UUID, conversation_id: UUID, text: str,
                            context: dict, ai: Optional[ent.AiOptions],
                            access_mode: str) -> ent.Operation:
+        self._validate_message(text, access_mode)
+        result = await self.graph.ainvoke(
+            self._chat_input(user_id, conversation_id, text, context, ai,
+                             access_mode),
+            config={"configurable": {"thread_id": str(conversation_id)}},
+        )
+        return result["operation"]
+
+    def _validate_message(self, text: str, access_mode: str) -> None:
         if not text or code_point_len(text) > 20000:
             raise validation_field("text", "text must be 1-20000 characters")
         if not ent.valid_access_mode(access_mode):
             raise validation_field(
                 "accessMode", "must be SUGGEST or CONFIRM_ACTIONS")
-        result = await self.graph.ainvoke(
-            {
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "text": text,
-                "context": context or {},
-                "ai": ai.model_dump(by_alias=True) if ai else None,
-                "access_mode": access_mode,
-            },
-            config={"configurable": {"thread_id": str(conversation_id)}},
-        )
-        return result["operation"]
+
+    def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
+                    context: dict, ai: Optional[ent.AiOptions],
+                    access_mode: str) -> dict:
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "text": text,
+            "context": context or {},
+            "ai": ai.model_dump(by_alias=True) if ai else None,
+            "access_mode": access_mode,
+        }
+
+    async def stream_message(self, user_id: UUID, conversation_id: UUID,
+                             text: str, context: dict,
+                             ai: Optional[ent.AiOptions], access_mode: str):
+        self._validate_message(text, access_mode)
+        async for mode, chunk in self.graph.astream(
+                self._chat_input(user_id, conversation_id, text, context, ai,
+                                 access_mode),
+                config={"configurable": {"thread_id": str(conversation_id)}},
+                stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
+                yield ("token", chunk["token"])
+            elif mode == "values" and chunk.get("operation") is not None:
+                yield ("done", chunk["operation"])

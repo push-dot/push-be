@@ -78,6 +78,27 @@ class AIGate:
         except Exception:
             raise provider_error("AI provider request failed")
 
+    async def stream(self, user_id: UUID, ai: ent.AiOptions,
+                     system: str, user: str, usage: dict):
+        await self.check(user_id, ai)
+        if ai.provider != "OPENAI" or self.chat is None:
+            raise not_configured("AI provider " + ai.provider + " is not supported")
+        key = await self.resolve_key(user_id, ai)
+        try:
+            chat_stream = getattr(self.chat, "chat_stream", None)
+            if chat_stream is None:
+                c = await self.chat.chat(key, ai.model, system, user)
+                usage["input_tokens"] = c.input_tokens
+                usage["output_tokens"] = c.output_tokens
+                yield c.text
+                return
+            async for tok in chat_stream(key, ai.model, system, user, usage):
+                yield tok
+        except DomainError:
+            raise
+        except Exception:
+            raise provider_error("AI provider request failed")
+
 
 async def record_usage(usage: AiUsageStore, user_id: UUID, op_id: UUID,
                        ai: ent.AiOptions, c: ent.AICompletion) -> None:

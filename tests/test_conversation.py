@@ -8,9 +8,9 @@ import pytest
 from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.domain.services.conversation import ConversationService
-from tests.stubs import (FakeDB, StubApplicationStore, StubConversationStore,
-                         StubDocumentStore, StubEvidenceStore,
-                         StubOperationStore)
+from tests.stubs import (FakeDB, StubAiUsageStore, StubApplicationStore,
+                         StubConversationStore, StubDocumentStore,
+                         StubEvidenceStore, StubOperationStore)
 
 
 def _now():
@@ -153,6 +153,55 @@ async def test_post_message_success_creates_operation():
     assert (user_msg.attachments[0].type == "DOCUMENT_VERSION"
             and user_msg.attachments[0].id == version_id)
     assert len(ops.created) == 1
+
+
+async def test_stream_message_stub_tokens_and_done():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    svc = _svc(convs)
+    events = [e async for e in svc.stream_message(
+        user_id, conv.id, "hello", {}, None, "SUGGEST")]
+    kinds = [k for k, _ in events]
+    assert kinds == ["token", "done"]
+    assert events[0][1].startswith("(로컬 스텁)")
+    op = events[1][1]
+    assert op.status == ent.OP_SUCCEEDED
+    assert len(convs.messages) == 2
+
+
+async def test_stream_message_ai_tokens_concat():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    usage = StubAiUsageStore()
+
+    class _Gate:
+        async def stream(self, _uid, _ai, _sys, _user, out):
+            for t in ["Hel", "lo"]:
+                yield t
+            out["input_tokens"] = 3
+            out["output_tokens"] = 2
+
+    svc = _svc(convs, gate=_Gate(), usage=usage)
+    ai = ent.AiOptions(provider="OPENAI", model="m",
+                       credential_mode="MANAGED", effort="LOW")
+    events = [e async for e in svc.stream_message(
+        user_id, conv.id, "hi", {}, ai, "SUGGEST")]
+    tokens = [p for k, p in events if k == "token"]
+    assert tokens == ["Hel", "lo"]
+    assert events[-1][0] == "done"
+    ai_msg = convs.messages[-1]
+    assert ai_msg.text == "Hello" and ai_msg.role == "ASSISTANT"
+
+
+async def test_stream_message_validates_text():
+    svc = _svc(StubConversationStore())
+    with pytest.raises(DomainError) as e:
+        async for _ in svc.stream_message(
+                uuid4(), uuid4(), "", {}, None, "SUGGEST"):
+            pass
+    assert e.value.code == "VALIDATION_ERROR"
 
 
 async def test_archive():

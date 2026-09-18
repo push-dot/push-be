@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import json
 
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
+
+from app.domain.errors import DomainError
+from app.jsonutil import to_jsonable
 from app.presentation import schemas as s
 from app.presentation.deps import (
     bind_json, current_user, data, optional_query_uuid, page_body,
@@ -63,6 +68,37 @@ async def post_message(id: str, request: Request):
                                             context, _ai(req.ai),
                                             req.access_mode)
     return data(202, op)
+
+
+@router.post("/conversations/{id}/messages/stream")
+async def post_message_stream(id: str, request: Request):
+    d = _deps(request)
+    req = await bind_json(request, s.PostMessageReq)
+    context = (req.context.model_dump(by_alias=True) if req.context else {})
+    user_id = current_user(request).id
+    conversation_id = param_id(id, "id")
+
+    async def events():
+        try:
+            async for kind, payload in d.conversations.stream_message(
+                    user_id, conversation_id, req.text, context, _ai(req.ai),
+                    req.access_mode):
+                if kind == "token":
+                    yield "data: " + json.dumps(
+                        {"type": "token", "text": payload}) + "\n\n"
+                else:
+                    yield "data: " + json.dumps(
+                        {"type": "done",
+                         "operation": to_jsonable(payload)}) + "\n\n"
+        except DomainError as e:
+            yield "data: " + json.dumps(
+                {"type": "error",
+                 "error": {"code": e.code, "message": e.message,
+                           "details": e.details}}) + "\n\n"
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/conversations/{id}/archive")

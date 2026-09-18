@@ -3,6 +3,7 @@ from typing import Any, Optional, TypedDict
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from app.domain import entities as ent
@@ -112,12 +113,22 @@ def build_chat_graph(svc, checkpointer=None):
         return {"conversation": conv, "attachments": attachments}
 
     async def generate_reply(state: ChatState) -> dict:
+        writer = get_stream_writer()
         ai = state.get("ai")
         if ai is None:
+            writer({"token": stub_reply(state["text"])})
             return {"completion": None}
         opts = ent.AiOptions(**ai)
-        completion = await svc.ai.complete(state["user_id"], opts, "", state["text"])
-        return {"completion": completion}
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        parts = []
+        async for tok in svc.ai.stream(
+                state["user_id"], opts, "", state["text"], usage):
+            parts.append(tok)
+            writer({"token": tok})
+        return {"completion": ent.AICompletion(
+            text="".join(parts),
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"])}
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
