@@ -49,14 +49,16 @@ class SessionStore(Store):
     async def save_oauth_state(self, s: OAuthState) -> None:
         await self.q().execute(
             "INSERT INTO oauth_states (state, provider, code_challenge, redirect_uri, "
-            "expires_at, created_at, user_id, purpose) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-            s.state, s.provider, s.code_challenge, s.redirect_uri, s.expires_at,
-            s.created_at, s.user_id, s.purpose or "LOGIN")
+            "final_uri, expires_at, created_at, user_id, purpose) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            s.state, s.provider, s.code_challenge, s.redirect_uri, s.final_uri,
+            s.expires_at, s.created_at, s.user_id, s.purpose or "LOGIN")
 
     async def get_oauth_state(self, state: str) -> OAuthState:
         return to_model(OAuthState, await self.one(
-            "SELECT state, provider, code_challenge, redirect_uri, expires_at, created_at, "
-            "user_id, purpose FROM oauth_states WHERE state = $1", state))
+            "SELECT state, provider, code_challenge, redirect_uri, final_uri, "
+            "expires_at, created_at, user_id, purpose FROM oauth_states WHERE state = $1",
+            state))
 
     async def delete_oauth_state(self, state: str) -> None:
         await self.q().execute("DELETE FROM oauth_states WHERE state = $1", state)

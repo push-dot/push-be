@@ -30,7 +30,7 @@ class AuthService:
         self.app_env = app_env
         self.dev_token = dev_token
         self.dev_user_id = dev_user_id
-        self.allowed_uris = {ent.AUTH_CALLBACK_URI}
+        self.allowed_uris = {ent.AUTH_CALLBACK_URI, ent.AUTH_CALLBACK_WEB_URI}
 
     async def start_oauth(self, provider: str, code_challenge: str, method: str,
                           redirect_uri: str, provider_callback_url: str) -> tuple[str, str, datetime]:
@@ -48,7 +48,7 @@ class AuthService:
         state = random_token()
         now = _now()
         rec = ent.OAuthState(state=state, provider=provider, code_challenge=code_challenge,
-                             redirect_uri=provider_callback_url,
+                             redirect_uri=provider_callback_url, final_uri=redirect_uri,
                              expires_at=now + ent.OAUTH_STATE_TTL, created_at=now)
         await self.sessions.save_oauth_state(rec)
         q = {"client_id": cfg.client_id, "redirect_uri": provider_callback_url,
@@ -102,7 +102,7 @@ class AuthService:
             await self.db.do(work)
         except Exception:
             raise internal()
-        return ent.AUTH_CALLBACK_URI + "?code=" + quote(exchange_code)
+        return (rec.final_uri or ent.AUTH_CALLBACK_URI) + "?code=" + quote(exchange_code)
 
     async def _issue_session(self, user_id: UUID, now: datetime) -> ent.Session:
         access, refresh = random_token(), random_token()

@@ -12,6 +12,7 @@ OAUTH_STATE_TTL = timedelta(minutes=10)
 EXCHANGE_CODE_TTL = timedelta(seconds=60)
 INTEGRATION_CODE_TTL = timedelta(seconds=60)
 AUTH_CALLBACK_URI = "push://auth/callback"
+AUTH_CALLBACK_WEB_URI = "http://localhost:5173/auth/callback"
 GOOGLE_CALLBACK_URI = "push://integrations/google/callback"
 OAUTH_PURPOSE_LOGIN = "LOGIN"
 OAUTH_PURPOSE_GOOGLE = "GOOGLE"
@@ -74,6 +75,7 @@ class OAuthState(BaseModel):
     user_id: Optional[UUID] = None
     code_challenge: str
     redirect_uri: str
+    final_uri: str = ""
     expires_at: datetime
     created_at: datetime
 
