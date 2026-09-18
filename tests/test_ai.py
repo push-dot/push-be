@@ -10,7 +10,8 @@ from app.domain.errors import DomainError
 from app.domain.services.ai import AIGate, AIService
 from tests.stubs import (FakeDB, StubAiKeyStore, StubAiUsageStore,
                          StubApplicationStore, StubChatCompleter, StubCipher,
-                         StubConversationStore, StubOperationStore)
+                         StubConversationStore, StubOperationStore,
+                         StubUserStore)
 from tests.test_conversation import _conv, _svc as conv_svc
 
 
@@ -107,6 +108,24 @@ async def test_gate_routes_byok_to_byok_client():
                        credential_mode="BYOK", effort="LOW")
     c = await g.complete(user_id, ai, "", "hi")
     assert c.text == "byok" and byok_chat.got["key"] == "sk-user"
+
+
+async def test_gate_ultra_resume_requires_ultra_plan():
+    user_id = uuid4()
+    g = _gate("sk-managed", chat=StubChatCompleter())
+    g.users = StubUserStore(ent.User(id=user_id, provider="dev",
+                                   provider_subject="d", display_name="d",
+                                   created_at=_now(), plan="FREE"))
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="LOW", ultra_resume=True)
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, ai)
+    assert e.value.code == "FEATURE_DISABLED"
+
+    g.users = StubUserStore(ent.User(id=user_id, provider="dev",
+                                   provider_subject="d", display_name="d",
+                                   created_at=_now(), plan="ULTRA"))
+    await g.check(user_id, ai)
 
 
 def _ai_svc(gate, ops, usage, apps):

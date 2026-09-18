@@ -829,6 +829,7 @@ class AiOptions(Model):
     model: str
     credential_mode: str
     effort: str
+    ultra_resume: bool = False
 
 
 class AIModelInfo(BaseModel):

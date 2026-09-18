@@ -6,11 +6,12 @@ from uuid import UUID, uuid4
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
-    DomainError, integration_required, internal, not_configured, not_found,
-    provider_error, validation_field,
+    DomainError, feature_disabled, integration_required, internal, not_configured,
+    not_found, provider_error, validation_field,
 )
 from app.domain.validators import code_point_len
 from app.infrastructure.store_ai import AiKeyStore, AiUsageStore
+from app.infrastructure.store_auth import UserStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_operations import OperationStore
 
@@ -37,6 +38,7 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
 class AIGate:
     def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None):
         self.keys = AiKeyStore(db)
+        self.users = UserStore(db)
         self.managed_key = managed_key
         self.cipher = cipher
         self.chat = chat
@@ -47,6 +49,13 @@ class AIGate:
         if ai is None:
             return
         validate_ai_options(ai)
+        if ai.ultra_resume:
+            try:
+                u = await self.users.get(user_id)
+            except NotFoundError:
+                raise not_found()
+            if u.plan != ent.PLAN_ULTRA:
+                raise feature_disabled("ultraResume requires the ULTRA plan")
         if ai.credential_mode == "MANAGED":
             if not self.managed_key:
                 raise not_configured("managed AI is not configured")
