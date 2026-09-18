@@ -81,6 +81,8 @@ class AiOptionsReq(Req):
     model: str
     credential_mode: str
     effort: str
+    ultra_resume: bool = False
+    web_search: bool = False
 
 
 class AnalyzeReq(Req):

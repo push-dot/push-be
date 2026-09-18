@@ -20,7 +20,9 @@ def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
     if req is None:
         return None
     return ent.AiOptions(provider=req.provider, model=req.model,
-                         credential_mode=req.credential_mode, effort=req.effort)
+                         credential_mode=req.credential_mode, effort=req.effort,
+                         ultra_resume=req.ultra_resume,
+                         web_search=req.web_search)
 
 
 def job_dto(j: ent.JobPosting) -> dict:
