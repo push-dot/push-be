@@ -107,12 +107,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             cipher = new_key_cipher(cfg.byok_master_key)
         oauth = OAuthClient()
         openai = OpenAIClient(base_url=cfg.ai_base_url)
+        openai_byok = OpenAIClient()
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stripe = StripeClient(cfg.stripe_secret)
         managed_ai = bool(cfg.managed_ai_key)
         byok_enabled = cipher is not None
 
-        gate = AIGate(db, cfg.managed_ai_key, cipher, openai)
+        gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok)
         auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                             cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
@@ -163,6 +164,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await saver_ctx.__aexit__(None, None, None)
             await oauth.aclose()
             await openai.aclose()
+            await openai_byok.aclose()
             await gapi.aclose()
             await stripe.aclose()
             await pool.close()

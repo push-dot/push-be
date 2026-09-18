@@ -91,6 +91,24 @@ async def test_gate_complete_provider_failure():
     assert e.value.code == "PROVIDER_ERROR"
 
 
+async def test_gate_routes_byok_to_byok_client():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="managed")
+    byok_chat = StubChatCompleter(text="byok")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    c = await g.complete(user_id, _managed(), "", "hi")
+    assert c.text == "managed" and managed_chat.got["key"] == "sk-managed"
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi")
+    assert c.text == "byok" and byok_chat.got["key"] == "sk-user"
+
+
 def _ai_svc(gate, ops, usage, apps):
     svc = AIService(FakeDB(), gate)
     svc.ops = ops

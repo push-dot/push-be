@@ -35,11 +35,12 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
 
 
 class AIGate:
-    def __init__(self, db: DB, managed_key: str, cipher, chat):
+    def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None):
         self.keys = AiKeyStore(db)
         self.managed_key = managed_key
         self.cipher = cipher
         self.chat = chat
+        self.byok_chat = byok_chat if byok_chat is not None else chat
         self.byok_enabled = cipher is not None
 
     async def check(self, user_id: UUID, ai: Optional[ent.AiOptions]) -> None:
@@ -73,8 +74,9 @@ class AIGate:
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         key = await self.resolve_key(user_id, ai)
+        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
         try:
-            return await self.chat.chat(key, ai.model, system, user)
+            return await chat.chat(key, ai.model, system, user)
         except Exception:
             raise provider_error("AI provider request failed")
 
@@ -84,10 +86,11 @@ class AIGate:
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         key = await self.resolve_key(user_id, ai)
+        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
         try:
-            chat_stream = getattr(self.chat, "chat_stream", None)
+            chat_stream = getattr(chat, "chat_stream", None)
             if chat_stream is None:
-                c = await self.chat.chat(key, ai.model, system, user)
+                c = await chat.chat(key, ai.model, system, user)
                 usage["input_tokens"] = c.input_tokens
                 usage["output_tokens"] = c.output_tokens
                 yield c.text
