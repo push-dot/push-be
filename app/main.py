@@ -31,6 +31,7 @@ from app.domain.services.conversation import ConversationService
 from app.domain.services.document import DocumentService
 from app.domain.services.evidence import EvidenceService
 from app.domain.services.google import GoogleService
+from app.domain.services.resume_workflow import ResumeWorkflowService
 from app.domain.services.interview import InterviewService
 from app.domain.services.job import JobService
 from app.domain.services.operation import OperationService
@@ -67,6 +68,7 @@ class Deps:
     interviews: InterviewService
     calendar: CalendarService
     conversations: ConversationService
+    resume_workflow: ResumeWorkflowService
     approvals: ApprovalService
     operations: OperationService
     ai: AIService
@@ -141,6 +143,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             await saver.setup()
             conversations = ConversationService(db, gate, saver)
+            resume_workflow = ResumeWorkflowService(
+                db, applications, jobs_svc, documents, evidence_svc, approvals)
             view = ConfigView(
                 google_configured=bool(cfg.google.client_id
                                        and cfg.google.client_secret),
@@ -152,7 +156,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 auth=auths, evidence=evidence_svc, jobs=jobs_svc,
                 applications=applications, documents=documents,
                 projects=projects, interviews=interviews, calendar=calendar,
-                conversations=conversations, approvals=approvals,
+                conversations=conversations, resume_workflow=resume_workflow,
+                approvals=approvals,
                 operations=operations, ai=ai_svc, google=google,
                 billing=billing, sources=SourceStore(db),
                 ai_keys=AiKeyStore(db), idem=IdempotencyStore(db), cfg=view,

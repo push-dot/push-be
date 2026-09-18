@@ -85,6 +85,10 @@ class AiOptionsReq(Req):
     web_search: bool = False
 
 
+class ResumeRunReq(Req):
+    ai: Optional["AiOptionsReq"] = None
+
+
 class AnalyzeReq(Req):
     application_id: UUIDT
     expected_revision: int
