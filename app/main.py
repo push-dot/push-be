@@ -106,7 +106,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if cfg.byok_master_key:
             cipher = new_key_cipher(cfg.byok_master_key)
         oauth = OAuthClient()
-        openai = OpenAIClient()
+        openai = OpenAIClient(base_url=cfg.ai_base_url)
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stripe = StripeClient(cfg.stripe_secret)
         managed_ai = bool(cfg.managed_ai_key)

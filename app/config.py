@@ -24,6 +24,7 @@ class Config:
     google: OAuthProviderConfig = field(default_factory=OAuthProviderConfig)
     github: OAuthProviderConfig = field(default_factory=OAuthProviderConfig)
     managed_ai_key: str = ""
+    ai_base_url: str = "https://openrouter.ai/api/v1"
     byok_master_key: str = ""
     stripe_secret: str = ""
     stripe_webhook_secret: str = ""
@@ -56,7 +57,9 @@ def load_config() -> Config:
         dev_user_id=dev_user,
         google=OAuthProviderConfig(env("GOOGLE_CLIENT_ID"), env("GOOGLE_CLIENT_SECRET")),
         github=OAuthProviderConfig(env("GITHUB_CLIENT_ID"), env("GITHUB_CLIENT_SECRET")),
-        managed_ai_key=os.environ.get("OPENAI_API_KEY", ""),
+        managed_ai_key=os.environ.get("OPENROUTER_API_KEY")
+        or os.environ.get("OPENAI_API_KEY", ""),
+        ai_base_url=env("AI_BASE_URL", "https://openrouter.ai/api/v1"),
         byok_master_key=os.environ.get("BYOK_MASTER_KEY", ""),
         stripe_secret=os.environ.get("STRIPE_SECRET_KEY", ""),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),

@@ -836,20 +836,23 @@ class AIModelInfo(BaseModel):
 
 
 OPENAI_MODELS = [
-    AIModelInfo(provider="OPENAI", model="gpt-4o-mini", label="GPT-4o mini"),
-    AIModelInfo(provider="OPENAI", model="gpt-4o", label="GPT-4o"),
+    AIModelInfo(provider="OPENAI", model="deepseek/deepseek-v4.1-flash",
+                label="DeepSeek V4.1 Flash"),
+    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-luna",
+                label="GPT-5.6 Luna"),
+    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-terra",
+                label="GPT-5.6 Terra"),
+    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-sol",
+                label="GPT-5.6 Sol"),
 ]
 
-_OPENAI_MICRO_PER_1M = {
-    "gpt-4o-mini": (150_000, 600_000),
-    "gpt-4o": (2_500_000, 10_000_000),
-}
+_DEFAULT_MICRO_PER_1M = (2_000_000, 8_000_000)
 
 
 def ai_cost_micro_credits(provider: str, model: str, in_tokens: int, out_tokens: int) -> int:
     if provider != "OPENAI":
         return 0
-    rates = _OPENAI_MICRO_PER_1M.get(model, _OPENAI_MICRO_PER_1M["gpt-4o-mini"])
+    rates = _DEFAULT_MICRO_PER_1M
     return (in_tokens * rates[0] + out_tokens * rates[1]) // 1_000_000
 
 
