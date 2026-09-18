@@ -128,6 +128,34 @@ async def test_gate_ultra_resume_requires_ultra_plan():
     await g.check(user_id, ai)
 
 
+async def test_gate_web_search_managed_uses_online_suffix():
+    user_id = uuid4()
+    chat = StubChatCompleter(text="answer")
+    g = _gate("sk-managed", chat=chat)
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="LOW", web_search=True)
+    await g.complete(user_id, ai, "sys", "hi")
+    assert chat.got["model"] == "m:online"
+
+
+async def test_gate_web_search_byok_injects_managed_results():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="search results")
+    byok_chat = StubChatCompleter(text="answer")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="BYOK",
+                       effort="LOW", web_search=True)
+    await g.complete(user_id, ai, "sys", "hi")
+    assert managed_chat.got["model"].endswith(":online")
+    assert "search results" in byok_chat.got["system"]
+    assert byok_chat.got["model"] == "m"
+
+
 def _ai_svc(gate, ops, usage, apps):
     svc = AIService(FakeDB(), gate)
     svc.ops = ops

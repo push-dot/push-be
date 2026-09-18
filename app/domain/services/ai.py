@@ -16,6 +16,9 @@ from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_operations import OperationStore
 
 
+_SEARCH_MODEL = "deepseek/deepseek-v4.1-flash"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -77,15 +80,33 @@ class AIGate:
         except Exception:
             raise integration_required("BYOK key could not be decrypted")
 
+    async def _search_context(self, ai: ent.AiOptions, user: str) -> str:
+        if not ai.web_search or ai.credential_mode == "MANAGED":
+            return ""
+        if not self.managed_key or self.chat is None:
+            raise not_configured("web search is not configured")
+        try:
+            c = await self.chat.chat(
+                self.managed_key, _SEARCH_MODEL + ":online",
+                "사용자 질문에 답하는 데 필요한 최신 정보를 검색하고, 핵심 사실과 출처 URL을 간결하게 정리해줘.",
+                user)
+        except DomainError:
+            raise
+        except Exception:
+            raise provider_error("web search failed")
+        return "\n\n[웹 검색 결과]\n" + c.text
+
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str) -> ent.AICompletion:
         await self.check(user_id, ai)
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
+        system += await self._search_context(ai, user)
         key = await self.resolve_key(user_id, ai)
         chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
+        model = ai.model + ":online" if ai.web_search and ai.credential_mode == "MANAGED" else ai.model
         try:
-            return await chat.chat(key, ai.model, system, user)
+            return await chat.chat(key, model, system, user)
         except Exception:
             raise provider_error("AI provider request failed")
 
@@ -94,17 +115,19 @@ class AIGate:
         await self.check(user_id, ai)
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
+        system += await self._search_context(ai, user)
         key = await self.resolve_key(user_id, ai)
         chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
+        model = ai.model + ":online" if ai.web_search and ai.credential_mode == "MANAGED" else ai.model
         try:
             chat_stream = getattr(chat, "chat_stream", None)
             if chat_stream is None:
-                c = await chat.chat(key, ai.model, system, user)
+                c = await chat.chat(key, model, system, user)
                 usage["input_tokens"] = c.input_tokens
                 usage["output_tokens"] = c.output_tokens
                 yield c.text
                 return
-            async for tok in chat_stream(key, ai.model, system, user, usage):
+            async for tok in chat_stream(key, model, system, user, usage):
                 yield tok
         except DomainError:
             raise
