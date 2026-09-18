@@ -123,6 +123,16 @@ class StubOperationStore:
         self.created.append(o)
 
 
+class StubUserStore:
+    def __init__(self, user: Optional[ent.User] = None):
+        self.user = user
+
+    async def get(self, id_: UUID) -> ent.User:
+        if self.user is None:
+            raise NotFoundError
+        return self.user
+
+
 class StubChatCompleter:
     def __init__(self, text: str = "", in_tokens: int = 0,
                  out_tokens: int = 0, err: Optional[Exception] = None,
