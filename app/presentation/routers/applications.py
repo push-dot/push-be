@@ -9,6 +9,7 @@ from app.presentation.deps import (
     bind_json, current_user, data, page_body, page_request, param_id,
     parse_time_field,
 )
+from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -81,6 +82,15 @@ async def application_timeline(id: str, request: Request):
                                       param_id(id, "id"),
                                       page_request(request))
     return page_body(p)
+
+
+@router.post("/applications/{id}/resume-run", status_code=202)
+async def resume_run(id: str, request: Request):
+    d = _deps(request)
+    req = await bind_json(request, s.ResumeRunReq)
+    op = await d.resume_workflow.run(
+        current_user(request).id, param_id(id, "id"), _ai(req.ai))
+    return data(202, op)
 
 
 @router.get("/applications/{id}/checklist")
