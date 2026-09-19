@@ -76,12 +76,13 @@ class ResumeWorkflowService:
             user_id, d.id, d.revision, eids, analysis["id"], ai, None)
         doc = gen_op.result.value["document"]
         version = gen_op.result.value["version"]
+        version_id = UUID(str(version["id"]))
         fa = await self._approve(
-            user_id, ent.APPROVAL_DOCUMENT_FINALIZE, app.id, version["id"])
+            user_id, ent.APPROVAL_DOCUMENT_FINALIZE, app.id, version_id)
         d = await self.documents.finalize(
-            user_id, d.id, doc["revision"], version["id"], fa.id)
+            user_id, d.id, doc["revision"], version_id, fa.id)
         export = await self.documents.create_export(
-            user_id, d.id, version["id"], "PDF", "v1")
+            user_id, d.id, version_id, "PDF", "v1")
         now = _now()
         op = ent.Operation(
             id=uuid4(), user_id=user_id, type=ent.OP_RESUME_WORKFLOW,
