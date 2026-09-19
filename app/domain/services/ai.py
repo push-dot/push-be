@@ -53,6 +53,7 @@ class AIGate:
                  grok_chat=None, claude_chat=None):
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
+        self.usage = AiUsageStore(db)
         self.managed_key = managed_key
         self.cipher = cipher
         self.chat = chat
@@ -73,14 +74,21 @@ class AIGate:
         if ai is None:
             return
         validate_ai_options(ai)
-        if ai.ultra_resume:
+        if ai.ultra_resume or ai.credential_mode == "MANAGED":
             try:
                 u = await self.users.get(user_id)
             except NotFoundError:
                 raise not_found()
-            if u.plan != ent.PLAN_ULTRA:
+            if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:
                 raise feature_disabled("ultraResume requires the ULTRA plan")
         if ai.credential_mode == "MANAGED":
+            now = _now()
+            month_start = now.replace(day=1, hour=0, minute=0, second=0,
+                                      microsecond=0)
+            spent = await self.usage.sum_cost_since(user_id, month_start)
+            if spent >= ent.PLAN_CREDITS_MICRO.get(u.plan, 0):
+                raise feature_disabled(
+                    "monthly managed AI usage limit reached for plan " + u.plan)
             if ai.model.startswith(_GO_PREFIX):
                 if not self.go_key or self.go_chat is None:
                     raise not_configured("OpenCode Go is not configured")

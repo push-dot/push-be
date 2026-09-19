@@ -51,6 +51,12 @@ class AiUsageStore(Store):
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
             u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status, u.created_at)
 
+    async def sum_cost_since(self, user_id: UUID, since: datetime) -> int:
+        return await self.q().fetchval(
+            "SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage "
+            "WHERE user_id = $1 AND managed AND status = 'SETTLED' "
+            "AND created_at >= $2", user_id, since)
+
     async def list(self, user_id: UUID, from_: Optional[datetime],
                    to: Optional[datetime], page) -> Page:
         q = (f"SELECT {_USAGE_COLS} FROM ai_usage WHERE user_id = $1")

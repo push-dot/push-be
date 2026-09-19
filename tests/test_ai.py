@@ -24,8 +24,15 @@ def _managed():
                          credential_mode="MANAGED", effort="LOW")
 
 
+def _user(plan="ULTRA"):
+    return ent.User(id=uuid4(), provider="dev", provider_subject="d",
+                    display_name="d", created_at=_now(), plan=plan)
+
+
 def _gate(managed_key="", cipher=None, chat=None, keys=None):
     g = AIGate(FakeDB(), managed_key, cipher, chat)
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
     if keys is not None:
         g.keys = keys
     return g
@@ -102,6 +109,8 @@ async def test_gate_routes_byok_to_byok_client():
     g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
                managed_chat, byok_chat)
     g.keys = keys
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
     c = await g.complete(user_id, _managed(), "", "hi")
     assert c.text == "managed" and managed_chat.got["key"] == "sk-managed"
     ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
@@ -126,6 +135,25 @@ async def test_gate_ultra_resume_requires_ultra_plan():
                                    provider_subject="d", display_name="d",
                                    created_at=_now(), plan="ULTRA"))
     await g.check(user_id, ai)
+
+
+async def test_gate_managed_monthly_limit():
+    user_id = uuid4()
+    g = _gate("sk-managed", chat=StubChatCompleter())
+    g.users = StubUserStore(_user("FREE"))
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, _managed())
+    assert e.value.code == "FEATURE_DISABLED"
+    g.users = StubUserStore(_user("PRO"))
+    await g.check(user_id, _managed())
+    g.usage = StubAiUsageStore([
+        ent.AiUsage(id=uuid4(), user_id=user_id, provider="OPENAI",
+                    model="m", managed=True, input_tokens=1, output_tokens=1,
+                    cost_micro_credits=ent.PLAN_CREDITS_MICRO["PRO"],
+                    status="SETTLED", created_at=_now())])
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, _managed())
+    assert e.value.code == "FEATURE_DISABLED"
 
 
 async def test_gate_byok_inline_key_skips_store():
@@ -160,6 +188,8 @@ async def test_gate_routes_go_model_to_go_client():
     go_chat = StubChatCompleter(text="go")
     g = AIGate(FakeDB(), "sk-managed", None, managed_chat, managed_chat,
                go_chat=go_chat, go_key="sk-go")
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
     ai = ent.AiOptions(provider="OPENAI",
                        model="opencode-go/deepseek-v4.1-flash",
                        credential_mode="MANAGED", effort="LOW")
@@ -171,6 +201,8 @@ async def test_gate_routes_go_model_to_go_client():
 
 async def test_gate_go_model_requires_go_key():
     g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
     ai = ent.AiOptions(provider="OPENAI",
                        model="opencode-go/deepseek-v4.1-flash",
                        credential_mode="MANAGED", effort="LOW")
@@ -199,6 +231,8 @@ async def test_gate_reasoning_effort_managed_only():
     g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
                managed_chat, byok_chat)
     g.keys = keys
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
     ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
                        effort="HIGH")
     await g.complete(user_id, ai, "", "hi")
