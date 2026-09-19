@@ -159,7 +159,7 @@ class DocumentService:
             d.revision = expected + 1
             out = d
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def _verify_blocks(self, user_id: UUID, application_id: UUID,
@@ -226,7 +226,7 @@ class DocumentService:
             d.revision = expected + 1
             out_doc, out_ver = d, v
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out_doc, out_ver
 
     async def list_versions(self, user_id: UUID, doc_id: UUID, page):
@@ -309,7 +309,7 @@ class DocumentService:
                 created_at=now, updated_at=now)
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op
 
     async def create_revision(self, user_id: UUID, doc_id: UUID, expected: int,
@@ -356,7 +356,7 @@ class DocumentService:
                 created_at=now, updated_at=now)
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op
 
     async def apply_revision(self, user_id: UUID, doc_id: UUID, proposal_id: UUID,
@@ -418,7 +418,7 @@ class DocumentService:
             d.revision = expected + 1
             out_doc, out_ver = d, v
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out_doc, out_ver
 
     async def review(self, user_id: UUID, doc_id: UUID,
@@ -477,7 +477,7 @@ class DocumentService:
                 created_at=now))
             out = d
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def archive(self, user_id: UUID, doc_id: UUID,
@@ -504,7 +504,7 @@ class DocumentService:
             d.revision = expected + 1
             out = d
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def create_export(self, user_id: UUID, doc_id: UUID, version_id: UUID,
@@ -540,7 +540,7 @@ class DocumentService:
             await self.documents.create_export(e)
             out = e
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def get_export(self, user_id: UUID, doc_id: UUID,
@@ -588,5 +588,5 @@ class DocumentService:
             await self.documents.update_export_result(e)
             out = e
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out

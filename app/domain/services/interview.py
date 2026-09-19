@@ -116,7 +116,7 @@ class InterviewService:
                 created_at=now))
             out = session
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def patch(self, user_id: UUID, id_: UUID, expected: int,
@@ -160,7 +160,7 @@ class InterviewService:
                     v.event_id, "", v.scheduled_at, ends)
             out = v
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def prepare(self, user_id: UUID, id_: UUID, expected: int,
@@ -214,5 +214,5 @@ class InterviewService:
                 created_at=now, updated_at=now)
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op

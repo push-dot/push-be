@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextvars import ContextVar
 from typing import Any, Optional, TypedDict
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
@@ -12,6 +13,9 @@ from app.domain.errors import (
 )
 from app.db import NotFoundError
 from app.jsonutil import to_jsonable
+
+
+byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
 
 
 def _now() -> datetime:
@@ -122,7 +126,8 @@ def build_chat_graph(svc, checkpointer=None):
         usage = {"input_tokens": 0, "output_tokens": 0}
         parts = []
         async for tok in svc.ai.stream(
-                state["user_id"], opts, "", state["text"], usage):
+                state["user_id"], opts, "", state["text"], usage,
+                byok_key=byok_key_var.get()):
             parts.append(tok)
             writer({"token": tok})
         return {"completion": ent.AICompletion(
@@ -164,7 +169,7 @@ def build_chat_graph(svc, checkpointer=None):
                 await record_usage(svc.usage, user_id, op_id,
                                    ent.AiOptions(**state["ai"]), completion)
 
-        await svc.db.do(work)
+        await svc.db.run(work)
         return {"operation": op}
 
     g = StateGraph(ChatState)

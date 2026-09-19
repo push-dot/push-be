@@ -197,12 +197,7 @@ class GoogleService:
                 raise unauthenticated("code expired or already used")
             await self.store.put_google_integration(gi)
 
-        try:
-            await self.db.do(work)
-        except DomainError:
-            raise
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return await self.status(user_id)
 
     async def _access_token(self, gi: ent.GoogleIntegration) -> str:
@@ -262,10 +257,7 @@ class GoogleService:
             await self.store.delete_google_data(user_id)
             await self.store.delete_google_integration(user_id)
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
 
     async def sync(self, user_id: UUID) -> ent.Operation:
         try:
@@ -370,7 +362,7 @@ class GoogleService:
             await self.ops.update(op)
 
         try:
-            await self.db.do(work)
+            await self.db.run(work)
         except Exception:
             await fail("INTERNAL", "google sync persistence failed")
         return op

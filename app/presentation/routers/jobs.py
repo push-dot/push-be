@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 from app.domain import entities as ent
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, page_body, page_request, param_id,
     parse_deadline,
 )
@@ -12,8 +12,6 @@ from app.presentation.deps import (
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
@@ -38,7 +36,7 @@ def job_dto(j: ent.JobPosting) -> dict:
 
 @router.get("/jobs")
 async def list_jobs(request: Request):
-    d = _deps(request)
+    d = deps(request)
     page = page_request(request)
     archived = None
     if "archived" in request.query_params:
@@ -55,7 +53,7 @@ async def list_jobs(request: Request):
 
 @router.post("/jobs", status_code=201)
 async def create_job(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateJobReq)
     deadline, _ = parse_deadline(req.deadline, "deadline" in req.model_fields_set)
     j = await d.jobs.create(current_user(request).id, req.company, req.title,
@@ -67,14 +65,14 @@ async def create_job(request: Request):
 
 @router.get("/jobs/{id}")
 async def get_job(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     j = await d.jobs.get(current_user(request).id, param_id(id, "id"))
     return data(200, job_dto(j))
 
 
 @router.patch("/jobs/{id}")
 async def patch_job(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.PatchJobReq)
     deadline, deadline_set = parse_deadline(
         req.deadline, "deadline" in req.model_fields_set)
@@ -87,7 +85,7 @@ async def patch_job(id: str, request: Request):
 
 @router.post("/jobs/{id}/analyze", status_code=202)
 async def analyze_job(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.AnalyzeReq)
     op = await d.jobs.analyze(current_user(request).id, param_id(id, "id"),
                               req.application_id, req.expected_revision,
@@ -97,7 +95,7 @@ async def analyze_job(id: str, request: Request):
 
 @router.get("/jobs/{id}/analyses")
 async def list_analyses(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.jobs.list_analyses(current_user(request).id,
                                    param_id(id, "id"), page_request(request))
     return page_body(p)

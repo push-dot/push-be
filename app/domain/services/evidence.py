@@ -104,7 +104,7 @@ class EvidenceService:
             e.revision = expected + 1
             out = e
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def import_(self, user_id: UUID, source_id: Optional[UUID], text: str,
@@ -134,10 +134,7 @@ class EvidenceService:
             await self._persist_import_result(op)
             await self.ops.create(op)
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return op
 
     async def _persist_import_result(self, op: ent.Operation) -> None:

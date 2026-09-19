@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from app.domain import entities as ent
 from app.domain.errors import validation_field
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, page_body, page_request, param_id,
     parse_time_field,
 )
@@ -14,13 +14,11 @@ from app.presentation.routers.jobs import _ai
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 @router.get("/applications")
 async def list_applications(request: Request):
-    d = _deps(request)
+    d = deps(request)
     page = page_request(request)
     stage = request.query_params.get("stage") or None
     if stage is not None and not ent.valid_stage(stage):
@@ -32,7 +30,7 @@ async def list_applications(request: Request):
 
 @router.post("/applications", status_code=201)
 async def create_application(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateApplicationReq)
     a = await d.applications.create(current_user(request).id, req.job_id,
                                     req.notes)
@@ -41,7 +39,7 @@ async def create_application(request: Request):
 
 @router.post("/applications/import", status_code=201)
 async def import_application(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ImportApplicationReq)
     a = await d.applications.import_(
         current_user(request).id, req.job_id, req.stage,
@@ -52,7 +50,7 @@ async def import_application(request: Request):
 
 @router.get("/applications/{id}")
 async def get_application(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     a = await d.applications.get(current_user(request).id,
                                  param_id(id, "id"))
     return data(200, a)
@@ -60,7 +58,7 @@ async def get_application(id: str, request: Request):
 
 @router.patch("/applications/{id}")
 async def patch_application(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.PatchApplicationReq)
     next_at = None
     clear_next = False
@@ -77,7 +75,7 @@ async def patch_application(id: str, request: Request):
 
 @router.get("/applications/{id}/timeline")
 async def application_timeline(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.applications.timeline(current_user(request).id,
                                       param_id(id, "id"),
                                       page_request(request))
@@ -86,7 +84,7 @@ async def application_timeline(id: str, request: Request):
 
 @router.post("/applications/{id}/resume-run", status_code=202)
 async def resume_run(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ResumeRunReq)
     op = await d.resume_workflow.run(
         current_user(request).id, param_id(id, "id"), _ai(req.ai))
@@ -95,7 +93,7 @@ async def resume_run(id: str, request: Request):
 
 @router.get("/applications/{id}/checklist")
 async def application_checklist(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     cl = await d.applications.checklist(current_user(request).id,
                                         param_id(id, "id"))
     return data(200, cl)
@@ -103,7 +101,7 @@ async def application_checklist(id: str, request: Request):
 
 @router.post("/applications/{id}/submission-drafts", status_code=201)
 async def create_submission_draft(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateDraftReq)
     dr = await d.applications.create_draft(
         current_user(request).id, param_id(id, "id"), req.expected_revision,
@@ -114,7 +112,7 @@ async def create_submission_draft(id: str, request: Request):
 
 @router.post("/applications/{id}/submissions", status_code=201)
 async def submit_application(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.SubmitReq)
     sub = await d.applications.submit(current_user(request).id,
                                       param_id(id, "id"),
@@ -125,7 +123,7 @@ async def submit_application(id: str, request: Request):
 
 @router.get("/applications/{id}/submissions")
 async def list_submissions(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.applications.list_submissions(current_user(request).id,
                                               param_id(id, "id"),
                                               page_request(request))

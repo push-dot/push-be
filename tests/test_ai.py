@@ -37,7 +37,7 @@ async def test_gate_complete_managed():
     c = await g.complete(uuid4(), _managed(), "sys", "hi")
     assert c.text == "hello" and c.input_tokens == 3 and c.output_tokens == 5
     assert chat.got == {"key": "sk-managed", "model": "gpt-4o-mini",
-                       "system": "sys", "user": "hi"}
+                       "system": "sys", "user": "hi", "reasoning": "low"}
 
 
 async def test_gate_complete_managed_not_configured():
@@ -128,6 +128,42 @@ async def test_gate_ultra_resume_requires_ultra_plan():
     await g.check(user_id, ai)
 
 
+async def test_gate_byok_inline_key_skips_store():
+    user_id = uuid4()
+    byok_chat = StubChatCompleter(text="byok")
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(), byok_chat)
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi", byok_key="sk-inline")
+    assert c.text == "byok"
+    assert byok_chat.got["key"] == "sk-inline"
+
+
+async def test_gate_routes_go_model_to_go_client():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="router")
+    go_chat = StubChatCompleter(text="go")
+    g = AIGate(FakeDB(), "sk-managed", None, managed_chat, managed_chat,
+               go_chat=go_chat, go_key="sk-go")
+    ai = ent.AiOptions(provider="OPENAI",
+                       model="opencode-go/deepseek-v4.1-flash",
+                       credential_mode="MANAGED", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi")
+    assert c.text == "go"
+    assert go_chat.got["key"] == "sk-go"
+    assert go_chat.got["model"] == "deepseek-v4.1-flash"
+
+
+async def test_gate_go_model_requires_go_key():
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    ai = ent.AiOptions(provider="OPENAI",
+                       model="opencode-go/deepseek-v4.1-flash",
+                       credential_mode="MANAGED", effort="LOW")
+    with pytest.raises(DomainError) as e:
+        await g.check(uuid4(), ai)
+    assert e.value.code == "NOT_CONFIGURED"
+
+
 async def test_gate_web_search_managed_uses_online_suffix():
     user_id = uuid4()
     chat = StubChatCompleter(text="answer")
@@ -136,6 +172,26 @@ async def test_gate_web_search_managed_uses_online_suffix():
                        effort="LOW", web_search=True)
     await g.complete(user_id, ai, "sys", "hi")
     assert chat.got["model"] == "m:online"
+
+
+async def test_gate_reasoning_effort_managed_only():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="managed")
+    byok_chat = StubChatCompleter(text="byok")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="HIGH")
+    await g.complete(user_id, ai, "", "hi")
+    assert managed_chat.got["reasoning"] == "high"
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="HIGH")
+    await g.complete(user_id, ai, "", "hi")
+    assert byok_chat.got["reasoning"] == ""
 
 
 async def test_gate_web_search_byok_injects_managed_results():

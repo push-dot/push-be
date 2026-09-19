@@ -843,6 +843,8 @@ class AIModelInfo(BaseModel):
 OPENAI_MODELS = [
     AIModelInfo(provider="OPENAI", model="deepseek/deepseek-v4.1-flash",
                 label="DeepSeek V4.1 Flash"),
+    AIModelInfo(provider="OPENAI", model="opencode-go/deepseek-v4.1-flash",
+                label="DeepSeek V4.1 Flash Go"),
     AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-luna",
                 label="GPT-5.6 Luna"),
     AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-terra",

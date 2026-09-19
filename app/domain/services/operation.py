@@ -52,7 +52,7 @@ class OperationService:
             await self.ops.update(op)
             out = op
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def cancel(self, user_id: UUID, id_: UUID) -> ent.Operation:
@@ -72,5 +72,5 @@ class OperationService:
             await self.ops.update(op)
             out = op
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out

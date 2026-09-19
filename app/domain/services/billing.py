@@ -152,7 +152,7 @@ class BillingService:
                 amount_micro_credits=credits, balance_after=bal + credits,
                 reference_id=session_id, created_at=_now()))
 
-        await self.db.do(work)
+        await self.db.run(work)
 
     async def _subscription_changed(self, typ: str, obj: dict) -> None:
         customer = obj.get("customer", "")

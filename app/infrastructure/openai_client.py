@@ -1,9 +1,18 @@
 from __future__ import annotations
 import json
+from typing import Optional
 
 import httpx
 
 from app.domain import entities as ent
+
+
+def stream_body(model: str, messages: list, reasoning: str) -> dict:
+    body = {"model": model, "messages": messages, "stream": True,
+            "stream_options": {"include_usage": True}}
+    if reasoning:
+        body["reasoning"] = {"effort": reasoning}
+    return body
 
 
 class OpenAIClient:
@@ -12,13 +21,19 @@ class OpenAIClient:
         self.base_url = base_url
 
     async def chat(self, api_key: str, model: str, system: str,
-                   user: str) -> dict:
+                   user: str, reasoning: str = "",
+                   extra_headers: Optional[dict] = None) -> dict:
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": user}]
+        body = {"model": model, "messages": messages}
+        if reasoning:
+            body["reasoning"] = {"effort": reasoning}
+        headers = {"Authorization": "Bearer " + api_key}
+        headers.update(extra_headers or {})
         resp = await self._client.post(
             self.base_url + "/chat/completions",
-            json={"model": model, "messages": messages},
-            headers={"Authorization": "Bearer " + api_key})
+            json=body,
+            headers=headers)
         body = resp.json()
         if resp.status_code != 200:
             msg = (body.get("error") or {}).get("message") or \
@@ -32,14 +47,16 @@ class OpenAIClient:
             output_tokens=(body.get("usage") or {}).get("completion_tokens", 0))
 
     async def chat_stream(self, api_key: str, model: str, system: str,
-                          user: str, usage: dict):
+                          user: str, usage: dict, reasoning: str = "",
+                          extra_headers: Optional[dict] = None):
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": user}]
+        headers = {"Authorization": "Bearer " + api_key}
+        headers.update(extra_headers or {})
         async with self._client.stream(
                 "POST", self.base_url + "/chat/completions",
-                json={"model": model, "messages": messages, "stream": True,
-                      "stream_options": {"include_usage": True}},
-                headers={"Authorization": "Bearer " + api_key}) as resp:
+                json=stream_body(model, messages, reasoning),
+                headers=headers) as resp:
             if resp.status_code != 200:
                 await resp.aread()
                 body = resp.json()

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
-    internal, not_configured, not_found, provider_error,
+    not_configured, not_found, provider_error,
     token_expired, unauthenticated, validation_field,
 )
 from app.infrastructure.crypto import random_token, token_hash, verify_pkce
@@ -98,10 +98,7 @@ class AuthService:
                 code=exchange_code, user_id=user.id, code_challenge=rec.code_challenge,
                 expires_at=now + ent.EXCHANGE_CODE_TTL, created_at=now))
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return (rec.final_uri or ent.AUTH_CALLBACK_URI) + "?code=" + quote(exchange_code)
 
     async def _issue_session(self, user_id: UUID, now: datetime) -> ent.Session:
@@ -137,10 +134,7 @@ class AuthService:
             await self.sessions.mark_exchange_code_used(code, now)
             session = await self._issue_session(rec.user_id, now)
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return session
 
     async def refresh(self, refresh_token: str) -> ent.Session:
@@ -162,10 +156,7 @@ class AuthService:
             await self.sessions.revoke_access_tokens_for_refresh(rec.id, now)
             session = await self._issue_session(rec.user_id, now)
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return session
 
     async def logout(self, refresh_token: str) -> None:

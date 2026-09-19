@@ -160,7 +160,7 @@ class JobService:
             j.revision = expected + 1
             out = j
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def analyze(self, user_id: UUID, job_id: UUID, application_id: UUID,
@@ -209,7 +209,7 @@ class JobService:
                 created_at=now, updated_at=now)
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op
 
     async def list_analyses(self, user_id: UUID, job_id: UUID, page):

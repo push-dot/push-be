@@ -25,6 +25,8 @@ class Config:
     github: OAuthProviderConfig = field(default_factory=OAuthProviderConfig)
     managed_ai_key: str = ""
     ai_base_url: str = "https://openrouter.ai/api/v1"
+    opencode_go_key: str = ""
+    opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
     byok_master_key: str = ""
     stripe_secret: str = ""
     stripe_webhook_secret: str = ""
@@ -60,6 +62,9 @@ def load_config() -> Config:
         managed_ai_key=os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("OPENAI_API_KEY", ""),
         ai_base_url=env("AI_BASE_URL", "https://openrouter.ai/api/v1"),
+        opencode_go_key=os.environ.get("OPENCODE_GO_API_KEY", ""),
+        opencode_go_base_url=env("OPENCODE_GO_BASE_URL",
+                                 "https://opencode.ai/zen/go/v1"),
         byok_master_key=os.environ.get("BYOK_MASTER_KEY", ""),
         stripe_secret=os.environ.get("STRIPE_SECRET_KEY", ""),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),

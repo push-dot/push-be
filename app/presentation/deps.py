@@ -17,6 +17,10 @@ from app.jsonutil import to_jsonable
 MAX_LIMIT = 100
 
 
+def deps(request: Request):
+    return request.app.state.deps
+
+
 def current_user(request: Request) -> ent.User:
     u = getattr(request.state, "user", None)
     if u is None:

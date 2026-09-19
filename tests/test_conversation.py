@@ -177,7 +177,7 @@ async def test_stream_message_ai_tokens_concat():
     usage = StubAiUsageStore()
 
     class _Gate:
-        async def stream(self, _uid, _ai, _sys, _user, out):
+        async def stream(self, _uid, _ai, _sys, _user, out, byok_key=""):
             for t in ["Hel", "lo"]:
                 yield t
             out["input_tokens"] = 3

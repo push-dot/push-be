@@ -1,10 +1,13 @@
 from __future__ import annotations
 import contextvars
 import json
+import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 _tx: contextvars.ContextVar[asyncpg.Connection | None] = contextvars.ContextVar("tx", default=None)
 
@@ -40,6 +43,16 @@ class DB:
                     return await fn()
                 finally:
                     _tx.reset(token)
+
+    async def run(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+        from app.domain.errors import DomainError, internal
+        try:
+            return await self.do(fn)
+        except DomainError:
+            raise
+        except Exception:
+            logger.exception("transaction failed")
+            raise internal()
 
     async def revision_guard(self, table: str, id_, user_id) -> None:
         row = await self.q().fetchrow(

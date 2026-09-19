@@ -17,6 +17,12 @@ from app.infrastructure.store_operations import OperationStore
 
 
 _SEARCH_MODEL = "deepseek/deepseek-v4.1-flash"
+_GO_PREFIX = "opencode-go/"
+
+
+def _byok_key_var():
+    from app.graph.chat import byok_key_var
+    return byok_key_var
 
 
 def _now() -> datetime:
@@ -39,16 +45,20 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
 
 
 class AIGate:
-    def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None):
+    def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None,
+                 go_chat=None, go_key: str = ""):
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
         self.managed_key = managed_key
         self.cipher = cipher
         self.chat = chat
         self.byok_chat = byok_chat if byok_chat is not None else chat
+        self.go_chat = go_chat
+        self.go_key = go_key
         self.byok_enabled = cipher is not None
 
-    async def check(self, user_id: UUID, ai: Optional[ent.AiOptions]) -> None:
+    async def check(self, user_id: UUID, ai: Optional[ent.AiOptions],
+                    byok_key: str = "") -> None:
         if ai is None:
             return
         validate_ai_options(ai)
@@ -60,15 +70,25 @@ class AIGate:
             if u.plan != ent.PLAN_ULTRA:
                 raise feature_disabled("ultraResume requires the ULTRA plan")
         if ai.credential_mode == "MANAGED":
-            if not self.managed_key:
+            if ai.model.startswith(_GO_PREFIX):
+                if not self.go_key or self.go_chat is None:
+                    raise not_configured("OpenCode Go is not configured")
+            elif not self.managed_key:
                 raise not_configured("managed AI is not configured")
+            return
+        byok_key = byok_key or _byok_key_var().get()
+        if byok_key:
             return
         if not self.byok_enabled or not await self.keys.has(user_id, ai.provider):
             raise integration_required("no BYOK key configured for " + ai.provider)
 
-    async def resolve_key(self, user_id: UUID, ai: ent.AiOptions) -> str:
+    async def resolve_key(self, user_id: UUID, ai: ent.AiOptions,
+                          byok_key: str = "") -> str:
         if ai.credential_mode == "MANAGED":
             return self.managed_key
+        byok_key = byok_key or _byok_key_var().get()
+        if byok_key:
+            return byok_key
         try:
             k = await self.keys.get(user_id, ai.provider)
         except NotFoundError:
@@ -96,38 +116,53 @@ class AIGate:
             raise provider_error("web search failed")
         return "\n\n[웹 검색 결과]\n" + c.text
 
+    async def _route(self, user_id: UUID, ai: ent.AiOptions,
+                     byok_key: str = ""):
+        model = ai.model
+        if ai.credential_mode == "MANAGED" and model.startswith(_GO_PREFIX):
+            return (self.go_chat, self.go_key, model[len(_GO_PREFIX):],
+                    {"x-opencode-session": str(user_id)})
+        key = await self.resolve_key(user_id, ai, byok_key)
+        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
+        if ai.web_search and ai.credential_mode == "MANAGED":
+            model += ":online"
+        return chat, key, model, None
+
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
-                       system: str, user: str) -> ent.AICompletion:
-        await self.check(user_id, ai)
+                       system: str, user: str,
+                       byok_key: str = "") -> ent.AICompletion:
+        await self.check(user_id, ai, byok_key)
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         system += await self._search_context(ai, user)
-        key = await self.resolve_key(user_id, ai)
-        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
-        model = ai.model + ":online" if ai.web_search and ai.credential_mode == "MANAGED" else ai.model
+        chat, key, model, headers = await self._route(user_id, ai, byok_key)
+        reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         try:
-            return await chat.chat(key, model, system, user)
+            return await chat.chat(key, model, system, user, reasoning,
+                                   headers)
         except Exception:
             raise provider_error("AI provider request failed")
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
-                     system: str, user: str, usage: dict):
-        await self.check(user_id, ai)
+                     system: str, user: str, usage: dict,
+                     byok_key: str = ""):
+        await self.check(user_id, ai, byok_key)
         if ai.provider != "OPENAI" or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         system += await self._search_context(ai, user)
-        key = await self.resolve_key(user_id, ai)
-        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
-        model = ai.model + ":online" if ai.web_search and ai.credential_mode == "MANAGED" else ai.model
+        chat, key, model, headers = await self._route(user_id, ai, byok_key)
+        reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         try:
             chat_stream = getattr(chat, "chat_stream", None)
             if chat_stream is None:
-                c = await chat.chat(key, model, system, user)
+                c = await chat.chat(key, model, system, user, reasoning,
+                                    headers)
                 usage["input_tokens"] = c.input_tokens
                 usage["output_tokens"] = c.output_tokens
                 yield c.text
                 return
-            async for tok in chat_stream(key, model, system, user, usage):
+            async for tok in chat_stream(key, model, system, user, usage,
+                                         reasoning, headers):
                 yield tok
         except DomainError:
             raise
@@ -184,12 +219,7 @@ class AIService:
             await self.ops.create(op)
             await record_usage(self.usage, user_id, op_id, ai, c)
 
-        try:
-            await self.db.do(work)
-        except DomainError:
-            raise
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return op
 
     async def list_usage(self, user_id: UUID, from_, to, page):
