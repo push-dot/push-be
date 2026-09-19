@@ -16,6 +16,7 @@ from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
 from app.infrastructure.oauth import OAuthClient, provider_configs
+from app.infrastructure.anthropic_client import AnthropicClient
 from app.infrastructure.openai_client import OpenAIClient
 from app.infrastructure.stripe_client import StripeClient
 from app.infrastructure.store_ai import AiKeyStore
@@ -112,6 +113,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         openai = OpenAIClient(base_url=cfg.ai_base_url)
         openai_byok = OpenAIClient()
         openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
+        grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
+        claude_byok = AnthropicClient()
         openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stripe = StripeClient(cfg.stripe_secret)
@@ -120,7 +123,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
                       go_chat=openai_go, go_key=cfg.opencode_go_key,
-                      openrouter_chat=openrouter_byok)
+                      openrouter_chat=openrouter_byok,
+                      grok_chat=grok_byok, claude_chat=claude_byok)
         auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                             cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
@@ -177,6 +181,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await openai.aclose()
             await openai_byok.aclose()
             await openrouter_byok.aclose()
+            await grok_byok.aclose()
+            await claude_byok.aclose()
             await openai_go.aclose()
             await gapi.aclose()
             await stripe.aclose()
