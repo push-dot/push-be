@@ -156,7 +156,8 @@ def build_chat_graph(svc, checkpointer=None):
         parts = []
         async for tok in svc.ai.stream(
                 state["user_id"], opts, "", user_msg, usage,
-                byok_key=byok_key_var.get()):
+                byok_key=byok_key_var.get(),
+                search_query=state["text"]):
             parts.append(tok)
             writer({"token": tok})
         return {"completion": ent.AICompletion(
