@@ -14,7 +14,9 @@ from app.domain.errors import (
 )
 from app.db import NotFoundError
 from app.domain.pagination import PageRequest
-from app.infrastructure.web_page import fetch_page_text, find_urls
+from app.infrastructure.web_page import (fetch_github_context,
+                                         fetch_page_text, find_urls,
+                                         github_usernames)
 from app.jsonutil import to_jsonable
 from app.graph.resume_prompt import resume_system_prompt, wants_resume_flow
 
@@ -181,14 +183,28 @@ def build_chat_graph(svc, checkpointer=None):
                         "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
                 except Exception:
                     continue
-        if hist_lines:
-            sections.append("[이전 대화]\n" + "\n".join(hist_lines))
-        sections.append("[현재 메시지]\n" + state["text"])
-        user_msg = "\n\n".join(sections)
         attach_titles = " ".join(
             a.title for a in state.get("attachments") or [] if a.title)
         resume_flow = wants_resume_flow(
             state["text"] + " " + attach_titles, "\n".join(hist_lines))
+        if resume_flow:
+            gh_users = []
+            for src in [state.get("context_text") or "", state["text"],
+                        *hist_lines]:
+                for u in github_usernames(src):
+                    if u not in gh_users:
+                        gh_users.append(u)
+            if gh_users:
+                gh = await asyncio.gather(
+                    *(fetch_github_context(u) for u in gh_users[:2]),
+                    return_exceptions=True)
+                for u, g in zip(gh_users[:2], gh):
+                    if isinstance(g, str) and g:
+                        sections.append("[GitHub] " + g)
+        if hist_lines:
+            sections.append("[이전 대화]\n" + "\n".join(hist_lines))
+        sections.append("[현재 메시지]\n" + state["text"])
+        user_msg = "\n\n".join(sections)
         system = resume_system_prompt() if resume_flow else ""
         parts = []
         async for tok in svc.ai.stream(

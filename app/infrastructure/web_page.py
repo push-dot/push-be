@@ -83,3 +83,50 @@ async def fetch_page_text(url: str) -> str:
         return rendered if len(rendered) > len(text) else text
     except Exception:
         return text
+
+
+_GH_USER_RE = re.compile(
+    r"github\s*\.?\s*com/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)",
+    re.I)
+_GH_SKIP = {"settings", "features", "pricing", "login", "signup", "explore",
+            "topics", "collections", "marketplace", "sponsors", "orgs",
+            "about", "contact", "security"}
+
+
+def github_usernames(text: str) -> list[str]:
+    seen, out = set(), []
+    for u in _GH_USER_RE.findall(text or ""):
+        u = u.lower()
+        if u not in seen and u not in _GH_SKIP:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+async def fetch_github_context(username: str) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get(
+                f"https://api.github.com/users/{username}/repos",
+                params={"per_page": 30, "sort": "pushed", "type": "owner"},
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": _UA})
+            if r.status_code != 200:
+                return ""
+            repos = r.json()
+    except Exception:
+        return ""
+    lines = []
+    for repo in repos:
+        if repo.get("fork"):
+            continue
+        desc = (repo.get("description") or "").strip()
+        lang = repo.get("language") or "-"
+        stars = repo.get("stargazers_count") or 0
+        pushed = (repo.get("pushed_at") or "")[:10]
+        line = f"- {repo['name']} | {lang} | ★{stars} | pushed {pushed}"
+        if desc:
+            line += f" | {desc}"
+        lines.append(line)
+    return f"github.com/{username} 공개 레포 ({len(lines)}개, 최근 push 순)\n" \
+        + "\n".join(lines)
