@@ -44,12 +44,13 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
         raise validation_field("ai.effort", "unsupported effort")
 
 
-_BYOK_PROVIDERS = {"OPENAI", "OPENROUTER"}
+_BYOK_PROVIDERS = {"OPENAI", "OPENROUTER", "GROK", "CLAUDE"}
 
 
 class AIGate:
     def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None,
-                 go_chat=None, go_key: str = "", openrouter_chat=None):
+                 go_chat=None, go_key: str = "", openrouter_chat=None,
+                 grok_chat=None, claude_chat=None):
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
         self.managed_key = managed_key
@@ -58,8 +59,13 @@ class AIGate:
         self.byok_chat = byok_chat if byok_chat is not None else chat
         self.go_chat = go_chat
         self.go_key = go_key
-        self.openrouter_chat = (openrouter_chat if openrouter_chat is not None
-                                else byok_chat)
+        self.byok_chats = {
+            "OPENAI": self.byok_chat,
+            "OPENROUTER": (openrouter_chat if openrouter_chat is not None
+                           else self.byok_chat),
+            "GROK": grok_chat if grok_chat is not None else self.byok_chat,
+            "CLAUDE": claude_chat if claude_chat is not None else self.byok_chat,
+        }
         self.byok_enabled = cipher is not None
 
     async def check(self, user_id: UUID, ai: Optional[ent.AiOptions],
@@ -131,7 +137,7 @@ class AIGate:
         if ai.credential_mode == "MANAGED":
             chat = self.chat
         else:
-            chat = self.openrouter_chat if ai.provider == "OPENROUTER" else self.byok_chat
+            chat = self.byok_chats.get(ai.provider) or self.byok_chat
         if ai.web_search and ai.credential_mode == "MANAGED":
             model += ":online"
         return chat, key, model, None

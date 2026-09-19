@@ -77,10 +77,10 @@ async def test_gate_complete_unsupported_provider():
                                     updated_at=_now()))
     g = _gate(cipher=StubCipher(plaintext="k"), chat=StubChatCompleter(),
               keys=keys)
-    ai = ent.AiOptions(provider="CLAUDE", model="claude-sonnet-4",
+    ai = ent.AiOptions(provider="GEMINI", model="gemini-2.5-pro",
                        credential_mode="BYOK", effort="LOW")
     with pytest.raises(DomainError) as e:
-        await g.complete(user_id, ai, "", "hi")
+        await g.complete(user_id, ai, "", "hi", byok_key="sk-x")
     assert e.value.code == "NOT_CONFIGURED"
 
 
@@ -137,6 +137,21 @@ async def test_gate_byok_inline_key_skips_store():
     c = await g.complete(user_id, ai, "", "hi", byok_key="sk-inline")
     assert c.text == "byok"
     assert byok_chat.got["key"] == "sk-inline"
+
+
+async def test_gate_byok_provider_routing():
+    user_id = uuid4()
+    claude = StubChatCompleter(text="claude")
+    grok = StubChatCompleter(text="grok")
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(),
+               StubChatCompleter(), grok_chat=grok, claude_chat=claude)
+    for provider, chat, model in (("CLAUDE", claude, "claude-sonnet-4"),
+                                  ("GROK", grok, "grok-4")):
+        ai = ent.AiOptions(provider=provider, model=model,
+                           credential_mode="BYOK", effort="LOW")
+        c = await g.complete(user_id, ai, "", "hi", byok_key="sk-x")
+        assert c.text == provider.lower()
+        assert chat.got["key"] == "sk-x" and chat.got["model"] == model
 
 
 async def test_gate_routes_go_model_to_go_client():
