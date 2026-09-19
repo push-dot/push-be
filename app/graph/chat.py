@@ -142,13 +142,15 @@ def build_chat_graph(svc, checkpointer=None):
             sections.append(state["context_text"])
         try:
             hist = await svc.conversations.list_messages(
-                user_id, state["conversation"].id, PageRequest(limit=12))
+                state["user_id"], state["conversation"].id,
+                PageRequest(limit=12))
             if hist.items:
                 lines = [m.role + ": " + m.text
                          for m in reversed(hist.items)]
                 sections.append("[이전 대화]\n" + "\n".join(lines))
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).exception("history load failed")
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
         parts = []
