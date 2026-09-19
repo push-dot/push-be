@@ -44,9 +44,12 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
         raise validation_field("ai.effort", "unsupported effort")
 
 
+_BYOK_PROVIDERS = {"OPENAI", "OPENROUTER"}
+
+
 class AIGate:
     def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None,
-                 go_chat=None, go_key: str = ""):
+                 go_chat=None, go_key: str = "", openrouter_chat=None):
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
         self.managed_key = managed_key
@@ -55,6 +58,8 @@ class AIGate:
         self.byok_chat = byok_chat if byok_chat is not None else chat
         self.go_chat = go_chat
         self.go_key = go_key
+        self.openrouter_chat = (openrouter_chat if openrouter_chat is not None
+                                else byok_chat)
         self.byok_enabled = cipher is not None
 
     async def check(self, user_id: UUID, ai: Optional[ent.AiOptions],
@@ -123,7 +128,10 @@ class AIGate:
             return (self.go_chat, self.go_key, model[len(_GO_PREFIX):],
                     {"x-opencode-session": str(user_id)})
         key = await self.resolve_key(user_id, ai, byok_key)
-        chat = self.chat if ai.credential_mode == "MANAGED" else self.byok_chat
+        if ai.credential_mode == "MANAGED":
+            chat = self.chat
+        else:
+            chat = self.openrouter_chat if ai.provider == "OPENROUTER" else self.byok_chat
         if ai.web_search and ai.credential_mode == "MANAGED":
             model += ":online"
         return chat, key, model, None
@@ -132,7 +140,9 @@ class AIGate:
                        system: str, user: str,
                        byok_key: str = "") -> ent.AICompletion:
         await self.check(user_id, ai, byok_key)
-        if ai.provider != "OPENAI" or self.chat is None:
+        providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
+                     else _BYOK_PROVIDERS)
+        if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         system += await self._search_context(ai, user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
@@ -147,7 +157,9 @@ class AIGate:
                      system: str, user: str, usage: dict,
                      byok_key: str = ""):
         await self.check(user_id, ai, byok_key)
-        if ai.provider != "OPENAI" or self.chat is None:
+        providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
+                     else _BYOK_PROVIDERS)
+        if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
         system += await self._search_context(ai, user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)

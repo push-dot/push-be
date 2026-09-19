@@ -111,6 +111,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         oauth = OAuthClient()
         openai = OpenAIClient(base_url=cfg.ai_base_url)
         openai_byok = OpenAIClient()
+        openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
         openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stripe = StripeClient(cfg.stripe_secret)
@@ -118,7 +119,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         byok_enabled = cipher is not None
 
         gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
-                      go_chat=openai_go, go_key=cfg.opencode_go_key)
+                      go_chat=openai_go, go_key=cfg.opencode_go_key,
+                      openrouter_chat=openrouter_byok)
         auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                             cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
@@ -174,6 +176,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await oauth.aclose()
             await openai.aclose()
             await openai_byok.aclose()
+            await openrouter_byok.aclose()
             await openai_go.aclose()
             await gapi.aclose()
             await stripe.aclose()
