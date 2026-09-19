@@ -808,7 +808,7 @@ class AiKey(BaseModel):
     updated_at: datetime
 
 
-AI_PROVIDERS = {"OPENAI", "CLAUDE", "GEMINI", "GROK"}
+AI_PROVIDERS = {"OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"}
 CREDENTIAL_MODES = {"MANAGED", "BYOK"}
 EFFORTS = {"LOW", "MEDIUM", "HIGH"}
 
