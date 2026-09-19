@@ -163,7 +163,7 @@ class EvidenceService:
         ev_list = (op.result.value or {}).get("evidence") or []
         if not ev_list:
             return
-        created = ent.CareerEvidence(**ev_list[0])
+        created = ent.CareerEvidence(**{**ev_list[0], "userId": op.user_id})
         await self.evidence.create(created)
         op.result = ent.OperationResult(
             kind=ent.OP_EVIDENCE_IMPORT,
