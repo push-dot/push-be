@@ -16,6 +16,7 @@ from app.db import NotFoundError
 from app.domain.pagination import PageRequest
 from app.infrastructure.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
+from app.graph.resume_prompt import resume_system_prompt, wants_resume_flow
 
 
 byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
@@ -142,7 +143,21 @@ def build_chat_graph(svc, checkpointer=None):
         sections = []
         if state.get("context_text"):
             sections.append(state["context_text"])
-        urls = find_urls(state["text"])[:2]
+        urls = set(find_urls(state["text"])[:2])
+        hist_items = []
+        hist_lines: list[str] = []
+        try:
+            hist = await svc.conversations.list_messages(
+                state["user_id"], state["conversation"].id,
+                PageRequest(limit=12))
+            hist_items = list(reversed(hist.items))
+            for m in hist_items:
+                hist_lines.append(m.role + ": " + m.text)
+                urls.update(find_urls(m.text))
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("history load failed")
+        urls = list(urls)[:4]
         if urls:
             pages = await asyncio.gather(
                 *(fetch_page_text(u) for u in urls),
@@ -150,22 +165,31 @@ def build_chat_graph(svc, checkpointer=None):
             for u, p in zip(urls, pages):
                 if isinstance(p, str) and p:
                     sections.append("[웹 페이지] " + u + "\n" + p)
-        try:
-            hist = await svc.conversations.list_messages(
-                state["user_id"], state["conversation"].id,
-                PageRequest(limit=12))
-            if hist.items:
-                lines = [m.role + ": " + m.text
-                         for m in reversed(hist.items)]
-                sections.append("[이전 대화]\n" + "\n".join(lines))
-        except Exception:
-            import logging
-            logging.getLogger(__name__).exception("history load failed")
+        seen_evidence = set()
+        ctx = state.get("context") or {}
+        for eid in ctx.get("evidenceIds") or []:
+            seen_evidence.add(str(eid))
+        for m in hist_items:
+            for a in m.attachments or []:
+                if a.type != "EVIDENCE" or str(a.id) in seen_evidence:
+                    continue
+                seen_evidence.add(str(a.id))
+                try:
+                    e = await svc.evidence.get(state["user_id"], a.id)
+                    sections.append(
+                        "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
+                except Exception:
+                    continue
+        if hist_lines:
+            sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
+        system = ""
+        if wants_resume_flow(state["text"], "\n".join(hist_lines)):
+            system = resume_system_prompt()
         parts = []
         async for tok in svc.ai.stream(
-                state["user_id"], opts, "", user_msg, usage,
+                state["user_id"], opts, system, user_msg, usage,
                 byok_key=byok_key_var.get(),
                 search_query=state["text"]):
             parts.append(tok)
