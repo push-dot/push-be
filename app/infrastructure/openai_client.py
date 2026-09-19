@@ -9,7 +9,8 @@ from app.domain import entities as ent
 
 def stream_body(model: str, messages: list, reasoning: str) -> dict:
     body = {"model": model, "messages": messages, "stream": True,
-            "stream_options": {"include_usage": True}}
+            "stream_options": {"include_usage": True},
+            "max_tokens": 32768}
     if reasoning:
         body["reasoning"] = {"effort": reasoning}
     return body
