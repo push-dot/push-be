@@ -38,6 +38,18 @@ pytest
 
 Tests use in-memory stubs; no running PostgreSQL required.
 
+## Experiments (A/B)
+
+`EXPERIMENTS` env JSON seeds experiment definitions:
+
+```
+EXPERIMENTS=[{"key":"home-greeting","variants":["A","B"]}]
+```
+
+- `GET /api/v1/experiments/{key}/assignment` — deterministic per-user variant
+- `POST /api/v1/experiments/{key}/events` — record event with assigned variant
+- `GET /api/v1/experiments/{key}/stats` — event counts by variant
+
 ## Layout
 
 - `app/main.py` — composition root (app factory, lifespan, wiring)
