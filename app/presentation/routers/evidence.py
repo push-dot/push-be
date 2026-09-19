@@ -73,7 +73,7 @@ async def import_evidence(request: Request):
     req = await bind_json(request, s.ImportEvidenceReq)
     op = await d.evidence.import_(current_user(request).id, req.source_id,
                                   req.text, req.source_url, req.content_hash,
-                                  req.format)
+                                  req.format, req.kind, req.title)
     return data(202, op)
 
 

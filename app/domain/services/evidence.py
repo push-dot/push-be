@@ -9,7 +9,8 @@ from app.domain.errors import (
     internal, map_revision_err, not_found, validation_field, integration_required,
 )
 from app.domain.validators import code_point_len, hash_bytes, validate_https_url
-from app.infrastructure.store_evidence import EvidenceStore
+from app.infrastructure.pdf_text import extract_pdf_text
+from app.infrastructure.store_evidence import EvidenceStore, SourceStore
 from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
 
@@ -45,6 +46,7 @@ class EvidenceService:
     def __init__(self, db: DB):
         self.db = db
         self.evidence = EvidenceStore(db)
+        self.sources = SourceStore(db)
         self.ops = OperationStore(db)
 
     async def list(self, user_id: UUID, kind: Optional[str], query: str, page) -> ent.Page:
@@ -109,7 +111,7 @@ class EvidenceService:
 
     async def import_(self, user_id: UUID, source_id: Optional[UUID], text: str,
                       source_url: Optional[str], content_hash: str,
-                      format_: str) -> ent.Operation:
+                      format_: str, kind: str = "", title: str = "") -> ent.Operation:
         if format_ not in IMPORT_FORMATS:
             raise validation_field("format", "unsupported format")
         if format_ == "GITHUB":
@@ -119,14 +121,14 @@ class EvidenceService:
                 validate_https_url(source_url)
             except ValueError:
                 raise validation_field("sourceUrl", "must be an http(s) URL without credentials")
-        if source_id is not None:
-            raise validation_field(
-                "sourceId", "stored sources are not supported by this build; pass extracted text")
+        if source_id is not None and not text:
+            text = await self._source_text(user_id, source_id)
         now = _now()
         op = ent.Operation(
             id=uuid4(), user_id=user_id, type=ent.OP_EVIDENCE_IMPORT, status="",
             pending_payload={"text": text, "sourceUrl": source_url,
-                             "contentHash": content_hash, "format": format_},
+                             "contentHash": content_hash, "format": format_,
+                             "kind": kind, "title": title},
             created_at=now, updated_at=now)
         await self._progress_import(op)
 
@@ -136,6 +138,24 @@ class EvidenceService:
 
         await self.db.run(work)
         return op
+
+    async def _source_text(self, user_id: UUID, source_id: UUID) -> str:
+        try:
+            src = await self.sources.get(user_id, source_id)
+        except NotFoundError:
+            raise validation_field("sourceId", "source not found")
+        except Exception:
+            raise internal()
+        try:
+            if src.mime_type == "application/pdf":
+                return await extract_pdf_text(src.path)
+            if src.mime_type == "text/plain":
+                with open(src.path, encoding="utf-8", errors="replace") as f:
+                    return f.read()
+        except Exception:
+            raise internal()
+        raise validation_field(
+            "sourceId", "cannot extract text from " + src.mime_type)
 
     async def _persist_import_result(self, op: ent.Operation) -> None:
         if op.status != ent.OP_SUCCEEDED or op.result is None:
