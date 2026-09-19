@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from contextvars import ContextVar
 from typing import Any, Optional, TypedDict
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from app.domain.errors import (
 )
 from app.db import NotFoundError
 from app.domain.pagination import PageRequest
+from app.infrastructure.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
 
@@ -140,6 +142,14 @@ def build_chat_graph(svc, checkpointer=None):
         sections = []
         if state.get("context_text"):
             sections.append(state["context_text"])
+        urls = find_urls(state["text"])[:2]
+        if urls:
+            pages = await asyncio.gather(
+                *(fetch_page_text(u) for u in urls),
+                return_exceptions=True)
+            for u, p in zip(urls, pages):
+                if isinstance(p, str) and p:
+                    sections.append("[웹 페이지] " + u + "\n" + p)
         try:
             hist = await svc.conversations.list_messages(
                 state["user_id"], state["conversation"].id,
