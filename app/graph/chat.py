@@ -22,6 +22,10 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _uid(v) -> UUID:
+    return v if isinstance(v, UUID) else UUID(str(v))
+
+
 def stub_reply(text: str) -> str:
     if len(text) > 80:
         text = text[:80]
@@ -59,7 +63,7 @@ def build_chat_graph(svc, checkpointer=None):
             version = None
             if document_id:
                 try:
-                    doc = await svc.documents.get(user_id, UUID(document_id))
+                    doc = await svc.documents.get(user_id, _uid(document_id))
                 except Exception:
                     raise validation_field("context.documentId", "document not found")
                 if (conv.application_id is not None
@@ -70,7 +74,7 @@ def build_chat_graph(svc, checkpointer=None):
                 if version_id:
                     try:
                         version = await svc.documents.get_version(
-                            user_id, doc.id, UUID(version_id))
+                            user_id, doc.id, _uid(version_id))
                     except Exception:
                         raise validation_field(
                             "context.versionId", "version not found in document")
@@ -87,7 +91,7 @@ def build_chat_graph(svc, checkpointer=None):
             else:
                 try:
                     version = await svc.documents.get_version_by_id(
-                        user_id, UUID(version_id))
+                        user_id, _uid(version_id))
                 except NotFoundError:
                     raise validation_field("context.versionId", "version not found")
                 except Exception:
@@ -108,7 +112,7 @@ def build_chat_graph(svc, checkpointer=None):
                 title=doc.title))
         for eid in ctx.get("evidenceIds") or []:
             try:
-                e = await svc.evidence.get(user_id, UUID(eid))
+                e = await svc.evidence.get(user_id, _uid(eid))
             except Exception:
                 raise validation_field(
                     "context.evidenceIds", "evidence " + str(eid) + " not found")
