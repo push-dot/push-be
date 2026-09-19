@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+
+from app.domain import entities as ent
+from app.domain.errors import DomainError
+from app.domain.services.ai import AIGate, AIService
+from tests.stubs import (FakeDB, StubAiKeyStore, StubAiUsageStore,
+                         StubApplicationStore, StubChatCompleter, StubCipher,
+                         StubConversationStore, StubOperationStore,
+                         StubUserStore)
+from tests.test_conversation import _conv, _svc as conv_svc
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def _managed():
+    return ent.AiOptions(provider="OPENAI", model="gpt-4o-mini",
+                         credential_mode="MANAGED", effort="LOW")
+
+
+def _user(plan="ULTRA"):
+    return ent.User(id=uuid4(), provider="dev", provider_subject="d",
+                    display_name="d", created_at=_now(), plan=plan)
+
+
+def _gate(managed_key="", cipher=None, chat=None, keys=None):
+    g = AIGate(FakeDB(), managed_key, cipher, chat)
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
+    if keys is not None:
+        g.keys = keys
+    return g
+
+
+async def test_gate_complete_managed():
+    chat = StubChatCompleter(text="hello", in_tokens=3, out_tokens=5)
+    g = _gate(managed_key="sk-managed", chat=chat)
+    c = await g.complete(uuid4(), _managed(), "sys", "hi")
+    assert c.text == "hello" and c.input_tokens == 3 and c.output_tokens == 5
+    assert chat.got == {"key": "sk-managed", "model": "gpt-4o-mini",
+                       "system": "sys", "user": "hi", "reasoning": "low"}
+
+
+async def test_gate_complete_managed_not_configured():
+    g = _gate(chat=StubChatCompleter())
+    with pytest.raises(DomainError) as e:
+        await g.complete(uuid4(), _managed(), "", "hi")
+    assert e.value.code == "NOT_CONFIGURED"
+
+
+async def test_gate_complete_byok_decrypts():
+    user_id = uuid4()
+    chat = StubChatCompleter(text="ok")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="user", ciphertext=b"1",
+                                  nonce=b"2", updated_at=_now()))
+    g = _gate(cipher=StubCipher(plaintext="sk-user"), chat=chat, keys=keys)
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="HIGH")
+    c = await g.complete(user_id, ai, "", "yo")
+    assert c.text == "ok" and chat.got["key"] == "sk-user"
+
+
+async def test_gate_complete_byok_missing_key():
+    g = _gate(cipher=StubCipher(), chat=StubChatCompleter(),
+              keys=StubAiKeyStore())
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="LOW")
+    with pytest.raises(DomainError) as e:
+        await g.complete(uuid4(), ai, "", "hi")
+    assert e.value.code == "INTEGRATION_REQUIRED"
+
+
+async def test_gate_complete_unsupported_provider():
+    user_id = uuid4()
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="CLAUDE",
+                                    last_four="k", ciphertext=b"1", nonce=b"2",
+                                    updated_at=_now()))
+    g = _gate(cipher=StubCipher(plaintext="k"), chat=StubChatCompleter(),
+              keys=keys)
+    ai = ent.AiOptions(provider="GEMINI", model="gemini-2.5-pro",
+                       credential_mode="BYOK", effort="LOW")
+    with pytest.raises(DomainError) as e:
+        await g.complete(user_id, ai, "", "hi", byok_key="sk-x")
+    assert e.value.code == "NOT_CONFIGURED"
+
+
+async def test_gate_complete_provider_failure():
+    chat = StubChatCompleter(err=RuntimeError("boom"))
+    g = _gate(managed_key="sk", chat=chat)
+    with pytest.raises(DomainError) as e:
+        await g.complete(uuid4(), _managed(), "", "hi")
+    assert e.value.code == "PROVIDER_ERROR"
+
+
+async def test_gate_routes_byok_to_byok_client():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="managed")
+    byok_chat = StubChatCompleter(text="byok")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
+    c = await g.complete(user_id, _managed(), "", "hi")
+    assert c.text == "managed" and managed_chat.got["key"] == "sk-managed"
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi")
+    assert c.text == "byok" and byok_chat.got["key"] == "sk-user"
+
+
+async def test_gate_ultra_resume_requires_ultra_plan():
+    user_id = uuid4()
+    g = _gate("sk-managed", chat=StubChatCompleter())
+    g.users = StubUserStore(ent.User(id=user_id, provider="dev",
+                                   provider_subject="d", display_name="d",
+                                   created_at=_now(), plan="FREE"))
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="LOW", ultra_resume=True)
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, ai)
+    assert e.value.code == "FEATURE_DISABLED"
+
+    g.users = StubUserStore(ent.User(id=user_id, provider="dev",
+                                   provider_subject="d", display_name="d",
+                                   created_at=_now(), plan="ULTRA"))
+    await g.check(user_id, ai)
+
+
+async def test_gate_managed_monthly_limit():
+    user_id = uuid4()
+    g = _gate("sk-managed", chat=StubChatCompleter())
+    g.users = StubUserStore(_user("FREE"))
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, _managed())
+    assert e.value.code == "FEATURE_DISABLED"
+    g.users = StubUserStore(_user("PRO"))
+    await g.check(user_id, _managed())
+    g.usage = StubAiUsageStore([
+        ent.AiUsage(id=uuid4(), user_id=user_id, provider="OPENAI",
+                    model="m", managed=True, input_tokens=1, output_tokens=1,
+                    cost_micro_credits=ent.PLAN_CREDITS_MICRO["PRO"],
+                    status="SETTLED", created_at=_now())])
+    with pytest.raises(DomainError) as e:
+        await g.check(user_id, _managed())
+    assert e.value.code == "FEATURE_DISABLED"
+
+
+async def test_gate_byok_inline_key_skips_store():
+    user_id = uuid4()
+    byok_chat = StubChatCompleter(text="byok")
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(), byok_chat)
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi", byok_key="sk-inline")
+    assert c.text == "byok"
+    assert byok_chat.got["key"] == "sk-inline"
+
+
+async def test_gate_byok_provider_routing():
+    user_id = uuid4()
+    claude = StubChatCompleter(text="claude")
+    grok = StubChatCompleter(text="grok")
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(),
+               StubChatCompleter(), grok_chat=grok, claude_chat=claude)
+    for provider, chat, model in (("CLAUDE", claude, "claude-sonnet-4"),
+                                  ("GROK", grok, "grok-4")):
+        ai = ent.AiOptions(provider=provider, model=model,
+                           credential_mode="BYOK", effort="LOW")
+        c = await g.complete(user_id, ai, "", "hi", byok_key="sk-x")
+        assert c.text == provider.lower()
+        assert chat.got["key"] == "sk-x" and chat.got["model"] == model
+
+
+async def test_gate_routes_go_model_to_go_client():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="router")
+    go_chat = StubChatCompleter(text="go")
+    g = AIGate(FakeDB(), "sk-managed", None, managed_chat, managed_chat,
+               go_chat=go_chat, go_key="sk-go")
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
+    ai = ent.AiOptions(provider="OPENAI",
+                       model="opencode-go/deepseek-v4.1-flash",
+                       credential_mode="MANAGED", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi")
+    assert c.text == "go"
+    assert go_chat.got["key"] == "sk-go"
+    assert go_chat.got["model"] == "deepseek-v4.1-flash"
+
+
+async def test_gate_go_model_requires_go_key():
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
+    ai = ent.AiOptions(provider="OPENAI",
+                       model="opencode-go/deepseek-v4.1-flash",
+                       credential_mode="MANAGED", effort="LOW")
+    with pytest.raises(DomainError) as e:
+        await g.check(uuid4(), ai)
+    assert e.value.code == "NOT_CONFIGURED"
+
+
+async def test_gate_web_search_managed_uses_online_suffix():
+    user_id = uuid4()
+    chat = StubChatCompleter(text="answer")
+    g = _gate("sk-managed", chat=chat)
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="LOW", web_search=True)
+    await g.complete(user_id, ai, "sys", "hi")
+    assert chat.got["model"] == "m:online"
+
+
+async def test_gate_reasoning_effort_managed_only():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="managed")
+    byok_chat = StubChatCompleter(text="byok")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    g.users = StubUserStore(_user())
+    g.usage = StubAiUsageStore()
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+                       effort="HIGH")
+    await g.complete(user_id, ai, "", "hi")
+    assert managed_chat.got["reasoning"] == "high"
+    ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
+                       credential_mode="BYOK", effort="HIGH")
+    await g.complete(user_id, ai, "", "hi")
+    assert byok_chat.got["reasoning"] == ""
+
+
+async def test_gate_web_search_byok_injects_managed_results():
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="search results")
+    byok_chat = StubChatCompleter(text="answer")
+    keys = StubAiKeyStore(ent.AiKey(user_id=user_id, provider="OPENAI",
+                                  last_four="k", ciphertext=b"1", nonce=b"2",
+                                  updated_at=_now()))
+    g = AIGate(FakeDB(), "sk-managed", StubCipher(plaintext="sk-user"),
+               managed_chat, byok_chat)
+    g.keys = keys
+    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="BYOK",
+                       effort="LOW", web_search=True)
+    await g.complete(user_id, ai, "sys", "hi")
+    assert managed_chat.got["model"].endswith(":online")
+    assert "search results" in byok_chat.got["system"]
+    assert byok_chat.got["model"] == "m"
+
+
+def _ai_svc(gate, ops, usage, apps):
+    svc = AIService(FakeDB(), gate)
+    svc.ops = ops
+    svc.usage = usage
+    svc.applications = apps
+    return svc
+
+
+async def test_generate_creates_operation_and_usage():
+    user_id, app_id = uuid4(), uuid4()
+    ops, usage = StubOperationStore(), StubAiUsageStore()
+    chat = StubChatCompleter(text="generated", in_tokens=10, out_tokens=20)
+    gate = _gate(managed_key="sk", chat=chat)
+    app = ent.Application(id=app_id, user_id=user_id, job_id=uuid4(),
+                          company="c", title="t", created_at=_now(),
+                          updated_at=_now())
+    svc = _ai_svc(gate, ops, usage, StubApplicationStore(app=app))
+    op = await svc.generate(user_id, _managed(), "write", app_id, [])
+    assert op.type == ent.OP_AI_GENERATE and op.status == ent.OP_SUCCEEDED
+    assert len(usage.items) == 1
+    u = usage.items[0]
+    assert (u.input_tokens == 10 and u.output_tokens == 20 and u.managed
+            and u.provider == "OPENAI" and u.status == ent.USAGE_SETTLED)
+    assert u.operation_id == op.id
+
+
+async def test_generate_bad_application():
+    svc = _ai_svc(AIGate(FakeDB(), "", None, None), StubOperationStore(),
+                  StubAiUsageStore(), StubApplicationStore())
+    with pytest.raises(DomainError) as e:
+        await svc.generate(uuid4(), _managed(), "x", uuid4(), [])
+    assert e.value.code == "NOT_FOUND"
+
+
+async def test_list_usage():
+    user_id = uuid4()
+    usage = StubAiUsageStore([
+        ent.AiUsage(id=uuid4(), user_id=user_id, provider="OPENAI",
+                    model="m", managed=True, input_tokens=1, output_tokens=1,
+                    cost_micro_credits=1, status="SETTLED",
+                    created_at=_now()),
+        ent.AiUsage(id=uuid4(), user_id=uuid4(), provider="OPENAI",
+                    model="m", managed=True, input_tokens=1, output_tokens=1,
+                    cost_micro_credits=1, status="SETTLED",
+                    created_at=_now()),
+    ])
+    svc = _ai_svc(AIGate(FakeDB(), "", None, None), StubOperationStore(),
+                  usage, StubApplicationStore())
+    p = await svc.list_usage(user_id, None, None, None)
+    assert len(p.items) == 1
+
+
+async def test_post_message_ai_completion():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    usage = StubAiUsageStore()
+    chat = StubChatCompleter(text="real answer", in_tokens=7, out_tokens=9)
+    gate = _gate(managed_key="sk", chat=chat)
+    svc = conv_svc(convs, gate=gate, usage=usage)
+    op = await svc.post_message(user_id, conv.id, "question", {},
+                                _managed(), "SUGGEST")
+    assert len(convs.messages) == 2
+    assert convs.messages[1].text == "real answer"
+    assert len(usage.items) == 1 and usage.items[0].operation_id == op.id
+
+
+async def test_post_message_no_ai_keeps_stub():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    chat = StubChatCompleter(text="should not be used")
+    svc = conv_svc(convs, gate=_gate(managed_key="sk", chat=chat))
+    await svc.post_message(user_id, conv.id, "hi", {}, None, "SUGGEST")
+    assert convs.messages[1].text != "should not be used"
