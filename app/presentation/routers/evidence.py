@@ -5,7 +5,8 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Request, UploadFile
+from fastapi import APIRouter, Request
+from starlette.datastructures import UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.domain import entities as ent
