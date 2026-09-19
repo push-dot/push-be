@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from app.db import unique_violation
+from app.db import NotFoundError, unique_violation
 from app.domain.entities import (
     AccessToken, ExchangeCode, IdempotencyRecord, OAuthState, RefreshToken, User,
 )
@@ -78,7 +78,6 @@ class SessionStore(Store):
         tag = await self.q().execute(
             "UPDATE exchange_codes SET used_at = $2 WHERE code = $1 AND used_at IS NULL", code, at)
         if tag.split()[-1] == "0":
-            from app.db import NotFoundError
             raise NotFoundError()
 
     async def save_access_token(self, t: AccessToken) -> None:
@@ -103,15 +102,25 @@ class SessionStore(Store):
             "SELECT id, user_id, token_hash, expires_at, revoked_at, created_at "
             "FROM refresh_tokens WHERE token_hash = $1", token_hash))
 
-    async def revoke_refresh_token(self, id_: UUID, at: datetime) -> None:
-        await self.q().execute(
+    async def revoke_refresh_token(self, id_: UUID, at: datetime) -> bool:
+        tag = await self.q().execute(
             "UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL",
             id_, at)
+        return tag.split()[-1] != "0"
 
     async def revoke_access_tokens_for_refresh(self, refresh_id: UUID, at: datetime) -> None:
         await self.q().execute(
             "UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id = $1",
             refresh_id, at)
+
+    async def revoke_all_sessions(self, user_id: UUID, at: datetime) -> None:
+        await self.q().execute(
+            "UPDATE refresh_tokens SET revoked_at = $2 "
+            "WHERE user_id = $1 AND revoked_at IS NULL",
+            user_id, at)
+        await self.q().execute(
+            "UPDATE access_tokens SET expires_at = $2 WHERE user_id = $1",
+            user_id, at)
 
 
 class IdempotencyStore(Store):

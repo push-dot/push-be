@@ -4,7 +4,7 @@ from typing import Optional
 from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
-from app.db import DB, NotFoundError
+from app.db import DB, NotFoundError, unique_violation
 from app.domain import entities as ent
 from app.domain.errors import (
     not_configured, not_found, provider_error,
@@ -32,13 +32,17 @@ class AuthService:
         self.dev_user_id = dev_user_id
         self.allowed_uris = {ent.AUTH_CALLBACK_URI, ent.AUTH_CALLBACK_WEB_URI}
 
-    async def start_oauth(self, provider: str, code_challenge: str, method: str,
-                          redirect_uri: str, provider_callback_url: str) -> tuple[str, str, datetime]:
+    def _provider_cfg(self, provider: str):
         if not ent.valid_oauth_provider(provider):
             raise not_found()
         cfg = self.providers.get(provider)
         if cfg is None or not cfg.client_id or not cfg.client_secret:
             raise not_configured(f"oauth provider {provider} is not configured")
+        return cfg
+
+    async def start_oauth(self, provider: str, code_challenge: str, method: str,
+                          redirect_uri: str, provider_callback_url: str) -> tuple[str, str, datetime]:
+        cfg = self._provider_cfg(provider)
         if method != "S256":
             raise validation_field("codeChallengeMethod", "must be S256")
         if not code_challenge:
@@ -61,11 +65,7 @@ class AuthService:
         return cfg.auth_url + "?" + urlencode(q), state, rec.expires_at
 
     async def handle_callback(self, provider: str, code: str, state: str) -> str:
-        if not ent.valid_oauth_provider(provider):
-            raise not_found()
-        cfg = self.providers.get(provider)
-        if cfg is None or not cfg.client_id:
-            raise not_configured(f"oauth provider {provider} is not configured")
+        cfg = self._provider_cfg(provider)
         try:
             rec = await self.sessions.get_oauth_state(state)
         except NotFoundError:
@@ -87,12 +87,7 @@ class AuthService:
 
         async def work():
             nonlocal exchange_code
-            try:
-                user = await self.users.get_by_provider(provider, subject)
-            except NotFoundError:
-                user = ent.User(id=uuid4(), provider=provider, provider_subject=subject,
-                                display_name=display_name, locale="ko", created_at=now)
-                await self.users.create(user)
+            user = await self._upsert_user(provider, subject, display_name, now)
             exchange_code = random_token()
             await self.sessions.save_exchange_code(ent.ExchangeCode(
                 code=exchange_code, user_id=user.id, code_challenge=rec.code_challenge,
@@ -100,6 +95,22 @@ class AuthService:
 
         await self.db.run(work)
         return (rec.final_uri or ent.AUTH_CALLBACK_URI) + "?code=" + quote(exchange_code)
+
+    async def _upsert_user(self, provider: str, subject: str, display_name: str,
+                           now: datetime) -> ent.User:
+        try:
+            return await self.users.get_by_provider(provider, subject)
+        except NotFoundError:
+            pass
+        user = ent.User(id=uuid4(), provider=provider, provider_subject=subject,
+                        display_name=display_name, locale="ko", created_at=now)
+        try:
+            await self.users.create(user)
+            return user
+        except Exception as err:
+            if not unique_violation(err):
+                raise
+            return await self.users.get_by_provider(provider, subject)
 
     async def _issue_session(self, user_id: UUID, now: datetime) -> ent.Session:
         access, refresh = random_token(), random_token()
@@ -131,7 +142,10 @@ class AuthService:
 
         async def work():
             nonlocal session
-            await self.sessions.mark_exchange_code_used(code, now)
+            try:
+                await self.sessions.mark_exchange_code_used(code, now)
+            except NotFoundError:
+                raise unauthenticated("code expired or already used")
             session = await self._issue_session(rec.user_id, now)
 
         await self.db.run(work)
@@ -144,20 +158,30 @@ class AuthService:
             raise unauthenticated("invalid refresh token")
         now = _now()
         if rec.revoked_at is not None:
+            await self._revoke_all_sessions(rec.user_id, now)
             raise unauthenticated("refresh token revoked")
         if now > rec.expires_at:
             raise token_expired()
 
         session: Optional[ent.Session] = None
+        reused = False
 
         async def work():
-            nonlocal session
-            await self.sessions.revoke_refresh_token(rec.id, now)
+            nonlocal session, reused
+            if not await self.sessions.revoke_refresh_token(rec.id, now):
+                reused = True
+                return
             await self.sessions.revoke_access_tokens_for_refresh(rec.id, now)
             session = await self._issue_session(rec.user_id, now)
 
         await self.db.run(work)
+        if reused:
+            await self._revoke_all_sessions(rec.user_id, now)
+            raise unauthenticated("refresh token revoked")
         return session
+
+    async def _revoke_all_sessions(self, user_id: UUID, now: datetime) -> None:
+        await self.db.run(lambda: self.sessions.revoke_all_sessions(user_id, now))
 
     async def logout(self, refresh_token: str) -> None:
         if not refresh_token:
@@ -167,8 +191,12 @@ class AuthService:
         except Exception:
             return
         now = _now()
-        await self.sessions.revoke_refresh_token(rec.id, now)
-        await self.sessions.revoke_access_tokens_for_refresh(rec.id, now)
+
+        async def work():
+            await self.sessions.revoke_refresh_token(rec.id, now)
+            await self.sessions.revoke_access_tokens_for_refresh(rec.id, now)
+
+        await self.db.run(work)
 
     async def resolve_access_token(self, token: str) -> ent.User:
         if self.app_env == "development" and self.dev_token and token == self.dev_token:
