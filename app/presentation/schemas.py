@@ -403,3 +403,7 @@ class PostMessageReq(Req):
     context: Optional[MessageContextReq] = None
     ai: Optional[AiOptionsReq] = None
     access_mode: str = ""
+
+
+class ExperimentEventReq(Req):
+    event: str

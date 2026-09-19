@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import os
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -6,6 +7,17 @@ from uuid import UUID
 
 def env(key: str, default: str = "") -> str:
     return os.environ.get(key) or default
+
+
+def env_json(key: str) -> list:
+    raw = env(key)
+    if not raw:
+        return []
+    try:
+        out = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return out if isinstance(out, list) else []
 
 
 @dataclass
@@ -38,6 +50,7 @@ class Config:
     storage_dir: str = "./data/sources"
     gmail_beta: bool = False
     job_site_adapters: dict = field(default_factory=dict)
+    experiments: list = field(default_factory=list)
 
 
 def load_config() -> Config:
@@ -76,4 +89,5 @@ def load_config() -> Config:
         storage_dir=env("STORAGE_DIR", "./data/sources"),
         gmail_beta=os.environ.get("GOOGLE_GMAIL_BETA_ENABLED") == "true",
         job_site_adapters={},
+        experiments=env_json("EXPERIMENTS"),
     )

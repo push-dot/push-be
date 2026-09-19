@@ -31,6 +31,7 @@ from app.domain.services.calendar import CalendarService
 from app.domain.services.conversation import ConversationService
 from app.domain.services.document import DocumentService
 from app.domain.services.evidence import EvidenceService
+from app.domain.services.experiment import ExperimentService
 from app.domain.services.google import GoogleService
 from app.domain.services.resume_workflow import ResumeWorkflowService
 from app.domain.services.interview import InterviewService
@@ -44,7 +45,8 @@ from app.presentation.errors import (
 from app.presentation.middleware import ApiMiddleware
 from app.presentation.routers import (
     ai, applications, approvals, auth, billing, calendar, conversations,
-    documents, evidence, integrations, interviews, jobs, operations, projects,
+    documents, evidence, experiments, integrations, interviews, jobs,
+    operations, projects,
 )
 
 
@@ -76,6 +78,7 @@ class Deps:
     ai: AIService
     google: GoogleService
     billing: BillingService
+    experiments: ExperimentService
     sources: SourceStore
     ai_keys: AiKeyStore
     idem: IdempotencyStore
@@ -146,6 +149,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             {"PRO": cfg.stripe_price_pro, "ULTRA": cfg.stripe_price_ultra},
             cfg.stripe_success_url, cfg.stripe_cancel_url,
             cfg.stripe_portal_url, cfg.stripe_webhook_secret)
+        experiments_svc = ExperimentService(db)
+        await experiments_svc.seed(cfg.experiments)
 
         saver_ctx = AsyncPostgresSaver.from_conn_string(cfg.database_url)
         saver = await saver_ctx.__aenter__()
@@ -169,7 +174,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 conversations=conversations, resume_workflow=resume_workflow,
                 approvals=approvals,
                 operations=operations, ai=ai_svc, google=google,
-                billing=billing, sources=SourceStore(db),
+                billing=billing, experiments=experiments_svc,
+                sources=SourceStore(db),
                 ai_keys=AiKeyStore(db), idem=IdempotencyStore(db), cfg=view,
                 storage_dir=cfg.storage_dir,
                 master_key=cfg.byok_master_key)
@@ -212,7 +218,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               documents.router, projects.router, interviews.router,
               conversations.router, calendar.router, approvals.router,
               operations.router, integrations.router, ai.router,
-              billing.router):
+              billing.router, experiments.router):
         app.include_router(r, prefix="/api/v1")
 
     app.get("/healthz")(_healthz)
