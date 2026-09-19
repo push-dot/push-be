@@ -206,6 +206,10 @@ class StubAiUsageStore:
     async def create(self, u):
         self.items.append(u)
 
+    async def sum_cost_since(self, user_id: UUID, since):
+        return sum(u.cost_micro_credits for u in self.items
+                   if u.user_id == user_id and u.managed)
+
     async def list(self, user_id: UUID, from_, to, page):
         from app.domain.pagination import new_page
         items = [u for u in self.items if u.user_id == user_id]
