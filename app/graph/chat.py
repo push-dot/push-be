@@ -12,6 +12,7 @@ from app.domain.errors import (
     invalid_transition, not_found, validation_field,
 )
 from app.db import NotFoundError
+from app.domain.pagination import PageRequest
 from app.jsonutil import to_jsonable
 
 
@@ -41,6 +42,7 @@ class ChatState(TypedDict, total=False):
     access_mode: str
     conversation: Any
     attachments: list
+    context_text: str
     completion: Any
     operation: Any
 
@@ -56,6 +58,7 @@ def build_chat_graph(svc, checkpointer=None):
             raise invalid_transition("conversation is archived")
         ctx = state.get("context") or {}
         attachments = []
+        context_parts = []
         document_id = ctx.get("documentId")
         version_id = ctx.get("versionId")
         if document_id or version_id:
@@ -110,6 +113,9 @@ def build_chat_graph(svc, checkpointer=None):
             attachments.append(ent.MessageAttachment(
                 type="DOCUMENT_VERSION", id=version.id, document_id=doc.id,
                 title=doc.title))
+            context_parts.append(
+                "[첨부 문서] " + doc.title + "\n"
+                + "\n".join(b.text for b in version.blocks))
         for eid in ctx.get("evidenceIds") or []:
             try:
                 e = await svc.evidence.get(user_id, _uid(eid))
@@ -118,7 +124,10 @@ def build_chat_graph(svc, checkpointer=None):
                     "context.evidenceIds", "evidence " + str(eid) + " not found")
             attachments.append(ent.MessageAttachment(
                 type="EVIDENCE", id=e.id, title=e.title))
-        return {"conversation": conv, "attachments": attachments}
+            context_parts.append(
+                "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
+        return {"conversation": conv, "attachments": attachments,
+                "context_text": "\n\n".join(context_parts)}
 
     async def generate_reply(state: ChatState) -> dict:
         writer = get_stream_writer()
@@ -128,9 +137,23 @@ def build_chat_graph(svc, checkpointer=None):
             return {"completion": None}
         opts = ent.AiOptions(**ai)
         usage = {"input_tokens": 0, "output_tokens": 0}
+        sections = []
+        if state.get("context_text"):
+            sections.append(state["context_text"])
+        try:
+            hist = await svc.conversations.list_messages(
+                user_id, state["conversation"].id, PageRequest(limit=12))
+            if hist.items:
+                lines = [m.role + ": " + m.text
+                         for m in reversed(hist.items)]
+                sections.append("[이전 대화]\n" + "\n".join(lines))
+        except Exception:
+            pass
+        sections.append("[현재 메시지]\n" + state["text"])
+        user_msg = "\n\n".join(sections)
         parts = []
         async for tok in svc.ai.stream(
-                state["user_id"], opts, "", state["text"], usage,
+                state["user_id"], opts, "", user_msg, usage,
                 byok_key=byok_key_var.get()):
             parts.append(tok)
             writer({"token": tok})
