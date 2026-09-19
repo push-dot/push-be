@@ -185,7 +185,10 @@ def build_chat_graph(svc, checkpointer=None):
             sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
-        resume_flow = wants_resume_flow(state["text"], "\n".join(hist_lines))
+        attach_titles = " ".join(
+            a.title for a in state.get("attachments") or [] if a.title)
+        resume_flow = wants_resume_flow(
+            state["text"] + " " + attach_titles, "\n".join(hist_lines))
         system = resume_system_prompt() if resume_flow else ""
         parts = []
         async for tok in svc.ai.stream(

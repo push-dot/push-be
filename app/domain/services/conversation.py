@@ -164,6 +164,7 @@ class ConversationService:
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            "operation": None,
         }
 
     async def stream_message(self, user_id: UUID, conversation_id: UUID,
