@@ -112,7 +112,7 @@ class AIGate:
             raise integration_required("BYOK key could not be decrypted")
 
     async def _search_context(self, ai: ent.AiOptions, user: str) -> str:
-        if not ai.web_search or ai.credential_mode == "MANAGED":
+        if not ai.web_search:
             return ""
         if not self.managed_key or self.chat is None:
             raise not_configured("web search is not configured")
