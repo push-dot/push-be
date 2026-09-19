@@ -159,13 +159,14 @@ class AIGate:
 
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str,
-                       byok_key: str = "") -> ent.AICompletion:
+                       byok_key: str = "",
+                       search_query: str = "") -> ent.AICompletion:
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(ai, user)
+        system += await self._search_context(ai, search_query or user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         try:
@@ -176,13 +177,13 @@ class AIGate:
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
-                     byok_key: str = ""):
+                     byok_key: str = "", search_query: str = ""):
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(ai, user)
+        system += await self._search_context(ai, search_query or user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         try:
