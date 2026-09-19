@@ -36,6 +36,27 @@ def _html_to_text(html: str) -> str:
     return t[:_MAX_TEXT]
 
 
+_MIN_TEXT = 1500
+
+
+async def _render_text(url: str) -> str:
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        try:
+            page = await browser.new_page(
+                user_agent=_UA, locale="ko-KR")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            text = await page.evaluate("document.body.innerText")
+            return _WS_RE.sub(" ", text or "").strip()[:_MAX_TEXT]
+        finally:
+            await browser.close()
+
+
 async def fetch_page_text(url: str) -> str:
     validate_https_url(url)
     async with httpx.AsyncClient(
@@ -54,4 +75,11 @@ async def fetch_page_text(url: str) -> str:
                     break
     if "text/plain" in ct:
         return bytes(buf).decode("utf-8", errors="replace")[:_MAX_TEXT]
-    return _html_to_text(bytes(buf).decode("utf-8", errors="replace"))
+    text = _html_to_text(bytes(buf).decode("utf-8", errors="replace"))
+    if len(text) >= _MIN_TEXT:
+        return text
+    try:
+        rendered = await _render_text(url)
+        return rendered if len(rendered) > len(text) else text
+    except Exception:
+        return text
