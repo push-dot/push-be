@@ -83,6 +83,8 @@ async def post_message_stream(id: str, request: Request):
                     user_id, conversation_id, req.text, context, _ai(req.ai),
                     req.access_mode,
                     request.headers.get("x-byok-key", "")):
+                if await request.is_disconnected():
+                    break
                 if kind == "token":
                     yield "data: " + json.dumps(
                         {"type": "token", "text": payload}) + "\n\n"
