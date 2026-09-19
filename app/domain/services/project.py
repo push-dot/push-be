@@ -147,7 +147,7 @@ class ProjectService:
                 created_at=now, updated_at=now)
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op
 
     async def select(self, user_id: UUID, id_: UUID,
@@ -176,7 +176,7 @@ class ProjectService:
             manifest["blueprintRevision"] = b.revision
             out = b
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out, manifest
 
     async def list_runs(self, user_id: UUID, project_id: UUID, page):
@@ -236,7 +236,7 @@ class ProjectService:
                     raise map_revision_err(err)
             out = r
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def start_run(self, user_id: UUID, project_id: UUID, run_id: UUID,
@@ -276,7 +276,7 @@ class ProjectService:
             r.revision = expected + 1
             out = r
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def report_launch(self, user_id: UUID, project_id: UUID, run_id: UUID,
@@ -314,7 +314,7 @@ class ProjectService:
             r.revision = expected + 1
             out = r
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def recover(self, user_id: UUID, project_id: UUID, run_id: UUID,
@@ -357,7 +357,7 @@ class ProjectService:
             r.revision = expected + 1
             out = r
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def report_result(self, user_id: UUID, project_id: UUID, run_id: UUID,
@@ -394,7 +394,7 @@ class ProjectService:
             r.revision = expected + 1
             out = r
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def create_evidence(self, user_id: UUID, project_id: UUID, run_id: UUID,
@@ -432,7 +432,7 @@ class ProjectService:
             await self.projects.create_evidence(e)
             out = e
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def list_evidence(self, user_id: UUID, project_id: UUID, page):
@@ -477,5 +477,5 @@ class ProjectService:
                 pass
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op

@@ -11,6 +11,9 @@ class FakeDB:
     async def do(self, fn):
         return await fn()
 
+    async def run(self, fn):
+        return await fn()
+
     def q(self):
         raise NotImplementedError
 
@@ -144,20 +147,22 @@ class StubChatCompleter:
         self.tokens = tokens if tokens is not None else [text]
         self.got = {}
 
-    async def chat(self, api_key: str, model: str, system: str, user: str):
+    async def chat(self, api_key: str, model: str, system: str, user: str,
+                   reasoning: str = "", extra_headers=None):
         if self.err is not None:
             raise self.err
         self.got = {"key": api_key, "model": model, "system": system,
-                    "user": user}
+                    "user": user, "reasoning": reasoning}
         return ent.AICompletion(text=self.text, input_tokens=self.in_tokens,
                                 output_tokens=self.out_tokens)
 
     async def chat_stream(self, api_key: str, model: str, system: str,
-                          user: str, usage: dict):
+                          user: str, usage: dict, reasoning: str = "",
+                          extra_headers=None):
         if self.err is not None:
             raise self.err
         self.got = {"key": api_key, "model": model, "system": system,
-                    "user": user}
+                    "user": user, "reasoning": reasoning}
         for tok in self.tokens:
             yield tok
         usage["input_tokens"] = self.in_tokens

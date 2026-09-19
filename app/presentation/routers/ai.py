@@ -11,7 +11,7 @@ from app.domain.errors import (
 )
 from app.infrastructure.crypto import new_key_cipher
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, optional_query_time, page_body,
     page_request,
 )
@@ -20,13 +20,11 @@ from app.presentation.routers.jobs import _ai
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 @router.get("/ai/models")
 async def ai_models(request: Request):
-    d = _deps(request)
+    d = deps(request)
     provider = request.query_params.get("provider", "")
     cred_mode = request.query_params.get("credentialMode", "")
     if provider and not ent.valid_ai_provider(provider):
@@ -44,9 +42,11 @@ async def ai_models(request: Request):
     for m in ent.OPENAI_MODELS:
         if provider and provider != m.provider:
             continue
-        available = d.cfg.managed_ai or byok_openai
+        managed_ok = d.cfg.managed_go if m.model.startswith("opencode-go/") \
+            else d.cfg.managed_ai
+        available = managed_ok or byok_openai
         if cred_mode == "MANAGED":
-            available = d.cfg.managed_ai
+            available = managed_ok
         elif cred_mode == "BYOK":
             available = byok_openai
         models.append({"provider": m.provider, "model": m.model,
@@ -62,7 +62,7 @@ def _key_dto(k: ent.AiKey) -> dict:
 
 @router.get("/ai/keys")
 async def ai_keys_list(request: Request):
-    d = _deps(request)
+    d = deps(request)
     try:
         keys = await d.ai_keys.list(current_user(request).id)
     except Exception:
@@ -72,7 +72,7 @@ async def ai_keys_list(request: Request):
 
 @router.put("/ai/keys/{provider}")
 async def ai_key_put(provider: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not ent.valid_ai_provider(provider):
         raise validation_field("provider", "unsupported provider")
     if not d.cfg.byok_enabled:
@@ -100,7 +100,7 @@ async def ai_key_put(provider: str, request: Request):
 
 @router.delete("/ai/keys/{provider}", status_code=204)
 async def ai_key_delete(provider: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not ent.valid_ai_provider(provider):
         raise validation_field("provider", "unsupported provider")
     try:
@@ -112,7 +112,7 @@ async def ai_key_delete(provider: str, request: Request):
 
 @router.post("/ai/keys/{provider}/test")
 async def ai_key_test(provider: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not ent.valid_ai_provider(provider):
         raise validation_field("provider", "unsupported provider")
     now = datetime.now(timezone.utc)
@@ -127,7 +127,7 @@ async def ai_key_test(provider: str, request: Request):
 
 @router.post("/ai/generate", status_code=202)
 async def ai_generate(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.AiGenerateReq)
     op = await d.ai.generate(current_user(request).id, _ai(req.ai),
                              req.prompt, req.application_id,
@@ -137,7 +137,7 @@ async def ai_generate(request: Request):
 
 @router.get("/ai/usage")
 async def ai_usage(request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.ai.list_usage(current_user(request).id,
                               optional_query_time(request, "from"),
                               optional_query_time(request, "to"),

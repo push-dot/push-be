@@ -100,5 +100,5 @@ class ResumeWorkflowService:
         async def work():
             await self.ops.create(op)
 
-        await self.db.do(work)
+        await self.db.run(work)
         return op

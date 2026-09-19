@@ -52,6 +52,7 @@ class ConfigView:
     google_configured: bool = False
     gmail_beta: bool = False
     managed_ai: bool = False
+    managed_go: bool = False
     byok_enabled: bool = False
     stripe_configured: bool = False
     job_site_adapters: dict = field(default_factory=dict)
@@ -110,12 +111,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         oauth = OAuthClient()
         openai = OpenAIClient(base_url=cfg.ai_base_url)
         openai_byok = OpenAIClient()
+        openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stripe = StripeClient(cfg.stripe_secret)
         managed_ai = bool(cfg.managed_ai_key)
         byok_enabled = cipher is not None
 
-        gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok)
+        gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
+                      go_chat=openai_go, go_key=cfg.opencode_go_key)
         auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                             cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
@@ -149,6 +152,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 google_configured=bool(cfg.google.client_id
                                        and cfg.google.client_secret),
                 gmail_beta=cfg.gmail_beta, managed_ai=managed_ai,
+                managed_go=bool(cfg.opencode_go_key),
                 byok_enabled=byok_enabled,
                 stripe_configured=bool(cfg.stripe_secret),
                 job_site_adapters=cfg.job_site_adapters)
@@ -170,6 +174,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await oauth.aclose()
             await openai.aclose()
             await openai_byok.aclose()
+            await openai_go.aclose()
             await gapi.aclose()
             await stripe.aclose()
             await pool.close()
@@ -188,7 +193,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "tauri://localhost", "http://tauri.localhost",
             "https://tauri.localhost"],
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
-                       "Idempotency-Key", "X-Request-Id"],
+                       "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
     app.add_middleware(BodyLimitMiddleware, limit=1 << 20)
     app.add_middleware(RequestIDMiddleware)

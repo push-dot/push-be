@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 from fastapi import Request
@@ -10,6 +11,8 @@ from starlette.exceptions import HTTPException
 from starlette.types import Message, Receive, Scope, Send
 
 from app.domain.errors import DomainError
+
+logger = logging.getLogger(__name__)
 
 
 def error_body(code: str, message: str, request_id: str,
@@ -53,6 +56,8 @@ async def http_error_handler(request: Request, exc: HTTPException):
 
 
 async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.exception("unhandled error rid=%s %s %s",
+                     request_id_of(request), request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content=error_body("INTERNAL", "internal error",

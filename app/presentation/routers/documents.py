@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from app.domain import entities as ent
 from app.domain.errors import validation_field
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, optional_query_uuid, page_body,
     page_request, param_id,
 )
@@ -13,8 +13,6 @@ from app.presentation.deps import (
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
@@ -28,7 +26,7 @@ def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
 
 @router.get("/documents")
 async def list_documents(request: Request):
-    d = _deps(request)
+    d = deps(request)
     page = page_request(request)
     application_id = optional_query_uuid(request, "applicationId")
     kind = request.query_params.get("kind") or None
@@ -41,7 +39,7 @@ async def list_documents(request: Request):
 
 @router.post("/documents", status_code=201)
 async def create_document(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateDocumentReq)
     doc = await d.documents.create(current_user(request).id,
                                    req.application_id, req.title, req.kind,
@@ -51,14 +49,14 @@ async def create_document(request: Request):
 
 @router.get("/documents/{id}")
 async def get_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     doc = await d.documents.get(current_user(request).id, param_id(id, "id"))
     return data(200, doc)
 
 
 @router.patch("/documents/{id}")
 async def patch_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.PatchDocumentReq)
     doc = await d.documents.patch(current_user(request).id, param_id(id, "id"),
                                   req.expected_revision, req.title,
@@ -68,7 +66,7 @@ async def patch_document(id: str, request: Request):
 
 @router.get("/documents/{id}/versions")
 async def list_versions(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.documents.list_versions(current_user(request).id,
                                         param_id(id, "id"),
                                         page_request(request))
@@ -77,7 +75,7 @@ async def list_versions(id: str, request: Request):
 
 @router.get("/documents/{id}/versions/{versionId}")
 async def get_version(id: str, versionId: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     v = await d.documents.get_version(current_user(request).id,
                                       param_id(id, "id"),
                                       param_id(versionId, "versionId"))
@@ -86,7 +84,7 @@ async def get_version(id: str, versionId: str, request: Request):
 
 @router.post("/documents/{id}/versions", status_code=201)
 async def create_version(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateVersionReq)
     blocks = [ent.Block(id=b.id, text=b.text,
                         evidence_refs=[ent.EvidenceRef(
@@ -101,7 +99,7 @@ async def create_version(id: str, request: Request):
 
 @router.post("/documents/{id}/generate", status_code=202)
 async def generate_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.GenerateDocReq)
     op = await d.documents.generate(current_user(request).id,
                                     param_id(id, "id"), req.expected_revision,
@@ -112,7 +110,7 @@ async def generate_document(id: str, request: Request):
 
 @router.post("/documents/{id}/revisions", status_code=202)
 async def create_revision(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ReviseReq)
     sel = ent.Selection(from_=req.selection.from_, to=req.selection.to,
                         text=req.selection.text)
@@ -124,7 +122,7 @@ async def create_revision(id: str, request: Request):
 
 @router.post("/documents/{id}/revisions/{revisionId}/apply")
 async def apply_revision(id: str, revisionId: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ExpectedRevisionReq)
     doc, v = await d.documents.apply_revision(
         current_user(request).id, param_id(id, "id"),
@@ -134,7 +132,7 @@ async def apply_revision(id: str, revisionId: str, request: Request):
 
 @router.post("/documents/{id}/review")
 async def review_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ReviewReq)
     v = await d.documents.review(current_user(request).id, param_id(id, "id"),
                                  req.version_id)
@@ -143,7 +141,7 @@ async def review_document(id: str, request: Request):
 
 @router.post("/documents/{id}/finalize")
 async def finalize_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.FinalizeReq)
     doc = await d.documents.finalize(current_user(request).id,
                                      param_id(id, "id"),
@@ -154,7 +152,7 @@ async def finalize_document(id: str, request: Request):
 
 @router.post("/documents/{id}/archive")
 async def archive_document(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ExpectedRevisionReq)
     doc = await d.documents.archive(current_user(request).id,
                                     param_id(id, "id"),
@@ -164,7 +162,7 @@ async def archive_document(id: str, request: Request):
 
 @router.post("/documents/{id}/exports", status_code=201)
 async def create_export(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateExportReq)
     e = await d.documents.create_export(current_user(request).id,
                                         param_id(id, "id"), req.version_id,
@@ -174,7 +172,7 @@ async def create_export(id: str, request: Request):
 
 @router.post("/documents/{id}/exports/{exportId}/result")
 async def record_export_result(id: str, exportId: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ExportResultReq)
     e = await d.documents.record_export_result(
         current_user(request).id, param_id(id, "id"),
@@ -189,7 +187,7 @@ async def record_export_result(id: str, exportId: str, request: Request):
 
 @router.get("/documents/{id}/exports")
 async def list_exports(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.documents.list_exports(current_user(request).id,
                                        param_id(id, "id"),
                                        page_request(request))

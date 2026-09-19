@@ -8,25 +8,23 @@ from fastapi.responses import StreamingResponse
 from app.domain import entities as ent
 from app.jsonutil import to_jsonable
 from app.presentation import schemas as s
-from app.presentation.deps import bind_json, current_user, data, param_id
+from app.presentation.deps import deps, bind_json, current_user, data, param_id
 
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 @router.get("/operations/{id}")
 async def get_operation(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     op = await d.operations.get(current_user(request).id, param_id(id, "id"))
     return data(200, op)
 
 
 @router.post("/operations/{id}/input")
 async def operation_input(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.OpInputReq)
     op = await d.operations.submit_input(current_user(request).id,
                                          param_id(id, "id"), req.fields,
@@ -36,7 +34,7 @@ async def operation_input(id: str, request: Request):
 
 @router.post("/operations/{id}/cancel")
 async def cancel_operation(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     op = await d.operations.cancel(current_user(request).id,
                                    param_id(id, "id"))
     return data(200, op)
@@ -44,7 +42,7 @@ async def cancel_operation(id: str, request: Request):
 
 @router.get("/operations/{id}/events")
 async def operation_events(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     op = await d.operations.get(current_user(request).id, param_id(id, "id"))
     seq = 0
 

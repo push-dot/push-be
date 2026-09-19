@@ -175,7 +175,7 @@ class ApprovalService:
             a.revision = expected + 1
             out = a
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def consume(self, user_id: UUID, approval_id: UUID, kind: str,

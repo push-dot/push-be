@@ -10,7 +10,7 @@ from app.domain.errors import (
 )
 from app.domain.services.ai import AIGate
 from app.domain.validators import code_point_len
-from app.graph.chat import build_chat_graph
+from app.graph.chat import build_chat_graph, byok_key_var as _BYOK_KEY
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_conversations import ConversationStore
@@ -97,7 +97,7 @@ class ConversationService:
             v.revision = expected + 1
             out = v
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def archive(self, user_id: UUID, id_: UUID,
@@ -121,7 +121,7 @@ class ConversationService:
             v.revision = expected + 1
             out = v
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def list_messages(self, user_id: UUID, conversation_id: UUID, page):
@@ -133,13 +133,18 @@ class ConversationService:
 
     async def post_message(self, user_id: UUID, conversation_id: UUID, text: str,
                            context: dict, ai: Optional[ent.AiOptions],
-                           access_mode: str) -> ent.Operation:
+                           access_mode: str,
+                           byok_key: str = "") -> ent.Operation:
         self._validate_message(text, access_mode)
-        result = await self.graph.ainvoke(
-            self._chat_input(user_id, conversation_id, text, context, ai,
-                             access_mode),
-            config={"configurable": {"thread_id": str(conversation_id)}},
-        )
+        token = _BYOK_KEY.set(byok_key)
+        try:
+            result = await self.graph.ainvoke(
+                self._chat_input(user_id, conversation_id, text, context, ai,
+                                 access_mode),
+                config={"configurable": {"thread_id": str(conversation_id)}},
+            )
+        finally:
+            _BYOK_KEY.reset(token)
         return result["operation"]
 
     def _validate_message(self, text: str, access_mode: str) -> None:
@@ -163,14 +168,19 @@ class ConversationService:
 
     async def stream_message(self, user_id: UUID, conversation_id: UUID,
                              text: str, context: dict,
-                             ai: Optional[ent.AiOptions], access_mode: str):
+                             ai: Optional[ent.AiOptions], access_mode: str,
+                             byok_key: str = ""):
         self._validate_message(text, access_mode)
-        async for mode, chunk in self.graph.astream(
-                self._chat_input(user_id, conversation_id, text, context, ai,
-                                 access_mode),
-                config={"configurable": {"thread_id": str(conversation_id)}},
-                stream_mode=["custom", "values"]):
-            if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
-                yield ("token", chunk["token"])
-            elif mode == "values" and chunk.get("operation") is not None:
-                yield ("done", chunk["operation"])
+        token = _BYOK_KEY.set(byok_key)
+        try:
+            async for mode, chunk in self.graph.astream(
+                    self._chat_input(user_id, conversation_id, text, context,
+                                     ai, access_mode),
+                    config={"configurable": {"thread_id": str(conversation_id)}},
+                    stream_mode=["custom", "values"]):
+                if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
+                    yield ("token", chunk["token"])
+                elif mode == "values" and chunk.get("operation") is not None:
+                    yield ("done", chunk["operation"])
+        finally:
+            _BYOK_KEY.reset(token)

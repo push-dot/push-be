@@ -10,6 +10,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
+from app.graph.chat import byok_key_var
 from app.presentation.errors import error_body
 
 _PUBLIC_EXACT = {
@@ -62,8 +63,11 @@ class ApiMiddleware:
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         scope.setdefault("state", {})["user"] = user
+        byok_key_var.set(
+            headers.get(b"x-byok-key", b"").decode(errors="replace"))
 
-        if scope["method"] != "POST" or path in _IDEMPOTENCY_EXEMPT:
+        if (scope["method"] != "POST" or path in _IDEMPOTENCY_EXEMPT
+                or path.endswith("/stream")):
             await self.app(scope, receive, send)
             return
         await self._idempotent(scope, receive, send, user, path, rid)

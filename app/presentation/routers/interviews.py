@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 from app.domain import entities as ent
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, optional_query_time, optional_query_uuid,
     page_body, page_request, param_id, parse_time_field,
 )
@@ -13,8 +13,6 @@ from app.presentation.routers.jobs import _ai
 router = APIRouter()
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 def _company_sources(items: list[s.CompanySourceReq] | None):
@@ -29,7 +27,7 @@ def _company_sources(items: list[s.CompanySourceReq] | None):
 
 @router.get("/interviews")
 async def list_interviews(request: Request):
-    d = _deps(request)
+    d = deps(request)
     p = await d.interviews.list(
         current_user(request).id,
         optional_query_uuid(request, "applicationId"),
@@ -40,7 +38,7 @@ async def list_interviews(request: Request):
 
 @router.post("/interviews", status_code=201)
 async def create_interview(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateInterviewReq)
     v = await d.interviews.create(
         current_user(request).id, req.application_id, req.title,
@@ -53,14 +51,14 @@ async def create_interview(request: Request):
 
 @router.get("/interviews/{id}")
 async def get_interview(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     v = await d.interviews.get(current_user(request).id, param_id(id, "id"))
     return data(200, v)
 
 
 @router.patch("/interviews/{id}")
 async def patch_interview(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.PatchInterviewReq)
     scheduled = (parse_time_field(req.scheduled_at, "scheduledAt")
                  if req.scheduled_at is not None else None)
@@ -73,7 +71,7 @@ async def patch_interview(id: str, request: Request):
 
 @router.post("/interviews/{id}/prepare", status_code=202)
 async def prepare_interview(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.PrepareReq)
     op = await d.interviews.prepare(current_user(request).id,
                                     param_id(id, "id"),

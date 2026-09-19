@@ -13,7 +13,7 @@ from app.domain.errors import (
     internal, invalid_transition, not_found, payload_too_large, validation_field,
 )
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, page_body, page_request, param_id,
 )
 
@@ -29,8 +29,6 @@ ALLOWED_SOURCE_MIME = {
 MAX_SOURCE_BYTES = 20 << 20
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 def source_dto(src: ent.Source) -> dict:
@@ -41,7 +39,7 @@ def source_dto(src: ent.Source) -> dict:
 
 @router.get("/career-evidence")
 async def list_evidence(request: Request):
-    d = _deps(request)
+    d = deps(request)
     page = page_request(request)
     kind = request.query_params.get("kind") or None
     if kind is not None and not ent.valid_evidence_kind(kind):
@@ -53,7 +51,7 @@ async def list_evidence(request: Request):
 
 @router.post("/career-evidence", status_code=201)
 async def create_evidence(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.CreateEvidenceReq)
     e = await d.evidence.create(current_user(request).id, req.kind, req.title,
                                 req.source_text, req.source_url, req.skills,
@@ -63,14 +61,14 @@ async def create_evidence(request: Request):
 
 @router.get("/career-evidence/{id}")
 async def get_evidence(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     e = await d.evidence.get(current_user(request).id, param_id(id, "id"))
     return data(200, e)
 
 
 @router.post("/career-evidence/import", status_code=202)
 async def import_evidence(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ImportEvidenceReq)
     op = await d.evidence.import_(current_user(request).id, req.source_id,
                                   req.text, req.source_url, req.content_hash,
@@ -80,7 +78,7 @@ async def import_evidence(request: Request):
 
 @router.post("/career-evidence/{id}/archive")
 async def archive_evidence(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.ExpectedRevisionReq)
     e = await d.evidence.archive(current_user(request).id,
                                  param_id(id, "id"), req.expected_revision)
@@ -89,7 +87,7 @@ async def archive_evidence(id: str, request: Request):
 
 @router.post("/sources", status_code=201)
 async def create_source(request: Request):
-    d = _deps(request)
+    d = deps(request)
     user = current_user(request)
     form = await request.form()
     kind = form.get("kind")
@@ -128,7 +126,7 @@ async def create_source(request: Request):
 
 @router.get("/sources/{id}")
 async def get_source(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     try:
         src = await d.sources.get(current_user(request).id,
                                   param_id(id, "id"))
@@ -139,7 +137,7 @@ async def get_source(id: str, request: Request):
 
 @router.get("/sources/{id}/content")
 async def get_source_content(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     try:
         src = await d.sources.get(current_user(request).id,
                                   param_id(id, "id"))
@@ -150,7 +148,7 @@ async def get_source_content(id: str, request: Request):
 
 @router.delete("/sources/{id}", status_code=204)
 async def delete_source(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     user_id = current_user(request).id
     sid = param_id(id, "id")
     try:

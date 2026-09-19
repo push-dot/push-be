@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse, Response
 
 from app.domain.errors import feature_disabled, not_configured
 from app.presentation import schemas as s
-from app.presentation.deps import (
+from app.presentation.deps import (deps,
     bind_json, current_user, data, optional_query_time, optional_query_uuid,
     page_body, page_request, param_id,
 )
@@ -21,20 +21,18 @@ JOB_SITE_CHECKLIST = [
 ]
 
 
-def _deps(request: Request):
-    return request.app.state.deps
 
 
 @router.get("/integrations/google")
 async def google_status(request: Request):
-    d = _deps(request)
+    d = deps(request)
     st = await d.google.status(current_user(request).id)
     return data(200, st)
 
 
 @router.post("/integrations/google/connect")
 async def google_connect(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.GoogleConnectReq)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
@@ -49,7 +47,7 @@ async def google_connect(request: Request):
 
 @router.get("/integrations/google/callback")
 async def google_callback(request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
     link = await d.google.handle_callback(
@@ -60,7 +58,7 @@ async def google_callback(request: Request):
 
 @router.post("/integrations/google/complete")
 async def google_complete(request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.GoogleCompleteReq)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
@@ -71,14 +69,14 @@ async def google_complete(request: Request):
 
 @router.delete("/integrations/google", status_code=204)
 async def google_disconnect(request: Request):
-    d = _deps(request)
+    d = deps(request)
     await d.google.disconnect(current_user(request).id)
     return Response(status_code=204)
 
 
 @router.post("/integrations/google/sync", status_code=202)
 async def google_sync(request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
     op = await d.google.sync(current_user(request).id)
@@ -87,7 +85,7 @@ async def google_sync(request: Request):
 
 @router.get("/integrations/google/messages")
 async def google_messages(request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
     if not d.cfg.gmail_beta:
@@ -100,7 +98,7 @@ async def google_messages(request: Request):
 
 @router.get("/integrations/google/events")
 async def google_events(request: Request):
-    d = _deps(request)
+    d = deps(request)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
     p = await d.google.list_events(
@@ -111,7 +109,7 @@ async def google_events(request: Request):
 
 @router.post("/integrations/google/messages/{id}/link")
 async def google_link_message(id: str, request: Request):
-    d = _deps(request)
+    d = deps(request)
     req = await bind_json(request, s.LinkMessageReq)
     if not d.cfg.google_configured:
         raise not_configured("google integration is not configured")
@@ -122,7 +120,7 @@ async def google_link_message(id: str, request: Request):
 
 @router.get("/integrations/job-sites")
 async def job_sites(request: Request):
-    d = _deps(request)
+    d = deps(request)
     sites = [{"provider": p,
               "enabled": d.cfg.job_site_adapters.get(p, False),
               "permissionVerified": False, "mode": "MANUAL_CHECKLIST",

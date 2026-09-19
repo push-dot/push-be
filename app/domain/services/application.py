@@ -117,7 +117,7 @@ class ApplicationService:
             a.revision = expected + 1
             out = a
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def import_(self, user_id: UUID, job_id: UUID, stage: str,
@@ -147,10 +147,7 @@ class ApplicationService:
                 type=ent.EVENT_IMPORTED,
                 payload={"stage": stage, "appliedAt": applied_at}, created_at=now))
 
-        try:
-            await self.db.do(work)
-        except Exception:
-            raise internal()
+        await self.db.run(work)
         return a
 
     async def timeline(self, user_id: UUID, id_: UUID, page):
@@ -241,7 +238,7 @@ class ApplicationService:
             await self.submissions.create_draft(d)
             out = d
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def submit(self, user_id: UUID, app_id: UUID, expected: int,
@@ -305,7 +302,7 @@ class ApplicationService:
                 created_at=now))
             out = sub
 
-        await self.db.do(work)
+        await self.db.run(work)
         return out
 
     async def list_submissions(self, user_id: UUID, app_id: UUID, page):
