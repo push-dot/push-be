@@ -149,7 +149,8 @@ class EvidenceService:
         try:
             if src.mime_type == "application/pdf":
                 return await extract_pdf_text(src.path)
-            if src.mime_type == "text/plain":
+            if src.mime_type.startswith("text/") or src.file_name.lower().endswith(
+                    (".txt", ".md", ".markdown")):
                 with open(src.path, encoding="utf-8", errors="replace") as f:
                     return f.read()
         except Exception:
