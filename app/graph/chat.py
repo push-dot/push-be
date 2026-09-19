@@ -48,6 +48,7 @@ class ChatState(TypedDict, total=False):
     context_text: str
     completion: Any
     operation: Any
+    resume_flow: bool
 
 
 def build_chat_graph(svc, checkpointer=None):
@@ -184,9 +185,8 @@ def build_chat_graph(svc, checkpointer=None):
             sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
-        system = ""
-        if wants_resume_flow(state["text"], "\n".join(hist_lines)):
-            system = resume_system_prompt()
+        resume_flow = wants_resume_flow(state["text"], "\n".join(hist_lines))
+        system = resume_system_prompt() if resume_flow else ""
         parts = []
         async for tok in svc.ai.stream(
                 state["user_id"], opts, system, user_msg, usage,
@@ -197,7 +197,8 @@ def build_chat_graph(svc, checkpointer=None):
         return {"completion": ent.AICompletion(
             text="".join(parts),
             input_tokens=usage["input_tokens"],
-            output_tokens=usage["output_tokens"])}
+            output_tokens=usage["output_tokens"]),
+            "resume_flow": resume_flow}
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
@@ -234,6 +235,14 @@ def build_chat_graph(svc, checkpointer=None):
                                    ent.AiOptions(**state["ai"]), completion)
 
         await svc.db.run(work)
+        if state.get("resume_flow") and completion is not None:
+            from app.infrastructure.resume_workspace import save_artifacts
+            try:
+                await asyncio.to_thread(
+                    save_artifacts, conv.id, conv.title or "", completion.text)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("artifact save failed")
         return {"operation": op}
 
     g = StateGraph(ChatState)
