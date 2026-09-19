@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import re
 from contextvars import ContextVar
 from typing import Any, Optional, TypedDict
 from uuid import UUID, uuid4
@@ -26,6 +27,19 @@ byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_CO_NAME_RE = re.compile(r"^\[([^\[\]]{2,30})\]", re.M)
+
+
+def _company_from_pages(sections: list) -> str:
+    for s in sections:
+        if not s.startswith("[웹 페이지]"):
+            continue
+        m = _CO_NAME_RE.search(s[:400])
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def _uid(v) -> UUID:
@@ -187,7 +201,8 @@ def build_chat_graph(svc, checkpointer=None):
             a.title for a in state.get("attachments") or [] if a.title)
         resume_flow = wants_resume_flow(
             state["text"] + " " + attach_titles, "\n".join(hist_lines))
-        if resume_flow:
+        ultra = bool((state.get("ai") or {}).get("ultraResume"))
+        if resume_flow and ultra:
             gh_users = []
             for src in [state.get("context_text") or "", state["text"],
                         *hist_lines]:
@@ -201,6 +216,11 @@ def build_chat_graph(svc, checkpointer=None):
                 for u, g in zip(gh_users[:2], gh):
                     if isinstance(g, str) and g:
                         sections.append("[GitHub] " + g)
+            company = _company_from_pages(sections)
+            if company:
+                research = await svc.ai.company_research(company)
+                if research:
+                    sections.append("[회사 검색] " + company + "\n" + research)
         if hist_lines:
             sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])

@@ -810,7 +810,7 @@ class AiKey(BaseModel):
 
 AI_PROVIDERS = {"OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"}
 CREDENTIAL_MODES = {"MANAGED", "BYOK"}
-EFFORTS = {"LOW", "MEDIUM", "HIGH"}
+EFFORTS = {"LOW", "MEDIUM", "HIGH", "MAX"}
 
 
 def valid_ai_provider(p: str) -> bool:

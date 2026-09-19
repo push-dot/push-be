@@ -269,3 +269,18 @@ class AIService:
             return await self.usage.list(user_id, from_, to, page)
         except Exception:
             raise internal()
+
+    async def company_research(self, company: str) -> str:
+        if not self.gate.managed_key or self.gate.chat is None:
+            return ""
+        try:
+            c = await self.gate.chat.chat(
+                self.gate.managed_key, _SEARCH_MODEL + ":online",
+                "채용 지원을 돕기 위해 회사 정보를 조사해줘. "
+                "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
+                "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
+                "확인 가능한 출처 URL을 붙여줘.",
+                company)
+            return c.text
+        except Exception:
+            return ""
