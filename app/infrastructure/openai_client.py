@@ -79,5 +79,16 @@ class OpenAIClient:
                     if delta:
                         yield delta
 
+    async def list_models(self, api_key: str) -> list[str]:
+        resp = await self._client.get(
+            self.base_url + "/models",
+            headers={"Authorization": "Bearer " + api_key})
+        body = resp.json()
+        if resp.status_code != 200:
+            msg = (body.get("error") or {}).get("message") or \
+                f"openai status {resp.status_code}"
+            raise ValueError(msg)
+        return sorted(m["id"] for m in body.get("data", []) if m.get("id"))
+
     async def aclose(self):
         await self._client.aclose()

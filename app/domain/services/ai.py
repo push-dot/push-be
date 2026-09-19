@@ -142,6 +142,21 @@ class AIGate:
             model += ":online"
         return chat, key, model, None
 
+    async def list_byok_models(self, provider: str,
+                               byok_key: str) -> list[str]:
+        if provider not in _BYOK_PROVIDERS:
+            raise validation_field("provider", "unsupported provider")
+        chat = self.byok_chats.get(provider) or self.byok_chat
+        if chat is None or not hasattr(chat, "list_models"):
+            raise not_configured(
+                "AI provider " + provider + " is not supported")
+        try:
+            return await chat.list_models(byok_key)
+        except DomainError:
+            raise
+        except Exception:
+            raise provider_error("model list failed")
+
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str,
                        byok_key: str = "") -> ent.AICompletion:

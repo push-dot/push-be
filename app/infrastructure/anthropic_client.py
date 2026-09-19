@@ -82,5 +82,16 @@ class AnthropicClient:
                     u = chunk.get("usage") or {}
                     usage["output_tokens"] = u.get("output_tokens", 0)
 
+    async def list_models(self, api_key: str) -> list[str]:
+        resp = await self._client.get(
+            self.base_url + "/v1/models",
+            headers=self._headers(api_key))
+        body = resp.json()
+        if resp.status_code != 200:
+            msg = (body.get("error") or {}).get("message") or \
+                f"anthropic status {resp.status_code}"
+            raise ValueError(msg)
+        return sorted(m["id"] for m in body.get("data", []) if m.get("id"))
+
     async def aclose(self):
         await self._client.aclose()

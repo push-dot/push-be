@@ -31,6 +31,15 @@ async def ai_models(request: Request):
         raise validation_field("provider", "unsupported provider")
     if cred_mode and not ent.valid_credential_mode(cred_mode):
         raise validation_field("credentialMode", "unsupported credentialMode")
+    if cred_mode == "BYOK" and provider:
+        key = request.headers.get("x-byok-key", "")
+        if not key:
+            return data(200, [])
+        ids = await d.ai.gate.list_byok_models(provider, key)
+        return data(200, [{"provider": provider, "model": m, "label": m,
+                           "available": True,
+                           "supportedEfforts": ["LOW", "MEDIUM", "HIGH"]}
+                          for m in ids])
     byok_openai = False
     if d.cfg.byok_enabled and d.ai_keys is not None:
         try:
