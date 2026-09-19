@@ -988,3 +988,31 @@ class StripeCheckout(BaseModel):
 
 def valid_plan(p: str) -> bool:
     return p in (PLAN_FREE, PLAN_PRO, PLAN_ULTRA)
+
+
+EXPERIMENT_ACTIVE = "active"
+EXPERIMENT_ENDED = "ended"
+
+
+class Experiment(Model):
+    key: str
+    variants: list[str]
+    status: str = EXPERIMENT_ACTIVE
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentAssignment(Model):
+    experiment_key: str
+    user_id: UUID = Field(exclude=True)
+    variant: str
+    created_at: datetime
+
+
+class ExperimentEvent(BaseModel):
+    id: UUID
+    experiment_key: str
+    user_id: UUID
+    variant: str
+    event: str
+    created_at: datetime
