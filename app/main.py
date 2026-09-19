@@ -201,6 +201,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "http://localhost:5173", "http://127.0.0.1:5173",
             "tauri://localhost", "http://tauri.localhost",
             "https://tauri.localhost"],
+        allow_credentials=True,
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
                        "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
