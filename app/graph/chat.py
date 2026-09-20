@@ -326,7 +326,9 @@ def build_chat_graph(svc, checkpointer=None):
                         continue
                 if arts:
                     sections.append(
-                        "[저장된 산출물]\n" + "\n\n".join(arts))
+                        "[저장된 산출물 — 참고용. 이미 디스크에 저장됨. "
+                        "응답에서 다시 출력하거나 재작성하지 말 것]\n" +
+                        "\n\n".join(arts))
                     user_msg = "\n\n".join(sections)
         system = _phase_prompt(phase) if resume_flow else ""
         from app.infrastructure.resume_workspace import visible_prefix
