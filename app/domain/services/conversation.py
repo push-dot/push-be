@@ -120,6 +120,22 @@ class ConversationService:
                 raise map_revision_err(err)
             v.revision = expected + 1
             out = v
+            for eid in await self.conversations.evidence_ids_in(user_id, id_):
+                if await self.conversations.evidence_refs_elsewhere(
+                        user_id, id_, eid):
+                    continue
+                try:
+                    e = await self.evidence.get(user_id, eid)
+                except NotFoundError:
+                    continue
+                if e.archived:
+                    continue
+                e.archived = True
+                e.updated_at = _now()
+                try:
+                    await self.evidence.update(e, e.revision)
+                except Exception:
+                    continue
 
         await self.db.run(work)
         return out

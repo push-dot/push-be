@@ -82,6 +82,12 @@ class StubConversationStore:
     async def list_messages(self, user_id, conversation_id, page):
         return self.messages
 
+    async def evidence_ids_in(self, user_id, conversation_id):
+        return getattr(self, "cascade_ids", [])
+
+    async def evidence_refs_elsewhere(self, user_id, conversation_id, evidence_id):
+        return getattr(self, "elsewhere", {}).get(evidence_id, 0)
+
 
 class StubDocumentStore:
     def __init__(self, doc=None, version=None):
@@ -116,6 +122,9 @@ class StubEvidenceStore:
         if e is None or e.user_id != user_id:
             raise NotFoundError()
         return e
+
+    async def update(self, e, expected: int):
+        pass
 
 
 class StubOperationStore:
