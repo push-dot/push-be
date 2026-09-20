@@ -19,7 +19,9 @@ from app.infrastructure.web_page import (fetch_github_context,
                                          fetch_page_text, find_urls,
                                          github_usernames)
 from app.jsonutil import to_jsonable
-from app.graph.resume_prompt import resume_system_prompt, wants_resume_flow
+from app.graph.resume_prompt import (
+    _phase_prompt, gate_for_phase, needs_gate, resume_phase,
+    wants_resume_flow)
 
 
 byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
@@ -65,6 +67,7 @@ class ChatState(TypedDict, total=False):
     completion: Any
     operation: Any
     resume_flow: bool
+    phase: int
     evidence_kinds: list
 
 
@@ -253,7 +256,13 @@ def build_chat_graph(svc, checkpointer=None):
             sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
-        system = resume_system_prompt(hist_text) if resume_flow else ""
+        conv = state.get("conversation")
+        phase = 0
+        if resume_flow:
+            phase = resume_phase(
+                hist_text, getattr(conv, "id", None),
+                getattr(conv, "title", "") or "")
+        system = _phase_prompt(phase) if resume_flow else ""
         from app.infrastructure.resume_workspace import visible_prefix
         parts = []
         emitted = 0
@@ -274,7 +283,7 @@ def build_chat_graph(svc, checkpointer=None):
             text="".join(parts),
             input_tokens=usage["input_tokens"],
             output_tokens=usage["output_tokens"]),
-            "resume_flow": resume_flow}
+            "resume_flow": resume_flow, "phase": phase}
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
@@ -294,9 +303,33 @@ def build_chat_graph(svc, checkpointer=None):
             reply = strip_file_blocks(completion.text) or "산출물을 저장했어요."
         else:
             reply = completion.text
+        assistant_text = reply
+        if state.get("resume_flow") and completion is not None:
+            from app.infrastructure.resume_workspace import (
+                save_artifacts, sync_documents)
+            try:
+                saved = await asyncio.to_thread(
+                    save_artifacts, conv.id, conv.title or "", completion.text)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("artifact save failed")
+                saved = []
+            new_phase = resume_phase(
+                "", conv.id, conv.title or "") if saved else state.get("phase", 0)
+            gate = gate_for_phase(new_phase - 1) if new_phase > state.get(
+                "phase", 0) else ""
+            if gate and needs_gate(reply):
+                assistant_text = reply + "\n\n---\n\n" + gate
+                get_stream_writer()({"token": "\n\n---\n\n" + gate})
+            if saved:
+                try:
+                    await sync_documents(svc, user_id, conv, saved)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("doc sync failed")
         assistant_msg = ent.Message(
             id=uuid4(), user_id=user_id, conversation_id=conv.id,
-            role="ASSISTANT", text=reply, attachments=[],
+            role="ASSISTANT", text=assistant_text, attachments=[],
             operation_id=op_id, created_at=now)
         op = ent.Operation(
             id=op_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
@@ -317,22 +350,6 @@ def build_chat_graph(svc, checkpointer=None):
                                    ent.AiOptions(**state["ai"]), completion)
 
         await svc.db.run(work)
-        if state.get("resume_flow") and completion is not None:
-            from app.infrastructure.resume_workspace import (
-                save_artifacts, sync_documents)
-            try:
-                saved = await asyncio.to_thread(
-                    save_artifacts, conv.id, conv.title or "", completion.text)
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception("artifact save failed")
-                saved = []
-            if saved:
-                try:
-                    await sync_documents(svc, user_id, conv, saved)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception("doc sync failed")
         return {"operation": op}
 
     g = StateGraph(ChatState)
