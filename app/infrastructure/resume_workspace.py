@@ -87,6 +87,9 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
             mapping = json.loads(map_file.read_text())
         except Exception:
             mapping = {}
+    if getattr(svc, "document_svc", None) is None:
+        return
+    docs = svc.document_svc
     changed = False
     for name in saved:
         if not _DOC_FILE.match(name):
@@ -97,15 +100,15 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
         doc_id = mapping.get(kind)
         try:
             if doc_id:
-                doc = await svc.documents.get(user_id, UUID(doc_id))
-                await svc.documents.create_version(
+                doc = await docs.get(user_id, UUID(doc_id))
+                await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat update " + name)
             else:
                 title = (conv.title or "생성 문서") + " " + label
-                doc = await svc.documents.create(
+                doc = await docs.create(
                     user_id, None, title, kind, "CLASSIC", "ko")
-                await svc.documents.create_version(
+                await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat " + name)
                 mapping[kind] = str(doc.id)

@@ -29,7 +29,8 @@ def _now() -> datetime:
 
 
 class ConversationService:
-    def __init__(self, db: DB, ai: AIGate, checkpointer=None):
+    def __init__(self, db: DB, ai: AIGate, checkpointer=None,
+                 document_svc=None):
         self.db = db
         self.conversations = ConversationStore(db)
         self.applications = ApplicationStore(db)
@@ -40,6 +41,7 @@ class ConversationService:
         self.usage = AiUsageStore(db)
         self.jobs = ChatJobStore(db)
         self.chunks = EvidenceChunkStore(db)
+        self.document_svc = document_svc
         self._byok_keys: dict[UUID, str] = {}
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
