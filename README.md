@@ -38,52 +38,9 @@ POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
                      documents, chat_jobs, chat_events
 ```
 
-`app/main.py`가 composition root — 모든 서비스를 생성해 라우터와 워커에 주입한다.
+`app/main.py`가 composition root — 모든 서비스를 생성해 라우터와 워커에 주입한다. `migrations/*.sql`은 시작 시 순서대로 적용된다.
 
-## Run
-
-```sh
-cp .env.example .env
-docker compose up -d postgres
-pip install -e .
-uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-
-The server applies `migrations/*.sql` at startup and listens on `:8080`.
-API base: `http://localhost:8080/api/v1`. `GET /healthz` is unauthenticated.
-
-## Development auth
-
-With `APP_ENV=development` and `DEV_AUTH_TOKEN` set, the dev user
-(`DEV_USER_ID`, seeded at startup) is authenticated via:
-
-```
-Authorization: Bearer $DEV_AUTH_TOKEN
-```
-
-Development auth is never active outside `APP_ENV=development`.
-
-## Test
-
-```sh
-pytest
-```
-
-Tests use in-memory stubs; no running PostgreSQL required.
-
-## Experiments (A/B)
-
-`EXPERIMENTS` env JSON seeds experiment definitions:
-
-```
-EXPERIMENTS=[{"key":"home-greeting","variants":["A","B"]}]
-```
-
-- `GET /api/v1/experiments/{key}/assignment` — deterministic per-user variant
-- `POST /api/v1/experiments/{key}/events` — record event with assigned variant
-- `GET /api/v1/experiments/{key}/stats` — event counts by variant
-
-## Layout
+## 구조
 
 - `app/main.py` — composition root (app factory, lifespan, wiring)
 - `app/presentation` — FastAPI routers, request schemas, middleware
