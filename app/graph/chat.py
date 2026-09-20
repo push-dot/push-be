@@ -329,14 +329,20 @@ def build_chat_graph(svc, checkpointer=None):
             if meta:
                 try:
                     company, title, url, page_text = meta
-                    job = await svc.job_svc.create(
-                        state["user_id"], company, title, "URL", url,
-                        page_text[:50000], [], [], None, "ko")
-                    app = await svc.application_svc.create(
-                        state["user_id"], job.id, "")
+                    job = await svc.job_svc.jobs.find_by_source_url(
+                        state["user_id"], url)
+                    if job is None:
+                        job = await svc.job_svc.create(
+                            state["user_id"], company, title, "URL", url,
+                            page_text[:50000], [], [], None, "ko")
+                    app = await svc.application_svc.applications.find_by_job(
+                        state["user_id"], job.id)
+                    if app is None:
+                        app = await svc.application_svc.create(
+                            state["user_id"], job.id, "")
                     conv.application_id = app.id
                     await svc.conversations.update(conv, conv.revision)
-                    writer({"status": "지원 항목 생성됨"})
+                    writer({"status": "지원 항목 연결됨"})
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception(

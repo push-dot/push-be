@@ -33,6 +33,12 @@ class JobStore(Store):
         return _job(await self.one(
             f"SELECT {_JOB_COLS} FROM jobs WHERE id = $1 AND user_id = $2", id_, user_id))
 
+    async def find_by_source_url(self, user_id: UUID, source_url: str) -> Optional[JobPosting]:
+        row = await self.q().fetchrow(
+            f"SELECT {_JOB_COLS} FROM jobs WHERE user_id = $1 AND source_url = $2 "
+            "ORDER BY created_at DESC LIMIT 1", user_id, source_url)
+        return _job(row) if row else None
+
     async def list(self, user_id: UUID, archived: Optional[bool], query: str, page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)
