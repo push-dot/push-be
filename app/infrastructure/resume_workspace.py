@@ -136,7 +136,10 @@ def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
     tail = re.search(r"```\w*\n# file: ([\w.\-]+)\n(.*)$",
                      text[last_end:], re.DOTALL)
     if tail:
-        blocks.append((tail.group(1), tail.group(2)))
+        existing = d / tail.group(1)
+        if not existing.exists() or \
+                existing.stat().st_size < len(tail.group(2)):
+            blocks.append((tail.group(1), tail.group(2)))
     for name, body in blocks:
         if name.startswith(".") or "/" in name or "\\" in name:
             continue
