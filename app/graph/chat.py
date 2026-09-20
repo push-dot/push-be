@@ -32,16 +32,28 @@ def _now() -> datetime:
 
 
 _CO_NAME_RE = re.compile(r"^\[([^\[\]]{2,30})\]", re.M)
+_JOB_TITLE_RE = re.compile(r"^\[[^\[\]]{2,30}\]\s*([^|\n]{2,120})", re.M)
+_PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 
 
 def _company_from_pages(sections: list) -> str:
+    meta = _job_meta(sections)
+    return meta[0] if meta else ""
+
+
+def _job_meta(sections: list):
     for s in sections:
-        if not s.startswith("[웹 페이지]"):
+        if not s.startswith("[웹 페이지] "):
             continue
-        m = _CO_NAME_RE.search(s[:400])
-        if m:
-            return m.group(1).strip()
-    return ""
+        head, _, text = s.partition("\n")
+        url = head[len("[웹 페이지] "):].strip()
+        m = _CO_NAME_RE.search(text[:400])
+        if not m:
+            continue
+        tm = _JOB_TITLE_RE.search(text[:400])
+        title = tm.group(1).strip() if tm else url
+        return m.group(1).strip(), title, url, text
+    return None
 
 
 def _uid(v) -> UUID:
@@ -310,6 +322,31 @@ def build_chat_graph(svc, checkpointer=None):
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
         conv = state.get("conversation")
+        if (resume_flow and getattr(conv, "application_id", None) is None
+                and getattr(svc, "job_svc", None)
+                and getattr(svc, "application_svc", None)):
+            meta = _job_meta(sections)
+            if meta:
+                try:
+                    company, title, url, page_text = meta
+                    job = await svc.job_svc.jobs.find_by_source_url(
+                        state["user_id"], url)
+                    if job is None:
+                        job = await svc.job_svc.create(
+                            state["user_id"], company, title, "URL", url,
+                            page_text[:50000], [], [], None, "ko")
+                    app = await svc.application_svc.applications.find_by_job(
+                        state["user_id"], job.id)
+                    if app is None:
+                        app = await svc.application_svc.create(
+                            state["user_id"], job.id, "")
+                    conv.application_id = app.id
+                    await svc.conversations.update(conv, conv.revision)
+                    writer({"status": "지원 항목 연결됨"})
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "application link failed")
         phase = 0
         if resume_flow:
             phase = resume_phase(
@@ -330,7 +367,9 @@ def build_chat_graph(svc, checkpointer=None):
                 if arts:
                     sections.append(
                         "[저장된 산출물 — 참고용. 이미 디스크에 저장됨. "
-                        "응답에서 다시 출력하거나 재작성하지 말 것]\n" +
+                        "그대로 다시 출력하지 말 것. 단, 사용자가 수정·재생성·"
+                        "템플릿 변경을 요청하면 변경된 내용을 반영한 "
+                        "# file: 블록으로 해당 파일을 다시 출력할 것]\n" +
                         "\n\n".join(arts))
                     user_msg = "\n\n".join(sections)
         system = _phase_prompt(phase) if resume_flow else ""
@@ -383,6 +422,7 @@ def build_chat_graph(svc, checkpointer=None):
         else:
             reply = completion.text
         assistant_text = reply
+        doc_attachments: list[ent.MessageAttachment] = []
         if state.get("resume_flow") and completion is not None:
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
@@ -407,13 +447,20 @@ def build_chat_graph(svc, checkpointer=None):
                 get_stream_writer()({"token": "\n\n---\n\n" + gate})
             if saved:
                 try:
-                    await sync_documents(svc, user_id, conv, saved)
+                    synced = await sync_documents(svc, user_id, conv, saved)
+                    doc_attachments = [
+                        ent.MessageAttachment(
+                            type="DOCUMENT_VERSION", id=r["version_id"],
+                            document_id=r["document_id"],
+                            title=r["title"])
+                        for r in synced]
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("doc sync failed")
         assistant_msg = ent.Message(
             id=uuid4(), user_id=user_id, conversation_id=conv.id,
-            role="ASSISTANT", text=assistant_text, attachments=[],
+            role="ASSISTANT", text=assistant_text,
+            attachments=doc_attachments,
             operation_id=op_id, created_at=now)
         op = ent.Operation(
             id=op_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
@@ -432,6 +479,15 @@ def build_chat_graph(svc, checkpointer=None):
                 from app.domain.services.ai import record_usage
                 await record_usage(svc.usage, user_id, op_id,
                                    ent.AiOptions(**state["ai"]), completion)
+            if (conv.title or "") in _PLACEHOLDER_TITLES:
+                try:
+                    fresh = await svc.conversations.get(user_id, conv.id)
+                    fresh.title = (state["text"] or "대화")[:40]
+                    await svc.conversations.update(fresh, fresh.revision)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "auto title failed")
 
         await svc.db.run(work)
         return {"operation": op}

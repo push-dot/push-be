@@ -64,6 +64,16 @@ class ChatJobStore:
             "INSERT INTO chat_events (job_id, type, payload) "
             "VALUES ($1,$2,$3)", job_id, type_, _dump(payload))
 
+    async def active_for_conversation(
+            self, user_id: UUID,
+            conversation_id: UUID) -> Optional[UUID]:
+        return await self.db.q().fetchval(
+            "SELECT id FROM chat_jobs "
+            "WHERE user_id=$1 AND conversation_id=$2 "
+            "AND status IN ('PENDING','RUNNING') "
+            "ORDER BY created_at DESC LIMIT 1",
+            user_id, conversation_id)
+
     async def status(self, job_id: UUID) -> Optional[str]:
         return await self.db.q().fetchval(
             "SELECT status FROM chat_jobs WHERE id=$1", job_id)

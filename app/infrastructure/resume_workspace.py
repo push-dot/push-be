@@ -75,7 +75,8 @@ def md_to_doc(md: str):
     return {"type": "doc", "content": nodes}, blocks
 
 
-async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
+async def sync_documents(svc, user_id, conv,
+                         saved: list[str]) -> list[dict]:
     import json
     import logging
     from uuid import UUID
@@ -88,9 +89,10 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
         except Exception:
             mapping = {}
     if getattr(svc, "document_svc", None) is None:
-        return
+        return []
     docs = svc.document_svc
     changed = False
+    synced: list[dict] = []
     for name in saved:
         if not _DOC_FILE.match(name):
             continue
@@ -101,23 +103,44 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
         try:
             if doc_id:
                 doc = await docs.get(user_id, UUID(doc_id))
-                await docs.create_version(
+                _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat update " + name)
             else:
-                title = (conv.title or "생성 문서") + " " + label
+                base = (conv.title or "").strip()
+                if base in ("", "새 채팅", "New chat"):
+                    base = _company_label(d) or "생성 문서"
+                title = base + " " + label
                 doc = await docs.create(
                     user_id, None, title, kind, "CLASSIC", "ko")
-                await docs.create_version(
+                _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat " + name)
                 mapping[kind] = str(doc.id)
                 changed = True
+            synced.append({"document_id": doc.id, "version_id": v.id,
+                           "title": doc.title})
         except Exception:
             logging.getLogger(__name__).exception(
                 "doc sync failed for %s", name)
     if changed:
         map_file.write_text(json.dumps(mapping))
+    return synced
+
+
+def _company_label(d: Path) -> str:
+    import json
+    f = d / "01_job_analyses.json"
+    try:
+        data = json.loads(f.read_text())
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            name = (it.get("company") or {}).get("name") or ""
+            if name.strip():
+                return name.strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _slug(title: str) -> str:
@@ -157,7 +180,7 @@ def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
     return saved
 
 
-def md_to_pdf(md: str, out: Path) -> None:
+def md_to_pdf(md: str, out) -> None:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
@@ -165,7 +188,8 @@ def md_to_pdf(md: str, out: Path) -> None:
     from reportlab.pdfgen import canvas
 
     pdfmetrics.registerFont(UnicodeCIDFont("HYGothic-Medium"))
-    c = canvas.Canvas(str(out), pagesize=A4)
+    c = canvas.Canvas(out if hasattr(out, "write") else str(out),
+                      pagesize=A4)
     width, height = A4
     margin, y = 20 * mm, height - 20 * mm
     max_chars = 42
