@@ -181,6 +181,8 @@ class ConversationService:
                     stream_mode=["custom", "values"]):
                 if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
                     yield ("token", chunk["token"])
+                elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
+                    yield ("status", chunk["status"])
                 elif mode == "values" and chunk.get("operation") is not None:
                     yield ("done", chunk["operation"])
         finally:

@@ -42,19 +42,67 @@ _RESUME_HINTS = (
 _GATE_HINTS = ("선택지:", "질문:", "Phase ", "산출물")
 
 
-def wants_resume_flow(text: str, history_text: str) -> bool:
+def wants_resume_flow(text: str, history_text: str,
+                      evidence_kinds: tuple = ()) -> bool:
     t = text.lower()
     return (
         any(k in t for k in _RESUME_HINTS)
         or any(k in history_text for k in _GATE_HINTS)
+        or "RESUME" in evidence_kinds
     )
 
 
-@lru_cache(maxsize=1)
-def resume_system_prompt() -> str:
+_PHASE_SKILLS = {
+    0: ("input-collector",),
+    1: ("resume-parser", "github-explorer", "job-analyzer"),
+    2: ("content-strategy", "approach-selector", "blueprint-generator",
+        "bottleneck-validator"),
+    3: ("content-craft", "score-booster"),
+    4: ("quality-review", "resume-designer"),
+    5: ("pdf-publisher", "resume-designer"),
+    6: ("result-presenter",),
+}
+
+_PHASE_MARKERS = (
+    (6, ("05_",)),
+    (5, ("04_",)),
+    (4, ("03_",)),
+    (3, ("02_",)),
+    (2, ("01_parsed_resume", "01_job_analyses", "01_github_findings")),
+    (1, ("01_scenario", "01_tone", "01_original", "01_extracted")),
+)
+
+_PHASE_LABELS = {
+    0: "Phase 0/0-I: 작업 모드 선택과 입력 수집",
+    1: "Phase 1: 이력서 파싱, GitHub 탐색, 공고 분석",
+    2: "Phase 2: 적합도 분석과 콘텐츠 전략",
+    3: "Phase 3: 콘텐츠 초안 작성",
+    4: "Phase 4: 품질 검증과 디자인 선택",
+    5: "Phase 5: PDF 출력",
+    6: "Phase 6: 최종 결과 제공",
+}
+
+
+def resume_phase(history_text: str) -> int:
+    for phase, markers in _PHASE_MARKERS:
+        if any(m in history_text for m in markers):
+            return phase
+    return 0
+
+
+@lru_cache(maxsize=8)
+def _phase_prompt(phase: int) -> str:
     parts = [_ADAPT, (_RES / "orchestrator.md").read_text()]
-    for p in sorted((_RES / "skills").glob("*.md")):
-        parts.append(p.read_text())
+    for name in _PHASE_SKILLS[phase]:
+        parts.append((_RES / "skills" / (name + ".md")).read_text())
     for p in sorted((_RES / "references").glob("*.md")):
         parts.append(p.read_text())
+    parts.append(
+        "[현재 단계] 지금 실행할 단계는 " + _PHASE_LABELS[phase] + "이다. "
+        "이전 단계는 이미 끝났다. 이 단계의 산출물과 GATE만 처리하고, "
+        "다음 Phase는 사용자 응답 후에 진행한다.")
     return "\n\n---\n\n".join(parts)
+
+
+def resume_system_prompt(history_text: str = "") -> str:
+    return _phase_prompt(resume_phase(history_text))

@@ -29,6 +29,7 @@ class EvidenceStore(Store):
     async def list(self, user_id: UUID, kind: Optional[str], query: str, page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)
+        c.add("NOT archived")
         if kind:
             c.add("kind = {}", kind)
         if query:

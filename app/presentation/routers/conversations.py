@@ -88,6 +88,9 @@ async def post_message_stream(id: str, request: Request):
                 if kind == "token":
                     yield "data: " + json.dumps(
                         {"type": "token", "text": payload}) + "\n\n"
+                elif kind == "status":
+                    yield "data: " + json.dumps(
+                        {"type": "status", "text": payload}) + "\n\n"
                 else:
                     yield "data: " + json.dumps(
                         {"type": "done",
