@@ -83,6 +83,7 @@ class AiOptionsReq(Req):
     effort: str
     ultra_resume: bool = False
     web_search: bool = False
+    models: dict = {}
 
 
 class ResumeRunReq(Req):

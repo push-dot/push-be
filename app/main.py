@@ -156,7 +156,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         saver = await saver_ctx.__aenter__()
         try:
             await saver.setup()
-            conversations = ConversationService(db, gate, saver)
+            conversations = ConversationService(db, gate, saver, documents)
+            await conversations.start_worker()
             resume_workflow = ResumeWorkflowService(
                 db, applications, jobs_svc, documents, evidence_svc, approvals)
             view = ConfigView(
@@ -182,6 +183,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             app.state.db = db
             yield
         finally:
+            await conversations.stop_worker()
             await saver_ctx.__aexit__(None, None, None)
             await oauth.aclose()
             await openai.aclose()

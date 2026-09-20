@@ -69,17 +69,31 @@ class AIGate:
         }
         self.byok_enabled = cipher is not None
 
-    async def company_research(self, company: str) -> str:
+    async def embed(self, texts: list[str],
+                    model: str = "openai/text-embedding-3-small"
+                    ) -> list[list[float]]:
+        if not self.managed_key or self.chat is None or not texts:
+            return []
+        try:
+            return await self.chat.embed(self.managed_key, model, texts)
+        except Exception:
+            return []
+
+    async def company_research(self, company: str, model: str = "",
+                               context: str = "") -> str:
         if not self.managed_key or self.chat is None:
             return ""
         try:
             c = await self.chat.chat(
-                self.managed_key, _SEARCH_MODEL + ":online",
-                "채용 지원을 돕기 위해 회사 정보를 조사해줘. "
+                self.managed_key, (model or _SEARCH_MODEL) + ":online",
+                "채용 지원을 돕기 위해 이 특정 회사를 조사해줘: " + company + ". "
+                "반드시 이 회사의 공식 사이트와 채용 공고를 먼저 찾아 확인하고, "
                 "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
                 "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
-                "확인 가능한 출처 URL을 붙여줘.",
-                company)
+                "확인 가능한 출처 URL을 붙여줘. "
+                "조회 결과가 해당 회사와 무관하면 무관하다고만 답해.",
+                company + ("\n\n[공고 컨텍스트]\n" + context[:3000]
+                           if context else ""))
             return c.text
         except Exception:
             return ""
@@ -200,7 +214,8 @@ class AIGate:
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
-                     byok_key: str = "", search_query: str = ""):
+                     byok_key: str = "", search_query: str = "",
+                     assistant_prefix: str = ""):
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
@@ -219,7 +234,8 @@ class AIGate:
                 yield c.text
                 return
             async for tok in chat_stream(key, model, system, user, usage,
-                                         reasoning, headers):
+                                         reasoning, headers,
+                                         assistant_prefix):
                 yield tok
         except DomainError:
             raise

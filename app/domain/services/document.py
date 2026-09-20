@@ -95,14 +95,16 @@ class DocumentService:
         except Exception:
             raise internal()
 
-    async def create(self, user_id: UUID, application_id: UUID, title: str,
-                     kind: str, template: str, language: str) -> ent.Document:
-        try:
-            await self.applications.get(user_id, application_id)
-        except NotFoundError:
-            raise not_found()
-        except Exception:
-            raise internal()
+    async def create(self, user_id: UUID, application_id: Optional[UUID],
+                     title: str, kind: str, template: str,
+                     language: str) -> ent.Document:
+        if application_id is not None:
+            try:
+                await self.applications.get(user_id, application_id)
+            except NotFoundError:
+                raise not_found()
+            except Exception:
+                raise internal()
         validate_document_input(title, kind, template)
         now = _now()
         d = ent.Document(
