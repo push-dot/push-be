@@ -120,6 +120,22 @@ class ConversationService:
                 raise map_revision_err(err)
             v.revision = expected + 1
             out = v
+            for eid in await self.conversations.evidence_ids_in(user_id, id_):
+                if await self.conversations.evidence_refs_elsewhere(
+                        user_id, id_, eid):
+                    continue
+                try:
+                    e = await self.evidence.get(user_id, eid)
+                except NotFoundError:
+                    continue
+                if e.archived:
+                    continue
+                e.archived = True
+                e.updated_at = _now()
+                try:
+                    await self.evidence.update(e, e.revision)
+                except Exception:
+                    continue
 
         await self.db.run(work)
         return out
@@ -181,6 +197,8 @@ class ConversationService:
                     stream_mode=["custom", "values"]):
                 if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
                     yield ("token", chunk["token"])
+                elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
+                    yield ("status", chunk["status"])
                 elif mode == "values" and chunk.get("operation") is not None:
                     yield ("done", chunk["operation"])
         finally:
