@@ -38,13 +38,4 @@ POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
                      documents, chat_jobs, chat_events
 ```
 
-`app/main.py`가 composition root — 모든 서비스를 생성해 라우터와 워커에 주입한다. `migrations/*.sql`은 시작 시 순서대로 적용된다.
-
-## 구조
-
-- `app/main.py` — composition root (app factory, lifespan, wiring)
-- `app/presentation` — FastAPI routers, request schemas, middleware
-- `app/domain` — entities, services, errors, state machines
-- `app/graph` — LangGraph chat workflow with Postgres checkpointing
-- `app/infrastructure` — asyncpg stores, crypto, OAuth/AI/Stripe/Google clients
-- `migrations` — numbered SQL files applied in order at startup
+계층은 Presentation(라우터·스키마) → Domain(서비스·상태기계) → Infrastructure(DB·외부 API 클라이언트) 방향으로만 의존한다.
