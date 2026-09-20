@@ -4,11 +4,120 @@ import re
 from pathlib import Path
 
 _BLOCK = re.compile(r"```\w*\n# file: ([\w.\-]+)\n(.*?)```", re.DOTALL)
+_MARKER = "# file: "
+
+
+def strip_file_blocks(text: str) -> str:
+    return visible_prefix(text).strip()
+
+
+def visible_prefix(text: str) -> str:
+    s = _BLOCK.sub("", text)
+    if s.count("```") % 2 == 0:
+        return s
+    idx = s.rfind("```")
+    after = s[idx + 3:]
+    nl = after.find("\n")
+    if nl == -1:
+        return s[:idx]
+    content = after[nl + 1:]
+    first = content.split("\n", 1)[0]
+    if _MARKER.startswith(first) or first.startswith(_MARKER):
+        return s[:idx]
+    return s
 
 
 def _root() -> Path:
     return Path(os.environ.get(
         "PUSH_RESUME_DIR", str(Path.home() / ".push-resume")))
+
+
+_DOC_KINDS = (("cover_letter", "COVER_LETTER", "자기소개서"),
+              ("portfolio", "PORTFOLIO", "포트폴리오"),
+              ("resume", "RESUME", "이력서"))
+_DOC_FILE = re.compile(r"^0[345]_.+\.md$")
+
+
+def _kind_of(name: str):
+    low = name.lower()
+    for key, kind, label in _DOC_KINDS:
+        if key in low:
+            return kind, label
+    return "RESUME", "이력서"
+
+
+def md_to_doc(md: str):
+    from app.domain.entities import Block
+    nodes, blocks, i = [], [], 0
+
+    def add(kind, extra, txt):
+        nonlocal i
+        i += 1
+        bid = "block-" + str(i)
+        nodes.append({"type": kind, "attrs": {"blockId": bid, **extra},
+                      "content": [{"type": "text", "text": txt}]})
+        blocks.append(Block(id=bid, text=txt))
+
+    for raw in md.splitlines():
+        s = raw.rstrip()
+        if not s:
+            continue
+        h = re.match(r"^(#{1,4})\s+(.*)", s)
+        li = re.match(r"^\s*[-*]\s+(.*)", s)
+        if h:
+            add("heading", {"level": len(h.group(1))}, h.group(2))
+        elif li:
+            add("paragraph", {}, "• " + li.group(1))
+        else:
+            add("paragraph", {}, s)
+    if not nodes:
+        add("paragraph", {}, "")
+    return {"type": "doc", "content": nodes}, blocks
+
+
+async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
+    import json
+    import logging
+    from uuid import UUID
+    d = workspace_dir(conv.id, conv.title or "")
+    map_file = d / ".docs.json"
+    mapping: dict = {}
+    if map_file.exists():
+        try:
+            mapping = json.loads(map_file.read_text())
+        except Exception:
+            mapping = {}
+    if getattr(svc, "document_svc", None) is None:
+        return
+    docs = svc.document_svc
+    changed = False
+    for name in saved:
+        if not _DOC_FILE.match(name):
+            continue
+        kind, label = _kind_of(name)
+        body = (d / name).read_text()
+        content, blocks = md_to_doc(body)
+        doc_id = mapping.get(kind)
+        try:
+            if doc_id:
+                doc = await docs.get(user_id, UUID(doc_id))
+                await docs.create_version(
+                    user_id, doc.id, doc.revision, content, blocks,
+                    "chat update " + name)
+            else:
+                title = (conv.title or "생성 문서") + " " + label
+                doc = await docs.create(
+                    user_id, None, title, kind, "CLASSIC", "ko")
+                await docs.create_version(
+                    user_id, doc.id, doc.revision, content, blocks,
+                    "chat " + name)
+                mapping[kind] = str(doc.id)
+                changed = True
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "doc sync failed for %s", name)
+    if changed:
+        map_file.write_text(json.dumps(mapping))
 
 
 def _slug(title: str) -> str:
@@ -25,7 +134,16 @@ def workspace_dir(conversation_id, title: str = "") -> Path:
 def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
     saved = []
     d = workspace_dir(conversation_id, title)
-    for name, body in _BLOCK.findall(text):
+    blocks = _BLOCK.findall(text)
+    last_end = max((m.end() for m in _BLOCK.finditer(text)), default=0)
+    tail = re.search(r"```\w*\n# file: ([\w.\-]+)\n(.*)$",
+                     text[last_end:], re.DOTALL)
+    if tail:
+        existing = d / tail.group(1)
+        if not existing.exists() or \
+                existing.stat().st_size < len(tail.group(2)):
+            blocks.append((tail.group(1), tail.group(2)))
+    for name, body in blocks:
         if name.startswith(".") or "/" in name or "\\" in name:
             continue
         (d / name).write_text(body.strip() + "\n")

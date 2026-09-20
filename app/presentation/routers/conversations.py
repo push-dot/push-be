@@ -91,6 +91,10 @@ async def post_message_stream(id: str, request: Request):
                 elif kind == "status":
                     yield "data: " + json.dumps(
                         {"type": "status", "text": payload}) + "\n\n"
+                elif kind == "error":
+                    yield "data: " + json.dumps(
+                        {"type": "error",
+                         "error": payload}) + "\n\n"
                 else:
                     yield "data: " + json.dumps(
                         {"type": "done",

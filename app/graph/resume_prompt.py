@@ -83,11 +83,38 @@ _PHASE_LABELS = {
 }
 
 
-def resume_phase(history_text: str) -> int:
+def resume_phase(history_text: str, conv_id=None, title: str = "") -> int:
+    if conv_id is not None:
+        try:
+            from app.infrastructure.resume_workspace import workspace_dir
+            files = {p.name for p in workspace_dir(conv_id, title).iterdir()}
+            for phase, markers in _PHASE_MARKERS:
+                if any(f.startswith(m) for f in files for m in markers):
+                    return phase
+        except Exception:
+            pass
     for phase, markers in _PHASE_MARKERS:
         if any(m in history_text for m in markers):
             return phase
     return 0
+
+
+_PHASE_GATES = {
+    1: "분석이 끝났어요. Fit Score와 콘텐츠 전략으로 진행할까요? (진행 / 조정 요청)",
+    2: "전략이 정리됐어요. 초안 작성으로 넘어갈까요? (진행 / 방향 수정)",
+    3: "초안이 나왔어요. 품질 검증을 진행할까요? (검증 진행 / 먼저 수정)",
+    4: "템플릿을 골라 주세요. (CLASSIC / MODERN / COMPACT / ATS)",
+    5: "최종 산출물이 나왔어요. 이대로 마무리할까요? (확정 / 추가 수정)",
+}
+
+
+def gate_for_phase(phase: int) -> str:
+    return _PHASE_GATES.get(phase, "")
+
+
+def needs_gate(reply: str) -> bool:
+    tail = reply.rstrip()[-400:]
+    return "?" not in tail and "선택지" not in tail and "할까요" not in tail
 
 
 @lru_cache(maxsize=8)
@@ -104,5 +131,6 @@ def _phase_prompt(phase: int) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def resume_system_prompt(history_text: str = "") -> str:
-    return _phase_prompt(resume_phase(history_text))
+def resume_system_prompt(history_text: str = "", conv_id=None,
+                         title: str = "") -> str:
+    return _phase_prompt(resume_phase(history_text, conv_id, title))
