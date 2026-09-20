@@ -832,6 +832,7 @@ class AiOptions(Model):
     effort: str
     ultra_resume: bool = False
     web_search: bool = False
+    models: dict = {}
 
 
 class AIModelInfo(BaseModel):

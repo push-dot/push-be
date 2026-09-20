@@ -79,12 +79,12 @@ class AIGate:
         except Exception:
             return []
 
-    async def company_research(self, company: str) -> str:
+    async def company_research(self, company: str, model: str = "") -> str:
         if not self.managed_key or self.chat is None:
             return ""
         try:
             c = await self.chat.chat(
-                self.managed_key, _SEARCH_MODEL + ":online",
+                self.managed_key, (model or _SEARCH_MODEL) + ":online",
                 "채용 지원을 돕기 위해 회사 정보를 조사해줘. "
                 "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
                 "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
