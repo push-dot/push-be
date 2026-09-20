@@ -210,7 +210,8 @@ class AIGate:
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
-                     byok_key: str = "", search_query: str = ""):
+                     byok_key: str = "", search_query: str = "",
+                     assistant_prefix: str = ""):
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
@@ -229,7 +230,8 @@ class AIGate:
                 yield c.text
                 return
             async for tok in chat_stream(key, model, system, user, usage,
-                                         reasoning, headers):
+                                         reasoning, headers,
+                                         assistant_prefix):
                 yield tok
         except DomainError:
             raise

@@ -167,7 +167,7 @@ class StubChatCompleter:
 
     async def chat_stream(self, api_key: str, model: str, system: str,
                           user: str, usage: dict, reasoning: str = "",
-                          extra_headers=None):
+                          extra_headers=None, assistant_prefix: str = ""):
         if self.err is not None:
             raise self.err
         self.got = {"key": api_key, "model": model, "system": system,

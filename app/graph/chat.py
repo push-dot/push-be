@@ -317,18 +317,24 @@ def build_chat_graph(svc, checkpointer=None):
         parts = []
         emitted = 0
         writer({"status": "응답 작성 중"})
-        async for tok in svc.ai.stream(
-                state["user_id"], opts, system, user_msg, usage,
-                byok_key=byok_key_var.get(),
-                search_query=state["text"]):
-            parts.append(tok)
-            if resume_flow:
-                safe = visible_prefix("".join(parts))
-                if len(safe) > emitted:
-                    writer({"token": safe[emitted:]})
-                    emitted = len(safe)
-            else:
-                writer({"token": tok})
+        for round_ in range(3):
+            usage.pop("finish", None)
+            async for tok in svc.ai.stream(
+                    state["user_id"], opts, system, user_msg, usage,
+                    byok_key=byok_key_var.get(),
+                    search_query=state["text"],
+                    assistant_prefix="".join(parts) if round_ else ""):
+                parts.append(tok)
+                if resume_flow:
+                    safe = visible_prefix("".join(parts))
+                    if len(safe) > emitted:
+                        writer({"token": safe[emitted:]})
+                        emitted = len(safe)
+                else:
+                    writer({"token": tok})
+            if usage.get("finish") != "length":
+                break
+            writer({"status": "응답이 길어 이어서 작성 중"})
         return {"completion": ent.AICompletion(
             text="".join(parts),
             input_tokens=usage["input_tokens"],

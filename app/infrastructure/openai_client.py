@@ -49,9 +49,13 @@ class OpenAIClient:
 
     async def chat_stream(self, api_key: str, model: str, system: str,
                           user: str, usage: dict, reasoning: str = "",
-                          extra_headers: Optional[dict] = None):
+                          extra_headers: Optional[dict] = None,
+                          assistant_prefix: str = ""):
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": user}]
+        if assistant_prefix:
+            messages += [{"role": "assistant", "content": assistant_prefix},
+                         {"role": "user", "content": "끊긴 지점부터 이어서 작성해."}]
         headers = {"Authorization": "Bearer " + api_key}
         headers.update(extra_headers or {})
         async with self._client.stream(
@@ -76,6 +80,8 @@ class OpenAIClient:
                     usage["output_tokens"] = chunk["usage"].get(
                         "completion_tokens", 0)
                 for c in chunk.get("choices") or []:
+                    if c.get("finish_reason"):
+                        usage["finish"] = c["finish_reason"]
                     delta = (c.get("delta") or {}).get("content")
                     if delta:
                         yield delta
