@@ -48,6 +48,24 @@ def _uid(v) -> UUID:
     return v if isinstance(v, UUID) else UUID(str(v))
 
 
+def _chunk_text(text: str, size: int = 1200, overlap: int = 150) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= size:
+        return [text]
+    out = []
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        cut = text.rfind("\n\n", start, end)
+        if cut > start + size // 2:
+            end = cut
+        out.append(text[start:end].strip())
+        start = end if end == len(text) else max(end - overlap, start + 1)
+    return [c for c in out if c]
+
+
 def stub_reply(text: str) -> str:
     if len(text) > 80:
         text = text[:80]
@@ -224,6 +242,34 @@ def build_chat_graph(svc, checkpointer=None):
                         "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
                 except Exception:
                     continue
+        try:
+            missing = await svc.chunks.evidence_ids_missing(
+                state["user_id"], limit=10)
+            for eid in missing:
+                try:
+                    e = await svc.evidence.get(state["user_id"], eid)
+                    texts = _chunk_text(e.source_text)
+                    vecs = await svc.ai.embed(texts)
+                    if len(vecs) == len(texts):
+                        await svc.chunks.replace_chunks(
+                            state["user_id"], eid, list(zip(texts, vecs)))
+                except Exception:
+                    continue
+            qvec = await svc.ai.embed([state["text"][:2000]])
+            if qvec:
+                hits = await svc.chunks.search(state["user_id"], qvec[0], 6)
+                rag = [h for h in hits
+                       if str(h["evidence_id"]) not in seen_evidence
+                       and (h["dist"] or 0) < 0.6]
+                if rag:
+                    writer({"status": "관련 근거 검색 완료"})
+                    sections.append(
+                        "[관련 근거]\n" + "\n\n".join(
+                            "- " + h["title"] + "\n" + h["text"]
+                            for h in rag))
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("rag retrieval failed")
         attach_titles = " ".join(
             a.title for a in state.get("attachments") or [] if a.title)
         hist_text = "\n".join(hist_lines)

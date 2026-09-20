@@ -69,6 +69,16 @@ class AIGate:
         }
         self.byok_enabled = cipher is not None
 
+    async def embed(self, texts: list[str],
+                    model: str = "openai/text-embedding-3-small"
+                    ) -> list[list[float]]:
+        if not self.managed_key or self.chat is None or not texts:
+            return []
+        try:
+            return await self.chat.embed(self.managed_key, model, texts)
+        except Exception:
+            return []
+
     async def company_research(self, company: str) -> str:
         if not self.managed_key or self.chat is None:
             return ""

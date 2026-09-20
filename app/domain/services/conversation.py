@@ -17,6 +17,7 @@ from app.graph.chat import build_chat_graph, byok_key_var as _BYOK_KEY
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
+from app.infrastructure.store_evidence_chunks import EvidenceChunkStore
 from app.infrastructure.store_conversations import ConversationStore
 from app.infrastructure.store_documents import DocumentStore
 from app.infrastructure.store_evidence import EvidenceStore
@@ -38,6 +39,7 @@ class ConversationService:
         self.ai = ai
         self.usage = AiUsageStore(db)
         self.jobs = ChatJobStore(db)
+        self.chunks = EvidenceChunkStore(db)
         self._byok_keys: dict[UUID, str] = {}
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None

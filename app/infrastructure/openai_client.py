@@ -80,6 +80,20 @@ class OpenAIClient:
                     if delta:
                         yield delta
 
+    async def embed(self, api_key: str, model: str,
+                    texts: list[str]) -> list[list[float]]:
+        resp = await self._client.post(
+            self.base_url + "/embeddings",
+            json={"model": model, "input": texts},
+            headers={"Authorization": "Bearer " + api_key})
+        body = resp.json()
+        if resp.status_code != 200:
+            msg = (body.get("error") or {}).get("message") or \
+                f"embeddings status {resp.status_code}"
+            raise ValueError(msg)
+        data = sorted(body.get("data") or [], key=lambda d: d["index"])
+        return [d["embedding"] for d in data]
+
     async def list_models(self, api_key: str) -> list[str]:
         resp = await self._client.get(
             self.base_url + "/models",
