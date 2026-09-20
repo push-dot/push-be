@@ -312,6 +312,22 @@ def build_chat_graph(svc, checkpointer=None):
             phase = resume_phase(
                 hist_text, getattr(conv, "id", None),
                 getattr(conv, "title", "") or "")
+            if getattr(conv, "id", None):
+                from app.infrastructure.resume_workspace import workspace_dir
+                wdir = workspace_dir(conv.id, getattr(conv, "title", "") or "")
+                arts = []
+                for f in sorted(wdir.iterdir()) if wdir.exists() else []:
+                    if f.name.startswith(".") or f.suffix == ".pdf":
+                        continue
+                    try:
+                        arts.append(f"### {f.name}\n" +
+                                    f.read_text()[:10000])
+                    except Exception:
+                        continue
+                if arts:
+                    sections.append(
+                        "[저장된 산출물]\n" + "\n\n".join(arts))
+                    user_msg = "\n\n".join(sections)
         system = _phase_prompt(phase) if resume_flow else ""
         from app.infrastructure.resume_workspace import visible_prefix
         parts = []
@@ -366,6 +382,11 @@ def build_chat_graph(svc, checkpointer=None):
             try:
                 saved = await asyncio.to_thread(
                     save_artifacts, conv.id, conv.title or "", completion.text)
+                if not saved and completion.text:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "no artifacts saved; raw head=%r tail=%r",
+                        completion.text[:200], completion.text[-200:])
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception("artifact save failed")
