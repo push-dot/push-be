@@ -75,7 +75,8 @@ def md_to_doc(md: str):
     return {"type": "doc", "content": nodes}, blocks
 
 
-async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
+async def sync_documents(svc, user_id, conv,
+                         saved: list[str]) -> list[dict]:
     import json
     import logging
     from uuid import UUID
@@ -88,9 +89,10 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
         except Exception:
             mapping = {}
     if getattr(svc, "document_svc", None) is None:
-        return
+        return []
     docs = svc.document_svc
     changed = False
+    synced: list[dict] = []
     for name in saved:
         if not _DOC_FILE.match(name):
             continue
@@ -101,23 +103,26 @@ async def sync_documents(svc, user_id, conv, saved: list[str]) -> None:
         try:
             if doc_id:
                 doc = await docs.get(user_id, UUID(doc_id))
-                await docs.create_version(
+                _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat update " + name)
             else:
                 title = (conv.title or "생성 문서") + " " + label
                 doc = await docs.create(
                     user_id, None, title, kind, "CLASSIC", "ko")
-                await docs.create_version(
+                _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat " + name)
                 mapping[kind] = str(doc.id)
                 changed = True
+            synced.append({"document_id": doc.id, "version_id": v.id,
+                           "title": doc.title})
         except Exception:
             logging.getLogger(__name__).exception(
                 "doc sync failed for %s", name)
     if changed:
         map_file.write_text(json.dumps(mapping))
+    return synced
 
 
 def _slug(title: str) -> str:

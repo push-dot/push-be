@@ -385,6 +385,7 @@ def build_chat_graph(svc, checkpointer=None):
         else:
             reply = completion.text
         assistant_text = reply
+        doc_attachments: list[ent.MessageAttachment] = []
         if state.get("resume_flow") and completion is not None:
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
@@ -409,13 +410,20 @@ def build_chat_graph(svc, checkpointer=None):
                 get_stream_writer()({"token": "\n\n---\n\n" + gate})
             if saved:
                 try:
-                    await sync_documents(svc, user_id, conv, saved)
+                    synced = await sync_documents(svc, user_id, conv, saved)
+                    doc_attachments = [
+                        ent.MessageAttachment(
+                            type="DOCUMENT_VERSION", id=r["version_id"],
+                            document_id=r["document_id"],
+                            title=r["title"])
+                        for r in synced]
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("doc sync failed")
         assistant_msg = ent.Message(
             id=uuid4(), user_id=user_id, conversation_id=conv.id,
-            role="ASSISTANT", text=assistant_text, attachments=[],
+            role="ASSISTANT", text=assistant_text,
+            attachments=doc_attachments,
             operation_id=op_id, created_at=now)
         op = ent.Operation(
             id=op_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
