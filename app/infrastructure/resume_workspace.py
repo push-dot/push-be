@@ -157,7 +157,7 @@ def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
     return saved
 
 
-def md_to_pdf(md: str, out: Path) -> None:
+def md_to_pdf(md: str, out) -> None:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
@@ -165,7 +165,8 @@ def md_to_pdf(md: str, out: Path) -> None:
     from reportlab.pdfgen import canvas
 
     pdfmetrics.registerFont(UnicodeCIDFont("HYGothic-Medium"))
-    c = canvas.Canvas(str(out), pagesize=A4)
+    c = canvas.Canvas(out if hasattr(out, "write") else str(out),
+                      pagesize=A4)
     width, height = A4
     margin, y = 20 * mm, height - 20 * mm
     max_chars = 42

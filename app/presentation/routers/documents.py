@@ -82,6 +82,42 @@ async def get_version(id: str, versionId: str, request: Request):
     return data(200, v)
 
 
+@router.get("/documents/{id}/versions/{versionId}/export")
+async def export_version(id: str, versionId: str, request: Request):
+    from fastapi.responses import Response
+
+    from app.domain.errors import validation_field
+    from app.infrastructure.doc_render import (
+        render_docx, render_pdf, tiptap_to_lines)
+
+    d = deps(request)
+    fmt = (request.query_params.get("format") or "PDF").upper()
+    if fmt not in ("PDF", "DOCX"):
+        raise validation_field("format", "must be PDF or DOCX")
+    doc = await d.documents.get(current_user(request).id, param_id(id, "id"))
+    v = await d.documents.get_version(current_user(request).id,
+                                      param_id(id, "id"),
+                                      param_id(versionId, "versionId"))
+    lines = tiptap_to_lines(v.content or {})
+    import asyncio
+    if fmt == "PDF":
+        body = await asyncio.to_thread(render_pdf, lines)
+        media, ext = "application/pdf", "pdf"
+    else:
+        body = await asyncio.to_thread(render_docx, lines)
+        media = ("application/vnd.openxmlformats-officedocument"
+                 ".wordprocessingml.document")
+        ext = "docx"
+    title = getattr(doc, "title", None) or "document"
+    from urllib.parse import quote
+    filename = quote(f"{title}.{ext}")
+    return Response(
+        content=body, media_type=media,
+        headers={"Content-Disposition":
+                 f"attachment; filename=doc.{ext}; "
+                 f"filename*=UTF-8''{filename}"})
+
+
 @router.post("/documents/{id}/versions", status_code=201)
 async def create_version(id: str, request: Request):
     d = deps(request)

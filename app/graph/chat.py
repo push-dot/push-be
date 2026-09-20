@@ -330,7 +330,9 @@ def build_chat_graph(svc, checkpointer=None):
                 if arts:
                     sections.append(
                         "[저장된 산출물 — 참고용. 이미 디스크에 저장됨. "
-                        "응답에서 다시 출력하거나 재작성하지 말 것]\n" +
+                        "그대로 다시 출력하지 말 것. 단, 사용자가 수정·재생성·"
+                        "템플릿 변경을 요청하면 변경된 내용을 반영한 "
+                        "# file: 블록으로 해당 파일을 다시 출력할 것]\n" +
                         "\n\n".join(arts))
                     user_msg = "\n\n".join(sections)
         system = _phase_prompt(phase) if resume_flow else ""
