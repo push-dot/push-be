@@ -153,7 +153,26 @@ def build_chat_graph(svc, checkpointer=None):
                 "context_text": "\n\n".join(context_parts),
                 "evidence_kinds": kinds}
 
+    async def _persist_user_msg(state: ChatState) -> None:
+        user_msg = ent.Message(
+            id=uuid4(), user_id=state["user_id"],
+            conversation_id=state["conversation"].id,
+            role="USER", text=state["text"],
+            attachments=state.get("attachments") or [],
+            operation_id=None, created_at=_now())
+        await svc.db.run(lambda: svc.conversations.create_message(user_msg))
+
     async def generate_reply(state: ChatState) -> dict:
+        try:
+            return await _generate_reply(state)
+        except Exception:
+            try:
+                await _persist_user_msg(state)
+            except Exception:
+                pass
+            raise
+
+    async def _generate_reply(state: ChatState) -> dict:
         writer = get_stream_writer()
         ai = state.get("ai")
         if ai is None:
