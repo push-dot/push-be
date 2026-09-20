@@ -210,3 +210,20 @@ async def test_archive():
     out = await _svc(StubConversationStore(conv=conv)).archive(
         user_id, conv.id, 1)
     assert out.archived and out.revision == 2
+
+
+async def test_archive_cascades_evidence():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    e1 = ent.CareerEvidence(id=uuid4(), user_id=user_id, kind="RESUME",
+                            title="a", source_text="t",
+                            created_at=_now(), updated_at=_now())
+    e2 = ent.CareerEvidence(id=uuid4(), user_id=user_id, kind="RESUME",
+                            title="b", source_text="t",
+                            created_at=_now(), updated_at=_now())
+    convs = StubConversationStore(conv=conv)
+    convs.cascade_ids = [e1.id, e2.id]
+    convs.elsewhere = {e2.id: 1}
+    ev = StubEvidenceStore({e1.id: e1, e2.id: e2})
+    await _svc(convs, ev=ev).archive(user_id, conv.id, 1)
+    assert e1.archived and not e2.archived

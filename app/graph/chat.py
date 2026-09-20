@@ -65,6 +65,7 @@ class ChatState(TypedDict, total=False):
     completion: Any
     operation: Any
     resume_flow: bool
+    evidence_kinds: list
 
 
 def build_chat_graph(svc, checkpointer=None):
@@ -136,6 +137,7 @@ def build_chat_graph(svc, checkpointer=None):
             context_parts.append(
                 "[첨부 문서] " + doc.title + "\n"
                 + "\n".join(b.text for b in version.blocks))
+        kinds = []
         for eid in ctx.get("evidenceIds") or []:
             try:
                 e = await svc.evidence.get(user_id, _uid(eid))
@@ -144,12 +146,33 @@ def build_chat_graph(svc, checkpointer=None):
                     "context.evidenceIds", "evidence " + str(eid) + " not found")
             attachments.append(ent.MessageAttachment(
                 type="EVIDENCE", id=e.id, title=e.title))
+            kinds.append(e.kind)
             context_parts.append(
                 "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
         return {"conversation": conv, "attachments": attachments,
-                "context_text": "\n\n".join(context_parts)}
+                "context_text": "\n\n".join(context_parts),
+                "evidence_kinds": kinds}
+
+    async def _persist_user_msg(state: ChatState) -> None:
+        user_msg = ent.Message(
+            id=uuid4(), user_id=state["user_id"],
+            conversation_id=state["conversation"].id,
+            role="USER", text=state["text"],
+            attachments=state.get("attachments") or [],
+            operation_id=None, created_at=_now())
+        await svc.db.run(lambda: svc.conversations.create_message(user_msg))
 
     async def generate_reply(state: ChatState) -> dict:
+        try:
+            return await _generate_reply(state)
+        except Exception:
+            try:
+                await _persist_user_msg(state)
+            except Exception:
+                pass
+            raise
+
+    async def _generate_reply(state: ChatState) -> dict:
         writer = get_stream_writer()
         ai = state.get("ai")
         if ai is None:
@@ -176,6 +199,7 @@ def build_chat_graph(svc, checkpointer=None):
             logging.getLogger(__name__).exception("history load failed")
         urls = list(urls)[:4]
         if urls:
+            writer({"status": "웹 페이지 읽는 중"})
             pages = await asyncio.gather(
                 *(fetch_page_text(u) for u in urls),
                 return_exceptions=True)
@@ -199,8 +223,10 @@ def build_chat_graph(svc, checkpointer=None):
                     continue
         attach_titles = " ".join(
             a.title for a in state.get("attachments") or [] if a.title)
+        hist_text = "\n".join(hist_lines)
         resume_flow = wants_resume_flow(
-            state["text"] + " " + attach_titles, "\n".join(hist_lines))
+            state["text"] + " " + attach_titles, hist_text,
+            tuple(state.get("evidence_kinds") or ()))
         ultra = bool((state.get("ai") or {}).get("ultraResume"))
         if resume_flow and ultra:
             gh_users = []
@@ -210,6 +236,7 @@ def build_chat_graph(svc, checkpointer=None):
                     if u not in gh_users:
                         gh_users.append(u)
             if gh_users:
+                writer({"status": "GitHub 저장소 조회 중"})
                 gh = await asyncio.gather(
                     *(fetch_github_context(u) for u in gh_users[:2]),
                     return_exceptions=True)
@@ -218,6 +245,7 @@ def build_chat_graph(svc, checkpointer=None):
                         sections.append("[GitHub] " + g)
             company = _company_from_pages(sections)
             if company:
+                writer({"status": "회사 정보 검색 중"})
                 research = await svc.ai.company_research(company)
                 if research:
                     sections.append("[회사 검색] " + company + "\n" + research)
@@ -225,7 +253,7 @@ def build_chat_graph(svc, checkpointer=None):
             sections.append("[이전 대화]\n" + "\n".join(hist_lines))
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
-        system = resume_system_prompt() if resume_flow else ""
+        system = resume_system_prompt(hist_text) if resume_flow else ""
         parts = []
         async for tok in svc.ai.stream(
                 state["user_id"], opts, system, user_msg, usage,

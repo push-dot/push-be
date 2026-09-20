@@ -65,3 +65,19 @@ class ConversationStore(Store):
         rows = await self.q().fetch(sql, *args)
         return new_page([_msg(r) for r in rows], page.effective_limit(),
                         lambda m: Cursor(m.created_at, m.id))
+
+    async def evidence_ids_in(self, user_id: UUID, conversation_id: UUID) -> list[UUID]:
+        rows = await self.q().fetch(
+            "SELECT DISTINCT (a->>'id')::uuid AS eid FROM messages, "
+            "jsonb_array_elements(attachments) a "
+            "WHERE user_id = $1 AND conversation_id = $2 AND a->>'type' = 'EVIDENCE'",
+            user_id, conversation_id)
+        return [r["eid"] for r in rows]
+
+    async def evidence_refs_elsewhere(self, user_id: UUID, conversation_id: UUID,
+                                      evidence_id: UUID) -> int:
+        return await self.q().fetchval(
+            "SELECT count(*) FROM messages, jsonb_array_elements(attachments) a "
+            "WHERE user_id = $1 AND conversation_id <> $2 "
+            "AND a->>'type' = 'EVIDENCE' AND a->>'id' = $3",
+            user_id, conversation_id, str(evidence_id))
