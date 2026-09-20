@@ -374,7 +374,9 @@ def build_chat_graph(svc, checkpointer=None):
             reply = stub_reply(state["text"])
         elif state.get("resume_flow"):
             from app.infrastructure.resume_workspace import strip_file_blocks
-            reply = strip_file_blocks(completion.text) or "산출물을 저장했어요."
+            reply = strip_file_blocks(completion.text) or (
+                "산출물을 저장했어요." if completion.text else
+                "응답 생성이 중단됐어요. 다시 시도해 주세요.")
         else:
             reply = completion.text
         assistant_text = reply
