@@ -31,14 +31,11 @@ allowed-tools:
    - 경험 갭이 없으면 공고 스택을 더 깊이 활용하는 난이도 있는 프로젝트
 6. `_workspace/01_scenario.json`의 `bottleneck_level`이 설정되어 있으면 해당 레벨에 맞는 병목/제약을 각 기획서에 포함한다.
 7. `references/projects.md`의 수식에 따라 프로젝트당 필수 완료 기준을 설정한다.
-8. 각 기획서는 별도 파일로 저장:
-   - `_workspace/06_experience_blueprints/01_{project-key}.md`
-   - `_workspace/06_experience_blueprints/02_{project-key}.md`
-   - `_workspace/06_experience_blueprints/03_{project-key}.md`
-   - `_workspace/06_experience_blueprints/04_{project-key}.md`
-9. `_workspace/06_experience_blueprints.json`에 모든 기획서의 메타데이터를 저장한다.
-10. `references/checklist-formulas.md`를 참조하여 각 기획서의 구현 완료 기준을 구체화한다.
-11. 각 기획서는 다음 섹션을 포함한다:
+8. 각 기획서는 파일로 저장하지 않는다. 채팅 응답 본문에 마크다운 그대로 출력한다.
+   `# file:` 블록을 사용하지 않는다. 한 번의 응답에 기획서 1개를 보여주고,
+   다음 기획서로 진행할지 사용자에게 확인한다.
+9. `references/checklist-formulas.md`를 참조하여 각 기획서의 구현 완료 기준을 구체화한다.
+10. 각 기획서는 다음 섹션을 포함한다:
     - 프로젝트 개요 (공고와의 연관성, 필수/우대 스택 매핑)
     - 서비스 맥락에서 발생하는 실제 문제 상황
     - 문제의 사용자/운영/비즈니스 영향
