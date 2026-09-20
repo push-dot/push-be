@@ -298,8 +298,11 @@ def build_chat_graph(svc, checkpointer=None):
             company = _company_from_pages(sections)
             if company:
                 writer({"status": "회사 정보 검색 중"})
+                page_ctx = next(
+                    (s for s in sections if s.startswith("[웹 페이지]")), "")
                 research = await svc.ai.company_research(
-                    company, role_models.get("research", ""))
+                    company, role_models.get("research", ""),
+                    state["text"] + "\n" + page_ctx[:2000])
                 if research:
                     sections.append("[회사 검색] " + company + "\n" + research)
         if hist_lines:
