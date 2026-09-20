@@ -206,9 +206,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "http://localhost:5173", "http://127.0.0.1:5173",
             "tauri://localhost", "http://tauri.localhost",
             "https://tauri.localhost"],
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=True,
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
                        "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],
