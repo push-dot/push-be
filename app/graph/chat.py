@@ -254,13 +254,22 @@ def build_chat_graph(svc, checkpointer=None):
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
         system = resume_system_prompt(hist_text) if resume_flow else ""
+        from app.infrastructure.resume_workspace import visible_prefix
         parts = []
+        emitted = 0
+        writer({"status": "응답 작성 중"})
         async for tok in svc.ai.stream(
                 state["user_id"], opts, system, user_msg, usage,
                 byok_key=byok_key_var.get(),
                 search_query=state["text"]):
             parts.append(tok)
-            writer({"token": tok})
+            if resume_flow:
+                safe = visible_prefix("".join(parts))
+                if len(safe) > emitted:
+                    writer({"token": safe[emitted:]})
+                    emitted = len(safe)
+            else:
+                writer({"token": tok})
         return {"completion": ent.AICompletion(
             text="".join(parts),
             input_tokens=usage["input_tokens"],
@@ -278,7 +287,13 @@ def build_chat_graph(svc, checkpointer=None):
             id=uuid4(), user_id=user_id, conversation_id=conv.id,
             role="USER", text=state["text"], attachments=attachments,
             operation_id=op_id, created_at=now)
-        reply = stub_reply(state["text"]) if completion is None else completion.text
+        if completion is None:
+            reply = stub_reply(state["text"])
+        elif state.get("resume_flow"):
+            from app.infrastructure.resume_workspace import strip_file_blocks
+            reply = strip_file_blocks(completion.text) or "산출물을 저장했어요."
+        else:
+            reply = completion.text
         assistant_msg = ent.Message(
             id=uuid4(), user_id=user_id, conversation_id=conv.id,
             role="ASSISTANT", text=reply, attachments=[],
@@ -303,13 +318,21 @@ def build_chat_graph(svc, checkpointer=None):
 
         await svc.db.run(work)
         if state.get("resume_flow") and completion is not None:
-            from app.infrastructure.resume_workspace import save_artifacts
+            from app.infrastructure.resume_workspace import (
+                save_artifacts, sync_documents)
             try:
-                await asyncio.to_thread(
+                saved = await asyncio.to_thread(
                     save_artifacts, conv.id, conv.title or "", completion.text)
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception("artifact save failed")
+                saved = []
+            if saved:
+                try:
+                    await sync_documents(svc, user_id, conv, saved)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("doc sync failed")
         return {"operation": op}
 
     g = StateGraph(ChatState)

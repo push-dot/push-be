@@ -359,7 +359,7 @@ class Document(Model):
     id: UUID
     user_id: UUID = Field(exclude=True)
     revision: int = 1
-    application_id: UUID
+    application_id: Optional[UUID] = None
     title: str
     kind: str
     template: str
@@ -405,7 +405,7 @@ class DocumentVersion(Model):
     id: UUID
     user_id: UUID = Field(exclude=True)
     document_id: UUID
-    application_id: UUID
+    application_id: Optional[UUID] = None
     number: int
     content: dict
     blocks: list[Block] = []
