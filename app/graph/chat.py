@@ -32,16 +32,28 @@ def _now() -> datetime:
 
 
 _CO_NAME_RE = re.compile(r"^\[([^\[\]]{2,30})\]", re.M)
+_JOB_TITLE_RE = re.compile(r"^\[[^\[\]]{2,30}\]\s*([^|\n]{2,120})", re.M)
+_PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 
 
 def _company_from_pages(sections: list) -> str:
+    meta = _job_meta(sections)
+    return meta[0] if meta else ""
+
+
+def _job_meta(sections: list):
     for s in sections:
-        if not s.startswith("[웹 페이지]"):
+        if not s.startswith("[웹 페이지] "):
             continue
-        m = _CO_NAME_RE.search(s[:400])
-        if m:
-            return m.group(1).strip()
-    return ""
+        head, _, text = s.partition("\n")
+        url = head[len("[웹 페이지] "):].strip()
+        m = _CO_NAME_RE.search(text[:400])
+        if not m:
+            continue
+        tm = _JOB_TITLE_RE.search(text[:400])
+        title = tm.group(1).strip() if tm else url
+        return m.group(1).strip(), title, url, text
+    return None
 
 
 def _uid(v) -> UUID:
@@ -310,6 +322,25 @@ def build_chat_graph(svc, checkpointer=None):
         sections.append("[현재 메시지]\n" + state["text"])
         user_msg = "\n\n".join(sections)
         conv = state.get("conversation")
+        if (resume_flow and getattr(conv, "application_id", None) is None
+                and getattr(svc, "job_svc", None)
+                and getattr(svc, "application_svc", None)):
+            meta = _job_meta(sections)
+            if meta:
+                try:
+                    company, title, url, page_text = meta
+                    job = await svc.job_svc.create(
+                        state["user_id"], company, title, "URL", url,
+                        page_text[:50000], [], [], None, "ko")
+                    app = await svc.application_svc.create(
+                        state["user_id"], job.id, "")
+                    conv.application_id = app.id
+                    await svc.conversations.update(conv, conv.revision)
+                    writer({"status": "지원 항목 생성됨"})
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "application link failed")
         phase = 0
         if resume_flow:
             phase = resume_phase(
@@ -442,6 +473,15 @@ def build_chat_graph(svc, checkpointer=None):
                 from app.domain.services.ai import record_usage
                 await record_usage(svc.usage, user_id, op_id,
                                    ent.AiOptions(**state["ai"]), completion)
+            if (conv.title or "") in _PLACEHOLDER_TITLES:
+                try:
+                    fresh = await svc.conversations.get(user_id, conv.id)
+                    fresh.title = (state["text"] or "대화")[:40]
+                    await svc.conversations.update(fresh, fresh.revision)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "auto title failed")
 
         await svc.db.run(work)
         return {"operation": op}

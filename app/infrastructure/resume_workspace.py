@@ -107,7 +107,10 @@ async def sync_documents(svc, user_id, conv,
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat update " + name)
             else:
-                title = (conv.title or "생성 문서") + " " + label
+                base = (conv.title or "").strip()
+                if base in ("", "새 채팅", "New chat"):
+                    base = _company_label(d) or "생성 문서"
+                title = base + " " + label
                 doc = await docs.create(
                     user_id, None, title, kind, "CLASSIC", "ko")
                 _, v = await docs.create_version(
@@ -123,6 +126,21 @@ async def sync_documents(svc, user_id, conv,
     if changed:
         map_file.write_text(json.dumps(mapping))
     return synced
+
+
+def _company_label(d: Path) -> str:
+    import json
+    f = d / "01_job_analyses.json"
+    try:
+        data = json.loads(f.read_text())
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            name = (it.get("company") or {}).get("name") or ""
+            if name.strip():
+                return name.strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _slug(title: str) -> str:
