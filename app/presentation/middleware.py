@@ -29,30 +29,9 @@ def _is_public(path: str) -> bool:
     return path in _PUBLIC_EXACT or bool(_PUBLIC_PATTERN.match(path))
 
 
-class _RateLimiter:
-    def __init__(self, limit: int, window_s: float):
-        self.limit = limit
-        self.window = window_s
-        self.hits: dict[str, list[float]] = {}
-
-    def allow(self, key: str, now: float) -> bool:
-        hits = self.hits.setdefault(key, [])
-        cutoff = now - self.window
-        while hits and hits[0] <= cutoff:
-            hits.pop(0)
-        if len(hits) >= self.limit:
-            return False
-        hits.append(now)
-        if len(self.hits) > 10000:
-            self.hits = {k: v for k, v in self.hits.items() if v}
-        return True
-
-
 class ApiMiddleware:
     def __init__(self, app):
         self.app = app
-        self._user_rl = _RateLimiter(600, 60)
-        self._public_rl = _RateLimiter(60, 60)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -65,19 +44,10 @@ class ApiMiddleware:
         self.auth = deps.auth
         self.idem = deps.idem
         path = scope.get("path", "")
-        if not path.startswith("/api/v1"):
+        if not path.startswith("/api/v1") or _is_public(path):
             await self.app(scope, receive, send)
             return
         rid = (scope.get("state") or {}).get("request_id", "")
-        now = datetime.now(timezone.utc).timestamp()
-        if _is_public(path):
-            client = (scope.get("client") or ("", 0))[0]
-            if not self._public_rl.allow(client, now):
-                await self._error(send, 429, "RATE_LIMITED",
-                                  "too many requests", rid)
-                return
-            await self.app(scope, receive, send)
-            return
         headers = dict(scope.get("headers") or [])
         authz = headers.get(b"authorization", b"").decode(errors="replace")
         if not authz.startswith("Bearer "):
@@ -93,10 +63,6 @@ class ApiMiddleware:
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         scope.setdefault("state", {})["user"] = user
-        if not self._user_rl.allow(str(user.id), now):
-            await self._error(send, 429, "RATE_LIMITED",
-                              "too many requests", rid)
-            return
         byok_key_var.set(
             headers.get(b"x-byok-key", b"").decode(errors="replace"))
 

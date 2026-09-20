@@ -156,8 +156,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         saver = await saver_ctx.__aenter__()
         try:
             await saver.setup()
-            conversations = ConversationService(
-                db, gate, saver, documents, jobs_svc, applications)
+            conversations = ConversationService(db, gate, saver, documents)
             await conversations.start_worker()
             resume_workflow = ResumeWorkflowService(
                 db, applications, jobs_svc, documents, evidence_svc, approvals)
@@ -207,9 +206,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
+            "http://localhost:5173", "http://127.0.0.1:5173",
             "tauri://localhost", "http://tauri.localhost",
             "https://tauri.localhost"],
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=True,
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
                        "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],

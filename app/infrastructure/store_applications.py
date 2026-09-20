@@ -27,12 +27,6 @@ class ApplicationStore(Store):
         return to_model(Application, await self.one(
             f"SELECT {_APP_COLS} FROM applications WHERE id = $1 AND user_id = $2", id_, user_id))
 
-    async def find_by_job(self, user_id: UUID, job_id: UUID) -> Optional[Application]:
-        row = await self.q().fetchrow(
-            f"SELECT {_APP_COLS} FROM applications WHERE user_id = $1 AND job_id = $2 "
-            "ORDER BY created_at DESC LIMIT 1", user_id, job_id)
-        return to_model(Application, row) if row else None
-
     async def list(self, user_id: UUID, stage: Optional[str], query: str, page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)

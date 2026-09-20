@@ -1,7 +1,6 @@
 from __future__ import annotations
 import base64
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
@@ -25,8 +24,6 @@ from app.jsonutil import to_jsonable
 GOOGLE_CIPHER_PURPOSE = "google"
 GOOGLE_SCOPE_GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
 GOOGLE_SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.events"
-_WEB_CALLBACK_RE = re.compile(
-    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?/integrations/google/callback$")
 GOOGLE_CALLBACK_URI = "push://integrations/google/callback"
 OAUTH_STATE_TTL = timedelta(minutes=10)
 INTEGRATION_CODE_TTL = timedelta(seconds=60)
@@ -89,8 +86,7 @@ class GoogleService:
             raise validation_field("codeChallengeMethod", "must be S256")
         if not code_challenge:
             raise validation_field("codeChallenge", "required")
-        if (redirect_uri != GOOGLE_CALLBACK_URI
-                and not _WEB_CALLBACK_RE.match(redirect_uri)):
+        if redirect_uri != GOOGLE_CALLBACK_URI:
             raise validation_field("redirectUri", "not allowed")
         state = random_token()
         now = _now()
@@ -98,7 +94,7 @@ class GoogleService:
             await self.sessions.save_oauth_state(ent.OAuthState(
                 state=state, provider="google", purpose="GOOGLE",
                 user_id=user_id, code_challenge=code_challenge,
-                redirect_uri=callback_url, final_uri=redirect_uri,
+                redirect_uri=callback_url,
                 expires_at=now + OAUTH_STATE_TTL, created_at=now))
         except Exception:
             raise internal()
@@ -150,7 +146,7 @@ class GoogleService:
                 expires_at=now + INTEGRATION_CODE_TTL, created_at=now))
         except Exception:
             raise internal()
-        return (rec.final_uri or GOOGLE_CALLBACK_URI) + "?code=" + integration_code
+        return GOOGLE_CALLBACK_URI + "?code=" + integration_code
 
     async def complete(self, user_id: UUID, code: str,
                        code_verifier: str) -> ent.GoogleStatus:

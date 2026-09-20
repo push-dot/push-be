@@ -30,7 +30,7 @@ def _now() -> datetime:
 
 class ConversationService:
     def __init__(self, db: DB, ai: AIGate, checkpointer=None,
-                 document_svc=None, job_svc=None, application_svc=None):
+                 document_svc=None):
         self.db = db
         self.conversations = ConversationStore(db)
         self.applications = ApplicationStore(db)
@@ -42,8 +42,6 @@ class ConversationService:
         self.jobs = ChatJobStore(db)
         self.chunks = EvidenceChunkStore(db)
         self.document_svc = document_svc
-        self.job_svc = job_svc
-        self.application_svc = application_svc
         self._byok_keys: dict[UUID, str] = {}
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
@@ -315,23 +313,6 @@ class ConversationService:
         job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
         if byok_key:
             self._byok_keys[job_id] = byok_key
-        async for ev in self._pump_job_events(job_id):
-            yield ev
-
-    async def active_job_id(self, user_id: UUID,
-                            conversation_id: UUID) -> Optional[UUID]:
-        await self.get(user_id, conversation_id)
-        return await self.jobs.active_for_conversation(
-            user_id, conversation_id)
-
-    async def stream_active(self, user_id: UUID, conversation_id: UUID):
-        job_id = await self.active_job_id(user_id, conversation_id)
-        if job_id is None:
-            return
-        async for ev in self._pump_job_events(job_id):
-            yield ev
-
-    async def _pump_job_events(self, job_id: UUID):
         last_id = 0
         idle = 0
         while True:

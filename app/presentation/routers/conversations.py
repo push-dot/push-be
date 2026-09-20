@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from app.domain.errors import DomainError
 from app.jsonutil import to_jsonable
@@ -78,63 +78,35 @@ async def post_message_stream(id: str, request: Request):
     conversation_id = param_id(id, "id")
 
     async def events():
-        async for frame in _sse_frames(
-                d.conversations.stream_message(
+        try:
+            async for kind, payload in d.conversations.stream_message(
                     user_id, conversation_id, req.text, context, _ai(req.ai),
                     req.access_mode,
-                    request.headers.get("x-byok-key", "")),
-                request):
-            yield frame
+                    request.headers.get("x-byok-key", "")):
+                if await request.is_disconnected():
+                    break
+                if kind == "token":
+                    yield "data: " + json.dumps(
+                        {"type": "token", "text": payload}) + "\n\n"
+                elif kind == "status":
+                    yield "data: " + json.dumps(
+                        {"type": "status", "text": payload}) + "\n\n"
+                elif kind == "error":
+                    yield "data: " + json.dumps(
+                        {"type": "error",
+                         "error": payload}) + "\n\n"
+                else:
+                    yield "data: " + json.dumps(
+                        {"type": "done",
+                         "operation": to_jsonable(payload)}) + "\n\n"
+        except DomainError as e:
+            yield "data: " + json.dumps(
+                {"type": "error",
+                 "error": {"code": e.code, "message": e.message,
+                           "details": e.details}}) + "\n\n"
 
-    return _sse_response(events())
-
-
-@router.get("/conversations/{id}/messages/stream/active")
-async def get_active_stream(id: str, request: Request):
-    d = deps(request)
-    user_id = current_user(request).id
-    conversation_id = param_id(id, "id")
-    if await d.conversations.active_job_id(user_id, conversation_id) is None:
-        return Response(status_code=204)
-
-    async def events():
-        async for frame in _sse_frames(
-                d.conversations.stream_active(user_id, conversation_id),
-                request):
-            yield frame
-
-    return _sse_response(events())
-
-
-async def _sse_frames(gen, request: Request):
-    try:
-        async for kind, payload in gen:
-            if await request.is_disconnected():
-                break
-            if kind == "token":
-                yield "data: " + json.dumps(
-                    {"type": "token", "text": payload}) + "\n\n"
-            elif kind == "status":
-                yield "data: " + json.dumps(
-                    {"type": "status", "text": payload}) + "\n\n"
-            elif kind == "error":
-                yield "data: " + json.dumps(
-                    {"type": "error",
-                     "error": payload}) + "\n\n"
-            else:
-                yield "data: " + json.dumps(
-                    {"type": "done",
-                     "operation": to_jsonable(payload)}) + "\n\n"
-    except DomainError as e:
-        yield "data: " + json.dumps(
-            {"type": "error",
-             "error": {"code": e.code, "message": e.message,
-                       "details": e.details}}) + "\n\n"
-
-
-def _sse_response(gen):
     return StreamingResponse(
-        gen, media_type="text/event-stream",
+        events(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import ipaddress
 import re
-import socket
-from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -21,30 +17,6 @@ _STRIP_RE = re.compile(
     re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
-_BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
-_BLOCKED_SUFFIX = (".localhost", ".internal", ".local", ".lan", ".home")
-
-
-def _assert_public_sync(url: str) -> None:
-    validate_https_url(url)
-    host = (urlparse(url).hostname or "").lower()
-    if host in _BLOCKED_HOSTS or host.endswith(_BLOCKED_SUFFIX):
-        raise ValueError("host not allowed")
-    try:
-        ips = {ipaddress.ip_address(host)}
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, None)
-            ips = {ipaddress.ip_address(i[4][0]) for i in infos}
-        except socket.gaierror:
-            raise ValueError("cannot resolve host")
-    for ip in ips:
-        if not ip.is_global:
-            raise ValueError("host resolves to a private address")
-
-
-async def _assert_public(url: str) -> None:
-    await asyncio.to_thread(_assert_public_sync, url)
 
 
 def find_urls(text: str) -> list[str]:
@@ -69,25 +41,11 @@ _MIN_TEXT = 1500
 
 async def _render_text(url: str) -> str:
     from playwright.async_api import async_playwright
-
-    async def guard(route):
-        req_url = route.request.url
-        if not req_url.startswith(("http://", "https://")):
-            await route.continue_()
-            return
-        try:
-            await asyncio.to_thread(_assert_public_sync, req_url)
-        except Exception:
-            await route.abort()
-            return
-        await route.continue_()
-
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         try:
             page = await browser.new_page(
                 user_agent=_UA, locale="ko-KR")
-            await page.route("**/*", guard)
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
@@ -100,29 +58,21 @@ async def _render_text(url: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
+    validate_https_url(url)
     async with httpx.AsyncClient(
             headers={"User-Agent": _UA, "Accept-Language": "ko,en;q=0.8"},
-            timeout=15) as client:
-        buf = bytearray()
-        ct = ""
-        for _ in range(6):
-            await _assert_public(url)
-            async with client.stream("GET", url) as r:
-                if r.is_redirect and "location" in r.headers:
-                    url = urljoin(url, r.headers["location"])
-                    continue
-                if r.status_code != 200:
-                    raise ValueError("http status " + str(r.status_code))
-                ct = r.headers.get("content-type", "")
-                if "text/html" not in ct and "text/plain" not in ct:
-                    raise ValueError("unsupported content type " + ct)
-                async for chunk in r.aiter_bytes():
-                    buf += chunk
-                    if len(buf) > _MAX_BYTES:
-                        break
-            break
-        else:
-            raise ValueError("too many redirects")
+            timeout=15, follow_redirects=True, max_redirects=5) as client:
+        async with client.stream("GET", url) as r:
+            if r.status_code != 200:
+                raise ValueError("http status " + str(r.status_code))
+            ct = r.headers.get("content-type", "")
+            if "text/html" not in ct and "text/plain" not in ct:
+                raise ValueError("unsupported content type " + ct)
+            buf = bytearray()
+            async for chunk in r.aiter_bytes():
+                buf += chunk
+                if len(buf) > _MAX_BYTES:
+                    break
     if "text/plain" in ct:
         return bytes(buf).decode("utf-8", errors="replace")[:_MAX_TEXT]
     text = _html_to_text(bytes(buf).decode("utf-8", errors="replace"))
