@@ -1,4 +1,6 @@
 from __future__ import annotations
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -6,13 +8,15 @@ from uuid import UUID, uuid4
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
-    internal, map_revision_err, not_found, revision_conflict, validation_field,
+    DomainError, internal, map_revision_err, not_found, revision_conflict,
+    validation_field,
 )
 from app.domain.services.ai import AIGate
 from app.domain.validators import code_point_len
 from app.graph.chat import build_chat_graph, byok_key_var as _BYOK_KEY
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
+from app.infrastructure.store_chat_jobs import ChatJobStore
 from app.infrastructure.store_conversations import ConversationStore
 from app.infrastructure.store_documents import DocumentStore
 from app.infrastructure.store_evidence import EvidenceStore
@@ -33,7 +37,90 @@ class ConversationService:
         self.ops = OperationStore(db)
         self.ai = ai
         self.usage = AiUsageStore(db)
+        self.jobs = ChatJobStore(db)
+        self._byok_keys: dict[UUID, str] = {}
+        self._sem = asyncio.Semaphore(4)
+        self._worker_task: Optional[asyncio.Task] = None
         self.graph = build_chat_graph(self, checkpointer)
+
+    async def start_worker(self) -> None:
+        recovered = await self.jobs.reset_stale()
+        if recovered:
+            logging.getLogger(__name__).info(
+                "requeued %d stale chat jobs", recovered)
+        self._worker_task = asyncio.create_task(self._worker_loop())
+
+    async def stop_worker(self) -> None:
+        if self._worker_task:
+            self._worker_task.cancel()
+            self._worker_task = None
+
+    async def _worker_loop(self) -> None:
+        log = logging.getLogger(__name__)
+        while True:
+            try:
+                job = await self.jobs.claim()
+            except Exception:
+                log.exception("chat job claim failed")
+                await asyncio.sleep(1)
+                continue
+            if job is None:
+                await asyncio.sleep(0.3)
+                continue
+            asyncio.create_task(self._run_job(job))
+
+    async def _run_job(self, job: dict) -> None:
+        log = logging.getLogger(__name__)
+        job_id = job["id"]
+        async with self._sem:
+            p = job["payload"]
+            byok = self._byok_keys.pop(job_id, "")
+            token = _BYOK_KEY.set(byok)
+            try:
+                async for mode, chunk in self.graph.astream(
+                        {
+                            "user_id": job["user_id"],
+                            "conversation_id": job["conversation_id"],
+                            "text": p["text"],
+                            "context": p.get("context") or {},
+                            "ai": p.get("ai"),
+                            "access_mode": p.get("access_mode") or "SUGGEST",
+                            "operation": None,
+                        },
+                        config={"configurable": {
+                            "thread_id": str(job["conversation_id"])}},
+                        stream_mode=["custom", "values"]):
+                    if mode == "custom" and isinstance(chunk, dict):
+                        if "token" in chunk:
+                            await self.jobs.emit(
+                                job_id, "token", {"text": chunk["token"]})
+                        elif "status" in chunk:
+                            await self.jobs.emit(
+                                job_id, "status", {"text": chunk["status"]})
+                    elif mode == "values" and chunk.get("operation"):
+                        from app.jsonutil import to_jsonable
+                        await self.jobs.emit(
+                            job_id, "done",
+                            {"operation": to_jsonable(chunk["operation"])})
+                await self.jobs.finish(job_id, "DONE")
+            except DomainError as e:
+                await self.jobs.emit(
+                    job_id, "error",
+                    {"error": {"code": e.code, "message": e.message,
+                               "details": e.details}})
+                await self.jobs.finish(job_id, "FAILED", e.code)
+            except Exception as e:
+                log.exception("chat job %s failed", job_id)
+                if job["attempt"] < 3:
+                    await self.jobs.requeue(job_id, 2.0 * job["attempt"])
+                else:
+                    await self.jobs.emit(
+                        job_id, "error",
+                        {"error": {"code": "INTERNAL",
+                                   "message": str(e)[:500]}})
+                    await self.jobs.finish(job_id, "FAILED", str(e)[:500])
+            finally:
+                _BYOK_KEY.reset(token)
 
     async def list(self, user_id: UUID, application_id: Optional[UUID], page):
         try:
@@ -188,6 +275,12 @@ class ConversationService:
                              ai: Optional[ent.AiOptions], access_mode: str,
                              byok_key: str = ""):
         self._validate_message(text, access_mode)
+        if self._worker_task is not None:
+            async for ev in self._stream_via_queue(
+                    user_id, conversation_id, text, context, ai, access_mode,
+                    byok_key):
+                yield ev
+            return
         token = _BYOK_KEY.set(byok_key)
         try:
             async for mode, chunk in self.graph.astream(
@@ -203,3 +296,48 @@ class ConversationService:
                     yield ("done", chunk["operation"])
         finally:
             _BYOK_KEY.reset(token)
+
+    async def _stream_via_queue(self, user_id, conversation_id, text, context,
+                                ai, access_mode, byok_key):
+        await self.get(user_id, conversation_id)
+        payload = {
+            "text": text,
+            "context": context or {},
+            "ai": ai.model_dump(by_alias=True) if ai else None,
+            "access_mode": access_mode,
+        }
+        job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
+        if byok_key:
+            self._byok_keys[job_id] = byok_key
+        last_id = 0
+        idle = 0
+        while True:
+            rows = await self.jobs.events_since(job_id, last_id)
+            for r in rows:
+                last_id = r["id"]
+                t = r["type"]
+                p = r["payload"]
+                if t == "token":
+                    yield ("token", p.get("text", ""))
+                elif t == "status":
+                    yield ("status", p.get("text", ""))
+                elif t == "done":
+                    yield ("done", p.get("operation"))
+                    return
+                elif t == "error":
+                    yield ("error", p.get("error") or {})
+                    return
+            if rows:
+                idle = 0
+            else:
+                idle += 1
+                if idle >= 30:
+                    st = await self.jobs.status(job_id)
+                    if st == "FAILED":
+                        yield ("error", {"code": "INTERNAL",
+                                         "message": "job failed"})
+                        return
+                    if st == "DONE":
+                        return
+                    idle = 0
+            await asyncio.sleep(0.2)
