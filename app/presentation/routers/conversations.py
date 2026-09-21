@@ -96,10 +96,12 @@ async def get_active_stream(id: str, request: Request):
     conversation_id = param_id(id, "id")
     if await d.conversations.active_job_id(user_id, conversation_id) is None:
         return Response(status_code=204)
+    after_raw = request.query_params.get("after", "")
+    after = int(after_raw) if after_raw.isdigit() else 0
 
     async def events():
         async for frame in _sse_frames(
-                d.conversations.stream_active(user_id, conversation_id),
+                d.conversations.stream_active(user_id, conversation_id, after),
                 request):
             yield frame
 
@@ -108,23 +110,20 @@ async def get_active_stream(id: str, request: Request):
 
 async def _sse_frames(gen, request: Request):
     try:
-        async for kind, payload in gen:
+        async for kind, payload, seq in gen:
             if await request.is_disconnected():
                 break
             if kind == "token":
-                yield "data: " + json.dumps(
-                    {"type": "token", "text": payload}) + "\n\n"
+                body = {"type": "token", "text": payload}
             elif kind == "status":
-                yield "data: " + json.dumps(
-                    {"type": "status", "text": payload}) + "\n\n"
+                body = {"type": "status", "text": payload}
             elif kind == "error":
-                yield "data: " + json.dumps(
-                    {"type": "error",
-                     "error": payload}) + "\n\n"
+                body = {"type": "error", "error": payload}
             else:
-                yield "data: " + json.dumps(
-                    {"type": "done",
-                     "operation": to_jsonable(payload)}) + "\n\n"
+                body = {"type": "done", "operation": to_jsonable(payload)}
+            if seq is not None:
+                body["seq"] = seq
+            yield "data: " + json.dumps(body) + "\n\n"
     except DomainError as e:
         yield "data: " + json.dumps(
             {"type": "error",
