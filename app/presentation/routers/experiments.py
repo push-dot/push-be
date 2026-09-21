@@ -30,3 +30,10 @@ async def experiment_stats(key: str, request: Request):
     d = deps(request)
     stats = await d.experiments.stats(key)
     return data(200, stats)
+
+
+@router.get("/experiments/{key}/results")
+async def experiment_results(key: str, request: Request):
+    d = deps(request)
+    results = await d.experiments.results(key)
+    return data(200, results)

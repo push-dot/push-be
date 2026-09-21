@@ -4,16 +4,17 @@ from uuid import UUID
 from app.domain.entities import Experiment, ExperimentAssignment, ExperimentEvent
 from app.infrastructure.store_common import Store, to_model
 
-_EXPERIMENT_COLS = "key, variants, status, created_at, updated_at"
+_EXPERIMENT_COLS = "key, variants, status, exclusion_group, created_at, updated_at"
 _ASSIGNMENT_COLS = "experiment_key, user_id, variant, created_at"
 
 
 class ExperimentStore(Store):
     async def upsert(self, e: Experiment) -> None:
         await self.q().execute(
-            f"INSERT INTO experiments ({_EXPERIMENT_COLS}) VALUES ($1,$2,$3,$4,$5) "
+            f"INSERT INTO experiments ({_EXPERIMENT_COLS}) VALUES ($1,$2,$3,$4,$5,$6) "
             "ON CONFLICT (key) DO NOTHING",
-            e.key, e.variants, e.status, e.created_at, e.updated_at)
+            e.key, e.variants, e.status, e.exclusion_group, e.created_at,
+            e.updated_at)
 
     async def get(self, key: str) -> Experiment:
         return to_model(Experiment, await self.one(
@@ -45,3 +46,22 @@ class ExperimentStore(Store):
         for r in rows:
             counts.setdefault(r["variant"], {})[r["event"]] = r["n"]
         return counts
+
+    async def group_keys(self, group: str) -> list[str]:
+        rows = await self.q().fetch(
+            "SELECT key FROM experiments WHERE exclusion_group = $1 "
+            "ORDER BY key", group)
+        return [r["key"] for r in rows]
+
+    async def result_counts(self, key: str) -> dict:
+        rows = await self.q().fetch(
+            "SELECT variant, "
+            "COUNT(DISTINCT user_id) FILTER (WHERE event = 'exposure') "
+            "AS exposed, "
+            "COUNT(DISTINCT user_id) FILTER (WHERE event = 'conversion') "
+            "AS converted "
+            "FROM experiment_events WHERE experiment_key = $1 "
+            "GROUP BY variant", key)
+        return {r["variant"]: {"exposed": r["exposed"],
+                               "converted": r["converted"]}
+                for r in rows}
