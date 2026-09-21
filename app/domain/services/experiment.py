@@ -36,6 +36,7 @@ class ExperimentService:
                 await self.experiments.upsert(ent.Experiment(
                     key=key, variants=variants,
                     status=spec.get("status") or ent.EXPERIMENT_ACTIVE,
+                    exclusion_group=spec.get("exclusion_group") or "",
                     created_at=now, updated_at=now))
             except Exception:
                 raise internal()
@@ -46,6 +47,12 @@ class ExperimentService:
             return ent.ExperimentAssignment(
                 experiment_key=key, user_id=user_id,
                 variant=exp.variants[0], created_at=_now())
+        if exp.exclusion_group and not await self._enrolled(
+                user_id, key, exp.exclusion_group):
+            return ent.ExperimentAssignment(
+                experiment_key=key, user_id=user_id,
+                variant=exp.variants[0], enrolled=False,
+                created_at=_now())
         try:
             return await self.experiments.get_assignment(key, user_id)
         except NotFoundError:
@@ -68,6 +75,8 @@ class ExperimentService:
         if not 1 <= len(event) <= 100:
             raise validation_field("event", "must be 1-100 characters")
         a = await self.assignment(user_id, key)
+        if not a.enrolled:
+            return
         try:
             await self.experiments.record_event(ent.ExperimentEvent(
                 id=uuid4(), experiment_key=key, user_id=user_id,
@@ -83,6 +92,32 @@ class ExperimentService:
             raise internal()
         variants = {v: counts.get(v, {}) for v in exp.variants}
         return {"key": key, "status": exp.status, "variants": variants}
+
+    async def results(self, key: str) -> dict:
+        exp = await self._get(key)
+        try:
+            counts = await self.experiments.result_counts(key)
+        except Exception:
+            raise internal()
+        out = []
+        for v in exp.variants:
+            c = counts.get(v, {})
+            exposed = c.get("exposed", 0)
+            converted = c.get("converted", 0)
+            out.append({"variant": v, "exposed": exposed,
+                        "converted": converted,
+                        "rate": converted / exposed if exposed else 0.0})
+        return {"key": key, "status": exp.status, "variants": out}
+
+    async def _enrolled(self, user_id: UUID, key: str, group: str) -> bool:
+        try:
+            keys = await self.experiments.group_keys(group)
+        except Exception:
+            raise internal()
+        if key not in keys:
+            return True
+        h = int(hashlib.sha256(f"{user_id}:{group}".encode()).hexdigest(), 16)
+        return keys[h % len(keys)] == key
 
     async def _get(self, key: str) -> ent.Experiment:
         try:

@@ -9,8 +9,9 @@ from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.domain.services.conversation import ConversationService
 from tests.stubs import (FakeDB, StubAiUsageStore, StubApplicationStore,
-                         StubConversationStore, StubDocumentStore,
-                         StubEvidenceStore, StubOperationStore)
+                         StubChatJobStore, StubConversationStore,
+                         StubDocumentStore, StubEvidenceStore,
+                         StubOperationStore)
 
 
 def _now():
@@ -162,9 +163,10 @@ async def test_stream_message_stub_tokens_and_done():
     svc = _svc(convs)
     events = [e async for e in svc.stream_message(
         user_id, conv.id, "hello", {}, None, "SUGGEST")]
-    kinds = [k for k, _ in events]
+    kinds = [k for k, _, _ in events]
     assert kinds == ["token", "done"]
     assert events[0][1].startswith("(로컬 스텁)")
+    assert events[0][2] is None
     op = events[1][1]
     assert op.status == ent.OP_SUCCEEDED
     assert len(convs.messages) == 2
@@ -188,11 +190,29 @@ async def test_stream_message_ai_tokens_concat():
                        credential_mode="MANAGED", effort="LOW")
     events = [e async for e in svc.stream_message(
         user_id, conv.id, "hi", {}, ai, "SUGGEST")]
-    tokens = [p for k, p in events if k == "token"]
+    tokens = [p for k, p, _ in events if k == "token"]
     assert tokens == ["Hel", "lo"]
     assert events[-1][0] == "done"
     ai_msg = convs.messages[-1]
     assert ai_msg.text == "Hello" and ai_msg.role == "ASSISTANT"
+
+
+async def test_stream_active_replays_only_events_after_cursor():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    svc.jobs = StubChatJobStore(events=[
+        {"id": 1, "type": "token", "payload": {"text": "he"}},
+        {"id": 2, "type": "token", "payload": {"text": "llo"}},
+        {"id": 3, "type": "token", "payload": {"text": " world"}},
+        {"id": 4, "type": "done",
+         "payload": {"operation": {"status": "SUCCEEDED"}}},
+    ])
+    events = [e async for e in svc.stream_active(user_id, conv.id, after=2)]
+    assert events == [
+        ("token", " world", 3),
+        ("done", {"status": "SUCCEEDED"}, 4),
+    ]
 
 
 async def test_stream_message_validates_text():
