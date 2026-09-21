@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.db import NotFoundError
 from app.domain import entities as ent
@@ -206,6 +206,24 @@ class StubAiKeyStore:
     async def has(self, user_id: UUID, provider: str) -> bool:
         return (self.key is not None and self.key.provider == provider
                 and self.key.user_id == user_id)
+
+
+class StubChatJobStore:
+    def __init__(self, events: Optional[list] = None,
+                 status: str = "RUNNING"):
+        self.job_id = uuid4()
+        self.events = events or []
+        self.status = status
+
+    async def active_for_conversation(self, user_id: UUID,
+                                      conversation_id: UUID):
+        return self.job_id
+
+    async def events_since(self, job_id: UUID, after_id: int):
+        return [e for e in self.events if e["id"] > after_id]
+
+    async def status(self, job_id: UUID):
+        return self.status
 
 
 class StubAiUsageStore:

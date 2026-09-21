@@ -295,11 +295,11 @@ class ConversationService:
                     config={"configurable": {"thread_id": str(conversation_id)}},
                     stream_mode=["custom", "values"]):
                 if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
-                    yield ("token", chunk["token"])
+                    yield ("token", chunk["token"], None)
                 elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
-                    yield ("status", chunk["status"])
+                    yield ("status", chunk["status"], None)
                 elif mode == "values" and chunk.get("operation") is not None:
-                    yield ("done", chunk["operation"])
+                    yield ("done", chunk["operation"], None)
         finally:
             _BYOK_KEY.reset(token)
 
@@ -324,15 +324,16 @@ class ConversationService:
         return await self.jobs.active_for_conversation(
             user_id, conversation_id)
 
-    async def stream_active(self, user_id: UUID, conversation_id: UUID):
+    async def stream_active(self, user_id: UUID, conversation_id: UUID,
+                            after: int = 0):
         job_id = await self.active_job_id(user_id, conversation_id)
         if job_id is None:
             return
-        async for ev in self._pump_job_events(job_id):
+        async for ev in self._pump_job_events(job_id, after):
             yield ev
 
-    async def _pump_job_events(self, job_id: UUID):
-        last_id = 0
+    async def _pump_job_events(self, job_id: UUID, after: int = 0):
+        last_id = after
         idle = 0
         while True:
             rows = await self.jobs.events_since(job_id, last_id)
@@ -341,14 +342,14 @@ class ConversationService:
                 t = r["type"]
                 p = r["payload"]
                 if t == "token":
-                    yield ("token", p.get("text", ""))
+                    yield ("token", p.get("text", ""), r["id"])
                 elif t == "status":
-                    yield ("status", p.get("text", ""))
+                    yield ("status", p.get("text", ""), r["id"])
                 elif t == "done":
-                    yield ("done", p.get("operation"))
+                    yield ("done", p.get("operation"), r["id"])
                     return
                 elif t == "error":
-                    yield ("error", p.get("error") or {})
+                    yield ("error", p.get("error") or {}, r["id"])
                     return
             if rows:
                 idle = 0
@@ -358,7 +359,7 @@ class ConversationService:
                     st = await self.jobs.status(job_id)
                     if st == "FAILED":
                         yield ("error", {"code": "INTERNAL",
-                                         "message": "job failed"})
+                                         "message": "job failed"}, None)
                         return
                     if st == "DONE":
                         return
