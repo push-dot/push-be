@@ -24,6 +24,10 @@ SPECS = [
      "exclusion_group": "home-hero"},
     {"key": "home-cta", "variants": ["A", "B"],
      "exclusion_group": "home-hero"},
+    {"key": "stream-render", "variants": ["A", "B"],
+     "exclusion_group": "chat-core"},
+    {"key": "approval-surface", "variants": ["A", "B"],
+     "exclusion_group": "chat-core"},
 ]
 
 PROPENSITY = {
@@ -31,10 +35,18 @@ PROPENSITY = {
     "home-cta": {"A": 0.10, "B": 0.10},
 }
 
+NEUTRAL_PROPENSITY = 0.5
+
 
 def converts(user_id, key, variant) -> bool:
+    p = PROPENSITY.get(key, {}).get(variant, NEUTRAL_PROPENSITY)
     h = int(hashlib.sha256(f"{user_id}:{key}:conv".encode()).hexdigest(), 16)
-    return (h % 1000) / 1000 < PROPENSITY[key][variant]
+    return (h % 1000) / 1000 < p
+
+
+def aborts(user_id, key) -> bool:
+    h = int(hashlib.sha256(f"{user_id}:{key}:abort".encode()).hexdigest(), 16)
+    return key == "stream-render" and h % 10 == 0
 
 
 async def main() -> None:
@@ -55,17 +67,21 @@ async def main() -> None:
     violations = 0
     for u in users:
         keys_enrolled = []
+        seen_groups = set()
         for spec in SPECS:
             key = spec["key"]
             a = await svc.assignment(u, key)
             if not a.enrolled:
                 continue
+            if spec["exclusion_group"] in seen_groups:
+                violations += 1
+            seen_groups.add(spec["exclusion_group"])
             keys_enrolled.append(key)
             await svc.record_event(u, key, "exposure")
+            if aborts(u, key):
+                await svc.record_event(u, key, "aborted")
             if converts(u, key, a.variant):
                 await svc.record_event(u, key, "conversion")
-        if len(keys_enrolled) > 1:
-            violations += 1
         for key in keys_enrolled:
             enrolled[key] = enrolled.get(key, 0) + 1
 
