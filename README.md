@@ -22,6 +22,7 @@
 - **문서 파이프라인** — 생성 산출물을 `내 서류` 문서 버전으로 동기화하고 PDF(ReportLab)·DOCX(직접 zip+XML)로 렌더링
 - **지원 항목 자동 연결** — 공고 URL 감지 시 JobPosting + Application을 생성(또는 `source_url`로 중복 제거)하고 대화에 링크
 - **A/B 실험** — `EXPERIMENTS` env로 시드, 사용자별 결정적 배정과 이벤트 집계
+- **요청 상관키** — 미들웨어가 `x-request-id`를 수신·생성·에코하고 `http_request` JSON 로그에 `requestId`·`statusCode`·`durationMs`를 남김
 
 ## 아키텍처
 
