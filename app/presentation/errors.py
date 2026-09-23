@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 
 from fastapi import Request
@@ -78,11 +79,24 @@ class RequestIDMiddleware:
             rid = "req_" + str(uuid.uuid4())
         scope.setdefault("state", {})["request_id"] = rid
 
+        status = 0
+        started = time.perf_counter()
+
         async def send_with_rid(message: Message):
+            nonlocal status
             if message["type"] == "http.response.start":
+                status = message["status"]
                 hdrs = list(message.get("headers") or [])
                 hdrs.append((b"x-request-id", rid.encode()))
                 message["headers"] = hdrs
+            if message["type"] == "http.response.body" and not message.get(
+                    "more_body"):
+                logger.info(json.dumps({
+                    "event": "http_request", "requestId": rid,
+                    "method": scope.get("method", ""),
+                    "path": scope.get("path", ""), "statusCode": status,
+                    "durationMs": round(
+                        (time.perf_counter() - started) * 1000, 2)}))
             await send(message)
 
         await self.app(scope, receive, send_with_rid)
