@@ -105,7 +105,8 @@ async def sync_documents(svc, user_id, conv,
             else:
                 base = (conv.title or "").strip()
                 if base in ("", "새 채팅", "New chat"):
-                    base = _company_label(d) or "생성 문서"
+                    base = (await asyncio.to_thread(_company_label, d)
+                            or "생성 문서")
                 title = base + " " + label
                 doc = await docs.create(
                     user_id, None, title, kind, "CLASSIC", "ko")

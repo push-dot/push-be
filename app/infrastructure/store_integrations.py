@@ -119,13 +119,20 @@ class BillingStore(Store):
             "period_ends_at=COALESCE($5, period_ends_at) WHERE id=$1",
             user_id, plan, status, customer_id, period_ends_at)
 
+    async def lock_user(self, user_id: UUID) -> None:
+        await self.q().execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+            "billing:" + str(user_id))
+
     async def update_subscription_by_customer(self, customer_id: str, plan: str,
                                               status: str, period_ends_at) -> None:
-        await self.q().execute(
+        tag = await self.q().execute(
             "UPDATE users SET subscription_status=$2, "
             "period_ends_at=COALESCE($3, period_ends_at), "
             "plan=COALESCE($4, plan) "
             "WHERE stripe_customer_id=$1", customer_id, status, period_ends_at, plan)
+        if tag.split()[-1] == "0":
+            raise NotFoundError()
 
     async def user_id_by_stripe_customer(self, customer_id: str) -> UUID:
         return await self.q().fetchval(
@@ -134,7 +141,8 @@ class BillingStore(Store):
     async def append_ledger(self, e: LedgerEntry) -> None:
         await self.q().execute(
             "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, "
-            "balance_after, reference_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            "balance_after, reference_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) "
+            "ON CONFLICT (user_id, type, reference_id) DO NOTHING",
             e.id, e.user_id, e.type, e.amount_micro_credits, e.balance_after,
             e.reference_id, e.created_at)
 

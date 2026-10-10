@@ -3,7 +3,7 @@ import asyncio
 import re
 from contextvars import ContextVar
 from typing import Any, Optional, TypedDict
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from datetime import datetime, timezone
 
 from langgraph.config import get_stream_writer
@@ -34,6 +34,29 @@ def _now() -> datetime:
 _CO_NAME_RE = re.compile(r"^\[([^\[\]]{2,30})\]", re.M)
 _JOB_TITLE_RE = re.compile(r"^\[[^\[\]]{2,30}\]\s*([^|\n]{2,120})", re.M)
 _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
+
+
+def _stable_ids(job_id) -> tuple:
+    if job_id:
+        base = "push:chat:" + str(job_id)
+        return (uuid5(NAMESPACE_URL, base + ":user"),
+                uuid5(NAMESPACE_URL, base + ":assistant"),
+                uuid5(NAMESPACE_URL, base + ":op"))
+    return uuid4(), uuid4(), uuid4()
+
+
+def _load_artifacts(conv) -> list:
+    from app.infrastructure.resume_workspace import workspace_dir
+    wdir = workspace_dir(conv.id, getattr(conv, "title", "") or "")
+    arts = []
+    for f in sorted(wdir.iterdir()) if wdir.exists() else []:
+        if f.name.startswith(".") or f.suffix == ".pdf":
+            continue
+        try:
+            arts.append(f"### {f.name}\n" + f.read_text()[:10000])
+        except Exception:
+            continue
+    return arts
 
 
 def _company_from_pages(sections: list) -> str:
@@ -96,6 +119,8 @@ class ChatState(TypedDict, total=False):
     context_text: str
     completion: Any
     operation: Any
+    job_id: Any
+    usage_ids: list
     resume_flow: bool
     phase: int
     evidence_kinds: list
@@ -187,8 +212,9 @@ def build_chat_graph(svc, checkpointer=None):
                 "evidence_kinds": kinds}
 
     async def _persist_user_msg(state: ChatState) -> None:
+        user_msg_id, _, _ = _stable_ids(state.get("job_id"))
         user_msg = ent.Message(
-            id=uuid4(), user_id=state["user_id"],
+            id=user_msg_id, user_id=state["user_id"],
             conversation_id=state["conversation"].id,
             role="USER", text=state["text"],
             attachments=state.get("attachments") or [],
@@ -351,21 +377,11 @@ def build_chat_graph(svc, checkpointer=None):
                         "application link failed")
         phase = 0
         if resume_flow:
-            phase = resume_phase(
-                hist_text, getattr(conv, "id", None),
+            phase = await asyncio.to_thread(
+                resume_phase, hist_text, getattr(conv, "id", None),
                 getattr(conv, "title", "") or "")
             if getattr(conv, "id", None):
-                from app.infrastructure.resume_workspace import workspace_dir
-                wdir = workspace_dir(conv.id, getattr(conv, "title", "") or "")
-                arts = []
-                for f in sorted(wdir.iterdir()) if wdir.exists() else []:
-                    if f.name.startswith(".") or f.suffix == ".pdf":
-                        continue
-                    try:
-                        arts.append(f"### {f.name}\n" +
-                                    f.read_text()[:10000])
-                    except Exception:
-                        continue
+                arts = await asyncio.to_thread(_load_artifacts, conv)
                 if arts:
                     sections.append(
                         "[저장된 산출물 — 참고용. 이미 디스크에 저장됨. "
@@ -374,7 +390,8 @@ def build_chat_graph(svc, checkpointer=None):
                         "# file: 블록으로 해당 파일을 다시 출력할 것]\n" +
                         "\n\n".join(arts))
                     user_msg = "\n\n".join(sections)
-        system = _phase_prompt(phase) if resume_flow else ""
+        system = (await asyncio.to_thread(_phase_prompt, phase)
+                  if resume_flow else "")
         from app.infrastructure.resume_workspace import visible_prefix
         parts = []
         emitted = 0
@@ -401,6 +418,7 @@ def build_chat_graph(svc, checkpointer=None):
             text="".join(parts),
             input_tokens=usage["input_tokens"],
             output_tokens=usage["output_tokens"]),
+            "usage_ids": usage.get("usage_ids") or [],
             "resume_flow": resume_flow, "phase": phase}
 
     async def persist(state: ChatState) -> dict:
@@ -409,9 +427,10 @@ def build_chat_graph(svc, checkpointer=None):
         attachments = state["attachments"]
         completion = state.get("completion")
         now = _now()
-        op_id = uuid4()
+        user_msg_id, assistant_msg_id, op_id = _stable_ids(
+            state.get("job_id"))
         user_msg = ent.Message(
-            id=uuid4(), user_id=user_id, conversation_id=conv.id,
+            id=user_msg_id, user_id=user_id, conversation_id=conv.id,
             role="USER", text=state["text"], attachments=attachments,
             operation_id=op_id, created_at=now)
         if completion is None:
@@ -434,14 +453,15 @@ def build_chat_graph(svc, checkpointer=None):
                 if not saved and completion.text:
                     import logging
                     logging.getLogger(__name__).warning(
-                        "no artifacts saved; raw head=%r tail=%r",
-                        completion.text[:200], completion.text[-200:])
+                        "no artifacts saved; completion_len=%d",
+                        len(completion.text))
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception("artifact save failed")
                 saved = []
-            new_phase = resume_phase(
-                "", conv.id, conv.title or "") if saved else state.get("phase", 0)
+            new_phase = (await asyncio.to_thread(
+                resume_phase, "", conv.id, conv.title or "")
+                if saved else state.get("phase", 0))
             gate = gate_for_phase(new_phase - 1) if new_phase > state.get(
                 "phase", 0) else ""
             if gate and needs_gate(reply):
@@ -460,7 +480,7 @@ def build_chat_graph(svc, checkpointer=None):
                     import logging
                     logging.getLogger(__name__).exception("doc sync failed")
         assistant_msg = ent.Message(
-            id=uuid4(), user_id=user_id, conversation_id=conv.id,
+            id=assistant_msg_id, user_id=user_id, conversation_id=conv.id,
             role="ASSISTANT", text=assistant_text,
             attachments=doc_attachments,
             operation_id=op_id, created_at=now)
@@ -480,7 +500,8 @@ def build_chat_graph(svc, checkpointer=None):
             if completion is not None:
                 from app.domain.services.ai import record_usage
                 await record_usage(svc.usage, user_id, op_id,
-                                   ent.AiOptions(**state["ai"]), completion)
+                                   ent.AiOptions(**state["ai"]), completion,
+                                   state.get("usage_ids") or [])
             if (conv.title or "") in _PLACEHOLDER_TITLES:
                 try:
                     fresh = await svc.conversations.get(user_id, conv.id)

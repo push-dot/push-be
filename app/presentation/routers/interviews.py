@@ -5,10 +5,10 @@ from fastapi import APIRouter, Request
 from app.domain import entities as ent
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, optional_query_time, optional_query_uuid,
     page_body, page_request, param_id, parse_time_field,
 )
-from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -75,5 +75,5 @@ async def prepare_interview(id: str, request: Request):
     req = await bind_json(request, s.PrepareReq)
     op = await d.interviews.prepare(current_user(request).id,
                                     param_id(id, "id"),
-                                    req.expected_revision, _ai(req.ai))
+                                    req.expected_revision, ai_options(req.ai))
     return data(202, op)

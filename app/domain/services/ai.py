@@ -181,6 +181,7 @@ class AIGate:
         async def work():
             nonlocal out
             await self.usage.lock_user(user_id)
+            await self.usage.expire_stale()
             u = await self.users.get(user_id)
             now = _now()
             month_start = now.replace(day=1, hour=0, minute=0, second=0,
@@ -292,7 +293,7 @@ class AIGate:
             await self._release(usage_id)
             raise provider_error("AI provider request failed")
         await self._settle(usage_id, model, c.input_tokens, c.output_tokens)
-        return c
+        return c.model_copy(update={"usage_id": usage_id})
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
@@ -307,6 +308,9 @@ class AIGate:
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         usage_id = await self._reserve(user_id, ai, system, user)
+        if usage_id is not None:
+            usage.setdefault("usage_ids", []).append(usage_id)
+        settled = False
         try:
             chat_stream = getattr(chat, "chat_stream", None)
             if chat_stream is None:
@@ -320,20 +324,24 @@ class AIGate:
                                              reasoning, headers,
                                              assistant_prefix):
                     yield tok
+            await self._settle(usage_id, model,
+                               usage.get("input_tokens", 0),
+                               usage.get("output_tokens", 0))
+            settled = True
         except DomainError:
-            await self._release(usage_id)
             raise
         except Exception:
-            await self._release(usage_id)
             raise provider_error("AI provider request failed")
-        await self._settle(usage_id, model, usage.get("input_tokens", 0),
-                           usage.get("output_tokens", 0))
+        finally:
+            if not settled:
+                await self._release(usage_id)
 
 
 async def record_usage(usage: AiUsageStore, user_id: UUID, op_id: UUID,
-                       ai: ent.AiOptions, c: ent.AICompletion) -> None:
-    if ai.credential_mode == "MANAGED" and await usage.attach_operation(
-            user_id, ai.model, op_id):
+                       ai: ent.AiOptions, c: ent.AICompletion,
+                       usage_ids=()) -> None:
+    if ai.credential_mode == "MANAGED":
+        await usage.attach_operations(op_id, list(usage_ids))
         return
     await usage.create(ent.AiUsage(
         id=uuid4(), user_id=user_id, operation_id=op_id, provider=ai.provider,
@@ -380,7 +388,8 @@ class AIService:
                               "outputTokens": c.output_tokens}}),
                 created_at=now, updated_at=now)
             await self.ops.create(op)
-            await record_usage(self.usage, user_id, op_id, ai, c)
+            await record_usage(self.usage, user_id, op_id, ai, c,
+                               [c.usage_id] if c.usage_id else [])
 
         await self.db.run(work)
         return op

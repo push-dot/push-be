@@ -6,22 +6,12 @@ from app.domain import entities as ent
 from app.domain.errors import validation_field
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, optional_query_uuid, page_body,
     page_request, param_id,
 )
 
 router = APIRouter()
-
-
-
-
-def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
-    if req is None:
-        return None
-    return ent.AiOptions(provider=req.provider, model=req.model,
-                         credential_mode=req.credential_mode, effort=req.effort,
-                         ultra_resume=req.ultra_resume,
-                         web_search=req.web_search)
 
 
 @router.get("/documents")
@@ -86,7 +76,7 @@ async def get_version(id: str, versionId: str, request: Request):
 async def export_version(id: str, versionId: str, request: Request):
     from fastapi.responses import Response
 
-    from app.domain.errors import validation_field
+    from app.domain.errors import document_not_finalized, validation_field
     from app.infrastructure.doc_render import (
         render_docx, render_pdf, tiptap_to_lines)
 
@@ -98,6 +88,9 @@ async def export_version(id: str, versionId: str, request: Request):
     v = await d.documents.get_version(current_user(request).id,
                                       param_id(id, "id"),
                                       param_id(versionId, "versionId"))
+    if doc.finalized_version_id is None or doc.finalized_version_id != v.id:
+        raise document_not_finalized(
+            "only the finalized version can be exported")
     lines = tiptap_to_lines(v.content or {})
     import asyncio
     if fmt == "PDF":
@@ -140,7 +133,7 @@ async def generate_document(id: str, request: Request):
     op = await d.documents.generate(current_user(request).id,
                                     param_id(id, "id"), req.expected_revision,
                                     req.evidence_ids, req.analysis_id,
-                                    _ai(req.ai), req.language)
+                                    ai_options(req.ai), req.language)
     return data(202, op)
 
 
@@ -152,7 +145,7 @@ async def create_revision(id: str, request: Request):
                         text=req.selection.text)
     op = await d.documents.create_revision(
         current_user(request).id, param_id(id, "id"), req.expected_revision,
-        req.version_id, sel, req.action, req.instruction, _ai(req.ai))
+        req.version_id, sel, req.action, req.instruction, ai_options(req.ai))
     return data(202, op)
 
 

@@ -62,7 +62,9 @@ class ChatJobStore:
         return await self.db.pool.fetchval(
             "WITH r AS (UPDATE chat_jobs SET status='PENDING', "
             "run_at=now(), updated_at=$1 WHERE status='RUNNING' "
-            "RETURNING 1) SELECT count(*) FROM r", _now())
+            "RETURNING id), "
+            "d AS (DELETE FROM chat_events WHERE job_id IN (SELECT id FROM r)) "
+            "SELECT count(*) FROM r", _now())
 
     async def emit(self, job_id: UUID, type_: str, payload: dict) -> None:
         await self.db.q().execute(

@@ -6,7 +6,9 @@ import re
 import socket
 from urllib.parse import urljoin, urlparse
 
+import httpcore
 import httpx
+from httpcore._backends.auto import AutoBackend
 
 from app.domain.validators import validate_https_url
 
@@ -25,7 +27,7 @@ _BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIX = (".localhost", ".internal", ".local", ".lan", ".home")
 
 
-def _assert_public_sync(url: str) -> None:
+def _assert_public_sync(url: str) -> list:
     validate_https_url(url)
     host = (urlparse(url).hostname or "").lower()
     if host in _BLOCKED_HOSTS or host.endswith(_BLOCKED_SUFFIX):
@@ -41,16 +43,70 @@ def _assert_public_sync(url: str) -> None:
     for ip in ips:
         if not ip.is_global:
             raise ValueError("host resolves to a private address")
+    return [str(ip) for ip in ips]
 
 
-async def _assert_public(url: str) -> None:
-    await asyncio.to_thread(_assert_public_sync, url)
+async def _assert_public(url: str) -> list:
+    return await asyncio.to_thread(_assert_public_sync, url)
 
 
-# ponytail: DNS is resolved at check time but the socket re-resolves at
-# connect time, so a host that rebinds between the two can still reach a
-# private address; fix by pinning connect to the validated IPs (custom
-# httpx transport / getaddrinfo patch).
+class _PinnedBackend:
+    def __init__(self, pins: dict):
+        self._pins = pins
+        self._inner = AutoBackend()
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def connect_tcp(self, host: str, port: int, timeout=None,
+                          local_address=None, socket_options=None):
+        ips = self._pins.get(host.lower())
+        if not ips:
+            return await self._inner.connect_tcp(
+                host, port, timeout, local_address, socket_options)
+        err = None
+        for ip in ips:
+            try:
+                return await self._inner.connect_tcp(
+                    ip, port, timeout, local_address, socket_options)
+            except Exception as e:
+                err = e
+        raise err
+
+
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    def __init__(self):
+        self.pins: dict = {}
+        self._pool = httpcore.AsyncConnectionPool(
+            network_backend=_PinnedBackend(self.pins))
+
+    async def handle_async_request(self, request: httpx.Request):
+        from httpx._transports.default import (
+            AsyncResponseStream, map_httpcore_exceptions)
+        req = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions)
+        with map_httpcore_exceptions():
+            resp = await self._pool.handle_async_request(req)
+        return httpx.Response(
+            status_code=resp.status, headers=resp.headers,
+            stream=AsyncResponseStream(resp.stream),
+            extensions=resp.extensions)
+
+    async def aclose(self) -> None:
+        await self._pool.aclose()
+
+
+# ponytail: httpx connects to the pinned validated IPs, but the playwright
+# fallback resolves its own DNS per request; full fix needs an egress proxy
+# or browser-level connect pinning.
 
 
 def find_urls(text: str) -> list[str]:
@@ -106,13 +162,18 @@ async def _render_text(url: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
+    transport = _PinnedTransport()
     async with httpx.AsyncClient(
+            transport=transport,
             headers={"User-Agent": _UA, "Accept-Language": "ko,en;q=0.8"},
             timeout=15) as client:
         buf = bytearray()
         ct = ""
         for _ in range(6):
-            await _assert_public(url)
+            ips = await _assert_public(url)
+            transport.pins.clear()
+            transport.pins.update(
+                {(urlparse(url).hostname or "").lower(): ips})
             async with client.stream("GET", url) as r:
                 if r.is_redirect and "location" in r.headers:
                     url = urljoin(url, r.headers["location"])

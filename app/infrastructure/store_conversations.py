@@ -52,7 +52,8 @@ class ConversationStore(Store):
 
     async def create_message(self, m: Message) -> None:
         await self.q().execute(
-            f"INSERT INTO messages ({_MSG_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            f"INSERT INTO messages ({_MSG_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+            "ON CONFLICT (id) DO NOTHING",
             m.id, m.user_id, m.conversation_id, m.role, m.text, dump(m.attachments),
             m.operation_id, m.created_at)
 

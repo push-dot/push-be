@@ -5,22 +5,12 @@ from fastapi import APIRouter, Request
 from app.domain import entities as ent
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, page_body, page_request, param_id,
     parse_deadline,
 )
 
 router = APIRouter()
-
-
-
-
-def _ai(req: s.AiOptionsReq | None) -> ent.AiOptions | None:
-    if req is None:
-        return None
-    return ent.AiOptions(provider=req.provider, model=req.model,
-                         credential_mode=req.credential_mode, effort=req.effort,
-                         ultra_resume=req.ultra_resume,
-                         web_search=req.web_search, models=req.models)
 
 
 def job_dto(j: ent.JobPosting) -> dict:
@@ -89,7 +79,7 @@ async def analyze_job(id: str, request: Request):
     req = await bind_json(request, s.AnalyzeReq)
     op = await d.jobs.analyze(current_user(request).id, param_id(id, "id"),
                               req.application_id, req.expected_revision,
-                              req.evidence_ids, _ai(req.ai))
+                              req.evidence_ids, ai_options(req.ai))
     return data(202, op)
 
 

@@ -42,6 +42,11 @@ async def cancel_operation(id: str, request: Request):
 
 @router.get("/operations/{id}/events")
 async def operation_events(id: str, request: Request):
+    """One-shot snapshot of the operation's current state, not a live feed.
+
+    Emits progress, then result/error if terminal, then closes. Clients poll
+    or re-request to observe further transitions.
+    """
     d = deps(request)
     op = await d.operations.get(current_user(request).id, param_id(id, "id"))
     seq = 0

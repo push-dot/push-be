@@ -129,3 +129,12 @@ def parse_time_field(value: Optional[str], field: str) -> datetime:
         return parse_rfc3339(value)
     except ValueError:
         raise validation_field(field, "must be RFC3339")
+
+
+def ai_options(req) -> Optional[ent.AiOptions]:
+    if req is None:
+        return None
+    return ent.AiOptions(provider=req.provider, model=req.model,
+                         credential_mode=req.credential_mode, effort=req.effort,
+                         ultra_resume=req.ultra_resume,
+                         web_search=req.web_search, models=req.models)
