@@ -104,9 +104,77 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
         await self._pool.aclose()
 
 
-# ponytail: httpx connects to the pinned validated IPs, but the playwright
-# fallback resolves its own DNS per request; full fix needs an egress proxy
-# or browser-level connect pinning.
+async def _pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+def _parse_connect_target(line: bytes) -> tuple[str, int] | None:
+    try:
+        target = line.split()[1].decode("ascii", "replace")
+        if target.startswith("["):
+            host, _, port = target[1:].partition("]:")
+            return host, int(port)
+        host, _, port = target.rpartition(":")
+        return host, int(port)
+    except (IndexError, ValueError):
+        return None
+
+
+async def _start_egress_proxy() -> tuple[asyncio.AbstractServer, int]:
+    async def handle(reader, writer):
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=10)
+            parsed = _parse_connect_target(line) if line.startswith(b"CONNECT ") else None
+            while await reader.readline() not in (b"\r\n", b"\n", b""):
+                pass
+            if parsed is None:
+                writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                await writer.drain()
+                return
+            host, port = parsed
+            try:
+                ips = await asyncio.to_thread(
+                    _assert_public_sync, f"https://{host}/")
+            except Exception:
+                writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                await writer.drain()
+                return
+            remote = None
+            for ip in ips:
+                try:
+                    remote = await asyncio.open_connection(ip, port)
+                    break
+                except OSError:
+                    continue
+            if remote is None:
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                await writer.drain()
+                return
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            r2, w2 = remote
+            await asyncio.gather(_pipe(reader, w2), _pipe(r2, writer))
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    return server, port
 
 
 def find_urls(text: str) -> list[str]:
@@ -144,21 +212,27 @@ async def _render_text(url: str) -> str:
             return
         await route.continue_()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        try:
-            page = await browser.new_page(
-                user_agent=_UA, locale="ko-KR")
-            await page.route("**/*", guard)
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    proxy_server, proxy_port = await _start_egress_proxy()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                proxy={"server": f"http://127.0.0.1:{proxy_port}"})
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
-            text = await page.evaluate("document.body.innerText")
-            return _WS_RE.sub(" ", text or "").strip()[:_MAX_TEXT]
-        finally:
-            await browser.close()
+                page = await browser.new_page(
+                    user_agent=_UA, locale="ko-KR")
+                await page.route("**/*", guard)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+                text = await page.evaluate("document.body.innerText")
+                return _WS_RE.sub(" ", text or "").strip()[:_MAX_TEXT]
+            finally:
+                await browser.close()
+    finally:
+        proxy_server.close()
+        await proxy_server.wait_closed()
 
 
 async def fetch_page_text(url: str) -> str:
