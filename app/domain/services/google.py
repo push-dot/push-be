@@ -257,11 +257,7 @@ class GoogleService:
                 except Exception:
                     pass
 
-        async def work():
-            await self.store.delete_google_data(user_id)
-            await self.store.delete_google_integration(user_id)
-
-        await self.db.run(work)
+        await self.db.run(lambda: self.store.delete_google_data(user_id))
 
     async def sync(self, user_id: UUID) -> ent.Operation:
         try:

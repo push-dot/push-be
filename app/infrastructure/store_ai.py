@@ -54,8 +54,36 @@ class AiUsageStore(Store):
     async def sum_cost_since(self, user_id: UUID, since: datetime) -> int:
         return await self.q().fetchval(
             "SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage "
-            "WHERE user_id = $1 AND managed AND status = 'SETTLED' "
-            "AND created_at >= $2", user_id, since)
+            "WHERE user_id = $1 AND managed AND created_at >= $2 AND ("
+            "status = 'SETTLED' OR (status = 'RESERVED' "
+            "AND created_at > now() - interval '10 minutes'))",
+            user_id, since)
+
+    async def lock_user(self, user_id: UUID) -> None:
+        await self.q().execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1::text))", str(user_id))
+
+    async def settle(self, id_: UUID, input_tokens: int, output_tokens: int,
+                     cost_micro_credits: int) -> None:
+        await self.q().execute(
+            "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, "
+            "cost_micro_credits = $4, status = 'SETTLED' "
+            "WHERE id = $1 AND status = 'RESERVED'",
+            id_, input_tokens, output_tokens, cost_micro_credits)
+
+    async def release(self, id_: UUID) -> None:
+        await self.q().execute(
+            "UPDATE ai_usage SET cost_micro_credits = 0, status = 'RELEASED' "
+            "WHERE id = $1 AND status = 'RESERVED'", id_)
+
+    async def attach_operation(self, user_id: UUID, model: str,
+                               operation_id: UUID) -> bool:
+        return await self.q().fetchval(
+            "UPDATE ai_usage SET operation_id = $3 WHERE id = ("
+            "SELECT id FROM ai_usage WHERE user_id = $1 AND model = $2 "
+            "AND managed AND operation_id IS NULL "
+            "ORDER BY created_at DESC LIMIT 1) RETURNING id",
+            user_id, model, operation_id) is not None
 
     async def list(self, user_id: UUID, from_: Optional[datetime],
                    to: Optional[datetime], page) -> Page:

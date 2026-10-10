@@ -47,6 +47,12 @@ async def _assert_public(url: str) -> None:
     await asyncio.to_thread(_assert_public_sync, url)
 
 
+# ponytail: DNS is resolved at check time but the socket re-resolves at
+# connect time, so a host that rebinds between the two can still reach a
+# private address; fix by pinning connect to the validated IPs (custom
+# httpx transport / getaddrinfo patch).
+
+
 def find_urls(text: str) -> list[str]:
     seen, out = set(), []
     for u in _URL_RE.findall(text or ""):

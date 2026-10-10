@@ -45,10 +45,15 @@ class ChatJobStore:
             "WHERE id=$1", job_id, status, error, _now())
 
     async def requeue(self, job_id: UUID, delay_s: float) -> None:
-        await self.db.q().execute(
-            "UPDATE chat_jobs SET status='PENDING', "
-            "run_at=now() + make_interval(secs => $2), updated_at=$3 "
-            "WHERE id=$1", job_id, delay_s, _now())
+        async def work():
+            await self.db.q().execute(
+                "UPDATE chat_jobs SET status='PENDING', "
+                "run_at=now() + make_interval(secs => $2), updated_at=$3 "
+                "WHERE id=$1", job_id, delay_s, _now())
+            await self.db.q().execute(
+                "DELETE FROM chat_events WHERE job_id=$1", job_id)
+
+        await self.db.do(work)
 
     async def reset_stale(self) -> int:
         await self.db.pool.execute(

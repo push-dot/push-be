@@ -20,6 +20,14 @@ class UserStore(Store):
             "VALUES ($1,$2,$3,$4,$5,$6)",
             u.id, u.provider, u.provider_subject, u.display_name, u.locale, u.created_at)
 
+    async def create_or_get(self, u: User) -> User:
+        await self.q().execute(
+            "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6) "
+            "ON CONFLICT (provider, provider_subject) DO NOTHING",
+            u.id, u.provider, u.provider_subject, u.display_name, u.locale, u.created_at)
+        return await self.get_by_provider(u.provider, u.provider_subject)
+
     async def get(self, id_: UUID) -> User:
         return to_model(User, await self.one(f"SELECT {_USER_COLS} FROM users WHERE id = $1", id_))
 

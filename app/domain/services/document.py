@@ -177,7 +177,7 @@ class DocumentService:
                 if e is None:
                     try:
                         e = await self.evidence.get(user_id, ref.evidence_id)
-                    except Exception:
+                    except NotFoundError:
                         raise validation_field(
                             "blocks", "evidence " + str(ref.evidence_id) + " not found")
                     loaded[ref.evidence_id] = e
@@ -267,7 +267,7 @@ class DocumentService:
             for eid in evidence_ids:
                 try:
                     e = await self.evidence.get(user_id, eid)
-                except Exception:
+                except NotFoundError:
                     raise validation_field(
                         "evidenceIds", "evidence " + str(eid) + " not found")
                 if e.archived:
@@ -334,7 +334,7 @@ class DocumentService:
                 raise revision_conflict(d.revision)
             try:
                 v = await self.documents.get_version(user_id, doc_id, version_id)
-            except Exception:
+            except NotFoundError:
                 raise not_found()
             if not any(selection.text in b.text for b in v.blocks):
                 raise validation_field(
@@ -372,7 +372,7 @@ class DocumentService:
                 raise revision_conflict(d.revision)
             try:
                 p = await self.documents.get_proposal(user_id, doc_id, proposal_id)
-            except Exception:
+            except NotFoundError:
                 raise not_found()
             if p.applied_at is not None:
                 raise invalid_transition("proposal already applied")
@@ -448,7 +448,7 @@ class DocumentService:
                 raise revision_conflict(d.revision)
             try:
                 v = await self.documents.get_version(user_id, doc_id, version_id)
-            except Exception:
+            except NotFoundError:
                 raise not_found()
             blocks = copy.deepcopy(v.blocks)
             refs = await self._verify_blocks(user_id, d.application_id, blocks)
@@ -525,7 +525,7 @@ class DocumentService:
                 raise not_found()
             try:
                 v = await self.documents.get_version(user_id, doc_id, version_id)
-            except Exception:
+            except NotFoundError:
                 raise not_found()
             if d.finalized_version_id is None or d.finalized_version_id != v.id:
                 raise document_not_finalized(

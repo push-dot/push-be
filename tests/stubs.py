@@ -235,7 +235,34 @@ class StubAiUsageStore:
 
     async def sum_cost_since(self, user_id: UUID, since):
         return sum(u.cost_micro_credits for u in self.items
-                   if u.user_id == user_id and u.managed)
+                   if u.user_id == user_id and u.managed
+                   and u.status in (ent.USAGE_SETTLED, ent.USAGE_RESERVED))
+
+    async def lock_user(self, user_id: UUID):
+        pass
+
+    async def settle(self, id_, input_tokens, output_tokens, cost):
+        for u in self.items:
+            if u.id == id_ and u.status == ent.USAGE_RESERVED:
+                u.input_tokens = input_tokens
+                u.output_tokens = output_tokens
+                u.cost_micro_credits = cost
+                u.status = ent.USAGE_SETTLED
+
+    async def release(self, id_):
+        for u in self.items:
+            if u.id == id_ and u.status == ent.USAGE_RESERVED:
+                u.cost_micro_credits = 0
+                u.status = ent.USAGE_RELEASED
+
+    async def attach_operation(self, user_id: UUID, model: str, op_id):
+        rows = [u for u in self.items if u.user_id == user_id
+                and u.model == model and u.managed and u.operation_id is None]
+        rows.sort(key=lambda u: u.created_at, reverse=True)
+        if not rows:
+            return False
+        rows[0].operation_id = op_id
+        return True
 
     async def list(self, user_id: UUID, from_, to, page):
         from app.domain.pagination import new_page

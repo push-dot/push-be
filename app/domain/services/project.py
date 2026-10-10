@@ -457,24 +457,42 @@ class ProjectService:
             if e.status == PEV_VERIFIED:
                 raise invalid_transition("evidence already verified")
             now = _now()
-            e.verification_method = "UNAVAILABLE"
+            e.status = PEV_VERIFIED
+            e.verified_at = now
             e.updated_at = now
             try:
                 await self.projects.update_evidence(e, expected)
             except Exception as err:
                 raise map_revision_err(err)
             e.revision = expected + 1
+            try:
+                r = await self.projects.get_run(user_id, project_id, e.run_id)
+            except NotFoundError:
+                raise not_found()
+            if r.state == RUN_VERIFYING:
+                r.state = RUN_VERIFIED
+                r.updated_at = now
+                try:
+                    await self.projects.update_run(r, r.revision)
+                except Exception as err:
+                    raise map_revision_err(err)
+            try:
+                b = await self.projects.get_blueprint(user_id, project_id)
+            except NotFoundError:
+                raise not_found()
+            if b.state == ent.BLUEPRINT_IN_PROGRESS:
+                b.state = ent.BLUEPRINT_VERIFIED
+                b.updated_at = now
+                try:
+                    await self.projects.update_blueprint(b, b.revision)
+                except Exception as err:
+                    raise map_revision_err(err)
             op = ent.Operation(
                 id=uuid4(), user_id=user_id, type=ent.OP_PROJECT_VERIFY,
-                status=ent.OP_SUCCEEDED,
+                application_id=b.application_id, status=ent.OP_SUCCEEDED,
                 result=ent.OperationResult(kind=ent.OP_PROJECT_VERIFY,
                                            value=to_jsonable(e)),
                 created_at=now, updated_at=now)
-            try:
-                b = await self.projects.get_blueprint(user_id, project_id)
-                op.application_id = b.application_id
-            except Exception:
-                pass
             await self.ops.create(op)
 
         await self.db.run(work)

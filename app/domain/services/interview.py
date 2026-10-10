@@ -86,7 +86,7 @@ class InterviewService:
             for eid in evidence_ids or []:
                 try:
                     await self.evidence.get(user_id, eid)
-                except Exception:
+                except NotFoundError:
                     raise validation_field(
                         "evidenceIds", "evidence " + str(eid) + " not found")
             tz = time_zone or "UTC"
@@ -189,7 +189,10 @@ class InterviewService:
             ]
             star_answers = []
             for eid in v.evidence_ids:
-                e = await self.evidence.get(user_id, eid)
+                try:
+                    e = await self.evidence.get(user_id, eid)
+                except NotFoundError:
+                    raise not_found()
                 star_answers.append({
                     "evidenceIds": [str(eid)], "situation": e.title,
                     "task": "", "action": "", "result": "",

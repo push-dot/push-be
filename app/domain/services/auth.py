@@ -4,7 +4,7 @@ from typing import Optional
 from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
-from app.db import DB, NotFoundError, unique_violation
+from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
     not_configured, not_found, provider_error,
@@ -104,13 +104,7 @@ class AuthService:
             pass
         user = ent.User(id=uuid4(), provider=provider, provider_subject=subject,
                         display_name=display_name, locale="ko", created_at=now)
-        try:
-            await self.users.create(user)
-            return user
-        except Exception as err:
-            if not unique_violation(err):
-                raise
-            return await self.users.get_by_provider(provider, subject)
+        return await self.users.create_or_get(user)
 
     async def _issue_session(self, user_id: UUID, now: datetime) -> ent.Session:
         access, refresh = random_token(), random_token()
@@ -188,7 +182,7 @@ class AuthService:
             return
         try:
             rec = await self.sessions.get_refresh_token(token_hash(refresh_token))
-        except Exception:
+        except NotFoundError:
             return
         now = _now()
 

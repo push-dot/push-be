@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -9,6 +11,7 @@ from fastapi import APIRouter, Request
 from starlette.datastructures import UploadFile
 from fastapi.responses import FileResponse, Response
 
+from app.db import NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
     internal, invalid_transition, not_found, payload_too_large, validation_field,
@@ -17,6 +20,8 @@ from app.presentation import schemas as s
 from app.presentation.deps import (deps,
     bind_json, current_user, data, page_body, page_request, param_id,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -108,10 +113,14 @@ async def create_source(request: Request):
     sha = hashlib.sha256(buf).hexdigest()
     src_id = uuid4()
     path = os.path.join(d.storage_dir, str(user.id), str(src_id))
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(buf)
-    os.chmod(path, 0o600)
+
+    def _write():
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(buf)
+        os.chmod(path, 0o600)
+
+    await asyncio.to_thread(_write)
     src = ent.Source(id=src_id, user_id=user.id,
                      file_name=file.filename or "", mime_type=mime,
                      size=len(buf), sha256=sha, path=path, status="STORED",
@@ -119,6 +128,10 @@ async def create_source(request: Request):
     try:
         await d.sources.create(src)
     except Exception:
+        try:
+            await asyncio.to_thread(os.unlink, path)
+        except OSError:
+            logger.exception("source file cleanup failed %s", src_id)
         raise internal()
     return data(201, {"id": src.id, "fileName": src.file_name,
                       "mimeType": src.mime_type, "size": src.size,
@@ -131,7 +144,7 @@ async def get_source(id: str, request: Request):
     try:
         src = await d.sources.get(current_user(request).id,
                                   param_id(id, "id"))
-    except Exception:
+    except NotFoundError:
         raise not_found()
     return data(200, source_dto(src))
 
@@ -142,7 +155,7 @@ async def get_source_content(id: str, request: Request):
     try:
         src = await d.sources.get(current_user(request).id,
                                   param_id(id, "id"))
-    except Exception:
+    except NotFoundError:
         raise not_found()
     return FileResponse(src.path)
 
@@ -153,13 +166,20 @@ async def delete_source(id: str, request: Request):
     user_id = current_user(request).id
     sid = param_id(id, "id")
     try:
+        src = await d.sources.get(user_id, sid)
         ref = await d.sources.referenced(user_id, sid)
+    except NotFoundError:
+        raise not_found()
     except Exception:
         raise internal()
     if ref:
         raise invalid_transition("source is referenced by evidence")
     try:
         await d.sources.delete(user_id, sid)
-    except Exception:
+    except NotFoundError:
         raise not_found()
+    try:
+        await asyncio.to_thread(os.unlink, src.path)
+    except OSError:
+        logger.exception("source file unlink failed %s", sid)
     return Response(status_code=204)

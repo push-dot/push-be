@@ -23,9 +23,13 @@ class AnthropicClient:
         return headers
 
     def _body(self, model: str, system: str, user: str,
-              stream: bool) -> dict:
+              stream: bool, assistant_prefix: str = "") -> dict:
+        messages = [{"role": "user", "content": user}]
+        if assistant_prefix:
+            messages.append({"role": "assistant",
+                             "content": assistant_prefix})
         body = {"model": model, "max_tokens": _MAX_TOKENS,
-                "messages": [{"role": "user", "content": user}]}
+                "messages": messages}
         if system:
             body["system"] = system
         if stream:
@@ -55,10 +59,11 @@ class AnthropicClient:
 
     async def chat_stream(self, api_key: str, model: str, system: str,
                           user: str, usage: dict, reasoning: str = "",
-                          extra_headers: Optional[dict] = None):
+                          extra_headers: Optional[dict] = None,
+                          assistant_prefix: str = ""):
         async with self._client.stream(
                 "POST", self.base_url + "/v1/messages",
-                json=self._body(model, system, user, True),
+                json=self._body(model, system, user, True, assistant_prefix),
                 headers=self._headers(api_key, extra_headers)) as resp:
             if resp.status_code != 200:
                 await resp.aread()
@@ -81,6 +86,10 @@ class AnthropicClient:
                 elif kind == "message_delta":
                     u = chunk.get("usage") or {}
                     usage["output_tokens"] = u.get("output_tokens", 0)
+                    stop = (chunk.get("delta") or {}).get("stop_reason")
+                    if stop:
+                        usage["finish"] = ("length" if stop == "max_tokens"
+                                           else stop)
 
     async def list_models(self, api_key: str) -> list[str]:
         resp = await self._client.get(

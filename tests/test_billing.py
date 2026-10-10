@@ -75,6 +75,9 @@ class StubBillingStore:
     async def last_balance(self, user_id):
         return self.balance
 
+    async def delete_stripe_event(self, event_id):
+        pass
+
 
 class StubStripeGateway:
     def __init__(self, checkout=None, err=None):
@@ -149,3 +152,45 @@ async def test_webhook_checkout_completed_grants_credits():
     assert len(store.ledger) == 1
     assert store.ledger[0].amount_micro_credits == \
         ent.PLAN_CREDITS_MICRO[ent.PLAN_ULTRA]
+
+
+class RetryBillingStore(StubBillingStore):
+    def __init__(self):
+        super().__init__()
+        self.events = set()
+        self.fail_once = True
+
+    async def record_stripe_event(self, event_id, typ, at):
+        if event_id in self.events:
+            return False
+        self.events.add(event_id)
+        return True
+
+    async def delete_stripe_event(self, event_id):
+        self.events.discard(event_id)
+
+    async def append_ledger(self, e):
+        if self.fail_once:
+            self.fail_once = False
+            raise RuntimeError("db down")
+        self.ledger.append(e)
+
+
+async def test_webhook_retry_reprocesses_after_failure():
+    user_id = uuid4()
+    secret = "whsec_test"
+    payload = json.dumps({
+        "id": "evt_retry", "type": "checkout.session.completed",
+        "data": {"object": {
+            "id": "cs_2", "client_reference_id": str(user_id),
+            "customer": "cus_2", "metadata": {"planId": "PRO"}}},
+    }).encode()
+    store = RetryBillingStore()
+    svc = _svc(store=store, webhook_secret=secret,
+               prices={ent.PLAN_PRO: "price_pro"})
+    with pytest.raises(RuntimeError):
+        await svc.handle_webhook(payload, _sign(payload, secret, _now()))
+    assert "evt_retry" not in store.events
+    await svc.handle_webhook(payload, _sign(payload, secret, _now()))
+    assert len(store.ledger) == 1
+    assert "evt_retry" in store.events

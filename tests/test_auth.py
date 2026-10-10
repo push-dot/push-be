@@ -56,6 +56,27 @@ class StubUserStore:
         return self.user
 
 
+class ConcurrentUserStore(StubUserStore):
+    def __init__(self):
+        super().__init__(None)
+        self.by_provider = {}
+        self.plain_create_calls = 0
+
+    async def get_by_provider(self, provider, subject):
+        u = self.by_provider.get((provider, subject))
+        if u is None:
+            raise NotFoundError()
+        return u
+
+    async def create(self, u):
+        self.plain_create_calls += 1
+        raise RuntimeError("unique violation: aborted transaction")
+
+    async def create_or_get(self, u):
+        return self.by_provider.setdefault(
+            (u.provider, u.provider_subject), u)
+
+
 def _user():
     return ent.User(id=uuid4(), provider="google", provider_subject="s",
                     display_name="U", locale="ko", created_at=datetime.now(timezone.utc))
@@ -106,3 +127,16 @@ async def test_refresh_unknown_token():
         await _svc(sessions, _user()).refresh("rt")
     assert exc.value.status == 401
     assert sessions.revoked_all == []
+
+
+@pytest.mark.asyncio
+async def test_oauth_concurrent_first_login():
+    import asyncio
+    svc = _svc(StubSessionStore(), None)
+    svc.users = ConcurrentUserStore()
+    now = datetime.now(timezone.utc)
+    first, second = await asyncio.gather(
+        svc._upsert_user("google", "sub-1", "U", now),
+        svc._upsert_user("google", "sub-1", "U", now))
+    assert first.provider_subject == second.provider_subject
+    assert svc.users.plain_create_calls == 0

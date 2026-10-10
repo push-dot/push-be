@@ -45,10 +45,11 @@ class OperationService:
                 await self.evidence.complete_import_input(op, fields)
             else:
                 raise invalid_transition("operation does not accept input")
-            op.input_request = None
+            if op.status != ent.OP_NEEDS_INPUT:
+                op.input_request = None
+                if not ent.terminal_operation_status(op.status):
+                    op.status = ent.OP_QUEUED
             op.updated_at = _now()
-            if op.status == ent.OP_NEEDS_INPUT:
-                op.status = ent.OP_QUEUED
             await self.ops.update(op)
             out = op
 

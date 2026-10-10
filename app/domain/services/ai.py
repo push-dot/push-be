@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -51,6 +52,7 @@ class AIGate:
     def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None,
                  go_chat=None, go_key: str = "", openrouter_chat=None,
                  grok_chat=None, claude_chat=None):
+        self.db = db
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
         self.usage = AiUsageStore(db)
@@ -69,18 +71,38 @@ class AIGate:
         }
         self.byok_enabled = cipher is not None
 
+    async def _meter(self, user_id: Optional[UUID], model: str,
+                     input_tokens: int, output_tokens: int) -> None:
+        if user_id is None:
+            return
+        try:
+            await self.usage.create(ent.AiUsage(
+                id=uuid4(), user_id=user_id, provider="OPENAI", model=model,
+                managed=True, input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_micro_credits=ent.ai_cost_micro_credits(
+                    "OPENAI", model, input_tokens, output_tokens),
+                status=ent.USAGE_SETTLED, created_at=_now()))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "usage metering failed user=%s model=%s", user_id, model)
+
     async def embed(self, texts: list[str],
-                    model: str = "openai/text-embedding-3-small"
-                    ) -> list[list[float]]:
+                    model: str = "openai/text-embedding-3-small",
+                    user_id: Optional[UUID] = None) -> list[list[float]]:
         if not self.managed_key or self.chat is None or not texts:
             return []
         try:
-            return await self.chat.embed(self.managed_key, model, texts)
+            vecs = await self.chat.embed(self.managed_key, model, texts)
         except Exception:
             return []
+        await self._meter(user_id, model, sum(
+            code_point_len(t) for t in texts) // 4, 0)
+        return vecs
 
     async def company_research(self, company: str, model: str = "",
-                               context: str = "") -> str:
+                               context: str = "",
+                               user_id: Optional[UUID] = None) -> str:
         if not self.managed_key or self.chat is None:
             return ""
         try:
@@ -94,9 +116,11 @@ class AIGate:
                 "조회 결과가 해당 회사와 무관하면 무관하다고만 답해.",
                 company + ("\n\n[공고 컨텍스트]\n" + context[:3000]
                            if context else ""))
-            return c.text
         except Exception:
             return ""
+        await self._meter(user_id, model or _SEARCH_MODEL,
+                          c.input_tokens, c.output_tokens)
+        return c.text
 
     async def check(self, user_id: UUID, ai: Optional[ent.AiOptions],
                     byok_key: str = "") -> None:
@@ -148,7 +172,60 @@ class AIGate:
         except Exception:
             raise integration_required("BYOK key could not be decrypted")
 
-    async def _search_context(self, ai: ent.AiOptions, user: str) -> str:
+    async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
+                       system: str, user: str) -> Optional[UUID]:
+        if ai.credential_mode != "MANAGED":
+            return None
+        out = None
+
+        async def work():
+            nonlocal out
+            await self.usage.lock_user(user_id)
+            u = await self.users.get(user_id)
+            now = _now()
+            month_start = now.replace(day=1, hour=0, minute=0, second=0,
+                                      microsecond=0)
+            spent = await self.usage.sum_cost_since(user_id, month_start)
+            if spent >= ent.PLAN_CREDITS_MICRO.get(u.plan, 0):
+                raise feature_disabled(
+                    "monthly managed AI usage limit reached for plan " + u.plan)
+            est_in = code_point_len(system + user) // 4
+            row = ent.AiUsage(
+                id=uuid4(), user_id=user_id, provider="OPENAI", model=ai.model,
+                managed=True, input_tokens=est_in, output_tokens=2048,
+                cost_micro_credits=ent.ai_cost_micro_credits(
+                    "OPENAI", ai.model, est_in, 2048),
+                status=ent.USAGE_RESERVED, created_at=now)
+            await self.usage.create(row)
+            out = row.id
+
+        await self.db.run(work)
+        return out
+
+    async def _settle(self, usage_id: Optional[UUID], model: str,
+                      input_tokens: int, output_tokens: int) -> None:
+        if usage_id is None:
+            return
+        try:
+            await self.usage.settle(
+                usage_id, input_tokens, output_tokens,
+                ent.ai_cost_micro_credits("OPENAI", model,
+                                          input_tokens, output_tokens))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "usage settle failed id=%s", usage_id)
+
+    async def _release(self, usage_id: Optional[UUID]) -> None:
+        if usage_id is None:
+            return
+        try:
+            await self.usage.release(usage_id)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "usage release failed id=%s", usage_id)
+
+    async def _search_context(self, user_id: UUID, ai: ent.AiOptions,
+                              user: str) -> str:
         if not ai.web_search:
             return ""
         if not self.managed_key or self.chat is None:
@@ -162,6 +239,8 @@ class AIGate:
             raise
         except Exception:
             raise provider_error("web search failed")
+        await self._meter(user_id, _SEARCH_MODEL,
+                          c.input_tokens, c.output_tokens)
         return "\n\n[웹 검색 결과]\n" + c.text
 
     async def _route(self, user_id: UUID, ai: ent.AiOptions,
@@ -203,14 +282,17 @@ class AIGate:
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(ai, search_query or user)
+        system += await self._search_context(user_id, ai, search_query or user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
+        usage_id = await self._reserve(user_id, ai, system, user)
         try:
-            return await chat.chat(key, model, system, user, reasoning,
-                                   headers)
+            c = await chat.chat(key, model, system, user, reasoning, headers)
         except Exception:
+            await self._release(usage_id)
             raise provider_error("AI provider request failed")
+        await self._settle(usage_id, model, c.input_tokens, c.output_tokens)
+        return c
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
@@ -221,9 +303,10 @@ class AIGate:
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(ai, search_query or user)
+        system += await self._search_context(user_id, ai, search_query or user)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
+        usage_id = await self._reserve(user_id, ai, system, user)
         try:
             chat_stream = getattr(chat, "chat_stream", None)
             if chat_stream is None:
@@ -232,19 +315,26 @@ class AIGate:
                 usage["input_tokens"] = c.input_tokens
                 usage["output_tokens"] = c.output_tokens
                 yield c.text
-                return
-            async for tok in chat_stream(key, model, system, user, usage,
-                                         reasoning, headers,
-                                         assistant_prefix):
-                yield tok
+            else:
+                async for tok in chat_stream(key, model, system, user, usage,
+                                             reasoning, headers,
+                                             assistant_prefix):
+                    yield tok
         except DomainError:
+            await self._release(usage_id)
             raise
         except Exception:
+            await self._release(usage_id)
             raise provider_error("AI provider request failed")
+        await self._settle(usage_id, model, usage.get("input_tokens", 0),
+                           usage.get("output_tokens", 0))
 
 
 async def record_usage(usage: AiUsageStore, user_id: UUID, op_id: UUID,
                        ai: ent.AiOptions, c: ent.AICompletion) -> None:
+    if ai.credential_mode == "MANAGED" and await usage.attach_operation(
+            user_id, ai.model, op_id):
+        return
     await usage.create(ent.AiUsage(
         id=uuid4(), user_id=user_id, operation_id=op_id, provider=ai.provider,
         model=ai.model, managed=ai.credential_mode == "MANAGED",

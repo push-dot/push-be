@@ -82,7 +82,8 @@ class ApprovalStore(Store):
                           target_id: UUID, now: datetime) -> Approval:
         return to_model(Approval, await self.one(
             f"SELECT {_APPR_COLS} FROM approvals WHERE user_id = $1 AND kind = $2 AND "
-            "application_id = $3 AND target_id = $4 AND status IN ('APPROVED','PENDING') "
+            "application_id IS NOT DISTINCT FROM $3 AND target_id = $4 "
+            "AND status IN ('APPROVED','PENDING') "
             "AND (expires_at IS NULL OR expires_at > $5) "
             "ORDER BY created_at DESC LIMIT 1",
             user_id, kind, application_id, target_id, now))

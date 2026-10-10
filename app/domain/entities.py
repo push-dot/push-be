@@ -721,7 +721,7 @@ class Approval(Model):
     user_id: UUID = Field(exclude=True)
     revision: int = 1
     kind: str
-    application_id: UUID
+    application_id: Optional[UUID] = None
     target_id: UUID
     target_revision: Optional[int] = None
     payload_hash: str

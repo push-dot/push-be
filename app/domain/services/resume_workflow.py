@@ -7,7 +7,7 @@ from app.jsonutil import to_jsonable
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
-from app.domain.errors import not_found, validation_field
+from app.domain.errors import DomainError, not_found, validation_field
 from app.domain.pagination import PageRequest
 from app.domain.services.application import ApplicationService
 from app.domain.services.approval import ApprovalService
@@ -62,7 +62,9 @@ class ResumeWorkflowService:
             try:
                 await self.approvals.require_evidence_use(
                     user_id, app.id, e.id)
-            except Exception:
+            except DomainError as err:
+                if err.code != "APPROVAL_REQUIRED":
+                    raise
                 await self._approve(
                     user_id, ent.APPROVAL_EVIDENCE_USE, app.id, e.id)
         eids = [e.id for e in pool]

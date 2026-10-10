@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from starlette.types import Message, Receive, Scope, Send
@@ -23,6 +24,9 @@ _PUBLIC_EXACT = {
 }
 _PUBLIC_PATTERN = re.compile(r"^/api/v1/auth/[^/]+/(start|callback)$")
 _IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
+_PENDING_TTL = timedelta(minutes=5)
+
+logger = logging.getLogger(__name__)
 
 
 def _is_public(path: str) -> bool:
@@ -142,18 +146,27 @@ class ApiMiddleware:
             except Exception:
                 await self._error(send, 500, "INTERNAL", "internal error", rid)
                 return
-            if (existing.request_hash != request_hash
-                    or existing.response_status is None):
-                await self._error(send, 409, "IDEMPOTENCY_CONFLICT",
-                                  "idempotency key conflict", rid)
+            if existing.response_status is None and datetime.now(
+                    timezone.utc) - existing.created_at > _PENDING_TTL:
+                try:
+                    await self.idem.delete_pending(existing.id)
+                    inserted = await self.idem.insert_pending(rec)
+                except Exception:
+                    logger.exception("idempotency stale pending cleanup failed")
+                    inserted = False
+            if not inserted:
+                if (existing.request_hash != request_hash
+                        or existing.response_status is None):
+                    await self._error(send, 409, "IDEMPOTENCY_CONFLICT",
+                                      "idempotency key conflict", rid)
+                    return
+                payload = existing.response_body or b""
+                await send({"type": "http.response.start",
+                            "status": existing.response_status,
+                            "headers": [(b"content-type",
+                                         b"application/json; charset=utf-8")]})
+                await send({"type": "http.response.body", "body": payload})
                 return
-            payload = existing.response_body or b""
-            await send({"type": "http.response.start",
-                        "status": existing.response_status,
-                        "headers": [(b"content-type",
-                                     b"application/json; charset=utf-8")]})
-            await send({"type": "http.response.body", "body": payload})
-            return
 
         sent = False
 
@@ -180,17 +193,21 @@ class ApiMiddleware:
         try:
             await self.app(scope, replay_receive, capture_send)
         except Exception:
+            logger.exception("idempotent handler failed rid=%s %s", rid, path)
             handler_failed = True
         if handler_failed or not (200 <= status < 300):
             try:
                 await self.idem.delete_pending(rec.id)
             except Exception:
-                pass
+                logger.exception("idempotency delete_pending failed rid=%s", rid)
         else:
             try:
                 await self.idem.complete(rec.id, status, bytes(captured))
             except Exception:
-                pass
+                logger.exception("idempotency complete failed rid=%s", rid)
+        if handler_failed and not start_message:
+            await self._error(send, 500, "INTERNAL", "internal error", rid)
+            return
         if start_message:
             await send(dict(start_message))
         await send({"type": "http.response.body", "body": bytes(captured)})

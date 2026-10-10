@@ -211,7 +211,7 @@ class ApplicationService:
             for vid in document_version_ids:
                 try:
                     v = await self.documents.get_version(user_id, nil, vid)
-                except Exception:
+                except NotFoundError:
                     raise validation_field(
                         "documentVersionIds", "version " + str(vid) + " not found")
                 if v.application_id != app_id:
@@ -255,7 +255,7 @@ class ApplicationService:
                 raise revision_conflict(a.revision)
             try:
                 d = await self.submissions.get_draft(user_id, draft_id)
-            except Exception:
+            except NotFoundError:
                 raise validation_field("draftId", "draft not found")
             if d.application_id != app_id:
                 raise validation_field(

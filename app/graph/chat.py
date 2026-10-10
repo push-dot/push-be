@@ -264,13 +264,14 @@ def build_chat_graph(svc, checkpointer=None):
                 try:
                     e = await svc.evidence.get(state["user_id"], eid)
                     texts = _chunk_text(e.source_text)
-                    vecs = await svc.ai.embed(texts)
+                    vecs = await svc.ai.embed(texts, user_id=state["user_id"])
                     if len(vecs) == len(texts):
                         await svc.chunks.replace_chunks(
                             state["user_id"], eid, list(zip(texts, vecs)))
                 except Exception:
                     continue
-            qvec = await svc.ai.embed([state["text"][:2000]])
+            qvec = await svc.ai.embed([state["text"][:2000]],
+                                    user_id=state["user_id"])
             if qvec:
                 hits = await svc.chunks.search(state["user_id"], qvec[0], 6)
                 rag = [h for h in hits
@@ -314,7 +315,8 @@ def build_chat_graph(svc, checkpointer=None):
                     (s for s in sections if s.startswith("[웹 페이지]")), "")
                 research = await svc.ai.company_research(
                     company, role_models.get("research", ""),
-                    state["text"] + "\n" + page_ctx[:2000])
+                    state["text"] + "\n" + page_ctx[:2000],
+                    user_id=state["user_id"])
                 if research:
                     sections.append("[회사 검색] " + company + "\n" + research)
         if hist_lines:

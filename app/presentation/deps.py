@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -91,6 +91,8 @@ def optional_query_time(request: Request, name: str) -> Optional[datetime]:
 
 def parse_rfc3339(s: str) -> datetime:
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
 
@@ -112,7 +114,7 @@ def parse_deadline(value: Optional[str], present: bool):
     if value is None:
         return None, True
     try:
-        dt = datetime.strptime(value, "%Y-%m-%d")
+        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         raise validation_field("deadline", "must be YYYY-MM-DD")
     if dt.strftime("%Y-%m-%d") != value:

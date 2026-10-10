@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -20,6 +21,11 @@ def _now() -> datetime:
 
 
 IMPORT_FORMATS = {"TEXT", "MARKDOWN", "PDF", "DOCX", "GITHUB"}
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 
 def validate_evidence_input(kind: str, title: str, source_text: str,
@@ -151,8 +157,7 @@ class EvidenceService:
                 return await extract_pdf_text(src.path)
             if src.mime_type.startswith("text/") or src.file_name.lower().endswith(
                     (".txt", ".md", ".markdown")):
-                with open(src.path, encoding="utf-8", errors="replace") as f:
-                    return f.read()
+                return await asyncio.to_thread(_read_text, src.path)
         except Exception:
             raise internal()
         raise validation_field(

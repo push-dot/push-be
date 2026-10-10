@@ -129,6 +129,11 @@ async def _sse_frames(gen, request: Request):
             {"type": "error",
              "error": {"code": e.code, "message": e.message,
                        "details": e.details}}) + "\n\n"
+    except Exception:
+        yield "data: " + json.dumps(
+            {"type": "error",
+             "error": {"code": "INTERNAL", "message": "internal error",
+                       "details": None}}) + "\n\n"
 
 
 def _sse_response(gen):

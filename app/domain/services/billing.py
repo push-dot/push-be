@@ -125,11 +125,18 @@ class BillingService:
         if not fresh:
             return
         obj = (event.get("data") or {}).get("object") or {}
-        if event["type"] == "checkout.session.completed":
-            await self._checkout_completed(obj)
-        elif event["type"] in ("customer.subscription.updated",
-                               "customer.subscription.deleted"):
-            await self._subscription_changed(event["type"], obj)
+        try:
+            if event["type"] == "checkout.session.completed":
+                await self._checkout_completed(obj)
+            elif event["type"] in ("customer.subscription.updated",
+                                   "customer.subscription.deleted"):
+                await self._subscription_changed(event["type"], obj)
+        except Exception:
+            try:
+                await self.billing.delete_stripe_event(event["id"])
+            except Exception:
+                pass
+            raise
 
     async def _checkout_completed(self, obj: dict) -> None:
         try:
@@ -154,6 +161,14 @@ class BillingService:
 
         await self.db.run(work)
 
+    def _plan_for_subscription(self, obj: dict) -> str:
+        items = ((obj.get("items") or {}).get("data")) or []
+        price = ""
+        if items:
+            price = (items[0].get("price") or {}).get("id", "")
+        by_price = {v: k for k, v in self.prices.items()}
+        return by_price.get(price)
+
     async def _subscription_changed(self, typ: str, obj: dict) -> None:
         customer = obj.get("customer", "")
         if not customer:
@@ -165,8 +180,10 @@ class BillingService:
         status = ent.SUB_ACTIVE
         if typ == "customer.subscription.deleted" or obj.get("status") == "canceled":
             status = ent.SUB_CANCELED
+        plan = (ent.PLAN_FREE if status == ent.SUB_CANCELED
+                else self._plan_for_subscription(obj))
         try:
             await self.billing.update_subscription_by_customer(
-                customer, status, period_end)
+                customer, plan, status, period_end)
         except Exception:
             raise internal()

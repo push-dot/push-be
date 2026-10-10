@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -80,14 +81,9 @@ async def sync_documents(svc, user_id, conv,
     import json
     import logging
     from uuid import UUID
-    d = workspace_dir(conv.id, conv.title or "")
+    d = await asyncio.to_thread(workspace_dir, conv.id, conv.title or "")
     map_file = d / ".docs.json"
-    mapping: dict = {}
-    if map_file.exists():
-        try:
-            mapping = json.loads(map_file.read_text())
-        except Exception:
-            mapping = {}
+    mapping: dict = await asyncio.to_thread(_load_mapping, map_file)
     if getattr(svc, "document_svc", None) is None:
         return []
     docs = svc.document_svc
@@ -97,7 +93,7 @@ async def sync_documents(svc, user_id, conv,
         if not _DOC_FILE.match(name):
             continue
         kind, label = _kind_of(name)
-        body = (d / name).read_text()
+        body = await asyncio.to_thread((d / name).read_text)
         content, blocks = md_to_doc(body)
         doc_id = mapping.get(kind)
         try:
@@ -124,8 +120,18 @@ async def sync_documents(svc, user_id, conv,
             logging.getLogger(__name__).exception(
                 "doc sync failed for %s", name)
     if changed:
-        map_file.write_text(json.dumps(mapping))
+        await asyncio.to_thread(map_file.write_text, json.dumps(mapping))
     return synced
+
+
+def _load_mapping(map_file: Path) -> dict:
+    import json
+    if map_file.exists():
+        try:
+            return json.loads(map_file.read_text())
+        except Exception:
+            return {}
+    return {}
 
 
 def _company_label(d: Path) -> str:

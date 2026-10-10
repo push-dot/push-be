@@ -168,3 +168,33 @@ async def test_sync_requires_connection():
     with pytest.raises(DomainError) as e:
         await _svc().sync(uuid4())
     assert e.value.code == "INTEGRATION_REQUIRED"
+
+
+class CountingStore(StubGoogleStore):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.delete_calls = 0
+
+    async def delete_google_data(self, user_id):
+        self.delete_calls += 1
+        self.integration = None
+
+    async def delete_google_integration(self, user_id):
+        self.delete_calls += 1
+        self.integration = None
+
+
+async def test_disconnect_deletes_once():
+    user_id = uuid4()
+    store = CountingStore(integration=ent.GoogleIntegration(
+        user_id=user_id, access_ciphertext=b"ct:at", access_nonce=b"n",
+        created_at=_now(), updated_at=_now()))
+    await _svc(store=store).disconnect(user_id)
+    assert store.delete_calls == 1
+    assert store.integration is None
+
+
+async def test_disconnect_without_integration_is_noop():
+    store = CountingStore()
+    await _svc(store=store).disconnect(uuid4())
+    assert store.delete_calls == 0

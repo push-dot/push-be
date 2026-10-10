@@ -243,6 +243,42 @@ async def test_gate_reasoning_effort_managed_only():
     assert byok_chat.got["reasoning"] == ""
 
 
+async def test_claude_stream_accepts_assistant_prefix():
+    import inspect
+    from app.infrastructure.anthropic_client import AnthropicClient
+    sig = inspect.signature(AnthropicClient.chat_stream)
+    assert "assistant_prefix" in sig.parameters
+    client = AnthropicClient()
+    body = client._body("m", "sys", "user", True, "continued-")
+    assert body["messages"][-1] == {"role": "assistant",
+                                    "content": "continued-"}
+
+
+async def test_gate_stream_passes_assistant_prefix():
+    user_id = uuid4()
+
+    class RecordingClient(StubChatCompleter):
+        async def chat_stream(self, api_key, model, system, user, usage,
+                              reasoning="", extra_headers=None,
+                              assistant_prefix=""):
+            self.prefix = assistant_prefix
+            async for tok in super().chat_stream(
+                    api_key, model, system, user, usage, reasoning,
+                    extra_headers, assistant_prefix):
+                yield tok
+
+    claude = RecordingClient(text="ok")
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(),
+               StubChatCompleter(), claude_chat=claude)
+    ai = ent.AiOptions(provider="CLAUDE", model="claude-sonnet-4",
+                       credential_mode="BYOK", effort="LOW")
+    usage = {}
+    toks = [t async for t in g.stream(
+        user_id, ai, "sys", "hi", usage, byok_key="sk-x",
+        assistant_prefix="partial-")]
+    assert toks == ["ok"] and claude.prefix == "partial-"
+
+
 async def test_gate_web_search_byok_injects_managed_results():
     user_id = uuid4()
     managed_chat = StubChatCompleter(text="search results")

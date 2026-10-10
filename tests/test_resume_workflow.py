@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.domain import entities as ent
+from app.domain.errors import approval_required
 from app.domain.pagination import Page
 from app.domain.services.resume_workflow import ResumeWorkflowService
 from tests.stubs import FakeDB, StubOperationStore
@@ -62,7 +63,7 @@ class _Approvals:
 
     async def require_evidence_use(self, user_id, app_id, eid):
         self.required.append(eid)
-        raise RuntimeError("not approved")
+        raise approval_required("not approved")
 
     async def create(self, user_id, kind, app_id, target_id, rev):
         return ent.Approval(

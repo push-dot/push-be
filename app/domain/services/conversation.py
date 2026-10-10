@@ -47,6 +47,7 @@ class ConversationService:
         self._byok_keys: dict[UUID, str] = {}
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
+        self._inflight: set[asyncio.Task] = set()
         self.graph = build_chat_graph(self, checkpointer)
 
     async def start_worker(self) -> None:
@@ -59,7 +60,13 @@ class ConversationService:
     async def stop_worker(self) -> None:
         if self._worker_task:
             self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
             self._worker_task = None
+        if self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
 
     async def _worker_loop(self) -> None:
         log = logging.getLogger(__name__)
@@ -73,7 +80,9 @@ class ConversationService:
             if job is None:
                 await asyncio.sleep(0.3)
                 continue
-            asyncio.create_task(self._run_job(job))
+            t = asyncio.create_task(self._run_job(job))
+            self._inflight.add(t)
+            t.add_done_callback(self._inflight.discard)
 
     async def _run_job(self, job: dict) -> None:
         log = logging.getLogger(__name__)
@@ -332,10 +341,17 @@ class ConversationService:
         async for ev in self._pump_job_events(job_id, after):
             yield ev
 
+    _PUMP_MAX_WAIT_S = 300.0
+
     async def _pump_job_events(self, job_id: UUID, after: int = 0):
         last_id = after
         idle = 0
+        deadline = asyncio.get_running_loop().time() + self._PUMP_MAX_WAIT_S
         while True:
+            if asyncio.get_running_loop().time() > deadline:
+                yield ("error", {"code": "INTERNAL",
+                                 "message": "job timed out"}, None)
+                return
             rows = await self.jobs.events_since(job_id, last_id)
             for r in rows:
                 last_id = r["id"]

@@ -35,18 +35,32 @@ async def domain_error_handler(request: Request, exc: DomainError):
 
 async def validation_error_handler(request: Request,
                                    exc: RequestValidationError):
+    details = [
+        {"field": ".".join(str(p) for p in e.get("loc", [])),
+         "message": e.get("msg", "")}
+        for e in exc.errors()]
     return JSONResponse(
         status_code=400,
         content=error_body("VALIDATION_ERROR", "invalid request",
-                           request_id_of(request)))
+                           request_id_of(request), details or None))
+
+
+_STATUS_CODES = {
+    400: "VALIDATION_ERROR",
+    401: "UNAUTHENTICATED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "NOT_FOUND",
+    409: "CONFLICT",
+    413: "PAYLOAD_TOO_LARGE",
+    429: "RATE_LIMITED",
+}
 
 
 async def http_error_handler(request: Request, exc: HTTPException):
-    code = "VALIDATION_ERROR"
-    if exc.status_code in (404, 405):
-        code = "NOT_FOUND"
-    elif exc.status_code == 401:
-        code = "UNAUTHENTICATED"
+    code = _STATUS_CODES.get(exc.status_code,
+                             "INTERNAL" if exc.status_code >= 500
+                             else "VALIDATION_ERROR")
     import http as _http
     message = _http.HTTPStatus(exc.status_code).phrase \
         if exc.status_code in _http.HTTPStatus._value2member_map_ \

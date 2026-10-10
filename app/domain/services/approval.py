@@ -6,8 +6,9 @@ from uuid import UUID, uuid4
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
-    approval_required, approval_stale, internal, invalid_transition,
-    map_revision_err, not_found, revision_conflict, validation_field,
+    DomainError, approval_required, approval_stale, internal,
+    invalid_transition, map_revision_err, not_found, revision_conflict,
+    validation_field,
 )
 from app.domain.validators import hash_bytes
 from app.infrastructure.store_applications import ApplicationStore, SubmissionStore
@@ -72,20 +73,24 @@ class ApprovalService:
                 return {"type": "CLI_RUN", "id": str(r.id), "provider": r.provider,
                         "workingDirectory": r.working_directory, "executable": r.executable,
                         "arguments": r.arguments, "prompt": r.prompt}
+        except NotFoundError:
+            return {}
         except Exception:
             raise internal()
         return {}
 
-    async def create(self, user_id: UUID, kind: str, application_id: UUID,
+    async def create(self, user_id: UUID, kind: str,
+                     application_id: Optional[UUID],
                      target_id: UUID, target_revision: Optional[int]) -> ent.Approval:
         if not ent.valid_approval_kind(kind):
             raise validation_field("kind", "unsupported kind")
-        try:
-            await self.applications.get(user_id, application_id)
-        except NotFoundError:
-            raise not_found()
-        except Exception:
-            raise internal()
+        if application_id is not None:
+            try:
+                await self.applications.get(user_id, application_id)
+            except NotFoundError:
+                raise not_found()
+            except Exception:
+                raise internal()
         h = await self._hash_target(user_id, kind, application_id, target_id)
         now = _now()
         a = ent.Approval(
@@ -100,43 +105,40 @@ class ApprovalService:
             raise internal()
         return a
 
-    async def _hash_target(self, user_id: UUID, kind: str, application_id: UUID,
+    async def _hash_target(self, user_id: UUID, kind: str,
+                           application_id: Optional[UUID],
                            target_id: UUID) -> str:
         nil = UUID(int=0)
-        if kind == ent.APPROVAL_EVIDENCE_USE:
-            try:
+        try:
+            if kind == ent.APPROVAL_EVIDENCE_USE:
                 e = await self.evidence.get(user_id, target_id)
-            except Exception:
-                raise not_found()
-            if e.archived:
-                raise invalid_transition("cannot approve archived evidence for new use")
-            return hash_json({"kind": kind, "evidenceId": e.id,
-                              "contentHash": e.provenance.content_hash})
-        if kind == ent.APPROVAL_DOCUMENT_FINALIZE:
-            try:
+                if e.archived:
+                    raise invalid_transition(
+                        "cannot approve archived evidence for new use")
+                return hash_json({"kind": kind, "evidenceId": e.id,
+                                  "contentHash": e.provenance.content_hash})
+            if kind == ent.APPROVAL_DOCUMENT_FINALIZE:
                 v = await self.documents.get_version(user_id, nil, target_id)
-            except Exception:
-                raise not_found()
-            if v.application_id != application_id:
-                raise not_found()
-            return hash_json({"kind": kind, "versionId": v.id,
-                              "content": v.content, "blocks": v.blocks})
-        if kind == ent.APPROVAL_APPLICATION_SUBMIT:
-            try:
+                if v.application_id != application_id:
+                    raise not_found()
+                return hash_json({"kind": kind, "versionId": v.id,
+                                  "content": v.content, "blocks": v.blocks})
+            if kind == ent.APPROVAL_APPLICATION_SUBMIT:
                 d = await self.submissions.get_draft(user_id, target_id)
-            except Exception:
-                raise not_found()
-            if d.application_id != application_id:
-                raise not_found()
-            return d.payload_hash
-        if kind == ent.APPROVAL_CLI_EXECUTE:
-            try:
+                if d.application_id != application_id:
+                    raise not_found()
+                return d.payload_hash
+            if kind == ent.APPROVAL_CLI_EXECUTE:
                 r = await self.projects.get_run(user_id, nil, target_id)
-            except Exception:
-                raise not_found()
-            if r.application_id != application_id:
-                raise not_found()
-            return r.payload_hash
+                if r.application_id != application_id:
+                    raise not_found()
+                return r.payload_hash
+        except NotFoundError:
+            raise not_found()
+        except DomainError:
+            raise
+        except Exception:
+            raise internal()
         raise validation_field("kind", "unsupported kind")
 
     async def decide(self, user_id: UUID, id_: UUID, expected: int,
@@ -162,7 +164,7 @@ class ApprovalService:
                 except Exception as err:
                     raise map_revision_err(err)
                 a.revision = expected + 1
-                raise invalid_transition("approval expired")
+                return
             if a.status != ent.APPROVAL_PENDING:
                 raise invalid_transition("approval already decided")
             a.status = decision
@@ -176,10 +178,12 @@ class ApprovalService:
             out = a
 
         await self.db.run(work)
+        if out is None:
+            raise invalid_transition("approval expired")
         return out
 
     async def consume(self, user_id: UUID, approval_id: UUID, kind: str,
-                      application_id: UUID, target_id: UUID,
+                      application_id: Optional[UUID], target_id: UUID,
                       expected_hash: str) -> ent.Approval:
         try:
             a = await self.approvals.get(user_id, approval_id)
@@ -190,21 +194,14 @@ class ApprovalService:
         if (a.kind != kind or a.application_id != application_id
                 or a.target_id != target_id):
             raise approval_required("approval does not cover this target")
-        now = _now()
-        if a.expired(now):
-            if a.status in (ent.APPROVAL_PENDING, ent.APPROVAL_APPROVED):
-                a.status = ent.APPROVAL_EXPIRED
-                a.updated_at = now
-                try:
-                    await self.approvals.update(a, a.revision)
-                except Exception:
-                    pass
+        if a.expired(_now()):
             raise approval_required("approval expired")
         if a.status != ent.APPROVAL_APPROVED:
             raise approval_required("approval is not approved")
         if expected_hash and a.payload_hash != expected_hash:
             raise approval_stale("approved content has changed")
         if ent.one_shot_approval(kind):
+            now = _now()
             a.status = ent.APPROVAL_CONSUMED
             a.consumed_at = now
             a.updated_at = now
@@ -215,7 +212,8 @@ class ApprovalService:
             a.revision += 1
         return a
 
-    async def require_evidence_use(self, user_id: UUID, application_id: UUID,
+    async def require_evidence_use(self, user_id: UUID,
+                                   application_id: Optional[UUID],
                                    evidence_id: UUID) -> None:
         try:
             a = await self.approvals.find_active(

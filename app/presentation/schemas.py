@@ -318,7 +318,7 @@ class PrepareReq(Req):
 
 class CreateApprovalReq(Req):
     kind: str
-    application_id: UUIDT
+    application_id: Optional[UUIDT] = None
     target_id: UUIDT
     target_revision: Optional[int] = None
 

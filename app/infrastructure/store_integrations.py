@@ -107,19 +107,25 @@ class BillingStore(Store):
             "ON CONFLICT (event_id) DO NOTHING", event_id, typ, at)
         return tag.split()[-1] == "1"
 
+    async def delete_stripe_event(self, event_id: str) -> None:
+        await self.q().execute(
+            "DELETE FROM stripe_events WHERE event_id = $1", event_id)
+
     async def update_subscription(self, user_id: UUID, plan: str, status: str,
                                   customer_id: Optional[str], period_ends_at) -> None:
         await self.q().execute(
             "UPDATE users SET plan=$2, subscription_status=$3, "
             "stripe_customer_id=COALESCE($4, stripe_customer_id), "
-            "period_ends_at=$5 WHERE id=$1",
+            "period_ends_at=COALESCE($5, period_ends_at) WHERE id=$1",
             user_id, plan, status, customer_id, period_ends_at)
 
-    async def update_subscription_by_customer(self, customer_id: str, status: str,
-                                              period_ends_at) -> None:
+    async def update_subscription_by_customer(self, customer_id: str, plan: str,
+                                              status: str, period_ends_at) -> None:
         await self.q().execute(
-            "UPDATE users SET subscription_status=$2, period_ends_at=$3 "
-            "WHERE stripe_customer_id=$1", customer_id, status, period_ends_at)
+            "UPDATE users SET subscription_status=$2, "
+            "period_ends_at=COALESCE($3, period_ends_at), "
+            "plan=COALESCE($4, plan) "
+            "WHERE stripe_customer_id=$1", customer_id, status, period_ends_at, plan)
 
     async def user_id_by_stripe_customer(self, customer_id: str) -> UUID:
         return await self.q().fetchval(

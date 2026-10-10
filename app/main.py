@@ -154,6 +154,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         saver_ctx = AsyncPostgresSaver.from_conn_string(cfg.database_url)
         saver = await saver_ctx.__aenter__()
+        conversations = None
         try:
             await saver.setup()
             conversations = ConversationService(
@@ -184,7 +185,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             app.state.db = db
             yield
         finally:
-            await conversations.stop_worker()
+            if conversations is not None:
+                await conversations.stop_worker()
             await saver_ctx.__aexit__(None, None, None)
             await oauth.aclose()
             await openai.aclose()
@@ -214,7 +216,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
                        "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
-    app.add_middleware(BodyLimitMiddleware, limit=1 << 20)
+    from app.presentation.routers.evidence import MAX_SOURCE_BYTES
+    app.add_middleware(BodyLimitMiddleware, limit=MAX_SOURCE_BYTES)
     app.add_middleware(RequestIDMiddleware)
 
     for r in (auth.router, evidence.router, jobs.router, applications.router,
