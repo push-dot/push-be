@@ -12,10 +12,10 @@ from app.domain.errors import (
 from app.infrastructure.crypto import new_key_cipher
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, optional_query_time, page_body,
     page_request,
 )
-from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -138,7 +138,7 @@ async def ai_key_test(provider: str, request: Request):
 async def ai_generate(request: Request):
     d = deps(request)
     req = await bind_json(request, s.AiGenerateReq)
-    op = await d.ai.generate(current_user(request).id, _ai(req.ai),
+    op = await d.ai.generate(current_user(request).id, ai_options(req.ai),
                              req.prompt, req.application_id,
                              req.evidence_ids)
     return data(202, op)

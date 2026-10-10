@@ -310,6 +310,7 @@ async def test_generate_creates_operation_and_usage():
     ops, usage = StubOperationStore(), StubAiUsageStore()
     chat = StubChatCompleter(text="generated", in_tokens=10, out_tokens=20)
     gate = _gate(managed_key="sk", chat=chat)
+    gate.usage = usage
     app = ent.Application(id=app_id, user_id=user_id, job_id=uuid4(),
                           company="c", title="t", created_at=_now(),
                           updated_at=_now())
@@ -356,6 +357,7 @@ async def test_post_message_ai_completion():
     usage = StubAiUsageStore()
     chat = StubChatCompleter(text="real answer", in_tokens=7, out_tokens=9)
     gate = _gate(managed_key="sk", chat=chat)
+    gate.usage = usage
     svc = conv_svc(convs, gate=gate, usage=usage)
     op = await svc.post_message(user_id, conv.id, "question", {},
                                 _managed(), "SUGGEST")

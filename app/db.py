@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import contextvars
 import json
 import logging
@@ -66,19 +67,33 @@ def unique_violation(err: Exception) -> bool:
     return isinstance(err, asyncpg.UniqueViolationError)
 
 
+_MIGRATION_LOCK_KEY = 0x707573685F6D6967
+
+
 async def run_migrations(pool: asyncpg.Pool, dir_: str) -> None:
-    await pool.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
-    names = sorted(p.name for p in Path(dir_).iterdir() if p.suffix == ".sql" and p.is_file())
-    for name in names:
-        applied = await pool.fetchval("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)", name)
-        if applied:
-            continue
-        sql = (Path(dir_) / name).read_text()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(sql)
-                await conn.execute("INSERT INTO schema_migrations (name) VALUES ($1)", name)
+    async with pool.acquire() as lock_conn:
+        await lock_conn.execute(
+            "SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
+        try:
+            await lock_conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
+            names = sorted(p.name for p in Path(dir_).iterdir()
+                           if p.suffix == ".sql" and p.is_file())
+            for name in names:
+                applied = await lock_conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)",
+                    name)
+                if applied:
+                    continue
+                sql = await asyncio.to_thread(
+                    (Path(dir_) / name).read_text)
+                async with lock_conn.transaction():
+                    await lock_conn.execute(sql)
+                    await lock_conn.execute(
+                        "INSERT INTO schema_migrations (name) VALUES ($1)", name)
+        finally:
+            await lock_conn.execute(
+                "SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
 
 
 async def create_pool(database_url: str) -> asyncpg.Pool:

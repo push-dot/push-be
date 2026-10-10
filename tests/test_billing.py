@@ -58,7 +58,10 @@ class StubBillingStore:
                                   period_ends_at):
         self.sub_updates.append((user_id, plan, status))
 
-    async def update_subscription_by_customer(self, customer_id, status,
+    async def lock_user(self, user_id):
+        pass
+
+    async def update_subscription_by_customer(self, customer_id, plan, status,
                                               period_ends_at):
         pass
 

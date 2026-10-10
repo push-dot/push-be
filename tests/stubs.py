@@ -112,6 +112,9 @@ class StubDocumentStore:
             raise NotFoundError()
         return self.version
 
+    async def update(self, d, expected: int):
+        pass
+
 
 class StubEvidenceStore:
     def __init__(self, items: Optional[dict] = None):
@@ -214,6 +217,19 @@ class StubChatJobStore:
         self.job_id = uuid4()
         self.events = events or []
         self.status = status
+        self.finished = []
+        self.requeued = []
+
+    async def emit(self, job_id: UUID, type_: str, payload: dict):
+        self.events.append({"id": len(self.events) + 1, "type": type_,
+                            "payload": payload})
+
+    async def finish(self, job_id: UUID, status: str, error=None):
+        self.finished.append((status, error))
+        self.status = status
+
+    async def requeue(self, job_id: UUID, delay_s: float):
+        self.requeued.append(job_id)
 
     async def active_for_conversation(self, user_id: UUID,
                                       conversation_id: UUID):
@@ -255,14 +271,17 @@ class StubAiUsageStore:
                 u.cost_micro_credits = 0
                 u.status = ent.USAGE_RELEASED
 
-    async def attach_operation(self, user_id: UUID, model: str, op_id):
-        rows = [u for u in self.items if u.user_id == user_id
-                and u.model == model and u.managed and u.operation_id is None]
-        rows.sort(key=lambda u: u.created_at, reverse=True)
-        if not rows:
-            return False
-        rows[0].operation_id = op_id
-        return True
+    async def attach_operations(self, op_id, usage_ids):
+        n = 0
+        for u in self.items:
+            if (u.id in usage_ids and u.status == ent.USAGE_SETTLED
+                    and u.operation_id is None):
+                u.operation_id = op_id
+                n += 1
+        return n
+
+    async def expire_stale(self):
+        pass
 
     async def list(self, user_id: UUID, from_, to, page):
         from app.domain.pagination import new_page

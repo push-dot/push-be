@@ -151,6 +151,7 @@ class BillingService:
         customer = obj.get("customer", "")
 
         async def work():
+            await self.billing.lock_user(user_id)
             await self.billing.update_subscription(
                 user_id, plan_id, ent.SUB_ACTIVE, customer, None)
             bal = await self.billing.last_balance(user_id)

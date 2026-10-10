@@ -472,11 +472,13 @@ class DocumentService:
             except Exception as err:
                 raise map_revision_err(err)
             d.revision = expected + 1
-            await self.applications.add_event(ent.ApplicationEvent(
-                id=uuid4(), user_id=user_id, application_id=d.application_id,
-                type=ent.EVENT_DOCUMENT_FINAL,
-                payload={"documentId": d.id, "versionId": version_id},
-                created_at=now))
+            if d.application_id is not None:
+                await self.applications.add_event(ent.ApplicationEvent(
+                    id=uuid4(), user_id=user_id,
+                    application_id=d.application_id,
+                    type=ent.EVENT_DOCUMENT_FINAL,
+                    payload={"documentId": d.id, "versionId": version_id},
+                    created_at=now))
             out = d
 
         await self.db.run(work)

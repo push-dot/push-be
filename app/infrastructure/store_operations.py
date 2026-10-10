@@ -22,7 +22,8 @@ def _op(row) -> Operation:
 class OperationStore(Store):
     async def create(self, o: Operation) -> None:
         await self.q().execute(
-            f"INSERT INTO operations ({_OP_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            f"INSERT INTO operations ({_OP_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) "
+            "ON CONFLICT (id) DO NOTHING",
             o.id, o.user_id, o.type, o.application_id, o.status, o.progress,
             dump(o.result) if o.result else None, dump(o.error) if o.error else None,
             dump(o.input_request) if o.input_request else None,

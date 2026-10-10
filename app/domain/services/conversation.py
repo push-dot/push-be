@@ -89,8 +89,8 @@ class ConversationService:
         job_id = job["id"]
         async with self._sem:
             p = job["payload"]
-            byok = self._byok_keys.pop(job_id, "")
-            token = _BYOK_KEY.set(byok)
+            token = _BYOK_KEY.set(self._byok_keys.get(job_id, ""))
+            terminal = False
             try:
                 async for mode, chunk in self.graph.astream(
                         {
@@ -101,6 +101,7 @@ class ConversationService:
                             "ai": p.get("ai"),
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
+                            "job_id": str(job_id),
                         },
                         config={"configurable": {
                             "thread_id": str(job["conversation_id"])}},
@@ -118,12 +119,14 @@ class ConversationService:
                             job_id, "done",
                             {"operation": to_jsonable(chunk["operation"])})
                 await self.jobs.finish(job_id, "DONE")
+                terminal = True
             except DomainError as e:
                 await self.jobs.emit(
                     job_id, "error",
                     {"error": {"code": e.code, "message": e.message,
                                "details": e.details}})
                 await self.jobs.finish(job_id, "FAILED", e.code)
+                terminal = True
             except Exception as e:
                 log.exception("chat job %s failed", job_id)
                 if job["attempt"] < 3:
@@ -134,8 +137,11 @@ class ConversationService:
                         {"error": {"code": "INTERNAL",
                                    "message": str(e)[:500]}})
                     await self.jobs.finish(job_id, "FAILED", str(e)[:500])
+                    terminal = True
             finally:
                 _BYOK_KEY.reset(token)
+                if terminal:
+                    self._byok_keys.pop(job_id, None)
 
     async def list(self, user_id: UUID, application_id: Optional[UUID], page):
         try:

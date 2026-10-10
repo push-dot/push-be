@@ -8,6 +8,7 @@ from app.domain.entities import (
     AccessToken, ExchangeCode, IdempotencyRecord, OAuthState, RefreshToken, User,
 )
 from app.infrastructure.store_common import Store, to_model
+from app.jsonutil import dump
 
 _USER_COLS = ("id, provider, provider_subject, display_name, locale, plan, "
               "subscription_status, stripe_customer_id, period_ends_at, created_at")
@@ -148,14 +149,16 @@ class IdempotencyStore(Store):
     async def get(self, user_id: UUID, method: str, path: str, key: UUID) -> IdempotencyRecord:
         return to_model(IdempotencyRecord, await self.one(
             "SELECT id, user_id, key, method, path, request_hash, response_status, "
-            "response_body, created_at FROM idempotency_keys "
+            "response_body, response_headers, created_at FROM idempotency_keys "
             "WHERE user_id = $1 AND method = $2 AND path = $3 AND key = $4",
             user_id, method, path, key))
 
-    async def complete(self, id_: UUID, status: int, body: bytes) -> None:
+    async def complete(self, id_: UUID, status: int, body: bytes,
+                       headers: Optional[list] = None) -> None:
         await self.q().execute(
-            "UPDATE idempotency_keys SET response_status = $2, response_body = $3 WHERE id = $1",
-            id_, status, body)
+            "UPDATE idempotency_keys SET response_status = $2, response_body = $3, "
+            "response_headers = $4 WHERE id = $1",
+            id_, status, body, dump(headers) if headers else None)
 
     async def delete_pending(self, id_: UUID) -> None:
         await self.q().execute(

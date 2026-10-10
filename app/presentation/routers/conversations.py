@@ -9,10 +9,10 @@ from app.domain.errors import DomainError
 from app.jsonutil import to_jsonable
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, optional_query_uuid, page_body,
     page_request, param_id,
 )
-from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -63,7 +63,7 @@ async def post_message(id: str, request: Request):
     context = (req.context.model_dump(by_alias=True) if req.context else {})
     op = await d.conversations.post_message(current_user(request).id,
                                             param_id(id, "id"), req.text,
-                                            context, _ai(req.ai),
+                                            context, ai_options(req.ai),
                                             req.access_mode,
                                             request.headers.get("x-byok-key", ""))
     return data(202, op)
@@ -80,7 +80,7 @@ async def post_message_stream(id: str, request: Request):
     async def events():
         async for frame in _sse_frames(
                 d.conversations.stream_message(
-                    user_id, conversation_id, req.text, context, _ai(req.ai),
+                    user_id, conversation_id, req.text, context, ai_options(req.ai),
                     req.access_mode,
                     request.headers.get("x-byok-key", "")),
                 request):

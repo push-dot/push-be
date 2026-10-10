@@ -45,11 +45,12 @@ class StubIdem:
             raise NotFoundError()
         return rec
 
-    async def complete(self, id_, status, body):
+    async def complete(self, id_, status, body, headers=None):
         for rec in self.records.values():
             if rec.id == id_:
                 rec.response_status = status
                 rec.response_body = body
+                rec.response_headers = headers
                 return
         raise NotFoundError()
 

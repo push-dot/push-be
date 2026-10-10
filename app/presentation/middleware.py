@@ -161,10 +161,17 @@ class ApiMiddleware:
                                       "idempotency key conflict", rid)
                     return
                 payload = existing.response_body or b""
+                replay_headers = [
+                    (str(k).encode("latin-1"), str(v).encode("latin-1"))
+                    for k, v in (existing.response_headers or [])]
+                if not any(k.lower() == b"content-type"
+                           for k, _ in replay_headers):
+                    replay_headers.append(
+                        (b"content-type",
+                         b"application/json; charset=utf-8"))
                 await send({"type": "http.response.start",
                             "status": existing.response_status,
-                            "headers": [(b"content-type",
-                                         b"application/json; charset=utf-8")]})
+                            "headers": replay_headers})
                 await send({"type": "http.response.body", "body": payload})
                 return
 
@@ -201,8 +208,12 @@ class ApiMiddleware:
             except Exception:
                 logger.exception("idempotency delete_pending failed rid=%s", rid)
         else:
+            resp_headers = [
+                [k.decode("latin-1"), v.decode("latin-1")]
+                for k, v in (start_message.get("headers") or [])]
             try:
-                await self.idem.complete(rec.id, status, bytes(captured))
+                await self.idem.complete(rec.id, status, bytes(captured),
+                                         resp_headers)
             except Exception:
                 logger.exception("idempotency complete failed rid=%s", rid)
         if handler_failed and not start_message:

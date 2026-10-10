@@ -6,10 +6,10 @@ from app.domain import entities as ent
 from app.domain.errors import validation_field
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, page_body, page_request, param_id,
     parse_time_field,
 )
-from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -87,7 +87,7 @@ async def resume_run(id: str, request: Request):
     d = deps(request)
     req = await bind_json(request, s.ResumeRunReq)
     op = await d.resume_workflow.run(
-        current_user(request).id, param_id(id, "id"), _ai(req.ai))
+        current_user(request).id, param_id(id, "id"), ai_options(req.ai))
     return data(202, op)
 
 

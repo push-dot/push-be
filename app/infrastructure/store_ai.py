@@ -76,14 +76,21 @@ class AiUsageStore(Store):
             "UPDATE ai_usage SET cost_micro_credits = 0, status = 'RELEASED' "
             "WHERE id = $1 AND status = 'RESERVED'", id_)
 
-    async def attach_operation(self, user_id: UUID, model: str,
-                               operation_id: UUID) -> bool:
-        return await self.q().fetchval(
-            "UPDATE ai_usage SET operation_id = $3 WHERE id = ("
-            "SELECT id FROM ai_usage WHERE user_id = $1 AND model = $2 "
-            "AND managed AND operation_id IS NULL "
-            "ORDER BY created_at DESC LIMIT 1) RETURNING id",
-            user_id, model, operation_id) is not None
+    async def attach_operations(self, operation_id: UUID,
+                                usage_ids: list) -> int:
+        if not usage_ids:
+            return 0
+        tag = await self.q().execute(
+            "UPDATE ai_usage SET operation_id = $1 WHERE id = ANY($2) "
+            "AND status = 'SETTLED' AND operation_id IS NULL",
+            operation_id, usage_ids)
+        return int(tag.split()[-1])
+
+    async def expire_stale(self) -> None:
+        await self.q().execute(
+            "UPDATE ai_usage SET cost_micro_credits = 0, status = 'EXPIRED' "
+            "WHERE status = 'RESERVED' "
+            "AND created_at < now() - interval '10 minutes'")
 
     async def list(self, user_id: UUID, from_: Optional[datetime],
                    to: Optional[datetime], page) -> Page:

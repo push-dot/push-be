@@ -127,6 +127,7 @@ class IdempotencyRecord(BaseModel):
     request_hash: str
     response_status: Optional[int] = None
     response_body: Optional[bytes] = None
+    response_headers: Optional[list] = None
     created_at: datetime
 
 
@@ -867,6 +868,7 @@ def ai_cost_micro_credits(provider: str, model: str, in_tokens: int, out_tokens:
 USAGE_RESERVED = "RESERVED"
 USAGE_SETTLED = "SETTLED"
 USAGE_RELEASED = "RELEASED"
+USAGE_EXPIRED = "EXPIRED"
 
 
 class AiUsage(Model):
@@ -887,6 +889,7 @@ class AICompletion(BaseModel):
     text: str
     input_tokens: int
     output_tokens: int
+    usage_id: Optional[UUID] = None
 
 
 class IntegrationCode(BaseModel):

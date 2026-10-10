@@ -5,10 +5,10 @@ from fastapi import APIRouter, Request
 from app.domain import entities as ent
 from app.presentation import schemas as s
 from app.presentation.deps import (deps,
+    ai_options,
     bind_json, current_user, data, optional_query_uuid, page_body,
     page_request, param_id, parse_time_field,
 )
-from app.presentation.routers.jobs import _ai
 
 router = APIRouter()
 
@@ -38,7 +38,7 @@ async def generate_blueprints(request: Request):
     req = await bind_json(request, s.BlueprintsReq)
     op = await d.projects.generate_blueprints(
         current_user(request).id, req.application_id, req.gap_analysis_id,
-        _ai(req.ai))
+        ai_options(req.ai))
     return data(202, op)
 
 
