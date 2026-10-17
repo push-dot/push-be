@@ -60,18 +60,19 @@ async def test_roundtrip_types_transaction_and_unique():
         await pool.execute(
             f"CREATE TABLE {name} ("
             "id uuid PRIMARY KEY, n int, flag bool, note jsonb, "
-            "blob bytea, at timestamptz, ids uuid[])")
+            "blob bytea, at timestamptz, ids uuid[], tags jsonb)")
         uid = uuid4()
         other = uuid4()
         when = datetime(2026, 10, 17, 12, 30, tzinfo=timezone.utc)
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    f"INSERT INTO {name} (id, n, flag, note, blob, at, ids) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                    uid, 7, True, {"a": 1}, b"\x00\xff", when, [uid, other])
+                    f"INSERT INTO {name} (id, n, flag, note, blob, at, ids, tags) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    uid, 7, True, {"a": 1}, b"\x00\xff", when, [uid, other], [])
                 row = await conn.fetchrow(
-                    f"SELECT id, n, flag, note, blob, at, ids FROM {name} WHERE id=$1",
+                    f"SELECT id, n, flag, note, blob, at, ids, tags "
+                    f"FROM {name} WHERE id=$1",
                     uid)
         assert row["id"] == uid
         assert row["n"] == 7
@@ -80,6 +81,7 @@ async def test_roundtrip_types_transaction_and_unique():
         assert row["blob"] == b"\x00\xff"
         assert row["at"] == when
         assert row["ids"] == [uid, other]
+        assert row["tags"] == []
         assert await pool.fetchval(f"SELECT count(*) FROM {name}") == 1
 
         with pytest.raises(RuntimeError):

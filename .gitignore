@@ -4,4 +4,9 @@ __pycache__/
 data/
 .env
 .venv/
+.venv-workers/
 .wrangler/
+python_modules/
+pylock.toml
+uv.lock
+src/*.egg-info/

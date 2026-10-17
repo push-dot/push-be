@@ -6,18 +6,12 @@ from typing import Any, Optional, TypedDict
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from datetime import datetime, timezone
 
-from langgraph.config import get_stream_writer
-from langgraph.graph import END, START, StateGraph
-
 from app.domain import entities as ent
 from app.domain.errors import (
-    invalid_transition, not_found, validation_field,
+    DomainError, invalid_transition, not_found, validation_field,
 )
 from app.db import NotFoundError
 from app.domain.pagination import PageRequest
-from app.infrastructure.web_page import (fetch_github_context,
-                                         fetch_page_text, find_urls,
-                                         github_usernames)
 from app.jsonutil import to_jsonable
 from app.graph.resume_prompt import (
     _phase_prompt, gate_for_phase, needs_gate, resume_phase,
@@ -33,6 +27,8 @@ def _emit(payload: dict) -> None:
     if sink is not None:
         sink.append(payload)
         return
+    # Imported here so health checks do not load LangGraph.
+    from langgraph.config import get_stream_writer
     get_stream_writer()(payload)
 
 
@@ -238,6 +234,10 @@ def build_chat_graph(svc, checkpointer=None):
     async def generate_reply(state: ChatState) -> dict:
         try:
             return await _generate_reply(state)
+        except DomainError:
+            # A rejected request (FEATURE_DISABLED and other 4xx) must not
+            # leave the user's message in the conversation.
+            raise
         except Exception:
             try:
                 await _persist_user_msg(state)
@@ -246,6 +246,8 @@ def build_chat_graph(svc, checkpointer=None):
             raise
 
     async def _generate_reply(state: ChatState) -> dict:
+        from app.infrastructure.web_page import (
+            fetch_github_context, fetch_page_text, find_urls, github_usernames)
         ai = state.get("ai")
         if ai is None:
             _emit({"token": stub_reply(state["text"])})
@@ -565,6 +567,8 @@ def build_chat_graph(svc, checkpointer=None):
 
         await svc.db.run(work)
         return {"operation": op}
+
+    from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(ChatState)
     g.add_node("resolve_context", resolve_context)

@@ -7,9 +7,14 @@ import re
 import socket
 from urllib.parse import urljoin, urlparse
 
-import httpcore
 import httpx
-from httpcore._backends.auto import AutoBackend
+
+try:  # Pyodide (Cloudflare Workers) ships httpx without httpcore.
+    import httpcore
+    from httpcore._backends.auto import AutoBackend
+except ImportError:  # pragma: no cover - Workers only
+    httpcore = None
+    AutoBackend = None
 
 from app.domain.validators import validate_https_url
 

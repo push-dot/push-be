@@ -162,9 +162,15 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
     experiments_svc = ExperimentService(db)
     await experiments_svc.seed(cfg.experiments)
 
-    use_memory = external_jobs() or os.environ.get("CHECKPOINTER") == "memory"
+    # Workflow steps keep their own checkpoint in chat_jobs. Workers do not
+    # import LangGraph's saver during bootstrap.
+    use_memory = (
+        not external_jobs() and os.environ.get("CHECKPOINTER") == "memory")
     saver_ctx = None
-    if use_memory:
+    saver = None
+    if external_jobs():
+        saver = None
+    elif use_memory:
         from langgraph.checkpoint.memory import MemorySaver
         saver = MemorySaver()
     else:

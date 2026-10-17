@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import UUID
+import contextvars
 
 
 class PgError(Exception):
@@ -369,18 +370,28 @@ async def _open_workers_websocket(url: str) -> ByteStream:
     from pyodide.ffi import create_proxy, to_js
     from js import Object, Uint8Array, fetch
 
+    # Workers fetch() only accepts http(s) URLs; the Upgrade header opens the socket.
+    if url.startswith("wss://"):
+        url = "https://" + url[len("wss://"):]
     headers = to_js({"Upgrade": "websocket"}, dict_converter=Object.fromEntries)
     resp = await fetch(url, to_js({"headers": headers}, dict_converter=Object.fromEntries))
     ws = resp.webSocket
     if ws is None:
         raise ConnectionError("Neon WebSocket upgrade failed")
+    # Newer compatibility dates deliver binary frames as Blob by default.
+    try:
+        ws.binaryType = "arraybuffer"
+    except Exception:
+        pass
     ws.accept()
     queue: asyncio.Queue = asyncio.Queue()
     proxies = []
 
     def on_message(event):
         data = getattr(event, "data", b"")
-        if hasattr(data, "to_py"):
+        if hasattr(data, "to_bytes"):
+            data = data.to_bytes()
+        elif hasattr(data, "to_py"):
             data = data.to_py()
         if isinstance(data, memoryview):
             data = data.tobytes()
@@ -403,7 +414,10 @@ async def _open_workers_websocket(url: str) -> ByteStream:
         return await queue.get()
 
     async def send(data: bytes):
-        ws.send(Uint8Array.new(data))
+        # Python bytes are not implicitly converted; copy into a Uint8Array.
+        buf = Uint8Array.new(len(data))
+        buf.assign(data)
+        ws.send(buf)
 
     async def close():
         for proxy in proxies:
@@ -572,8 +586,46 @@ class PgConnection:
     def transaction(self):
         return _Transaction(self)
 
+    async def _describe_params(self, sql: str, oids: list[int]) -> list[int]:
+        """Parse *sql* and return the parameter types Postgres inferred."""
+        parse = (_cstr("") + _cstr(sql) + _i16(len(oids))
+                 + b"".join(_i32(o) for o in oids))
+        await self.stream.write(
+            b"P" + _frame(parse) + b"D" + _frame(b"S" + _cstr(""))
+            + b"S" + _frame(b""))
+        inferred = list(oids)
+        err: Optional[PgError] = None
+        while True:
+            kind, payload = await self._read()
+            if kind == b"Z":
+                break
+            if kind == b"t":
+                n = struct.unpack("!h", payload[:2])[0]
+                inferred = [struct.unpack("!i", payload[2 + 4 * i:6 + 4 * i])[0]
+                            for i in range(n)]
+            elif kind == b"E":
+                err = _pg_error(_parse_error_fields(payload))
+        if err is not None:
+            raise err
+        return inferred
+
     async def _extended(self, sql: str, args: tuple) -> tuple[list[Row], str]:
         bound = [_bind_param(a) for a in args]
+        lists = [i for i, a in enumerate(args) if isinstance(a, (list, tuple))]
+        if lists:
+            # asyncpg encodes a Python list by the column's type: jsonb gets
+            # JSON, arrays get an array literal. Ask Postgres which one it is
+            # instead of guessing from the elements (an empty attachments list
+            # would otherwise be sent as uuid[] into a jsonb column).
+            probe = [0 if i in lists else oid for i, (oid, _) in enumerate(bound)]
+            inferred = await self._describe_params(sql, probe)
+            for i in lists:
+                oid = inferred[i] if i < len(inferred) else 0
+                if oid in (_JSONOID, _JSONBOID):
+                    bound[i] = (oid, json.dumps(
+                        list(args[i]), default=str).encode())
+                elif oid:
+                    bound[i] = (oid, bound[i][1])
         oids = b"".join(_i32(oid) for oid, _ in bound)
         parse = _cstr("") + _cstr(sql) + _i16(len(bound)) + oids
         values = b""
@@ -681,6 +733,20 @@ class _Transaction:
         return False
 
 
+# Cloudflare Workers ties every socket to the request that opened it; using a
+# WebSocket from an earlier request throws "Cannot perform I/O on behalf of a
+# different request". worker.py sets a fresh scope per fetch / cron / workflow
+# run so the pool reconnects instead of reusing another request's socket.
+_request_scope: contextvars.ContextVar = contextvars.ContextVar(
+    "pg_request_scope", default=None)
+
+
+def begin_request_scope() -> object:
+    scope = object()
+    _request_scope.set(scope)
+    return scope
+
+
 class PgPool:
     """Single-connection pool. Workers handle one request at a time per lock."""
 
@@ -695,9 +761,23 @@ class PgPool:
         return _Acquire(self)
 
     async def _ensure(self) -> PgConnection:
+        scope = _request_scope.get()
+        conn = self._conn
+        if conn is not None and not conn.closed and scope is not None \
+                and getattr(conn, "scope", None) is not scope:
+            # Owned by another request: abandon it without touching the socket.
+            conn.closed = True
         if self._conn is None or self._conn.closed:
             self._conn = await connect(self.database_url, self.transport)
+            self._conn.scope = scope
         return self._conn
+
+    async def end_request_scope(self, scope: object) -> None:
+        """Close the connection opened by *scope* before its request ends."""
+        async with self._lock:
+            conn = self._conn
+            if conn is not None and getattr(conn, "scope", None) is scope:
+                await self._drop()
 
     async def _drop(self) -> None:
         conn = self._conn

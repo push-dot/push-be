@@ -28,7 +28,11 @@ def thaw_state(raw: dict) -> dict:
 
 def _freeze(value):
     if isinstance(value, BaseModel):
-        data = value.model_dump(mode="json")
+        # model_dump() drops Field(exclude=True) fields such as
+        # Conversation.user_id, which the next workflow step needs to rebuild
+        # the model. Freeze every declared field by name instead.
+        data = {name: _freeze(getattr(value, name))
+                for name in type(value).model_fields}
         data["__m__"] = type(value).__name__
         return data
     if isinstance(value, list):
@@ -42,6 +46,7 @@ def _thaw(value):
     if isinstance(value, dict) and "__m__" in value:
         data = dict(value)
         name = data.pop("__m__")
+        data = {k: _thaw(v) for k, v in data.items()}
         cls = _MODELS.get(name)
         return cls(**data) if cls is not None else data
     if isinstance(value, list):

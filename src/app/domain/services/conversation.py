@@ -51,7 +51,16 @@ class ConversationService:
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
-        self.graph = build_chat_graph(self, checkpointer)
+        self._checkpointer = checkpointer
+        self._compiled = None
+
+    @property
+    def graph(self):
+        # LangGraph compile is the heavy import. Health and auth requests
+        # never touch it; the first chat message in an isolate does.
+        if self._compiled is None:
+            self._compiled = build_chat_graph(self, self._checkpointer)
+        return self._compiled
 
     async def start_worker(self) -> None:
         recovered = await self.jobs.reset_stale()
@@ -512,6 +521,7 @@ class ConversationService:
                     "operation": None,
                     "job_id": str(jid),
                 }
+            _ = self.graph
             update = await self.chat_nodes[name](state)
             if update:
                 state.update(update)

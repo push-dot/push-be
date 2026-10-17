@@ -1,9 +1,14 @@
-"""Apply ``migrations/*.sql`` to Neon (or any Postgres) over TCP.
+"""Apply ``migrations/*.sql`` to Neon (or any Postgres).
 
 Workers cannot open port 5432, so run this from a laptop before
-``pywrangler deploy``. Neon free projects accept the pooled or direct
-host with ``sslmode=require``.
+``pywrangler deploy``. The default transport is TCP + TLS. When outbound
+5432 is blocked, set ``PG_TRANSPORT=websocket`` to use Neon's
+``wss://<host>/v2`` endpoint instead (same wire protocol).
 
+    DATABASE_URL='postgresql://...neon.tech/neondb?sslmode=require' \\
+        python scripts/migrate.py
+
+    PG_TRANSPORT=websocket \\
     DATABASE_URL='postgresql://...neon.tech/neondb?sslmode=require' \\
         python scripts/migrate.py
 """
@@ -15,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 os.environ.setdefault("DB_DRIVER", "neon")
 os.environ.setdefault("PG_TRANSPORT", "tcp")

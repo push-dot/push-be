@@ -247,3 +247,42 @@ async def test_archive_cascades_evidence():
     ev = StubEvidenceStore({e1.id: e1, e2.id: e2})
     await _svc(convs, ev=ev).archive(user_id, conv.id, 1)
     assert e1.archived and not e2.archived
+
+
+async def test_feature_disabled_does_not_save_user_message(monkeypatch):
+    from app.domain.errors import feature_disabled
+
+    monkeypatch.setenv("LLM_STREAM", "0")
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    store = StubConversationStore(conv=conv)
+
+    class Gate:
+        async def complete(self, *args, **kwargs):
+            raise feature_disabled("monthly managed AI usage limit reached")
+
+    svc = _svc(store, gate=Gate())
+    from app.graph.chat import event_sink
+    sink = event_sink.set([])
+    state = {
+        "user_id": user_id,
+        "text": "hi",
+        "conversation": conv,
+        "context": {},
+        "attachments": [],
+        "job_id": str(uuid4()),
+        "ai": {
+            "provider": "OPENAI",
+            "model": "openai/gpt-5.6-luna",
+            "credential_mode": "MANAGED",
+            "effort": "LOW",
+        },
+    }
+    try:
+        with pytest.raises(DomainError) as e:
+            _ = svc.graph
+            await svc.chat_nodes["generate_reply"](state)
+    finally:
+        event_sink.reset(sink)
+    assert e.value.code == "FEATURE_DISABLED"
+    assert store.messages == []

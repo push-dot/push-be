@@ -46,8 +46,26 @@ jobs:
       - name: Test
         run: python -m pytest
 
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Install Workers tooling
+        run: uv sync --group dev --python 3.12
+      - name: Check Worker bundle size
+        run: |
+          uv run pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
+          python3 scripts/check_worker_bundle.py /tmp/push-be-bundle
+
   deploy:
-    needs: test
+    needs: [test, bundle]
     if: ${{ github.event_name == 'push' && github.ref_name == (vars.DEPLOY_BRANCH || 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15

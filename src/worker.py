@@ -77,6 +77,23 @@ async def _create_workflow(env, job_id: str, byok: str) -> None:
     await binding.create(to_js(body, dict_converter=Object.fromEntries))
 
 
+def _begin_db_scope():
+    from app.pgproto import begin_request_scope
+    return begin_request_scope()
+
+
+async def _end_db_scope(scope) -> None:
+    db = getattr(app.state, "db", None)
+    pool = getattr(db, "pool", None)
+    end = getattr(pool, "end_request_scope", None)
+    if end is None:
+        return
+    try:
+        await end(scope)
+    except Exception:
+        pass
+
+
 def _install_scheduler(env) -> None:
     async def schedule(job_id: str, byok: str) -> None:
         await _create_workflow(env, job_id, byok)
@@ -118,6 +135,13 @@ class ChatWorkflow(WorkflowEntrypoint):
 
     async def run(self, event, step):
         apply_env(self.env)
+        scope = _begin_db_scope()
+        try:
+            await self._run(event, step)
+        finally:
+            await _end_db_scope(scope)
+
+    async def _run(self, event, step):
         await ensure_ready(app)
         payload = _payload(event)
         job_id = str(payload.get("jobId") or "")
@@ -133,12 +157,17 @@ class ChatWorkflow(WorkflowEntrypoint):
         if await claim() != "ok":
             return
 
-        for node in ("resolve_context", "generate_reply", "persist"):
+        # step.do injects dependencies by parameter name, so the node name
+        # must be closed over rather than passed as a default argument.
+        def make_step(node):
             @step.do(node, config={"retries": {"limit": 1, "delay": "5 seconds"}})
-            async def run_node(node=node):
+            async def run_node():
                 return await svc.exec_chat_node(job_id, node)
 
-            if await run_node() != "ok":
+            return run_node
+
+        for node in ("resolve_context", "generate_reply", "persist"):
+            if await make_step(node)() != "ok":
                 return
 
 
@@ -148,10 +177,21 @@ class Default(WorkerEntrypoint):
         _install_scheduler(self.env)
         if asgi is None:
             raise RuntimeError("workers package is not installed")
-        return await asgi.fetch(app, request, self.env)
+        scope = _begin_db_scope()
+        try:
+            return await asgi.fetch(app, request, self.env)
+        finally:
+            await _end_db_scope(scope)
 
-    async def scheduled(self, controller, env, ctx):
+    async def scheduled(self, controller, env=None, ctx=None):
+        # WorkerEntrypoint handlers get bindings on self.env; the positional
+        # env argument is empty on this runtime.
+        env = getattr(self, "env", None) or env
         apply_env(env)
         _install_scheduler(env)
-        await ensure_ready(app)
-        await app.state.deps.conversations.nudge_pending()
+        scope = _begin_db_scope()
+        try:
+            await ensure_ready(app)
+            await app.state.deps.conversations.nudge_pending()
+        finally:
+            await _end_db_scope(scope)

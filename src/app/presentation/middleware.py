@@ -27,6 +27,17 @@ _IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
 _PENDING_TTL = timedelta(minutes=5)
 
 logger = logging.getLogger(__name__)
+_URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:]+:[^@\s/]+@", re.I)
+_SECRET_ASSIGN = re.compile(
+    r"(?i)(password|secret|token|api_key|database_url)=([^\s,;]+)")
+
+
+def _public_error(exc: BaseException) -> str:
+    """Exception text safe to log. Connection strings and secrets are redacted."""
+    text = f"{type(exc).__name__}: {exc}"
+    text = _URL_USERINFO.sub(r"\1", text)
+    text = _SECRET_ASSIGN.sub(r"\1=***", text)
+    return text[:400]
 
 
 def _is_public(path: str) -> bool:
@@ -91,9 +102,15 @@ class ApiMiddleware:
         try:
             user = await self.auth.resolve_access_token(authz[7:])
         except DomainError as e:
+            logger.warning(
+                "auth rejected rid=%s path=%s code=%s status=%s",
+                rid, path, e.code, e.status)
             await self._error(send, e.status, e.code, e.message, rid, e.details)
             return
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "auth failed rid=%s path=%s err=%s",
+                rid, path, _public_error(e))
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         scope.setdefault("state", {})["user"] = user
@@ -137,13 +154,19 @@ class ApiMiddleware:
             created_at=datetime.now(timezone.utc))
         try:
             inserted = await self.idem.insert_pending(rec)
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "idempotency insert failed rid=%s path=%s err=%s",
+                rid, path, _public_error(e))
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         if not inserted:
             try:
                 existing = await self.idem.get(user.id, "POST", path, key)
-            except Exception:
+            except Exception as e:
+                logger.error(
+                    "idempotency read failed rid=%s path=%s err=%s",
+                    rid, path, _public_error(e))
                 await self._error(send, 500, "INTERNAL", "internal error", rid)
                 return
             if existing.response_status is None and datetime.now(
