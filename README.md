@@ -122,7 +122,7 @@ pgvector는 모든 Neon 플랜에 있다. `migrations/0009_evidence_vectors.sql`
 
 ### 2. 마이그레이션
 
-Worker 안에서 마이그레이션을 돌리지 않는다. CPU 한도와 매 콜드 스타트 실행을 피하기 위해 `RUN_MIGRATIONS=0`이다. 5432로 나가는 노트북에서 실행한다.
+Worker 안에서 마이그레이션을 돌리지 않는다. CPU 한도와 매 콜드 스타트 실행을 피하기 위해 `RUN_MIGRATIONS=0`이다. `develop`나 `main`에 푸시해도 스키마는 바뀌지 않는다. 5432로 나가는 노트북에서 실행하거나, Actions의 **Migrate database**를 수동 실행한다.
 
 ```bash
 pip install -e ".[local]"
@@ -199,3 +199,24 @@ uv run pywrangler deploy
 ```
 
 배포된 주소는 `https://push-be.<account>.workers.dev` 형태다. `workers_dev`가 켜져 있다.
+
+### 6. GitHub Actions
+
+`.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. 액션은 메이저 버전에 고정하고, pip와 uv 캐시를 쓴다.
+
+- **CI** — pull request, 그리고 `develop`와 `main` push에서 `python -m pytest`를 실행한다. Postgres 16 서비스가 와이어 프로토콜 테스트까지 포함해 128개를 돌린다.
+- **CD** — push가 `main`일 때만 `uv run pywrangler deploy`를 실행한다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
+
+배포 잡은 코드와 `wrangler.jsonc`의 vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않는다. Worker에 이미 넣어 둔 `DATABASE_URL`, `OPENROUTER_API_KEY` 같은 런타임 시크릿은 배포를 거듭해도 그대로다.
+
+GitHub 저장소 시크릿 (Settings → Secrets and variables → Actions):
+
+| 이름 | 쓰임 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | 배포에 필수. Workers Scripts를 편집할 수 있는 API 토큰 |
+| `CLOUDFLARE_ACCOUNT_ID` | 배포에 필수. Cloudflare 계정 ID |
+| `DATABASE_URL` | 수동 마이그레이션에만 필요. Direct 호스트, `sslmode=require` |
+
+`OPENROUTER_API_KEY`는 GitHub 시크릿으로 두지 않는다. Worker 시크릿으로 한 번 넣으면 된다.
+
+마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.

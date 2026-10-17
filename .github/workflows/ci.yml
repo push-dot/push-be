@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+# Tests run on pull requests and on pushes to develop and main.
+# Deploys run only for DEPLOY_BRANCH, which defaults to main.
+# Set the repository variable DEPLOY_BRANCH to retarget CD. If the new
+# branch is not develop or main, add it under on.push.branches as well.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: push
+          POSTGRES_PASSWORD: push
+          POSTGRES_DB: push
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U push -d push"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Test
+        run: python -m pytest
+
+  deploy:
+    needs: test
+    if: ${{ github.event_name == 'push' && github.ref_name == (vars.DEPLOY_BRANCH || 'main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy-${{ vars.DEPLOY_BRANCH || 'main' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Install Workers tooling
+        run: uv sync --group dev --python 3.12
+      # Uploads the script and wrangler.jsonc vars only.
+      # Do not map Worker secrets into this step and do not run
+      # `wrangler secret put` / `pywrangler secret put`. Secrets already
+      # stored on the Worker persist across deploys.
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: uv run pywrangler deploy
