@@ -212,7 +212,7 @@ uv run pywrangler deploy
 
 ### 6. GitHub Actions
 
-`.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. 액션은 메이저 버전에 고정하고, pip와 uv 캐시를 쓴다.
+`.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. `actions/checkout`와 `actions/setup-python`은 존재하는 메이저 태그 `v7`에 고정한다. `astral-sh/setup-uv`는 떠 있는 `v10` 태그가 없어서 `v10.3.0`에 고정한다. pip와 uv 캐시를 쓴다.
 
 - **CI** — pull request, 그리고 `develop`와 `main` push에서 `python -m pytest`를 실행한다. Postgres 16 서비스가 와이어 프로토콜 테스트까지 포함한다. 같은 워크플로가 `pywrangler deploy --dry-run`으로 번들 크기를 확인하고, `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다.
 - **CD** — push가 `main`일 때만 `uv run pywrangler deploy`를 실행한다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
