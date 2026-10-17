@@ -62,11 +62,12 @@ class EvidenceStore(Store):
 
 
 class SourceStore(Store):
-    async def create(self, s: Source) -> None:
+    async def create(self, s: Source, content: bytes | None = None) -> None:
         await self.q().execute(
-            f"INSERT INTO sources ({_SOURCE_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            f"INSERT INTO sources ({_SOURCE_COLS}, content) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             s.id, s.user_id, s.file_name, s.mime_type, s.size, s.sha256, s.path,
-            s.status, s.created_at)
+            s.status, s.created_at, content)
 
     async def get(self, user_id: UUID, id_: UUID) -> Source:
         return to_model(Source, await self.one(
@@ -77,6 +78,13 @@ class SourceStore(Store):
             "DELETE FROM sources WHERE id = $1 AND user_id = $2", id_, user_id)
         if tag.split()[-1] == "0":
             raise NotFoundError()
+
+    async def content(self, user_id: UUID, id_: UUID) -> bytes:
+        row = await self.one(
+            "SELECT content FROM sources WHERE id = $1 AND user_id = $2",
+            id_, user_id)
+        data = row["content"]
+        return bytes(data) if data else b""
 
     async def referenced(self, user_id: UUID, id_: UUID) -> bool:
         n = await self.q().fetchval(

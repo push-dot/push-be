@@ -90,3 +90,35 @@ class ChatJobStore:
             "SELECT id, type, payload FROM chat_events "
             "WHERE job_id=$1 AND id>$2 ORDER BY id", job_id, after_id)
         return [dict(r) for r in rows]
+
+    async def emit_many(self, job_id: UUID, events: list[tuple[str, dict]]) -> None:
+        if not events:
+            return
+        await self.db.q().executemany(
+            "INSERT INTO chat_events (job_id, type, payload) VALUES ($1,$2,$3)",
+            [(job_id, type_, _dump(payload)) for type_, payload in events])
+
+    async def claim_id(self, job_id: UUID) -> Optional[dict]:
+        row = await self.db.pool.fetchrow(
+            "UPDATE chat_jobs SET status='RUNNING', attempt=attempt+1, "
+            "updated_at=$2 WHERE id=$1 AND status='PENDING' AND run_at<=now() "
+            "RETURNING id, user_id, conversation_id, payload, attempt",
+            job_id, _now())
+        return dict(row) if row else None
+
+    async def get(self, job_id: UUID) -> Optional[dict]:
+        row = await self.db.q().fetchrow(
+            "SELECT id, user_id, conversation_id, payload, attempt, status, "
+            "checkpoint FROM chat_jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+
+    async def save_checkpoint(self, job_id: UUID, checkpoint: dict) -> None:
+        await self.db.q().execute(
+            "UPDATE chat_jobs SET checkpoint=$2, updated_at=$3 WHERE id=$1",
+            job_id, _dump(checkpoint), _now())
+
+    async def pending_ids(self, limit: int = 5) -> list[UUID]:
+        rows = await self.db.pool.fetch(
+            "SELECT id FROM chat_jobs WHERE status='PENDING' AND run_at<=now() "
+            "ORDER BY created_at LIMIT $1", limit)
+        return [r["id"] for r in rows]

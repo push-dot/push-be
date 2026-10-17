@@ -5,7 +5,7 @@ import os
 import secrets
 from uuid import UUID
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from app.infrastructure import aesgcm
 
 
 def new_key_cipher(master: str) -> "KeyCipher":
@@ -22,7 +22,7 @@ def new_key_cipher(master: str) -> "KeyCipher":
 
 class KeyCipher:
     def __init__(self, key: bytes):
-        self._aes = AESGCM(key)
+        self._key = key
 
     @staticmethod
     def _aad(user_id: UUID, provider: str) -> bytes:
@@ -30,10 +30,13 @@ class KeyCipher:
 
     def encrypt(self, plaintext: str, user_id: UUID, provider: str) -> tuple[bytes, bytes]:
         nonce = os.urandom(12)
-        return self._aes.encrypt(nonce, plaintext.encode(), self._aad(user_id, provider)), nonce
+        ct = aesgcm.encrypt(self._key, nonce, plaintext.encode(),
+                            self._aad(user_id, provider))
+        return ct, nonce
 
     def decrypt(self, ciphertext: bytes, nonce: bytes, user_id: UUID, provider: str) -> str:
-        return self._aes.decrypt(nonce, ciphertext, self._aad(user_id, provider)).decode()
+        return aesgcm.decrypt(
+            self._key, nonce, ciphertext, self._aad(user_id, provider)).decode()
 
 
 def random_token() -> str:

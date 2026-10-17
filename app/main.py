@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,7 @@ from starlette.exceptions import HTTPException
 
 from app.config import Config, load_config
 from app.db import create_pool, run_migrations, DB
+from app.jobs import external_jobs
 from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
@@ -91,113 +93,153 @@ def _healthz():
     return JSONResponse(content={"data": {"status": "ok"}}, status_code=200)
 
 
-def create_app(cfg: Config | None = None) -> FastAPI:
-    cfg = cfg or load_config()
+async def ensure_ready(app: FastAPI, cfg: Config | None = None) -> None:
+    if getattr(app.state, "deps", None) is not None:
+        return
+    lock = getattr(app.state, "_ready_lock", None)
+    if lock is None:
+        import asyncio
+        lock = asyncio.Lock()
+        app.state._ready_lock = lock
+    async with lock:
+        if getattr(app.state, "deps", None) is not None:
+            return
+        await _bootstrap(app, cfg or load_config())
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
+
+async def _bootstrap(app: FastAPI, cfg: Config) -> None:
+    pool = await create_pool(cfg.database_url)
+    db = DB(pool)
+    migrations = Path(__file__).resolve().parent.parent / "migrations"
+    if migrations.is_dir() and os.environ.get("RUN_MIGRATIONS", "1") != "0":
+        await run_migrations(pool, str(migrations))
+    if cfg.app_env == "development" and cfg.dev_auth_token:
+        try:
+            await UserStore(db).get(cfg.dev_user_id)
+        except Exception:
+            await UserStore(db).upsert_dev_user(cfg.dev_user_id)
+
+    cipher = None
+    if cfg.byok_master_key:
+        cipher = new_key_cipher(cfg.byok_master_key)
+    oauth = OAuthClient()
+    openai = OpenAIClient(base_url=cfg.ai_base_url)
+    openai_byok = OpenAIClient()
+    openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
+    grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
+    claude_byok = AnthropicClient()
+    openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
+    gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
+    stripe = StripeClient(cfg.stripe_secret)
+    managed_ai = bool(cfg.managed_ai_key)
+    byok_enabled = cipher is not None
+
+    gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
+                  go_chat=openai_go, go_key=cfg.opencode_go_key,
+                  openrouter_chat=openrouter_byok,
+                  grok_chat=grok_byok, claude_chat=claude_byok)
+    auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
+                        cfg.dev_auth_token, cfg.dev_user_id)
+    approvals = ApprovalService(db)
+    evidence_svc = EvidenceService(db)
+    applications = ApplicationService(db, approvals,
+                                      cfg.job_site_adapters)
+    jobs_svc = JobService(db, approvals, gate)
+    documents = DocumentService(db, approvals, gate)
+    projects = ProjectService(db, approvals, gate)
+    interviews = InterviewService(db, gate)
+    calendar = CalendarService(db)
+    ai_svc = AIService(db, gate)
+    operations = OperationService(db, evidence_svc)
+    google = GoogleService(
+        db, cipher, gapi, cfg.google.client_id, cfg.google.client_secret,
+        "https://accounts.google.com/o/oauth2/v2/auth", cfg.gmail_beta)
+    billing = BillingService(
+        db, stripe, bool(cfg.stripe_secret),
+        {"PRO": cfg.stripe_price_pro, "ULTRA": cfg.stripe_price_ultra},
+        cfg.stripe_success_url, cfg.stripe_cancel_url,
+        cfg.stripe_portal_url, cfg.stripe_webhook_secret)
+    experiments_svc = ExperimentService(db)
+    await experiments_svc.seed(cfg.experiments)
+
+    use_memory = external_jobs() or os.environ.get("CHECKPOINTER") == "memory"
+    saver_ctx = None
+    if use_memory:
+        from langgraph.checkpoint.memory import MemorySaver
+        saver = MemorySaver()
+    else:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        pool = await create_pool(cfg.database_url)
-        db = DB(pool)
-        migrations = Path(__file__).resolve().parent.parent / "migrations"
-        if migrations.is_dir():
-            await run_migrations(pool, str(migrations))
-        if cfg.app_env == "development" and cfg.dev_auth_token:
-            try:
-                await UserStore(db).get(cfg.dev_user_id)
-            except Exception:
-                await UserStore(db).upsert_dev_user(cfg.dev_user_id)
-
-        cipher = None
-        if cfg.byok_master_key:
-            cipher = new_key_cipher(cfg.byok_master_key)
-        oauth = OAuthClient()
-        openai = OpenAIClient(base_url=cfg.ai_base_url)
-        openai_byok = OpenAIClient()
-        openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
-        grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
-        claude_byok = AnthropicClient()
-        openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
-        gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
-        stripe = StripeClient(cfg.stripe_secret)
-        managed_ai = bool(cfg.managed_ai_key)
-        byok_enabled = cipher is not None
-
-        gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
-                      go_chat=openai_go, go_key=cfg.opencode_go_key,
-                      openrouter_chat=openrouter_byok,
-                      grok_chat=grok_byok, claude_chat=claude_byok)
-        auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
-                            cfg.dev_auth_token, cfg.dev_user_id)
-        approvals = ApprovalService(db)
-        evidence_svc = EvidenceService(db)
-        applications = ApplicationService(db, approvals,
-                                          cfg.job_site_adapters)
-        jobs_svc = JobService(db, approvals, gate)
-        documents = DocumentService(db, approvals, gate)
-        projects = ProjectService(db, approvals, gate)
-        interviews = InterviewService(db, gate)
-        calendar = CalendarService(db)
-        ai_svc = AIService(db, gate)
-        operations = OperationService(db, evidence_svc)
-        google = GoogleService(
-            db, cipher, gapi, cfg.google.client_id, cfg.google.client_secret,
-            "https://accounts.google.com/o/oauth2/v2/auth", cfg.gmail_beta)
-        billing = BillingService(
-            db, stripe, bool(cfg.stripe_secret),
-            {"PRO": cfg.stripe_price_pro, "ULTRA": cfg.stripe_price_ultra},
-            cfg.stripe_success_url, cfg.stripe_cancel_url,
-            cfg.stripe_portal_url, cfg.stripe_webhook_secret)
-        experiments_svc = ExperimentService(db)
-        await experiments_svc.seed(cfg.experiments)
-
         saver_ctx = AsyncPostgresSaver.from_conn_string(cfg.database_url)
         saver = await saver_ctx.__aenter__()
-        conversations = None
+        await saver.setup()
+    conversations = ConversationService(
+        db, gate, saver, documents, jobs_svc, applications)
+    if not external_jobs():
+        await conversations.start_worker()
+    resume_workflow = ResumeWorkflowService(
+        db, applications, jobs_svc, documents, evidence_svc, approvals)
+    view = ConfigView(
+        google_configured=bool(cfg.google.client_id
+                               and cfg.google.client_secret),
+        gmail_beta=cfg.gmail_beta, managed_ai=managed_ai,
+        managed_go=bool(cfg.opencode_go_key),
+        byok_enabled=byok_enabled,
+        stripe_configured=bool(cfg.stripe_secret),
+        job_site_adapters=cfg.job_site_adapters)
+    app.state.deps = Deps(
+        auth=auths, evidence=evidence_svc, jobs=jobs_svc,
+        applications=applications, documents=documents,
+        projects=projects, interviews=interviews, calendar=calendar,
+        conversations=conversations, resume_workflow=resume_workflow,
+        approvals=approvals,
+        operations=operations, ai=ai_svc, google=google,
+        billing=billing, experiments=experiments_svc,
+        sources=SourceStore(db),
+        ai_keys=AiKeyStore(db), idem=IdempotencyStore(db), cfg=view,
+        storage_dir=cfg.storage_dir,
+        master_key=cfg.byok_master_key)
+    app.state.db = db
+    app.state._closers = (
+        conversations, saver_ctx, oauth, openai, openai_byok,
+        openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool)
+
+
+async def _shutdown(app: FastAPI) -> None:
+    closers = getattr(app.state, "_closers", None)
+    if not closers:
+        return
+    (conversations, saver_ctx, oauth, openai, openai_byok,
+     openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool) = closers
+    if conversations is not None and not external_jobs():
+        await conversations.stop_worker()
+    if saver_ctx is not None:
+        await saver_ctx.__aexit__(None, None, None)
+    await oauth.aclose()
+    await openai.aclose()
+    await openai_byok.aclose()
+    await openrouter_byok.aclose()
+    await grok_byok.aclose()
+    await claude_byok.aclose()
+    await openai_go.aclose()
+    await gapi.aclose()
+    await stripe.aclose()
+    await pool.close()
+    app.state._closers = None
+
+
+def create_app(cfg: Config | None = None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await ensure_ready(app, cfg)
         try:
-            await saver.setup()
-            conversations = ConversationService(
-                db, gate, saver, documents, jobs_svc, applications)
-            await conversations.start_worker()
-            resume_workflow = ResumeWorkflowService(
-                db, applications, jobs_svc, documents, evidence_svc, approvals)
-            view = ConfigView(
-                google_configured=bool(cfg.google.client_id
-                                       and cfg.google.client_secret),
-                gmail_beta=cfg.gmail_beta, managed_ai=managed_ai,
-                managed_go=bool(cfg.opencode_go_key),
-                byok_enabled=byok_enabled,
-                stripe_configured=bool(cfg.stripe_secret),
-                job_site_adapters=cfg.job_site_adapters)
-            app.state.deps = Deps(
-                auth=auths, evidence=evidence_svc, jobs=jobs_svc,
-                applications=applications, documents=documents,
-                projects=projects, interviews=interviews, calendar=calendar,
-                conversations=conversations, resume_workflow=resume_workflow,
-                approvals=approvals,
-                operations=operations, ai=ai_svc, google=google,
-                billing=billing, experiments=experiments_svc,
-                sources=SourceStore(db),
-                ai_keys=AiKeyStore(db), idem=IdempotencyStore(db), cfg=view,
-                storage_dir=cfg.storage_dir,
-                master_key=cfg.byok_master_key)
-            app.state.db = db
             yield
         finally:
-            if conversations is not None:
-                await conversations.stop_worker()
-            await saver_ctx.__aexit__(None, None, None)
-            await oauth.aclose()
-            await openai.aclose()
-            await openai_byok.aclose()
-            await openrouter_byok.aclose()
-            await grok_byok.aclose()
-            await claude_byok.aclose()
-            await openai_go.aclose()
-            await gapi.aclose()
-            await stripe.aclose()
-            await pool.close()
+            # The Workers ASGI adapter starts and stops lifespan per request.
+            # Keep the pool for the life of the isolate; a new SCRAM handshake
+            # on every call would spend the free-plan CPU budget.
+            if os.environ.get("CF_WORKER") == "1":
+                return
+            await _shutdown(app)
 
     app = FastAPI(lifespan=lifespan)
     app.add_exception_handler(DomainError, domain_error_handler)

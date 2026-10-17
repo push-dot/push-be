@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import re
 import socket
 from urllib.parse import urljoin, urlparse
@@ -235,7 +236,108 @@ async def _render_text(url: str) -> str:
         await proxy_server.wait_closed()
 
 
+def _workers_runtime() -> bool:
+    return os.environ.get("CF_WORKER") == "1"
+
+
+async def _reject_private_host(host: str) -> None:
+    host = (host or "").lower()
+    if host in _BLOCKED_HOSTS or host.endswith(_BLOCKED_SUFFIX):
+        raise ValueError("host not allowed")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if not ip.is_global:
+            raise ValueError("host resolves to a private address")
+        return
+    async with httpx.AsyncClient(timeout=5) as client:
+        for rtype in ("A", "AAAA"):
+            resp = await client.get(
+                "https://cloudflare-dns.com/dns-query",
+                params={"name": host, "type": rtype},
+                headers={"accept": "application/dns-json"})
+            if resp.status_code != 200:
+                continue
+            for ans in resp.json().get("Answer") or []:
+                if ans.get("type") not in (1, 28):
+                    continue
+                resolved = ipaddress.ip_address(ans["data"])
+                if not resolved.is_global:
+                    raise ValueError("host resolves to a private address")
+
+
+async def _browser_markdown(url: str) -> str:
+    account = os.environ.get("CF_ACCOUNT_ID", "")
+    token = os.environ.get("CF_API_TOKEN", "")
+    if not account or not token:
+        raise RuntimeError("browser rendering is not configured")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.cloudflare.com/client/v4/accounts/"
+            + account + "/browser-rendering/markdown",
+            headers={"Authorization": "Bearer " + token},
+            json={"url": url})
+    if resp.status_code != 200:
+        raise RuntimeError("browser rendering http " + str(resp.status_code))
+    body = resp.json()
+    result = body.get("result") if isinstance(body, dict) else ""
+    if isinstance(result, dict):
+        result = result.get("markdown") or result.get("content") or ""
+    return _WS_RE.sub(" ", result or "").strip()[:_MAX_TEXT]
+
+
+async def _fetch_page_text_worker(url: str) -> str:
+    """HTTP fetch on Workers. No local CONNECT proxy and no Playwright.
+
+    Cloudflare Browser Rendering (10 minutes/day on the free plan) is used
+    when CF_ACCOUNT_ID and CF_API_TOKEN are set and the static extract is
+    short. DNS is checked via DNS-over-HTTPS before the fetch; Workers
+    cannot pin the TCP destination the way the local transport does.
+    """
+    validate_https_url(url)
+    await _reject_private_host(urlparse(url).hostname or "")
+    buf = bytearray()
+    ct = ""
+    async with httpx.AsyncClient(
+            headers={"User-Agent": _UA, "Accept-Language": "ko,en;q=0.8"},
+            timeout=15, follow_redirects=False) as client:
+        for _ in range(6):
+            async with client.stream("GET", url) as r:
+                if r.is_redirect and "location" in r.headers:
+                    url = urljoin(url, r.headers["location"])
+                    validate_https_url(url)
+                    await _reject_private_host(urlparse(url).hostname or "")
+                    continue
+                if r.status_code != 200:
+                    raise ValueError("http status " + str(r.status_code))
+                ct = r.headers.get("content-type", "")
+                if "text/html" not in ct and "text/plain" not in ct:
+                    raise ValueError("unsupported content type " + ct)
+                async for chunk in r.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > _MAX_BYTES:
+                        break
+            break
+        else:
+            raise ValueError("too many redirects")
+    if "text/plain" in ct:
+        text = bytes(buf).decode("utf-8", errors="replace")[:_MAX_TEXT]
+    else:
+        text = _html_to_text(bytes(buf).decode("utf-8", errors="replace"))
+    if len(text) >= _MIN_TEXT:
+        return text
+    try:
+        rendered = await _browser_markdown(url)
+        return rendered if len(rendered) > len(text) else text
+    except Exception:
+        return text
+
+
 async def fetch_page_text(url: str) -> str:
+    if _workers_runtime():
+        return await _fetch_page_text_worker(url)
     transport = _PinnedTransport()
     async with httpx.AsyncClient(
             transport=transport,
