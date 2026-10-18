@@ -58,7 +58,9 @@ class ChatJobStore:
     async def reset_stale(self) -> int:
         await self.db.pool.execute(
             "UPDATE chat_jobs SET status='FAILED', error='worker died', "
-            "updated_at=$1 WHERE status='RUNNING' AND attempt >= 3", _now())
+            "updated_at=$1 WHERE status='RUNNING' AND ("
+            "attempt >= 3 OR COALESCE((checkpoint->>'fails')::int, 0) >= 3)",
+            _now())
         return await self.db.pool.fetchval(
             "WITH r AS (UPDATE chat_jobs SET status='PENDING', "
             "run_at=now(), updated_at=$1 WHERE status='RUNNING' "
@@ -84,6 +86,17 @@ class ChatJobStore:
     async def status(self, job_id: UUID) -> Optional[str]:
         return await self.db.q().fetchval(
             "SELECT status FROM chat_jobs WHERE id=$1", job_id)
+
+    async def delete_events_after(self, job_id: UUID, event_id: int) -> None:
+        await self.db.q().execute(
+            "DELETE FROM chat_events WHERE job_id=$1 AND id>$2",
+            job_id, event_id)
+
+    async def max_event_id(self, job_id: UUID) -> int:
+        val = await self.db.q().fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM chat_events WHERE job_id=$1",
+            job_id)
+        return int(val or 0)
 
     async def events_since(self, job_id: UUID, after_id: int) -> list[dict]:
         rows = await self.db.q().fetch(

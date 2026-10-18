@@ -31,6 +31,41 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Workflow steps. prepare_reply is not a LangGraph node; the local graph
+# still prepares inside generate_reply. Each name is one free-plan CPU budget.
+WORKFLOW_NODES = (
+    "resolve_context", "prepare_reply", "generate_reply", "persist")
+MAX_STEP_FAILS = 3
+
+
+def step_already_done(checkpoint: dict | None, name: str) -> bool:
+    node = (checkpoint or {}).get("node") or ""
+    if node not in WORKFLOW_NODES or name not in WORKFLOW_NODES:
+        return False
+    return WORKFLOW_NODES.index(node) >= WORKFLOW_NODES.index(name)
+
+
+def step_fail_limit_reached(checkpoint: dict | None) -> bool:
+    try:
+        fails = int((checkpoint or {}).get("fails") or 0)
+    except (TypeError, ValueError):
+        return False
+    return fails >= MAX_STEP_FAILS
+
+
+def _checkpoint_dict(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        import json
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 class ConversationService:
     def __init__(self, db: DB, ai: AIGate, checkpointer=None,
                  document_svc=None, job_svc=None, application_svc=None):
@@ -57,10 +92,17 @@ class ConversationService:
     @property
     def graph(self):
         # LangGraph compile is the heavy import. Health and auth requests
-        # never touch it; the first chat message in an isolate does.
+        # never touch it; the first local chat message in an isolate does.
         if self._compiled is None:
             self._compiled = build_chat_graph(self, self._checkpointer)
         return self._compiled
+
+    def ensure_chat_nodes(self) -> None:
+        # Workflow steps call node functions directly and skip compile.
+        if getattr(self, "chat_nodes", None):
+            return
+        from app.graph.chat import bind_chat_nodes
+        bind_chat_nodes(self)
 
     async def start_worker(self) -> None:
         recovered = await self.jobs.reset_stale()
@@ -498,17 +540,30 @@ class ConversationService:
         job = await self.jobs.get(jid)
         if job is None:
             return "skip"
+        status = job.get("status")
+        if status == "DONE":
+            return "ok"
+        if status == "FAILED":
+            return "error"
         payload = job["payload"] if isinstance(job["payload"], dict) else {}
+        ck = _checkpoint_dict(job.get("checkpoint"))
+        if step_already_done(ck, name):
+            return "ok"
+        if step_fail_limit_reached(ck):
+            await self._fail_step(jid, "step exceeded retry limit")
+            return "error"
+        # Drop events from a previous attempt of this step. Earlier steps
+        # stay; their high-water id is stored on the checkpoint.
+        hw = int(ck.get("event_id") or 0)
+        await self.jobs.delete_events_after(jid, hw)
+        fails = int(ck.get("fails") or 0) + 1
+        await self.jobs.save_checkpoint(jid, {**ck, "fails": fails})
         byok = self._byok_keys.get(jid) or self._byok_from_payload(
             job["user_id"], payload)
         token = _BYOK_KEY.set(byok or "")
         events: list[dict] = []
         sink = event_sink.set(events)
         try:
-            ck = job.get("checkpoint") or {}
-            if isinstance(ck, str):
-                import json
-                ck = json.loads(ck or "{}")
             state = thaw_state((ck or {}).get("state") or {})
             if not state:
                 state = {
@@ -521,7 +576,7 @@ class ConversationService:
                     "operation": None,
                     "job_id": str(jid),
                 }
-            _ = self.graph
+            self.ensure_chat_nodes()
             update = await self.chat_nodes[name](state)
             if update:
                 state.update(update)
@@ -539,8 +594,10 @@ class ConversationService:
                     {"operation": to_jsonable(state["operation"])})
                 await self.jobs.finish(jid, "DONE")
                 self._byok_keys.pop(jid, None)
+            event_id = await self.jobs.max_event_id(jid)
             await self.jobs.save_checkpoint(
-                jid, {"state": freeze_state(state), "node": name})
+                jid, {"state": freeze_state(state), "node": name,
+                      "event_id": event_id, "fails": 0})
             return "ok"
         except DomainError as e:
             await self.jobs.emit(
@@ -549,19 +606,22 @@ class ConversationService:
                            "details": e.details}})
             await self.jobs.finish(jid, "FAILED", e.code)
             return "error"
-        except Exception as e:
+        except Exception:
+            # Leave the incremented fails count in the checkpoint and let
+            # the Workflow retry the step. A CPU-limit kill (Error 1102)
+            # never reaches this handler; the same checkpoint makes that
+            # retry idempotent.
             logging.getLogger(__name__).exception("chat node %s failed", name)
-            if job.get("attempt", 1) < 3:
-                await self.jobs.requeue(jid, 2.0 * job.get("attempt", 1))
-            else:
-                await self.jobs.emit(
-                    jid, "error",
-                    {"error": {"code": "INTERNAL", "message": str(e)[:500]}})
-                await self.jobs.finish(jid, "FAILED", str(e)[:500])
-            return "error"
+            raise
         finally:
             event_sink.reset(sink)
             _BYOK_KEY.reset(token)
+
+    async def _fail_step(self, job_id: UUID, message: str) -> None:
+        await self.jobs.emit(
+            job_id, "error",
+            {"error": {"code": "INTERNAL", "message": message, "details": None}})
+        await self.jobs.finish(job_id, "FAILED", message)
 
     async def nudge_pending(self) -> int:
         await self.jobs.reset_stale()

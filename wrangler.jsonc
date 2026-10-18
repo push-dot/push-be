@@ -1,11 +1,14 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "push-be",
+  "name": "push-be-python",
   // src/ is the upload root, so a repo-level .venv is not part of the bundle.
+  // The public workers.dev name is the TypeScript front worker (front/).
+  // This worker is only reached through the front worker's service binding,
+  // plus its own cron and Workflow triggers.
   "main": "src/worker.py",
   "compatibility_date": "2026-10-17",
   "compatibility_flags": ["python_workers"],
-  "workers_dev": true,
+  "workers_dev": false,
   "rules": [{"type": "Data", "globs": ["app/resources/**/*.md"], "fallthrough": true}],
   "observability": {
     "enabled": true

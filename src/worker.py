@@ -130,6 +130,28 @@ except ImportError:  # imported outside the Workers runtime
     asgi = None
 
 
+def _step_config(timeout: str, limit: int = 5) -> dict:
+    # A step killed by the free-plan CPU limit fails the attempt. Workflows
+    # retry it with exponential backoff. The node itself is idempotent, so
+    # a retry does not duplicate chat_events from the attempt that died.
+    return {
+        "retries": {
+            "limit": limit,
+            "delay": "2 seconds",
+            "backoff": "exponential",
+        },
+        "timeout": timeout,
+    }
+
+
+_NODE_TIMEOUTS = {
+    "resolve_context": "1 minute",
+    "prepare_reply": "2 minutes",
+    "generate_reply": "3 minutes",
+    "persist": "1 minute",
+}
+
+
 class ChatWorkflow(WorkflowEntrypoint):
     """One graph node per step so each step gets a fresh free-plan CPU budget."""
 
@@ -150,7 +172,7 @@ class ChatWorkflow(WorkflowEntrypoint):
             return
         svc = app.state.deps.conversations
 
-        @step.do("claim", config={"retries": {"limit": 2, "delay": "2 seconds"}})
+        @step.do("claim", config=_step_config("30 seconds"))
         async def claim():
             return await svc.claim_for_workflow(job_id, byok)
 
@@ -160,13 +182,14 @@ class ChatWorkflow(WorkflowEntrypoint):
         # step.do injects dependencies by parameter name, so the node name
         # must be closed over rather than passed as a default argument.
         def make_step(node):
-            @step.do(node, config={"retries": {"limit": 1, "delay": "5 seconds"}})
+            @step.do(node, config=_step_config(_NODE_TIMEOUTS[node]))
             async def run_node():
                 return await svc.exec_chat_node(job_id, node)
 
             return run_node
 
-        for node in ("resolve_context", "generate_reply", "persist"):
+        for node in ("resolve_context", "prepare_reply", "generate_reply",
+                     "persist"):
             if await make_step(node)() != "ok":
                 return
 
