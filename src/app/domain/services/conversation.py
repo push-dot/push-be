@@ -14,6 +14,9 @@ from app.domain.errors import (
 from app.domain.services.ai import AIGate
 from app.domain.validators import code_point_len
 from app.graph.chat import build_chat_graph, byok_key_var as _BYOK_KEY
+from app.graph.chat import event_sink
+from app.graph.freeze import freeze_state, thaw_state
+from app.jobs import external_jobs, schedule_chat_job, sse_max_polls
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
@@ -48,7 +51,16 @@ class ConversationService:
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
-        self.graph = build_chat_graph(self, checkpointer)
+        self._checkpointer = checkpointer
+        self._compiled = None
+
+    @property
+    def graph(self):
+        # LangGraph compile is the heavy import. Health and auth requests
+        # never touch it; the first chat message in an isolate does.
+        if self._compiled is None:
+            self._compiled = build_chat_graph(self, self._checkpointer)
+        return self._compiled
 
     async def start_worker(self) -> None:
         recovered = await self.jobs.reset_stale()
@@ -260,6 +272,9 @@ class ConversationService:
                            access_mode: str,
                            byok_key: str = "") -> ent.Operation:
         self._validate_message(text, access_mode)
+        if external_jobs():
+            return await self._enqueue_and_wait(
+                user_id, conversation_id, text, context, ai, access_mode, byok_key)
         token = _BYOK_KEY.set(byok_key)
         try:
             result = await self.graph.ainvoke(
@@ -296,7 +311,7 @@ class ConversationService:
                              ai: Optional[ent.AiOptions], access_mode: str,
                              byok_key: str = ""):
         self._validate_message(text, access_mode)
-        if self._worker_task is not None:
+        if self._worker_task is not None or external_jobs():
             async for ev in self._stream_via_queue(
                     user_id, conversation_id, text, context, ai, access_mode,
                     byok_key):
@@ -327,9 +342,12 @@ class ConversationService:
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
         }
+        payload = self._stash_byok(user_id, payload, byok_key)
         job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
         if byok_key:
             self._byok_keys[job_id] = byok_key
+        if external_jobs():
+            await schedule_chat_job(job_id, byok_key)
         async for ev in self._pump_job_events(job_id):
             yield ev
 
@@ -352,8 +370,11 @@ class ConversationService:
     async def _pump_job_events(self, job_id: UUID, after: int = 0):
         last_id = after
         idle = 0
+        polls = 0
+        limit = sse_max_polls()
         deadline = asyncio.get_running_loop().time() + self._PUMP_MAX_WAIT_S
-        while True:
+        while polls < limit:
+            polls += 1
             if asyncio.get_running_loop().time() > deadline:
                 yield ("error", {"code": "INTERNAL",
                                  "message": "job timed out"}, None)
@@ -386,4 +407,165 @@ class ConversationService:
                     if st == "DONE":
                         return
                     idle = 0
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.25 if external_jobs() else 0.2)
+
+    def _stash_byok(self, user_id: UUID, payload: dict, byok_key: str) -> dict:
+        cipher = getattr(self.ai, "cipher", None)
+        if not byok_key or cipher is None:
+            return payload
+        import base64
+        ct, nonce = cipher.encrypt(byok_key, user_id, "chat-job")
+        stored = dict(payload)
+        stored["_byok"] = {
+            "ct": base64.b64encode(ct).decode(),
+            "nonce": base64.b64encode(nonce).decode(),
+        }
+        return stored
+
+    def _byok_from_payload(self, user_id, payload) -> str:
+        cipher = getattr(self.ai, "cipher", None)
+        blob = (payload or {}).get("_byok") if isinstance(payload, dict) else None
+        if not blob or cipher is None:
+            return ""
+        import base64
+        try:
+            uid = user_id if isinstance(user_id, UUID) else UUID(str(user_id))
+            return cipher.decrypt(
+                base64.b64decode(blob["ct"]),
+                base64.b64decode(blob["nonce"]),
+                uid, "chat-job")
+        except Exception:
+            return ""
+
+    async def _enqueue_and_wait(self, user_id, conversation_id, text, context,
+                                ai, access_mode, byok_key) -> ent.Operation:
+        await self.get(user_id, conversation_id)
+        payload = self._stash_byok(user_id, {
+            "text": text,
+            "context": context or {},
+            "ai": ai.model_dump(by_alias=True) if ai else None,
+            "access_mode": access_mode,
+        }, byok_key)
+        job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
+        if byok_key:
+            self._byok_keys[job_id] = byok_key
+        await schedule_chat_job(job_id, byok_key)
+        op = await self._wait_operation(job_id)
+        if op is not None:
+            return op
+        now = _now()
+        return ent.Operation(
+            id=job_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
+            status=ent.OP_QUEUED,
+            result=ent.OperationResult(
+                kind=ent.OP_CHAT_MESSAGE, value={"jobId": str(job_id)}),
+            created_at=now, updated_at=now)
+
+    async def _wait_operation(self, job_id: UUID):
+        last = 0
+        for _ in range(sse_max_polls()):
+            for row in await self.jobs.events_since(job_id, last):
+                last = row["id"]
+                if row["type"] == "done":
+                    op = (row["payload"] or {}).get("operation")
+                    if isinstance(op, dict) and op.get("status"):
+                        data = dict(op)
+                        data.setdefault(
+                            "userId", "00000000-0000-4000-8000-000000000000")
+                        return ent.Operation.model_validate(data)
+                    return None
+                if row["type"] == "error":
+                    err = (row["payload"] or {}).get("error") or {}
+                    raise DomainError(
+                        500 if err.get("code") in (None, "INTERNAL") else 400,
+                        err.get("code") or "INTERNAL",
+                        err.get("message") or "job failed",
+                        err.get("details"))
+            await asyncio.sleep(0.25)
+        return None
+
+    async def claim_for_workflow(self, job_id: str, byok: str = "") -> str:
+        jid = UUID(str(job_id))
+        job = await self.jobs.claim_id(jid)
+        if job is None:
+            existing = await self.jobs.get(jid)
+            if existing is None or existing.get("status") != "RUNNING":
+                return "skip"
+        return "ok"
+
+    async def exec_chat_node(self, job_id: str, name: str) -> str:
+        jid = UUID(str(job_id))
+        job = await self.jobs.get(jid)
+        if job is None:
+            return "skip"
+        payload = job["payload"] if isinstance(job["payload"], dict) else {}
+        byok = self._byok_keys.get(jid) or self._byok_from_payload(
+            job["user_id"], payload)
+        token = _BYOK_KEY.set(byok or "")
+        events: list[dict] = []
+        sink = event_sink.set(events)
+        try:
+            ck = job.get("checkpoint") or {}
+            if isinstance(ck, str):
+                import json
+                ck = json.loads(ck or "{}")
+            state = thaw_state((ck or {}).get("state") or {})
+            if not state:
+                state = {
+                    "user_id": job["user_id"],
+                    "conversation_id": job["conversation_id"],
+                    "text": payload.get("text") or "",
+                    "context": payload.get("context") or {},
+                    "ai": payload.get("ai"),
+                    "access_mode": payload.get("access_mode") or "SUGGEST",
+                    "operation": None,
+                    "job_id": str(jid),
+                }
+            _ = self.graph
+            update = await self.chat_nodes[name](state)
+            if update:
+                state.update(update)
+            mapped = []
+            for ev in events:
+                if "token" in ev:
+                    mapped.append(("token", {"text": ev["token"]}))
+                elif "status" in ev:
+                    mapped.append(("status", {"text": ev["status"]}))
+            await self.jobs.emit_many(jid, mapped)
+            if name == "persist" and state.get("operation") is not None:
+                from app.jsonutil import to_jsonable
+                await self.jobs.emit(
+                    jid, "done",
+                    {"operation": to_jsonable(state["operation"])})
+                await self.jobs.finish(jid, "DONE")
+                self._byok_keys.pop(jid, None)
+            await self.jobs.save_checkpoint(
+                jid, {"state": freeze_state(state), "node": name})
+            return "ok"
+        except DomainError as e:
+            await self.jobs.emit(
+                jid, "error",
+                {"error": {"code": e.code, "message": e.message,
+                           "details": e.details}})
+            await self.jobs.finish(jid, "FAILED", e.code)
+            return "error"
+        except Exception as e:
+            logging.getLogger(__name__).exception("chat node %s failed", name)
+            if job.get("attempt", 1) < 3:
+                await self.jobs.requeue(jid, 2.0 * job.get("attempt", 1))
+            else:
+                await self.jobs.emit(
+                    jid, "error",
+                    {"error": {"code": "INTERNAL", "message": str(e)[:500]}})
+                await self.jobs.finish(jid, "FAILED", str(e)[:500])
+            return "error"
+        finally:
+            event_sink.reset(sink)
+            _BYOK_KEY.reset(token)
+
+    async def nudge_pending(self) -> int:
+        await self.jobs.reset_stale()
+        ids = await self.jobs.pending_ids(5)
+        for pending in ids:
+            await schedule_chat_job(pending, "")
+        return len(ids)

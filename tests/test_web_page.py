@@ -72,9 +72,22 @@ async def test_proxy_pipes_to_validated_ip(monkeypatch):
         await writer.drain()
         assert await reader.readexactly(4) == b"ping"
         writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), timeout=2)
+        except (asyncio.TimeoutError, TimeoutError):
+            pass
     finally:
         server.close()
         echo_server.close()
-        server.close_clients()
-        echo_server.close_clients()
-        await asyncio.gather(server.wait_closed(), echo_server.wait_closed())
+        for open_server in (server, echo_server):
+            close_clients = getattr(open_server, "close_clients", None)
+            if close_clients is not None:
+                close_clients()
+
+        async def _wait(open_server):
+            try:
+                await asyncio.wait_for(open_server.wait_closed(), timeout=2)
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
+
+        await asyncio.gather(_wait(server), _wait(echo_server))

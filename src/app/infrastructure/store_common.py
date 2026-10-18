@@ -1,8 +1,6 @@
 from __future__ import annotations
 from typing import Any
 
-import asyncpg
-
 from app.db import DB, NotFoundError
 from app.domain.pagination import Page, PageRequest, new_page
 
@@ -14,7 +12,7 @@ class Store:
     def q(self):
         return self.d.q()
 
-    async def one(self, sql: str, *args) -> asyncpg.Record:
+    async def one(self, sql: str, *args) -> Any:
         row = await self.q().fetchrow(sql, *args)
         if row is None:
             raise NotFoundError()
