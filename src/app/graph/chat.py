@@ -6,18 +6,12 @@ from typing import Any, Optional, TypedDict
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from datetime import datetime, timezone
 
-from langgraph.config import get_stream_writer
-from langgraph.graph import END, START, StateGraph
-
 from app.domain import entities as ent
 from app.domain.errors import (
-    invalid_transition, not_found, validation_field,
+    DomainError, invalid_transition, not_found, validation_field,
 )
 from app.db import NotFoundError
 from app.domain.pagination import PageRequest
-from app.infrastructure.web_page import (fetch_github_context,
-                                         fetch_page_text, find_urls,
-                                         github_usernames)
 from app.jsonutil import to_jsonable
 from app.graph.resume_prompt import (
     _phase_prompt, gate_for_phase, needs_gate, resume_phase,
@@ -25,6 +19,22 @@ from app.graph.resume_prompt import (
 
 
 byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
+event_sink: ContextVar[list | None] = ContextVar("event_sink", default=None)
+
+
+def _emit(payload: dict) -> None:
+    sink = event_sink.get()
+    if sink is not None:
+        sink.append(payload)
+        return
+    # Imported here so health checks do not load LangGraph.
+    from langgraph.config import get_stream_writer
+    get_stream_writer()(payload)
+
+
+def _blob_db() -> bool:
+    import os
+    return os.environ.get("BLOB_STORE") == "db" or os.environ.get("CF_WORKER") == "1"
 
 
 def _now() -> datetime:
@@ -224,6 +234,10 @@ def build_chat_graph(svc, checkpointer=None):
     async def generate_reply(state: ChatState) -> dict:
         try:
             return await _generate_reply(state)
+        except DomainError:
+            # A rejected request (FEATURE_DISABLED and other 4xx) must not
+            # leave the user's message in the conversation.
+            raise
         except Exception:
             try:
                 await _persist_user_msg(state)
@@ -232,10 +246,11 @@ def build_chat_graph(svc, checkpointer=None):
             raise
 
     async def _generate_reply(state: ChatState) -> dict:
-        writer = get_stream_writer()
+        from app.infrastructure.web_page import (
+            fetch_github_context, fetch_page_text, find_urls, github_usernames)
         ai = state.get("ai")
         if ai is None:
-            writer({"token": stub_reply(state["text"])})
+            _emit({"token": stub_reply(state["text"])})
             return {"completion": None}
         opts = ent.AiOptions(**ai)
         role_models = opts.models or {}
@@ -261,7 +276,7 @@ def build_chat_graph(svc, checkpointer=None):
             logging.getLogger(__name__).exception("history load failed")
         urls = list(urls)[:4]
         if urls:
-            writer({"status": "웹 페이지 읽는 중"})
+            _emit({"status": "웹 페이지 읽는 중"})
             pages = await asyncio.gather(
                 *(fetch_page_text(u) for u in urls),
                 return_exceptions=True)
@@ -304,7 +319,7 @@ def build_chat_graph(svc, checkpointer=None):
                        if str(h["evidence_id"]) not in seen_evidence
                        and (h["dist"] or 0) < 0.6]
                 if rag:
-                    writer({"status": "관련 근거 검색 완료"})
+                    _emit({"status": "관련 근거 검색 완료"})
                     sections.append(
                         "[관련 근거]\n" + "\n\n".join(
                             "- " + h["title"] + "\n" + h["text"]
@@ -327,7 +342,7 @@ def build_chat_graph(svc, checkpointer=None):
                     if u not in gh_users:
                         gh_users.append(u)
             if gh_users:
-                writer({"status": "GitHub 저장소 조회 중"})
+                _emit({"status": "GitHub 저장소 조회 중"})
                 gh = await asyncio.gather(
                     *(fetch_github_context(u) for u in gh_users[:2]),
                     return_exceptions=True)
@@ -336,7 +351,7 @@ def build_chat_graph(svc, checkpointer=None):
                         sections.append("[GitHub] " + g)
             company = _company_from_pages(sections)
             if company:
-                writer({"status": "회사 정보 검색 중"})
+                _emit({"status": "회사 정보 검색 중"})
                 page_ctx = next(
                     (s for s in sections if s.startswith("[웹 페이지]")), "")
                 research = await svc.ai.company_research(
@@ -370,19 +385,34 @@ def build_chat_graph(svc, checkpointer=None):
                             state["user_id"], job.id, "")
                     conv.application_id = app.id
                     await svc.conversations.update(conv, conv.revision)
-                    writer({"status": "지원 항목 연결됨"})
+                    _emit({"status": "지원 항목 연결됨"})
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception(
                         "application link failed")
         phase = 0
         if resume_flow:
-            phase = await asyncio.to_thread(
-                resume_phase, hist_text, getattr(conv, "id", None),
-                getattr(conv, "title", "") or "")
-            if getattr(conv, "id", None):
-                arts = await asyncio.to_thread(_load_artifacts, conv)
-                if arts:
+            if _blob_db() and getattr(conv, "id", None):
+                from app.infrastructure.resume_workspace import (
+                    artifact_names, read_artifact)
+                from app.graph.resume_prompt import phase_from_filenames
+                names = await artifact_names(svc.db, conv.id)
+                phase = phase_from_filenames(names, hist_text)
+                arts = []
+                for name in sorted(names):
+                    if name.startswith(".") or name.endswith(".pdf"):
+                        continue
+                    body = await read_artifact(svc.db, conv.id, name)
+                    if body:
+                        arts.append(f"### {name}\n" + body[:10000])
+            else:
+                phase = await asyncio.to_thread(
+                    resume_phase, hist_text, getattr(conv, "id", None),
+                    getattr(conv, "title", "") or "")
+                arts = []
+                if getattr(conv, "id", None):
+                    arts = await asyncio.to_thread(_load_artifacts, conv)
+            if arts:
                     sections.append(
                         "[저장된 산출물 — 참고용. 이미 디스크에 저장됨. "
                         "그대로 다시 출력하지 말 것. 단, 사용자가 수정·재생성·"
@@ -395,7 +425,19 @@ def build_chat_graph(svc, checkpointer=None):
         from app.infrastructure.resume_workspace import visible_prefix
         parts = []
         emitted = 0
-        writer({"status": "응답 작성 중"})
+        _emit({"status": "응답 작성 중"})
+        import os
+        if os.environ.get("LLM_STREAM", "1") == "0":
+            completion = await svc.ai.complete(
+                state["user_id"], opts, system, user_msg,
+                byok_key=byok_key_var.get(), search_query=state["text"])
+            text = completion.text or ""
+            step = 48
+            for i in range(0, len(text), step):
+                _emit({"token": text[i:i + step]})
+            return {"completion": completion,
+                    "usage_ids": [completion.usage_id] if completion.usage_id else [],
+                    "resume_flow": resume_flow, "phase": phase}
         for round_ in range(3):
             usage.pop("finish", None)
             async for tok in svc.ai.stream(
@@ -407,13 +449,13 @@ def build_chat_graph(svc, checkpointer=None):
                 if resume_flow:
                     safe = visible_prefix("".join(parts))
                     if len(safe) > emitted:
-                        writer({"token": safe[emitted:]})
+                        _emit({"token": safe[emitted:]})
                         emitted = len(safe)
                 else:
-                    writer({"token": tok})
+                    _emit({"token": tok})
             if usage.get("finish") != "length":
                 break
-            writer({"status": "응답이 길어 이어서 작성 중"})
+            _emit({"status": "응답이 길어 이어서 작성 중"})
         return {"completion": ent.AICompletion(
             text="".join(parts),
             input_tokens=usage["input_tokens"],
@@ -448,8 +490,15 @@ def build_chat_graph(svc, checkpointer=None):
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
             try:
-                saved = await asyncio.to_thread(
-                    save_artifacts, conv.id, conv.title or "", completion.text)
+                if _blob_db():
+                    from app.infrastructure.resume_workspace import (
+                        artifact_names, save_artifacts_db)
+                    from app.graph.resume_prompt import phase_from_filenames
+                    saved = await save_artifacts_db(
+                        svc.db, conv.id, conv.title or "", completion.text)
+                else:
+                    saved = await asyncio.to_thread(
+                        save_artifacts, conv.id, conv.title or "", completion.text)
                 if not saved and completion.text:
                     import logging
                     logging.getLogger(__name__).warning(
@@ -459,14 +508,18 @@ def build_chat_graph(svc, checkpointer=None):
                 import logging
                 logging.getLogger(__name__).exception("artifact save failed")
                 saved = []
-            new_phase = (await asyncio.to_thread(
-                resume_phase, "", conv.id, conv.title or "")
-                if saved else state.get("phase", 0))
+            if saved and _blob_db():
+                new_phase = phase_from_filenames(
+                    await artifact_names(svc.db, conv.id), "")
+            else:
+                new_phase = (await asyncio.to_thread(
+                    resume_phase, "", conv.id, conv.title or "")
+                    if saved else state.get("phase", 0))
             gate = gate_for_phase(new_phase - 1) if new_phase > state.get(
                 "phase", 0) else ""
             if gate and needs_gate(reply):
                 assistant_text = reply + "\n\n---\n\n" + gate
-                get_stream_writer()({"token": "\n\n---\n\n" + gate})
+                _emit({"token": "\n\n---\n\n" + gate})
             if saved:
                 try:
                     synced = await sync_documents(svc, user_id, conv, saved)
@@ -515,6 +568,8 @@ def build_chat_graph(svc, checkpointer=None):
         await svc.db.run(work)
         return {"operation": op}
 
+    from langgraph.graph import END, START, StateGraph
+
     g = StateGraph(ChatState)
     g.add_node("resolve_context", resolve_context)
     g.add_node("generate_reply", generate_reply)
@@ -523,4 +578,9 @@ def build_chat_graph(svc, checkpointer=None):
     g.add_edge("resolve_context", "generate_reply")
     g.add_edge("generate_reply", "persist")
     g.add_edge("persist", END)
+    svc.chat_nodes = {
+        "resolve_context": resolve_context,
+        "generate_reply": generate_reply,
+        "persist": persist,
+    }
     return g.compile(checkpointer=checkpointer)

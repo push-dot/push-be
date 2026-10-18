@@ -97,7 +97,9 @@ async def get_active_stream(id: str, request: Request):
     if await d.conversations.active_job_id(user_id, conversation_id) is None:
         return Response(status_code=204)
     after_raw = request.query_params.get("after", "")
-    after = int(after_raw) if after_raw.isdigit() else 0
+    if not after_raw:
+        after_raw = request.headers.get("last-event-id", "")
+    after = int(after_raw) if str(after_raw).isdigit() else 0
 
     async def events():
         async for frame in _sse_frames(
@@ -109,6 +111,9 @@ async def get_active_stream(id: str, request: Request):
 
 
 async def _sse_frames(gen, request: Request):
+    # EventSource reconnects with Last-Event-ID. Free-plan Workers close the
+    # response after a short poll budget; `retry` asks the client to resume.
+    yield "retry: 400\n\n"
     try:
         async for kind, payload, seq in gen:
             if await request.is_disconnected():
@@ -123,7 +128,8 @@ async def _sse_frames(gen, request: Request):
                 body = {"type": "done", "operation": to_jsonable(payload)}
             if seq is not None:
                 body["seq"] = seq
-            yield "data: " + json.dumps(body) + "\n\n"
+            prefix = f"id: {seq}\n" if seq is not None else ""
+            yield prefix + "data: " + json.dumps(body) + "\n\n"
     except DomainError as e:
         yield "data: " + json.dumps(
             {"type": "error",

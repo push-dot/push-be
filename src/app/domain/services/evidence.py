@@ -153,6 +153,12 @@ class EvidenceService:
         except Exception:
             raise internal()
         try:
+            if src.path.startswith("db://"):
+                data = await self.sources.content(user_id, source_id)
+                if src.mime_type == "application/pdf":
+                    from app.infrastructure.pdf_text import extract_pdf_bytes
+                    return extract_pdf_bytes(data)
+                return data.decode("utf-8", errors="replace")
             if src.mime_type == "application/pdf":
                 return await extract_pdf_text(src.path)
             if src.mime_type.startswith("text/") or src.file_name.lower().endswith(

@@ -1,0 +1,33 @@
+name: Migrate database
+
+# Manual only. Pushes to develop/main deploy the Worker and do not migrate.
+# This job uses the GitHub secret DATABASE_URL over TCP. It does not call
+# `wrangler secret put`, so Worker runtime secrets stay as they are.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: python -m pip install -e .
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Repository secret DATABASE_URL is not set."
+            exit 1
+          fi
+          python scripts/migrate.py

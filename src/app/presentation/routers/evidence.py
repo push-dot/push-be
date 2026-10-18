@@ -112,26 +112,30 @@ async def create_source(request: Request):
         raise validation_field("file", "unsupported file type " + mime)
     sha = hashlib.sha256(buf).hexdigest()
     src_id = uuid4()
-    path = os.path.join(d.storage_dir, str(user.id), str(src_id))
+    in_db = os.environ.get("BLOB_STORE") == "db" or os.environ.get("CF_WORKER") == "1"
+    path = (f"db://sources/{src_id}" if in_db
+            else os.path.join(d.storage_dir, str(user.id), str(src_id)))
 
-    def _write():
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(buf)
-        os.chmod(path, 0o600)
+    if not in_db:
+        def _write():
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(buf)
+            os.chmod(path, 0o600)
 
-    await asyncio.to_thread(_write)
+        await asyncio.to_thread(_write)
     src = ent.Source(id=src_id, user_id=user.id,
                      file_name=file.filename or "", mime_type=mime,
                      size=len(buf), sha256=sha, path=path, status="STORED",
                      created_at=datetime.now(timezone.utc))
     try:
-        await d.sources.create(src)
+        await d.sources.create(src, buf if in_db else None)
     except Exception:
-        try:
-            await asyncio.to_thread(os.unlink, path)
-        except OSError:
-            logger.exception("source file cleanup failed %s", src_id)
+        if not in_db:
+            try:
+                await asyncio.to_thread(os.unlink, path)
+            except OSError:
+                logger.exception("source file cleanup failed %s", src_id)
         raise internal()
     return data(201, {"id": src.id, "fileName": src.file_name,
                       "mimeType": src.mime_type, "size": src.size,
@@ -157,6 +161,9 @@ async def get_source_content(id: str, request: Request):
                                   param_id(id, "id"))
     except NotFoundError:
         raise not_found()
+    if src.path.startswith("db://"):
+        body = await d.sources.content(current_user(request).id, src.id)
+        return Response(content=body, media_type=src.mime_type)
     return FileResponse(src.path)
 
 
@@ -178,8 +185,9 @@ async def delete_source(id: str, request: Request):
         await d.sources.delete(user_id, sid)
     except NotFoundError:
         raise not_found()
-    try:
-        await asyncio.to_thread(os.unlink, src.path)
-    except OSError:
-        logger.exception("source file unlink failed %s", sid)
+    if not src.path.startswith("db://"):
+        try:
+            await asyncio.to_thread(os.unlink, src.path)
+        except OSError:
+            logger.exception("source file unlink failed %s", sid)
     return Response(status_code=204)

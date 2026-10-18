@@ -83,6 +83,13 @@ _PHASE_LABELS = {
 }
 
 
+def phase_from_filenames(names, history_text: str = "") -> int:
+    for phase, markers in _PHASE_MARKERS:
+        if any(str(f).startswith(m) for f in names for m in markers):
+            return phase
+    return resume_phase(history_text)
+
+
 def resume_phase(history_text: str, conv_id=None, title: str = "") -> int:
     if conv_id is not None:
         try:

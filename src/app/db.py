@@ -3,14 +3,13 @@ import asyncio
 import contextvars
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import asyncpg
-
 logger = logging.getLogger(__name__)
 
-_tx: contextvars.ContextVar[asyncpg.Connection | None] = contextvars.ContextVar("tx", default=None)
+_tx: contextvars.ContextVar[Any | None] = contextvars.ContextVar("tx", default=None)
 
 
 class NotFoundError(Exception):
@@ -23,13 +22,14 @@ class ConflictError(Exception):
         self.current = current
 
 
-async def _init_conn(conn: asyncpg.Connection) -> None:
+async def _init_conn(conn) -> None:
     for t in ("json", "jsonb"):
-        await conn.set_type_codec(t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+        await conn.set_type_codec(
+            t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
 
 
 class DB:
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool):
         self.pool = pool
 
     def q(self):
@@ -64,13 +64,17 @@ class DB:
 
 
 def unique_violation(err: Exception) -> bool:
-    return isinstance(err, asyncpg.UniqueViolationError)
+    from app.pgproto import UniqueViolationError
+    if isinstance(err, UniqueViolationError):
+        return True
+    name = type(err).__name__
+    return name == "UniqueViolationError" or getattr(err, "sqlstate", None) == "23505"
 
 
 _MIGRATION_LOCK_KEY = 0x707573685F6D6967
 
 
-async def run_migrations(pool: asyncpg.Pool, dir_: str) -> None:
+async def run_migrations(pool, dir_: str) -> None:
     async with pool.acquire() as lock_conn:
         await lock_conn.execute(
             "SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
@@ -85,10 +89,13 @@ async def run_migrations(pool: asyncpg.Pool, dir_: str) -> None:
                     name)
                 if applied:
                     continue
-                sql = await asyncio.to_thread(
-                    (Path(dir_) / name).read_text)
+                sql = (Path(dir_) / name).read_text()
+                script = getattr(lock_conn, "simple", None)
                 async with lock_conn.transaction():
-                    await lock_conn.execute(sql)
+                    if script is not None:
+                        await lock_conn.simple(sql)
+                    else:
+                        await lock_conn.execute(sql)
                     await lock_conn.execute(
                         "INSERT INTO schema_migrations (name) VALUES ($1)", name)
         finally:
@@ -96,6 +103,35 @@ async def run_migrations(pool: asyncpg.Pool, dir_: str) -> None:
                 "SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
 
 
-async def create_pool(database_url: str) -> asyncpg.Pool:
+def database_driver(database_url: str) -> str:
+    explicit = os.environ.get("DB_DRIVER", "").strip().lower()
+    if explicit in ("asyncpg", "neon", "pg"):
+        return "asyncpg" if explicit == "asyncpg" else "neon"
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(database_url).hostname or ""
+    except Exception:
+        host = ""
+    if host.endswith(".neon.tech") or os.environ.get("CF_WORKER") == "1":
+        return "neon"
+    return "asyncpg"
+
+
+def pg_transport() -> str:
+    explicit = os.environ.get("PG_TRANSPORT", "").strip().lower()
+    if explicit in ("tcp", "websocket"):
+        return explicit
+    if os.environ.get("CF_WORKER") == "1":
+        return "websocket"
+    return "tcp"
+
+
+async def create_pool(database_url: str):
+    driver = database_driver(database_url)
+    if driver == "neon":
+        from app.pgproto import PgPool
+        return PgPool(database_url, transport=pg_transport())
+    import asyncpg
     url = database_url.replace("?sslmode=disable", "").replace("&sslmode=disable", "")
     return await asyncpg.create_pool(url, init=_init_conn)
