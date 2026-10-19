@@ -2,7 +2,8 @@
 
 Cloudflare Workers have no background thread. On that runtime a Workflow
 (one graph node per step, so each step gets its own 10 ms CPU budget)
-claims the row. A cron trigger nudges anything left PENDING.
+claims the row. ``prepare_reply`` is its own step, ahead of the model
+call. A cron trigger nudges anything left PENDING.
 """
 
 from __future__ import annotations
