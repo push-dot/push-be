@@ -52,7 +52,7 @@ FastAPI와 LangGraph를 Python Worker(`src/worker.py`, `workers.asgi`)에 남겼
 Neon 접속은 앱의 대화형 트랜잭션(`db.run` / `db.do`)을 지키기 위해 Postgres 와이어 프로토콜 클라이언트(`app/pgproto.py`)를 쓴다.
 
 - 노트북에서 마이그레이션: TCP + TLS (`PG_TRANSPORT=tcp`, `sslmode=require`)
-- Worker: WebSocket `wss://<host>/v2` (`PG_TRANSPORT=websocket`). 프레임은 Neon 서버리스 드라이버와 같고, TLS 안의 Postgres는 평문이다
+- Worker: WebSocket `wss://<host>/v2` (`PG_TRANSPORT=websocket`). 프레임은 Neon 서버리스 드라이버와 같고, TLS 안의 Postgres는 평문이다. 리전은 `DATABASE_URL`의 호스트에만 있다. `ap-southeast-1`이든 `ap-northeast-1`이든 호스트가 `.neon.tech`로 끝나면 Neon 드라이버를 쓰고, 소켓 주소는 그 호스트의 `wss://<host>/v2`다. 프런트 Worker는 URL을 `@neondatabase/serverless`에 그대로 넘긴다
 
 Hyperdrive는 무료 플랜(쿼리 10만/일)에 포함되지만 클라이언트가 node-postgres / postgres.js다. Python Worker는 `asyncpg`·`psycopg` 네이티브 확장을 로드하지 못한다. Neon의 HTTP `/sql`은 한 요청 안의 비대화형 배치만 받는다. 둘 다 이 앱의 트랜잭션 형태와 맞지 않아 와이어 클라이언트를 택했다.
 
@@ -220,9 +220,9 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 | --- | --- |
 | `GET /healthz` | DB도 Python도 타지 않는다 |
 | `GET /api/v1/healthz` | Python은 타지 않는다. 공개 속도 제한을 Neon에 기록한다. 이 isolate가 이미 한도에 닿았으면 그 분은 다시 쓰지 않는다 |
-| `GET /api/v1/auth/me` | 액세스 토큰 SHA-256, 사용자, 사용자 속도 제한을 Neon HTTP 한 번으로 처리한다 |
-| `GET /api/v1/conversations` | 목록. 생성·수정·아카이브는 Python |
-| `GET /api/v1/conversations/:id/messages` | 메시지 목록 |
+| `GET /api/v1/auth/me` | 액세스 토큰 SHA-256, 사용자, 사용자 속도 제한. isolate에 같은 분이 있으면 Neon을 건너뛴다 |
+| `GET /api/v1/conversations` | 목록. 생성·수정·아카이브는 Python. 짧은 isolate 캐시 |
+| `GET /api/v1/conversations/:id/messages` | 메시지 목록. 짧은 isolate 캐시 |
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 다시 보낸다. 생성 시작(`POST .../messages`, `POST .../stream`)은 Python |
 | `GET /api/v1/ai/models` | 정적 카탈로그. `credentialMode=BYOK`이고 `X-Byok-Key`가 있으면 프로바이더 목록이라 Python으로 넘긴다 |
 | `GET /api/v1/integrations/job-sites` | 어댑터가 모두 꺼진 고정 체크리스트 |
@@ -230,12 +230,23 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 
 그 밖에는 Python이다. 상태 코드, `{"data": ...}` / `{"error": ...}` 모양, `x-request-id`, `Idempotency-Key`는 Python 미들웨어가 그대로 처리한다.
 
-캐시 (Cloudflare Cache API, KV 네임스페이스는 만들지 않는다):
+캐시. Workers KV는 쓰지 않는다. 무료 플랜 쓰기가 하루 1,000번이라 대화가 생길 때마다 키를 쓰면 그 한도가 먼저 끝난다. isolate 메모리와 Cache API만 쓴다. isolate 항목은 그 isolate 안에서만 보인다.
 
-| 응답 | TTL | 무효화 |
-| --- | --- | --- |
-| `GET /api/v1/ai/models` | `MODEL_CACHE_TTL` 초, 기본 600 | 같은 토큰으로 `PUT`/`DELETE /api/v1/ai/keys/:provider`가 2xx이면 그 사용자의 카탈로그 키를 지운다. TTL이 지나도 지워진다 |
-| `GET /api/v1/integrations/job-sites` | `JOB_SITES_CACHE_TTL` 초, 기본 3600 | 체크리스트가 바뀌면 `front/src/cache.ts`의 캐시 URL 버전을 올린다 |
+| 응답 | 저장 | TTL | 무효화 |
+| --- | --- | --- | --- |
+| 액세스 토큰 → 사용자 | isolate. 키는 토큰 SHA-256 | `AUTH_CACHE_TTL` 초, 기본 10, 최대 30. `0`이면 끈다 | `POST /api/v1/auth/logout`와 `POST /api/v1/auth/refresh`가 2xx이면 바로 지운다. 만료된 토큰, 429, `hits`가 없는 행은 넣지 않는다. UTC 분이 바뀌면 사용자 행이 남아 있어도 그 분의 첫 요청은 Neon으로 속도 제한을 맞춘다 |
+| `GET /api/v1/conversations`, `GET /api/v1/conversations/:id/messages` | isolate. 키는 사용자 id, 세대, 경로 | `READ_CACHE_TTL` 초, 기본 5, 최대 30. `0`이면 끈다 | 그 토큰의 `POST`/`PATCH`/`PUT`/`DELETE`가 2xx이면 그 사용자의 세대를 올린다. 예전 키는 다시 맞지 않는다. 사용자를 아직 모르면 토큰을 dirty로 두고, 다음 읽기가 사용자를 안 뒤에 세대를 올린다. 다른 사용자 id와는 키가 겹치지 않는다 |
+| `GET /api/v1/ai/models` | Cache API | `MODEL_CACHE_TTL` 초, 기본 600. 응답은 `private` | 같은 토큰으로 `PUT`/`DELETE /api/v1/ai/keys/:provider`가 2xx이면 그 토큰의 카탈로그 키를 지운다. BYOK 가능 여부가 사용자마다 달라 `public`이 아니다 |
+| `GET /api/v1/integrations/job-sites` | Cache API | `JOB_SITES_CACHE_TTL` 초, 기본 3600. 응답은 `public` | 체크리스트가 바뀌면 `front/src/cache.ts`의 캐시 URL 버전을 올린다 |
+| `GET .../messages/stream/active` | 캐시하지 않는다 | | 이벤트는 요청 시점의 `chat_events`여야 한다 |
+
+요금제 이름(`PLAN_FREE`, `PLAN_PRO`, `PLAN_ULTRA`)과 크레딧은 Python 상수다. Neon에 요금제 카탈로그가 없고, `GET /billing`은 사용자별이라 프런트가 캐시하지 않고 Python으로 넘긴다.
+
+사용자 읽기와 `GET /api/v1/auth/me`는 `Cache-Control: private, no-cache`, `Vary: Authorization`, weak ETag다. `If-None-Match`가 같으면 본문 없이 304다. 모델은 `private, max-age`, 채용 사이트는 `public, max-age`다.
+
+캐시가 맞은 요청은 Neon `rate_limits`를 올리지 않는다. isolate는 `마지막 Neon hits + 그 뒤 이 isolate의 캐시 횟수`로 600회/분을 센다. 한 isolate 안에서는 한도가 유지된다. 같은 토큰이 여러 isolate로 나뉘면, 어느 isolate가 가득 찬 버킷을 다시 읽기 전까지 isolate 개수만큼 한도를 넘을 수 있다. 분이 바뀌면 각 isolate가 한 번은 Neon에 맞춘다. 이미 가득 찬 분을 본 isolate는 캐시보다 먼저 429를 내고 그 분은 Neon을 다시 치지 않는다.
+
+예상 감소는 실측이 아니다. 목록, 메시지, `/auth/me`를 약 1초에 한 번 치는 클라이언트는 isolate마다 인증과 속도 제한이 분당 한 번, 목록과 메시지가 5초당 한 번으로 줄어든다. 그 isolate에서 쓰기가 2xx이면 다음 읽기는 바로 Neon을 친다. 인증 TTL 안에 반복되는 모델·채용 사이트 조회는 Neon 0번이다. isolate 사이의 목록 지연은 읽기 TTL 안이다.
 
 `MANAGED_AI`와 `MANAGED_GO`는 프런트 Worker vars다. 시크릿이 아니다. Python Worker에 `OPENROUTER_API_KEY` 또는 `OPENAI_API_KEY`가 있으면 `MANAGED_AI=1`, `OPENCODE_GO_API_KEY`가 있으면 `MANAGED_GO=1`로 맞춘다. 기본값은 `1`과 `0`이다.
 
@@ -245,7 +256,7 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 
 Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
 
-속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 사용자 조회와 카운터 증가를 SQL 한 문으로 보낸다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙여 Neon을 한 번만 친다. 캐시에 있는 모델 목록과 채용 사이트 목록, `/auth/me`도 조회가 하나다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
+속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 캐시가 없으면 사용자 조회와 카운터 증가를 SQL 한 문으로 보낸다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙여 Neon을 한 번만 친다. 인증 isolate 캐시가 맞으면 그 요청은 Neon을 건너뛰고, 목록·메시지는 사용자별 읽기 캐시를 본다. 모델과 채용 사이트의 Cache API가 맞고 인증도 캐시되어 있으면 Neon은 0번이다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
 
 프런트 Worker `front/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
 

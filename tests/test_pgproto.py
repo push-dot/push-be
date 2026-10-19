@@ -16,7 +16,7 @@ import pytest
 
 from app.pgproto import (
     PgPool, UniqueViolationError, begin_request_scope, open_tcp_stream,
-    parse_dsn, scram_client_proof,
+    parse_dsn, scram_client_proof, websocket_url,
 )
 
 
@@ -41,6 +41,23 @@ def test_parse_dsn_neon_url():
     assert dsn["host"] == "ep-abc.eu-central-1.aws.neon.tech"
     assert dsn["database"] == "neondb"
     assert dsn["sslmode"] == "require"
+
+
+def test_any_neon_region_uses_the_wire_client(monkeypatch):
+    monkeypatch.delenv("DB_DRIVER", raising=False)
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    from app.db import database_driver
+    assert database_driver(
+        "postgresql://u:p@ep.ap-southeast-1.aws.neon.tech/db") == "neon"
+    assert database_driver(
+        "postgresql://u:p@ep.ap-northeast-1.aws.neon.tech/neondb?sslmode=require") == "neon"
+    assert database_driver("postgresql://u:p@127.0.0.1:5432/push") == "asyncpg"
+
+
+def test_websocket_url_uses_the_url_host():
+    dsn = parse_dsn(
+        "postgresql://u:p@ep-tokyo.ap-northeast-1.aws.neon.tech/neondb?sslmode=require")
+    assert websocket_url(dsn) == "wss://ep-tokyo.ap-northeast-1.aws.neon.tech/v2"
 
 
 DSN = os.environ.get(

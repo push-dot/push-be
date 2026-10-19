@@ -67,3 +67,126 @@ export function modelCacheUrls(authHash: string): string[] {
 }
 
 export const JOB_SITES_CACHE_URL = "https://cache.push-be.internal/v1/job-sites";
+
+/** Clamp a TTL in seconds. `0` disables that cache. */
+export function clampTtl(raw: string | undefined, fallback: number, max: number): number {
+  if (raw == null || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Math.floor(n), max);
+}
+
+export function weakEtag(body: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < body.length; i++) {
+    h ^= body.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `W/"${(h >>> 0).toString(16).padStart(8, "0")}"`;
+}
+
+export interface CachedUser {
+  id: string;
+  displayName: string;
+  locale: string;
+  createdAt: string;
+  expiresAtMs: number;
+}
+
+export interface CachedRead {
+  body: string;
+  userId: string;
+  expires: number;
+}
+
+const AUTH_CAP = 1024;
+const READ_CAP = 256;
+
+export interface IsolateCache {
+  reset(): void;
+  getAuth(hash: string, nowMs: number): CachedUser | undefined;
+  putAuth(hash: string, user: CachedUser, nowMs: number, ttlMs: number): void;
+  dropAuth(hash: string): void;
+  generation(userId: string): number;
+  bump(userId: string): void;
+  markDirty(hash: string): void;
+  isDirty(hash: string): boolean;
+  clearDirty(hash: string): void;
+  readKey(userId: string, url: string): string;
+  getRead(key: string, nowMs: number): CachedRead | undefined;
+  putRead(key: string, rec: CachedRead): void;
+}
+
+export function createIsolateCache(): IsolateCache {
+  const auth = new Map<string, { user: CachedUser; until: number }>();
+  const gen = new Map<string, number>();
+  const dirty = new Set<string>();
+  const reads = new Map<string, CachedRead>();
+
+  function trim(map: Map<string, unknown>, cap: number): void {
+    while (map.size > cap) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) return;
+      map.delete(oldest);
+    }
+  }
+
+  return {
+    reset() {
+      auth.clear();
+      gen.clear();
+      dirty.clear();
+      reads.clear();
+    },
+    getAuth(hash, nowMs) {
+      const hit = auth.get(hash);
+      if (!hit) return undefined;
+      if (hit.until <= nowMs) {
+        auth.delete(hash);
+        return undefined;
+      }
+      return hit.user;
+    },
+    putAuth(hash, user, nowMs, ttlMs) {
+      auth.delete(hash);
+      auth.set(hash, { user, until: nowMs + ttlMs });
+      trim(auth, AUTH_CAP);
+    },
+    dropAuth(hash) {
+      auth.delete(hash);
+    },
+    generation(userId) {
+      return gen.get(userId) ?? 0;
+    },
+    bump(userId) {
+      gen.set(userId, (gen.get(userId) ?? 0) + 1);
+    },
+    markDirty(hash) {
+      dirty.add(hash);
+    },
+    isDirty(hash) {
+      return dirty.has(hash);
+    },
+    clearDirty(hash) {
+      dirty.delete(hash);
+    },
+    readKey(userId, url) {
+      return `${userId}:${gen.get(userId) ?? 0}:${url}`;
+    },
+    getRead(key, nowMs) {
+      const hit = reads.get(key);
+      if (!hit) return undefined;
+      if (hit.expires <= nowMs) {
+        reads.delete(key);
+        return undefined;
+      }
+      if (!key.startsWith(`${hit.userId}:`)) return undefined;
+      return hit;
+    },
+    putRead(key, rec) {
+      reads.delete(key);
+      reads.set(key, rec);
+      trim(reads, READ_CAP);
+    },
+  };
+}
