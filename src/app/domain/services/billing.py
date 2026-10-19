@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import hashlib
 import hmac as hmac_mod
 import json
@@ -17,7 +18,7 @@ STRIPE_WEBHOOK_TOLERANCE = 300
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def verify_stripe_signature(payload: bytes, header: str, secret: str,

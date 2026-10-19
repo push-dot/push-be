@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -20,7 +21,7 @@ from app.jsonutil import to_jsonable
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 _WORD_RE = re.compile(r"[a-z0-9+#가-힣]+")

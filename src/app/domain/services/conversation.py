@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ from app.infrastructure.store_operations import OperationStore
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 # Workflow steps. prepare_reply is not a LangGraph node; the local graph
