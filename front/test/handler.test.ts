@@ -500,6 +500,241 @@ test("a rejected python proxy and a broken cache still return a response", async
   assert.match(await models.text(), /"data":/);
 });
 
+test("auth cache skips Neon until logout or the TTL", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  let revoked = false;
+  const query: Query = async (sql) => {
+    seen.push(sql);
+    if (revoked) return [];
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1,
+      }];
+    }
+    return [];
+  };
+  const d = deps(query);
+  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(first.status, 200);
+  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(second.status, 200);
+  assert.equal(seen.length, 1);
+
+  const api = { async fetch() { return new Response(null, { status: 204 }); } };
+  const logout = await handle(new Request("https://push-be.example/api/v1/auth/logout", {
+    method: "POST",
+    headers: { authorization: "Bearer secret-token" },
+  }), env(api), d);
+  assert.equal(logout.status, 204);
+  revoked = true;
+  const after = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(after.status, 401);
+  assert.equal(seen.length, 2);
+});
+
+test("auth cache expires and the next request syncs Neon", async () => {
+  resetLimits();
+  let now = NOW;
+  let calls = 0;
+  const query: Query = async (sql) => {
+    calls += 1;
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1,
+      }];
+    }
+    return [];
+  };
+  const d = deps(query, { now: () => now });
+  const ok = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(ok.status, 200);
+  now = new Date(NOW.getTime() + 11_000);
+  const again = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(again.status, 200);
+  assert.equal(calls, 2);
+});
+
+test("cached auth still enforces the per-minute limit without another Neon write", async () => {
+  resetLimits();
+  let calls = 0;
+  const query: Query = async (sql) => {
+    calls += 1;
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1,
+      }];
+    }
+    return [];
+  };
+  const d = deps(query, { limits: { user: 2, public: 60, windowMs: 60_000 } });
+  const headers = { authorization: "Bearer secret-token" };
+  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  const third = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(third.status, 429);
+  assert.equal(calls, 1);
+});
+
+test("per-user reads are isolated and a write drops that user's cache", async () => {
+  resetLimits();
+  const userB = "22345678-1234-5678-1234-567812345678";
+  const hashA = await sha256Hex("token-a");
+  const hashB = await sha256Hex("token-b");
+  let wrote = false;
+  const seen: string[] = [];
+  const query: Query = async (sql, params) => {
+    seen.push(sql);
+    const key = String(params[0]);
+    const mine = key === hashA || key === USER;
+    const id = mine ? USER : userB;
+    const title = wrote && mine ? "A의 새 채팅" : (mine ? "A의 채팅" : "B의 채팅");
+    const row = {
+      id, revision: 1, application_id: null, title, pinned: false,
+      created_at: "2026-10-17T21:57:28Z", updated_at: "2026-10-17T21:57:28Z",
+    };
+    if (sql.includes("access_tokens")) {
+      return [{
+        id, display_name: mine ? "Ada" : "Bea", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [row],
+      }];
+    }
+    if (sql.includes("FROM conversations")) return [row];
+    return [];
+  };
+  const api = { async fetch() { return new Response(null, { status: 202 }); } };
+  const d = deps(query);
+  const list = (token: string) => handle(new Request("https://push-be.example/api/v1/conversations", {
+    headers: { authorization: `Bearer ${token}` },
+  }), env(), d);
+  const first = await list("token-a");
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as { data: { title: string }[] }).data[0].title, "A의 채팅");
+  const cached = await list("token-a");
+  assert.equal((await cached.json() as { data: { title: string }[] }).data[0].title, "A의 채팅");
+  assert.equal(seen.length, 1);
+
+  const post = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    method: "POST",
+    headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+    body: "{}",
+  }), env(api), d);
+  assert.equal(post.status, 202);
+  wrote = true;
+  const fresh = await list("token-a");
+  assert.equal((await fresh.json() as { data: { title: string }[] }).data[0].title, "A의 새 채팅");
+  assert.equal(seen.length, 2);
+
+  const other = await list("token-b");
+  const otherBody = await other.json() as { data: { title: string }[] };
+  assert.equal(otherBody.data[0].title, "B의 채팅");
+  assert.equal(seen.length, 3);
+  assert.equal(hashB.length, 64);
+});
+
+test("message reads stay on that user and refresh after a write", async () => {
+  resetLimits();
+  let wrote = false;
+  let calls = 0;
+  const query: Query = async (sql) => {
+    calls += 1;
+    const message = {
+      id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      conversation_id: USER,
+      role: "USER",
+      text: wrote ? "다음" : "안녕",
+      attachments: [],
+      operation_id: null,
+      created_at: "2026-10-17T21:57:28Z",
+    };
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, conversation_id: USER, rows: [message],
+      }];
+    }
+    if (sql.includes("FROM conversations")) return [{ id: USER }];
+    if (sql.includes("FROM messages")) return [message];
+    return [];
+  };
+  const d = deps(query);
+  const read = () => handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages`, {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  const first = await read();
+  assert.equal((await first.json() as { data: { text: string }[] }).data[0].text, "안녕");
+  const cached = await read();
+  assert.equal((await cached.json() as { data: { text: string }[] }).data[0].text, "안녕");
+  assert.equal(calls, 1);
+  const api = { async fetch() { return new Response(null, { status: 202 }); } };
+  const post = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages`, {
+    method: "POST",
+    headers: { authorization: "Bearer secret-token", "content-type": "application/json" },
+    body: "{}",
+  }), env(api), d);
+  assert.equal(post.status, 202);
+  wrote = true;
+  const fresh = await read();
+  assert.equal((await fresh.json() as { data: { text: string }[] }).data[0].text, "다음");
+  assert.equal(calls, 3);
+});
+
+test("a matching list ETag is 304 and does not query", async () => {
+  resetLimits();
+  let calls = 0;
+  const query: Query = async (sql) => {
+    calls += 1;
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  };
+  const d = deps(query);
+  const first = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get("cache-control") || "", /private, no-cache/);
+  assert.match(first.headers.get("vary") || "", /Authorization/);
+  const etag = first.headers.get("etag") || "";
+  assert.match(etag, /^W\/"[0-9a-f]{8}"$/);
+  const second = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    headers: { authorization: "Bearer secret-token", "if-none-match": etag },
+  }), env(), d);
+  assert.equal(second.status, 304);
+  assert.equal(await second.text(), "");
+  assert.equal(calls, 1);
+});
+
+async function sha256Hex(value: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 test("CORS preflight is answered without calling Python", async () => {
   let proxied = 0;
   const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {

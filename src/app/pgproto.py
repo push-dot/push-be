@@ -365,9 +365,13 @@ async def open_tcp_stream(dsn: dict) -> ByteStream:
     return _ReaderStream(reader, writer)
 
 
+def websocket_url(dsn: dict) -> str:
+    """Neon WebSocket endpoint. The host is whatever DATABASE_URL names."""
+    return f"wss://{dsn['host']}/v2"
+
+
 async def open_websocket_stream(dsn: dict) -> ByteStream:
-    host = dsn["host"]
-    url = f"wss://{host}/v2"
+    url = websocket_url(dsn)
     if os.environ.get("CF_WORKER") == "1":
         return await _open_workers_websocket(url)
     return await _open_python_websocket(url)
