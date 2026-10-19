@@ -253,6 +253,7 @@ test("job sites are served from cache after the first auth", async () => {
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
+    if (sql.includes("rate_limits")) return [{ hits: 1 }];
     keyQueries += 1;
     return [];
   };
@@ -319,6 +320,90 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
   }), env(), d);
   assert.equal(again.status, 200);
   assert.ok(calls.length > after);
+});
+
+test("shared rate limit rejects once the neon counter is over the limit", async () => {
+  resetLimits();
+  let hits = 0;
+  const query: Query = async (sql) => {
+    if (sql.includes("access_tokens")) {
+      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+    }
+    if (sql.includes("rate_limits")) {
+      hits += 1;
+      return [{ hits }];
+    }
+    return [];
+  };
+  const d = deps(query, { limits: { user: 1, public: 1, windowMs: 60_000 } });
+  const ok = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(ok.status, 200);
+  const denied = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(denied.status, 429);
+  assert.equal((await denied.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+});
+
+test("api healthz uses the shared public counter", async () => {
+  resetLimits();
+  const seen: { sql: string; params: unknown[] }[] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/healthz", {
+    headers: { "cf-connecting-ip": "203.0.113.5" },
+  }), env(), deps(async (sql, params) => {
+    seen.push({ sql, params });
+    return [{ hits: 1 }];
+  }));
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  assert.match(seen[0].sql, /rate_limits/);
+  assert.equal(seen[0].params[0], `ip:203.0.113.5:${Math.floor(NOW.getTime() / 1000 / 60)}`);
+});
+
+test("a rejected python proxy and a broken cache still return a response", async () => {
+  resetLimits();
+  const auth: Query = async (sql) => {
+    if (sql.includes("access_tokens")) {
+      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+    }
+    if (sql.includes("rate_limits")) return [{ hits: 1 }];
+    if (sql.includes("ai_keys")) return [{ has: false }];
+    return [];
+  };
+  const failed = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    method: "POST",
+    headers: { authorization: "Bearer secret-token", "content-type": "application/json" },
+    body: "{}",
+  }), env({ async fetch() { throw new Error("socket stolen"); } }), deps(auth));
+  assert.equal(failed.status, 500);
+  assert.equal((await failed.json() as { error: { code: string } }).error.code, "INTERNAL");
+
+  const empty = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active`, {
+    headers: { authorization: "Bearer secret-token", origin: "http://localhost:5173" },
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) {
+      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+    }
+    if (sql.includes("rate_limits")) return [{ hits: 1 }];
+    if (sql.includes("FROM conversations")) return [{ id: USER }];
+    return [];
+  }));
+  assert.equal(empty.status, 204);
+  assert.equal(empty.headers.get("access-control-allow-origin"), "http://localhost:5173");
+  assert.equal(await empty.text(), "");
+
+  const cache = {
+    async match() { return undefined; },
+    async put() { throw new Error("cache put failed"); },
+    async delete() { return false; },
+  };
+  const models = await handle(new Request("https://push-be.example/api/v1/ai/models", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(auth, { cache }));
+  assert.equal(models.status, 200);
+  assert.match(await models.text(), /"data":/);
 });
 
 test("CORS preflight is answered without calling Python", async () => {

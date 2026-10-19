@@ -156,6 +156,46 @@ async def test_post_message_success_creates_operation():
     assert len(ops.created) == 1
 
 
+async def test_external_post_message_returns_queued_without_polling(monkeypatch):
+    monkeypatch.setattr(
+        "app.domain.services.conversation.external_jobs", lambda: True)
+    scheduled = []
+
+    async def schedule(job_id, byok):
+        scheduled.append((str(job_id), byok))
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.schedule_chat_job", schedule)
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    svc = _svc(convs)
+    jobs = StubChatJobStore()
+    polls = {"n": 0}
+
+    async def enqueue(uid, cid, payload):
+        jobs.payload = payload
+        return jobs.job_id
+
+    async def events_since(job_id, after):
+        polls["n"] += 1
+        return []
+
+    jobs.enqueue = enqueue
+    jobs.events_since = events_since
+    svc.jobs = jobs
+    op = await svc.post_message(
+        user_id, conv.id, "hi", {}, None, "SUGGEST", "")
+    assert op.status == ent.OP_QUEUED
+    assert op.id == jobs.job_id
+    assert op.result is not None
+    assert op.result.value == {"jobId": str(jobs.job_id)}
+    assert scheduled == [(str(jobs.job_id), "")]
+    assert polls["n"] == 0
+    assert convs.messages == []
+    assert svc._compiled is None
+
+
 async def test_stream_message_stub_tokens_and_done():
     user_id = uuid4()
     conv = _conv(user_id=user_id)

@@ -55,6 +55,11 @@ const ALLOWED_HEADERS = new Set([
 
 const hits = new Map<string, number[]>();
 
+const RATE_SQL = "INSERT INTO rate_limits (bucket, hits, expires_at) "
+  + "VALUES ($1, 1, to_timestamp($2::double precision)) "
+  + "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
+  + "RETURNING hits";
+
 export function resetLimits(): void {
   hits.clear();
 }
@@ -75,6 +80,22 @@ function allow(key: string, limit: number, windowMs: number, nowMs: number): boo
   }
   hits.set(key, kept);
   return true;
+}
+
+async function allowShared(
+  deps: Deps, kind: string, key: string, limit: number, windowMs: number, now: Date,
+): Promise<boolean> {
+  const window = Math.floor(now.getTime() / 1000 / 60);
+  const bucket = `${kind}:${key || "unknown"}:${window}`;
+  try {
+    const rows = await deps.query(RATE_SQL, [bucket, window * 60 + 120]);
+    const row = rows[0];
+    if (row && row.hits != null && row.hits !== "") return Number(row.hits) <= limit;
+  } catch {
+    // Missing table or a Neon blip: count in this isolate and try the
+    // shared counter again on the next request.
+  }
+  return allow(bucket, limit, windowMs, now.getTime());
 }
 
 function asBool(value: unknown): boolean {
@@ -104,11 +125,25 @@ function corsHeaders(request: Request): Headers {
 }
 
 function withCors(request: Request, response: Response): Response {
-  const headers = new Headers(response.headers);
-  for (const [k, v] of corsHeaders(request)) {
-    if (!headers.has(k)) headers.set(k, v);
+  try {
+    const headers = new Headers(response.headers);
+    for (const [k, v] of corsHeaders(request)) {
+      if (!headers.has(k)) headers.set(k, v);
+    }
+    // 204/205/304 reject a body. Copying response.body threw and the
+    // Worker recorded an exception instead of returning the response.
+    if (response.status === 204 || response.status === 205 || response.status === 304) {
+      headers.delete("content-length");
+      return new Response(null, { status: response.status, headers });
+    }
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch {
+    return response;
   }
-  return new Response(response.body, { status: response.status, headers });
 }
 
 function requestIdOf(request: Request): string {
@@ -162,16 +197,29 @@ function pageLimit(url: URL, rid: string): { limit: number } | Response {
 
 export async function handle(request: Request, env: FrontEnv, deps: Deps): Promise<Response> {
   const rid = requestIdOf(request);
-  const url = new URL(request.url);
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return errorResponse(400, "VALIDATION_ERROR", "invalid url", rid);
+  }
   const path = url.pathname;
   if (request.method === "OPTIONS") {
-    return withCors(request, preflight(request));
+    try {
+      return withCors(request, preflight(request));
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
   }
   try {
     const response = await route(request, env, deps, url, path, rid);
     return withCors(request, response);
   } catch {
-    return withCors(request, errorResponse(500, "INTERNAL", "internal error", rid));
+    try {
+      return withCors(request, errorResponse(500, "INTERNAL", "internal error", rid));
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
   }
 }
 
@@ -193,7 +241,9 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   const now = deps.now ?? (() => new Date());
   const limits = deps.limits ?? { user: 600, public: 60, windowMs: 60_000 };
   if (request.method === "GET" && (path === "/healthz" || path === "/api/v1/healthz")) {
-    if (path === "/api/v1/healthz" && !allow("pub:" + clientIp(request), limits.public, limits.windowMs, now().getTime())) {
+    if (path === "/api/v1/healthz" && !await allowShared(
+      deps, "ip", clientIp(request), limits.public, limits.windowMs, now(),
+    )) {
       return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
     }
     return jsonResponse(200, { data: { status: "ok" } }, rid);
@@ -236,9 +286,17 @@ async function proxy(request: Request, env: FrontEnv, rid: string): Promise<Resp
     init.body = await request.arrayBuffer();
   }
   const forwarded = new Request(request.url, init);
-  const res = await env.API.fetch(forwarded);
+  let res: Response;
+  try {
+    res = await env.API.fetch(forwarded);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
   const out = new Headers(res.headers);
   if (!out.has("x-request-id")) out.set("x-request-id", rid);
+  if (res.status === 204 || res.status === 205 || res.status === 304) {
+    return new Response(null, { status: res.status, headers: out });
+  }
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
 }
 
@@ -261,7 +319,7 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
     }
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
-  if (!allow("user:" + user.id, limits.user, limits.windowMs, now().getTime())) {
+  if (!await allowShared(deps, "user", user.id, limits.user, limits.windowMs, now())) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   return user;
@@ -470,12 +528,18 @@ async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: UR
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const encoder = new TextEncoder();
+  let open = true;
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (frame: string) => controller.enqueue(encoder.encode(frame));
+      const send = (frame: string) => {
+        if (!open) return;
+        try { controller.enqueue(encoder.encode(frame)); }
+        catch { open = false; }
+      };
       send("retry: 400\n\n");
       try {
         for (let i = 0; i < polls; i++) {
+          if (!open) break;
           const rows = await deps.query(
             "SELECT id, type, payload FROM chat_events WHERE job_id = $1::uuid AND id > $2 ORDER BY id",
             [jobId, after],
@@ -498,8 +562,10 @@ async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: UR
           error: { code: "INTERNAL", message: "internal error", details: null },
         }) + "\n\n");
       }
-      controller.close();
+      try { controller.close(); }
+      catch { /* the client already hung up */ }
     },
+    cancel() { open = false; },
   });
   return new Response(stream, {
     status: 200,
@@ -577,7 +643,7 @@ async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, r
     }),
   };
   const text = pyJson(body);
-  await cache.put(cacheReq, new Response(text, {
+  await putCache(cache, cacheReq, new Response(text, {
     headers: { "content-type": "application/json", "cache-control": `public, max-age=${ttl}` },
   }));
   return new Response(text, {
@@ -601,7 +667,7 @@ async function jobSites(request: Request, env: FrontEnv, deps: Deps, rid: string
   if (hit) text = await hit.text();
   else {
     text = pyJson(jobSitesBody());
-    await cache.put(cacheReq, new Response(text, {
+    await putCache(cache, cacheReq, new Response(text, {
       headers: { "content-type": "application/json", "cache-control": `public, max-age=${ttl}` },
     }));
   }
@@ -619,10 +685,22 @@ function cacheOf(deps: Deps): CacheStore {
   return deps.cache ?? workersCache() ?? memoryCache();
 }
 
+async function putCache(cache: CacheStore, req: Request, res: Response): Promise<void> {
+  try {
+    await cache.put(req, res);
+  } catch {
+    // A cache failure must not become an uncaught Worker exception or a 500.
+  }
+}
+
 async function purgeModelCache(request: Request, deps: Deps): Promise<void> {
-  const token = (request.headers.get("authorization") || "").replace(/^Bearer /, "");
-  if (!token) return;
-  const cache = cacheOf(deps);
-  const hash = await sha256Hex(token);
-  await Promise.all(modelCacheUrls(hash).map((url) => cache.delete(new Request(url))));
+  try {
+    const token = (request.headers.get("authorization") || "").replace(/^Bearer /, "");
+    if (!token) return;
+    const cache = cacheOf(deps);
+    const hash = await sha256Hex(token);
+    await Promise.all(modelCacheUrls(hash).map((url) => cache.delete(new Request(url))));
+  } catch {
+    // Invalidation is best-effort. The TTL still expires the entry.
+  }
 }

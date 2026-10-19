@@ -157,14 +157,16 @@ class ChatWorkflow(WorkflowEntrypoint):
 
     async def run(self, event, step):
         apply_env(self.env)
+        # ensure_ready runs before any step. Its socket is closed here so a
+        # suspended step cannot reuse it, and each step opens its own.
         scope = _begin_db_scope()
         try:
-            await self._run(event, step)
+            await ensure_ready(app)
         finally:
             await _end_db_scope(scope)
+        await self._run(event, step)
 
     async def _run(self, event, step):
-        await ensure_ready(app)
         payload = _payload(event)
         job_id = str(payload.get("jobId") or "")
         byok = payload.get("byok") or ""
@@ -174,7 +176,11 @@ class ChatWorkflow(WorkflowEntrypoint):
 
         @step.do("claim", config=_step_config("30 seconds"))
         async def claim():
-            return await svc.claim_for_workflow(job_id, byok)
+            scope = _begin_db_scope()
+            try:
+                return await svc.claim_for_workflow(job_id, byok)
+            finally:
+                await _end_db_scope(scope)
 
         if await claim() != "ok":
             return
@@ -184,7 +190,11 @@ class ChatWorkflow(WorkflowEntrypoint):
         def make_step(node):
             @step.do(node, config=_step_config(_NODE_TIMEOUTS[node]))
             async def run_node():
-                return await svc.exec_chat_node(job_id, node)
+                scope = _begin_db_scope()
+                try:
+                    return await svc.exec_chat_node(job_id, node)
+                finally:
+                    await _end_db_scope(scope)
 
             return run_node
 
@@ -216,5 +226,7 @@ class Default(WorkerEntrypoint):
         try:
             await ensure_ready(app)
             await app.state.deps.conversations.nudge_pending()
+            from app.ratelimit import sweep
+            await sweep(app.state.db.pool)
         finally:
             await _end_db_scope(scope)

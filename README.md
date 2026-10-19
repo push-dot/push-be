@@ -216,7 +216,8 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 
 | 메서드와 경로 | 이유 |
 | --- | --- |
-| `GET /healthz`, `GET /api/v1/healthz` | DB도 Python도 타지 않는다 |
+| `GET /healthz` | DB도 Python도 타지 않는다 |
+| `GET /api/v1/healthz` | Python은 타지 않는다. 공개 속도 제한 한 번만 Neon에 기록한다 |
 | `GET /api/v1/auth/me` | 액세스 토큰 SHA-256과 사용자 한 줄 |
 | `GET /api/v1/conversations` | 목록. 생성·수정·아카이브는 Python |
 | `GET /api/v1/conversations/:id/messages` | 메시지 목록 |
@@ -237,6 +238,12 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 `MANAGED_AI`와 `MANAGED_GO`는 프런트 Worker vars다. 시크릿이 아니다. Python Worker에 `OPENROUTER_API_KEY` 또는 `OPENAI_API_KEY`가 있으면 `MANAGED_AI=1`, `OPENCODE_GO_API_KEY`가 있으면 `MANAGED_GO=1`로 맞춘다. 기본값은 `1`과 `0`이다.
 
 채팅 Workflow 스텝은 `claim`, `resolve_context`, `prepare_reply`, `generate_reply`, `persist`다. 각 스텝은 재시도 5회, 2초에서 지수 백오프, 타임아웃은 claim 30초, prepare 2분, generate 3분, 나머지 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 스텝은 건너뛴다. 같은 스텝이 3번 실패하면 잡을 `FAILED`로 닫는다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
+
+`POST /api/v1/conversations/:id/messages`는 대화를 확인하고 `chat_jobs`에 넣은 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. 토큰과 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 멱등 키와 BYOK 암호화는 Python에 그대로 있다.
+
+Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
+
+속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. isolate 메모리는 프로세스가 나뉘면 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터 때문에 `rate_limits`를 한 번 조회한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 기존 크론이 지운다.
 
 ### 6. GitHub Actions
 
