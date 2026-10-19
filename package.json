@@ -1,0 +1,13 @@
+{
+  "name": "push-be",
+  "private": true,
+  "workspaces": [
+    "services/gateway",
+    "packages/contracts"
+  ],
+  "scripts": {
+    "test": "npm test -w push-be-front",
+    "typecheck": "tsc -p services/gateway --noEmit",
+    "contracts": "npm run generate -w @push/contracts"
+  }
+}

@@ -31,8 +31,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: services/ai/pyproject.toml
       - name: Install dependencies
+        working-directory: services/ai
         env:
           MIGRATE_TRANSPORT: ${{ inputs.transport }}
         run: |
@@ -43,6 +44,7 @@ jobs:
             *) echo "transport must be tcp or websocket." >&2; exit 1 ;;
           esac
       - name: Apply migrations
+        working-directory: services/ai
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PG_TRANSPORT: ${{ inputs.transport }}

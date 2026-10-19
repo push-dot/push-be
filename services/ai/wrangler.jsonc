@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "push-be-python",
+  // src/ is the upload root, so a repo-level .venv is not part of the bundle.
+  // The public workers.dev name is the TypeScript gateway (services/gateway).
+  // This worker is only reached through the front worker's service binding,
+  // plus its own cron and Workflow triggers.
+  "main": "src/worker.py",
+  "compatibility_date": "2026-10-17",
+  "compatibility_flags": ["python_workers"],
+  "workers_dev": false,
+  "rules": [{"type": "Data", "globs": ["app/resources/**/*.md"], "fallthrough": true}],
+  "observability": {
+    "enabled": true
+  },
+  // Keep this cron. The public `push-be` worker deploys `"crons": []`
+  // only to delete the schedule left on that name; this worker still
+  // nudges pending chats and sweeps rate-limit rows.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "workflows": [
+    {
+      "name": "push-chat",
+      "binding": "CHAT_WORKFLOW",
+      "class_name": "ChatWorkflow"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "production",
+    "DB_DRIVER": "neon",
+    "PG_TRANSPORT": "websocket",
+    "RUN_MIGRATIONS": "0",
+    "CHAT_EXECUTOR": "workflow",
+    "LLM_STREAM": "1",
+    "BLOB_STORE": "db",
+    "SSE_MAX_POLLS": "20",
+    "AI_BASE_URL": "https://openrouter.ai/api/v1",
+    "OPENCODE_GO_BASE_URL": "https://opencode.ai/zen/go/v1",
+    "GOOGLE_GMAIL_BETA_ENABLED": "false",
+    "STRIPE_SUCCESS_URL": "push://billing/success",
+    "STRIPE_CANCEL_URL": "push://billing/cancel",
+    "STRIPE_PORTAL_RETURN_URL": "push://billing/portal"
+  }
+}

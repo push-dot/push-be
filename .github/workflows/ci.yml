@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 # Tests run on pull requests and on pushes to develop and main.
-# Deploys run only for DEPLOY_BRANCH, which defaults to main.
+# Path filters skip a service when the diff does not touch it.
+# A push to DEPLOY_BRANCH (default main) still runs every service
+# before deploy. Deploys run only for that branch.
 # Set the repository variable DEPLOY_BRANCH to retarget CD. If the new
 # branch is not develop or main, add it under on.push.branches as well.
 concurrency:
@@ -17,7 +19,56 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ai: ${{ steps.filter.outputs.ai }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      db: ${{ steps.filter.outputs.db }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'main' }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$BASE_SHA"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD^)"
+          else
+            base="$BEFORE"
+          fi
+          git diff --name-only "$base" HEAD > /tmp/changed
+          match() { grep -Eq "$1" /tmp/changed; }
+          ai=false
+          gateway=false
+          db=false
+          if match '^(services/ai/|packages/contracts/|\.github/workflows/ci\.yml)'; then ai=true; fi
+          if match '^(services/gateway/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then gateway=true; fi
+          if match '^(db/|\.github/workflows/migrate\.yml|services/ai/scripts/migrate\.py|\.github/workflows/ci\.yml)'; then db=true; fi
+          deploy=false
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEPLOY_BRANCH" ]; then
+            ai=true
+            gateway=true
+            db=true
+            deploy=true
+          fi
+          echo "ai=$ai" >> "$GITHUB_OUTPUT"
+          echo "gateway=$gateway" >> "$GITHUB_OUTPUT"
+          echo "db=$db" >> "$GITHUB_OUTPUT"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
+  test-ai:
+    needs: changes
+    if: needs.changes.outputs.ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -40,53 +91,124 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: front/package-lock.json
+          cache-dependency-path: services/ai/pyproject.toml
       - name: Install dependencies
+        working-directory: services/ai
         run: python -m pip install -e ".[test]"
       - name: Test
+        working-directory: services/ai
         run: python -m pytest
-      - name: Test front worker
-        working-directory: front
-        run: |
-          npm ci
-          npm test
 
-  bundle:
+  test-gateway:
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - name: Install Python
-        run: uv python install 3.12
-      - name: Install Workers tooling
-        run: uv sync --group dev --python 3.12
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: front/package-lock.json
-      - name: Check Worker bundle size
+          cache-dependency-path: package-lock.json
+      - name: Test gateway
+        run: |
+          npm ci
+          npm test -w push-be-front
+          npx tsc -p services/gateway --noEmit
+
+  test-db:
+    needs: changes
+    if: needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: push
+          POSTGRES_PASSWORD: push
+          POSTGRES_DB: push
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U push -d push"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/ai/pyproject.toml
+      - name: Install dependencies
+        working-directory: services/ai
+        run: python -m pip install -e . 'asyncpg>=0.30'
+      - name: Apply migrations
+        working-directory: services/ai
+        env:
+          DATABASE_URL: postgres://push:push@localhost:5432/push?sslmode=disable
+          DB_DRIVER: asyncpg
+          PG_TRANSPORT: tcp
+          RUN_MIGRATIONS: "1"
+        run: python scripts/migrate.py
+
+  bundle-ai:
+    needs: changes
+    if: needs.changes.outputs.ai == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/pyproject.toml
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Install Workers tooling
+        working-directory: services/ai
+        run: uv sync --group dev --python 3.12
+      - name: Check Python worker bundle
+        working-directory: services/ai
         run: |
           uv run pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
           python3 scripts/check_worker_bundle.py /tmp/push-be-bundle
-      - name: Check front worker bundle
-        working-directory: front
-        run: |
-          npm ci
-          npx wrangler deploy --dry-run --outdir /tmp/push-be-front
+
+  bundle-gateway:
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install workspace
+        run: npm ci
+      - name: Check gateway bundle
+        working-directory: services/gateway
+        run: npx wrangler deploy --dry-run --outdir /tmp/push-be-front
 
   deploy:
-    needs: [test, bundle]
-    if: ${{ github.event_name == 'push' && github.ref_name == (vars.DEPLOY_BRANCH || 'main') }}
+    needs: [changes, test-ai, test-gateway, test-db, bundle-ai, bundle-gateway]
+    if: |
+      always() &&
+      needs.changes.outputs.deploy == 'true' &&
+      needs.changes.result == 'success' &&
+      (needs.test-ai.result == 'success' || needs.test-ai.result == 'skipped') &&
+      (needs.test-gateway.result == 'success' || needs.test-gateway.result == 'skipped') &&
+      (needs.test-db.result == 'success' || needs.test-db.result == 'skipped') &&
+      (needs.bundle-ai.result == 'success' || needs.bundle-ai.result == 'skipped') &&
+      (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -98,31 +220,32 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: front/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
-          cache-dependency-glob: pyproject.toml
+          cache-dependency-glob: services/ai/pyproject.toml
       - name: Install Python
         run: uv python install 3.12
       - name: Install Workers tooling
+        working-directory: services/ai
         run: uv sync --group dev --python 3.12
-      - name: Install front worker
-        working-directory: front
+      - name: Install gateway
         run: npm ci
       # Uploads the script and wrangler vars only.
       # Do not map Worker secrets into this step and do not run
       # `wrangler secret put` / `pywrangler secret put`. Secrets already
       # stored on each Worker persist across deploys.
-      # Python is deployed first so the front worker's service binding
+      # Python is deployed first so the gateway's service binding
       # has a target. The public workers.dev name stays `push-be`.
       - name: Deploy Python worker
+        working-directory: services/ai
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: uv run pywrangler deploy
-      - name: Deploy front worker
-        working-directory: front
+      - name: Deploy gateway worker
+        working-directory: services/gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

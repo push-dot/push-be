@@ -1,0 +1,47 @@
+# Local stack. Postgres matches the laptop port used by .env.example (5434).
+# The AI service is uvicorn, the shape that will later run on a VPS.
+# Migrations are mounted at /db so app.db.migrations_dir() finds them.
+#
+# The gateway Worker speaks Neon HTTP, not this Postgres wire protocol, so
+# it is not a compose service. Run it with:
+#   cd services/gateway && npx wrangler dev
+# Routes the gateway does not handle still go to the Python Worker through
+# the API service binding. Hit the uvicorn process on :8080 for those.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: push
+      POSTGRES_PASSWORD: push
+      POSTGRES_DB: push
+    ports:
+      - "5434:5432"
+    volumes:
+      - push-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U push -d push"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ai:
+    build:
+      context: ../services/ai
+    environment:
+      DATABASE_URL: postgres://push:push@postgres:5432/push?sslmode=disable
+      DB_DRIVER: asyncpg
+      PG_TRANSPORT: tcp
+      RUN_MIGRATIONS: "1"
+      APP_ENV: development
+      PYTHONPATH: /app/src
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../db:/db:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  push-pgdata:
