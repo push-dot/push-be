@@ -436,8 +436,17 @@ class ConversationService:
         finally:
             _BYOK_KEY.reset(token)
 
+    async def _allow_chat(self, user_id, ai, byok_key: str = "") -> None:
+        # The Workflow still checks inside the model call. This one runs
+        # first so a rejected chat never enqueues, never embeds, and returns
+        # the same 403 the synchronous path returned.
+        if ai is None or self.ai is None:
+            return
+        await self.ai.check(user_id, ai, byok_key)
+
     async def _stream_via_queue(self, user_id, conversation_id, text, context,
                                 ai, access_mode, byok_key):
+        await self._allow_chat(user_id, ai, byok_key)
         payload = {
             "text": text,
             "context": context or {},
@@ -544,6 +553,7 @@ class ConversationService:
 
     async def _enqueue(self, user_id, conversation_id, text, context,
                                 ai, access_mode, byok_key) -> ent.Operation:
+        await self._allow_chat(user_id, ai, byok_key)
         payload = self._stash_byok(user_id, {
             "text": text,
             "context": context or {},
