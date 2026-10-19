@@ -8,10 +8,12 @@ import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:00Z");
 
-function env(api?: FrontEnv["API"]): FrontEnv {
+function env(api?: FrontEnv["API"], core?: FrontEnv["API"]): FrontEnv {
+  const python = api ?? { async fetch() { throw new Error("python should not be called"); } };
   return {
     DATABASE_URL: "postgres://example",
-    API: api ?? { async fetch() { throw new Error("python should not be called"); } },
+    API: python,
+    CORE: core ?? python,
     APP_ENV: "production",
     MANAGED_AI: "1",
     MANAGED_GO: "0",
@@ -321,30 +323,48 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
   }), env(), d);
   const before = calls.length;
   const forwarded: string[] = [];
-  const api = {
+  const python = {
     async fetch(request: Request) {
-      forwarded.push(request.method + " " + new URL(request.url).pathname);
+      forwarded.push("python " + request.method + " " + new URL(request.url).pathname + " " + (request.headers.get("x-push-internal") || ""));
+      return new Response('{"data":{}}', { status: 202, headers: { "content-type": "application/json" } });
+    },
+  };
+  const core = {
+    async fetch(request: Request) {
+      forwarded.push("core " + request.method + " " + new URL(request.url).pathname);
       return new Response('{"data":{}}', {
         status: request.method === "PUT" ? 200 : 202,
-        headers: { "content-type": "application/json", "x-request-id": "req_from_python" },
+        headers: { "content-type": "application/json", "x-request-id": "req_from_core" },
       });
     },
   };
   const post = await handle(new Request("https://push-be.example/api/v1/conversations/" + USER + "/messages", {
     method: "POST",
-    headers: { authorization: "Bearer secret-token", "idempotency-key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "content-type": "application/json" },
+    headers: { authorization: "Bearer secret-token", "idempotency-key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "content-type": "application/json", "x-push-internal": "1" },
     body: '{"text":"hi","accessMode":"SUGGEST"}',
-  }), env(api), d);
+  }), env(python, core), d);
   assert.equal(post.status, 202);
-  assert.equal(post.headers.get("x-request-id"), "req_from_python");
+  assert.equal(post.headers.get("x-request-id"), "req_from_core");
   assert.equal(calls.length, before);
-  assert.equal(forwarded[0], `POST /api/v1/conversations/${USER}/messages`);
+  assert.equal(forwarded[0], `core POST /api/v1/conversations/${USER}/messages`);
+  const generated = await handle(new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST",
+    headers: { authorization: "Bearer secret-token", "x-push-internal": "1", "content-type": "application/json" },
+    body: "{}",
+  }), env(python, core), d);
+  assert.equal(generated.status, 202);
+  assert.equal(forwarded[1], "python POST /api/v1/ai/generate ");
+  const hidden = await handle(new Request("https://push-be.example/internal/chat/schedule", {
+    method: "POST",
+    headers: { "x-push-internal": "1" },
+  }), env(python, core), d);
+  assert.equal(hidden.status, 404);
 
   const put = await handle(new Request("https://push-be.example/api/v1/ai/keys/OPENAI", {
     method: "PUT",
     headers: { authorization: "Bearer secret-token" },
     body: '{"key":"sk-12345678"}',
-  }), env(api), d);
+  }), env(python, core), d);
   assert.equal(put.status, 200);
   const after = calls.length;
   const again = await handle(new Request("https://push-be.example/api/v1/ai/models", {

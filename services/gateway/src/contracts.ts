@@ -1,8 +1,7 @@
 /**
  * Routes this worker answers itself, checked against the FastAPI OpenAPI
- * export. Response bodies stay hand-built: a cache hit must not call Python,
- * and the bytes are already covered by the gateway tests. The planned
- * TypeScript core-api service is what should return these operations.
+ * export. Response bodies stay hand-built: a cache hit must not call
+ * another worker, and the bytes are already covered by the gateway tests.
  */
 
 import type { paths } from "@push/contracts";

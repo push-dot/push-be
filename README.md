@@ -15,16 +15,17 @@
 ## 저장소 배치
 
 ```
-services/gateway     TypeScript Worker `push-be`. 인증, 속도 제한, 캐시, 라우팅
-services/ai          Python Worker `push-be-python`. FastAPI와 LangGraph. 지금은 코어 API도 여기 있다
+services/gateway     TypeScript Worker `push-be`. 인증 캐시, 속도 제한, 캐시, 라우팅
+services/core-api    TypeScript Worker `push-be-core`. 인증, 대화, 결제, 키 저장, 공고, 캘린더
+services/ai          Python Worker `push-be-python`. LangGraph, LLM, 임베딩, 크론, 사용량 기록
 packages/contracts   FastAPI OpenAPI와 그 스펙으로 만든 TypeScript 타입
 db/migrations        SQL 마이그레이션
 infra                로컬 docker compose
 ```
 
-`packages/ts-shared`는 두지 않았다. 게이트웨이와 Python이 공유하는 TypeScript 런타임 코드가 없다.
+`packages/ts-shared`는 두지 않았다. 게이트웨이와 코어가 각자 타임스탬프 도우미를 둔다. 응답 바이트를 바꾸지 않으려고 게이트웨이 읽기 경로를 공유 패키지로 옮기지 않았다.
 
-코어 API를 TypeScript 서비스로 옮기는 일은 이 배치에 없다. 게이트웨이가 직접 처리하지 않는 요청은 계속 `push-be-python`이 받는다. 그 TypeScript 서비스는 나중에 따로 만든다. `packages/contracts`의 타입이 그 작업의 입력이다. 게이트웨이는 응답 바이트를 그대로 두기 위해 카탈로그와 읽기 JSON을 아직 손으로 만든다. 생성 타입은 `services/gateway/src/contracts.ts`에서 타입으로만 참조한다.
+게이트웨이가 직접 답하는 읽기(건강 확인, `/auth/me`, 대화 목록, 메시지 목록, 활성 스트림, 모델 목록, 채용 사이트)는 그대로다. 그 외 비-AI 경로 중 코어가 구현한 것은 `CORE` 바인딩으로 `push-be-core`에 간다. AI 경로와 아직 옮기지 않은 CRUD는 `API` 바인딩으로 `push-be-python`에 간다. `POST /conversations/:id/messages`는 코어가 크레딧을 확인하고 잡을 넣은 뒤, Python의 `POST /internal/chat/schedule`로 Workflow만 예약한다. 게이트웨이는 `/internal`을 404로 막고 `x-push-internal`을 넘기지 않는다.
 
 Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`로, PDF·웹 페이지 파싱을 `app/ingest`로 옮겼다. 도메인과 인프라 계층은 그대로다. RAG는 `app/graphs/chat.py`의 답변 준비와 `app/infrastructure/store_evidence_chunks.py`에 남아 있다. 검색이 프롬프트 조립과 한 함수 안에 있고, 청크 저장소는 인프라 어댑터라 `app/rag`로 자르면 경계만 생기고 호출은 그대로다.
 
@@ -284,7 +285,7 @@ Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그
 
 채팅 Workflow 호출은 `prepare`, `generate_reply`, `persist` 세 번이다. `prepare` 안에서 claim, `resolve_context`, `prepare_reply`가 같은 Neon 연결을 쓴다. 각 호출은 재시도 5회, 2초에서 지수 백오프다. 타임아웃은 prepare 3분, generate 3분, persist 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 노드는 건너뛴다. 같은 노드가 3번 실패하면 잡을 `FAILED`로 닫는다. 예약마다 claim 토큰이 하나 생기고, 그 토큰이 `chat_jobs.checkpoint`에 들어간다. generate와 persist는 `UPDATE ... WHERE claim = $토큰`으로 주인만 이벤트, 사용량, 상태를 쓴다. 토큰을 잃은 실행은 조용히 멈춘다. `DONE`과 `FAILED`는 덮어쓰지 않는다. 프로덕션에서 `completion`이 없으면 로컬 스텁 문장을 저장하지 않고 스텝을 재시도한다. `ai_usage`는 잡과 용도마다 한 행이다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
 
-`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 멱등 키와 BYOK 암호화는 Python에 그대로 있다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
+`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 큐에 넣는 요청의 멱등 키와 BYOK 암호화는 코어 Worker가 처리한다. 스트림과 사용량 기록은 Python에 남는다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
 
 Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
 
@@ -296,12 +297,19 @@ Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 �
 
 `.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. `actions/checkout`와 `actions/setup-python`은 존재하는 메이저 태그 `v7`에, `actions/setup-node`는 `v6`에 고정한다. `astral-sh/setup-uv`는 떠 있는 `v10` 태그가 없어서 `v10.3.0`에 고정한다. pip, npm, uv 캐시를 쓴다.
 
-- **CI** — pull request, 그리고 `develop`와 `main` push에서 바뀐 서비스만 돌린다. `services/ai`는 `python -m pytest`(Postgres 16), `services/gateway`는 `npm test`와 `tsc --noEmit`, `db`는 pgvector에 `services/ai/scripts/migrate.py`를 적용한다. 같은 워크플로가 Python과 게이트웨이의 `wrangler deploy --dry-run`을 확인한다. Python 번들에 `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다. `main` 푸시는 경로와 상관없이 이 검사를 모두 돌린다.
-- **CD** — push가 `main`일 때만 배포한다. 순서는 `push-be-python` (`services/ai`에서 `uv run pywrangler deploy`) 다음 `push-be` (`services/gateway`에서 `npx wrangler deploy`)다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
+- **CI** — pull request, 그리고 `develop`와 `main` push에서 바뀐 서비스만 돌린다. `services/ai`는 `python -m pytest`(Postgres 16), `services/gateway`와 `services/core-api`는 `npm test`와 `tsc --noEmit`, `db`는 pgvector에 `services/ai/scripts/migrate.py`를 적용한다. 같은 워크플로가 Python, 코어, 게이트웨이의 `wrangler deploy --dry-run`을 확인한다. Python 번들에 `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다. `main` 푸시는 경로와 상관없이 이 검사를 모두 돌린다.
+- **CD** — push가 `main`일 때만 배포한다. 순서는 `push-be-python`, `push-be-core`, `push-be`다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
 
 배포 잡은 코드와 wrangler vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않고, KV 네임스페이스도 만들지 않는다. Worker에 이미 넣어 둔 런타임 시크릿은 배포를 거듭해도 그대로다.
 
-프런트 Worker(`push-be`)에도 `DATABASE_URL`이 필요하다. Neon HTTP(`@neondatabase/serverless`)로 읽기 전용 쿼리를 보낸다. 이름이 같은 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다. 처음 배포 뒤에 `npx wrangler secret list`로 확인하고, 없으면 넣는다.
+프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 AI 키와 채팅 BYOK를 암호화하므로 `BYOK_MASTER_KEY`도 필요하다. 저장소 시크릿 `DATABASE_URL`과 `BYOK_MASTER_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
+
+```bash
+printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-core
+printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY --name push-be-core
+```
+
+OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
 
 Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
 

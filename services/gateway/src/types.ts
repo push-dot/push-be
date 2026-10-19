@@ -16,6 +16,7 @@ export interface Query {
 export interface FrontEnv {
   DATABASE_URL?: string;
   API: { fetch(input: Request): Promise<Response> };
+  CORE?: { fetch(input: Request): Promise<Response> };
   APP_ENV?: string;
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;

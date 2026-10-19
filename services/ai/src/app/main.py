@@ -45,9 +45,9 @@ from app.api.errors import (
 )
 from app.api.middleware import ApiMiddleware
 from app.api.routers import (
-    ai, applications, approvals, auth, billing, calendar, conversations,
-    documents, evidence, experiments, integrations, interviews, jobs,
-    operations, projects,
+    ai, applications, approvals, conversations, documents, evidence,
+    experiments, integrations, internal, interviews, jobs, operations,
+    projects,
 )
 
 
@@ -267,12 +267,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.add_middleware(BodyLimitMiddleware, limit=MAX_SOURCE_BYTES)
     app.add_middleware(RequestIDMiddleware)
 
-    for r in (auth.router, evidence.router, jobs.router, applications.router,
+    for r in (evidence.router, jobs.router, applications.router,
               documents.router, projects.router, interviews.router,
-              conversations.router, calendar.router, approvals.router,
+              conversations.router, approvals.router,
               operations.router, integrations.router, ai.router,
-              billing.router, experiments.router):
+              experiments.router):
         app.include_router(r, prefix="/api/v1")
+    app.include_router(internal.router)
 
     app.get("/healthz")(_healthz)
     app.get("/api/v1/healthz")(_healthz)

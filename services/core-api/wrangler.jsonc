@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "push-be-core",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-17",
+  "compatibility_flags": ["nodejs_compat"],
+  // Not a public workers.dev host. The gateway reaches this worker
+  // through the CORE service binding.
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "services": [
+    { "binding": "API", "service": "push-be-python" }
+  ],
+  "vars": {
+    "APP_ENV": "production",
+    "MANAGED_AI": "1",
+    "MANAGED_GO": "0",
+    "STRIPE_SUCCESS_URL": "push://billing/success",
+    "STRIPE_CANCEL_URL": "push://billing/cancel",
+    "STRIPE_PORTAL_RETURN_URL": "push://billing/portal"
+  }
+}
