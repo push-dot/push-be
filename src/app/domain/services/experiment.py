@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import hashlib
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from app.infrastructure.store_experiments import ExperimentStore
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def bucket_variant(user_id: UUID, key: str, variants: list[str]) -> str:

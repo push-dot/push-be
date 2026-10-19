@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import base64
 import json
 import re
@@ -33,7 +34,7 @@ INTEGRATION_CODE_TTL = timedelta(seconds=60)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 class GoogleService:

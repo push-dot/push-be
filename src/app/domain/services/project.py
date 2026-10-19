@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import posixpath
 from datetime import datetime, timezone
 from typing import Optional
@@ -29,7 +30,7 @@ PEV_VERIFIED = "VERIFIED"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def build_blueprints(user_id: UUID, application_id: UUID, gap_analysis_id: UUID,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote, urlencode
@@ -16,7 +17,7 @@ from app.infrastructure.store_auth import SessionStore, UserStore
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 class AuthService:

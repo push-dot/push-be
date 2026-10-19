@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -21,7 +22,7 @@ import json
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def hash_json(v) -> str:

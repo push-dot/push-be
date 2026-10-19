@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import asyncio
 import re
 from contextvars import ContextVar
@@ -38,7 +39,7 @@ def _blob_db() -> bool:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 _CO_NAME_RE = re.compile(r"^\[([^\[\]]{2,30})\]", re.M)

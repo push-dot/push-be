@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,7 +36,7 @@ def _byok_key_var():
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:

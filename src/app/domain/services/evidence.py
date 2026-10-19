@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,7 +18,7 @@ from app.jsonutil import to_jsonable
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 IMPORT_FORMATS = {"TEXT", "MARKDOWN", "PDF", "DOCX", "GITHUB"}

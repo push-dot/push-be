@@ -38,6 +38,7 @@ export interface Deps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
   limits?: { user: number; public: number; windowMs: number };
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 interface User {
@@ -61,13 +62,30 @@ const hits = new Map<string, number[]>();
 // Buckets this isolate has seen filled. Further requests are rejected
 // here and do not write Neon.
 const remoteHits = new Map<string, number>();
-// Hits already added to the shared counter and not yet served. A request
-// spends one. When this is empty the next request claims another batch.
-const leases = new Map<string, number>();
+// Hits already added to the shared counter and not yet served.
+interface Lease {
+  remaining: number;
+  size: number;
+  expiresAt: number;
+  spent: boolean;
+  bucket: string;
+  generation: number;
+}
+const leases = new Map<string, Lease>();
+let leaseSeq = 1;
 const isolate = createIsolateCache();
 
-// One Neon upsert grants this many hits, less when the bucket is near the cap.
-const LEASE_BATCH = 20;
+// A cold isolate claims 1. The batch doubles only after that grant is used
+// up before it expires, and never past this cap.
+const MAX_LEASE = 32;
+const LEASE_TTL_MS = 5_000;
+
+// Reads stop this far under the shared cap so a burst of GETs leaves room
+// for Python writes on the same `user:{id}:{minute}` row.
+function readCap(limit: number): number {
+  if (limit < 10) return limit;
+  return limit - Math.floor(limit / 10);
+}
 
 const USER_CACHE_CONTROL = "private, no-cache";
 
@@ -79,36 +97,49 @@ const RATE_SQL = "INSERT INTO rate_limits (bucket, hits, expires_at) "
   + "WHERE rate_limits.hits < $3 "
   + "RETURNING hits";
 
+// Timestamps stay text. A JS Date only has milliseconds, so the Neon driver
+// turned `...644999` into `...644000` and made ETags and cursors unstable.
+const TS_FMT = "YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"";
+function tsText(expr: string): string {
+  return "to_char(" + expr + " AT TIME ZONE 'UTC', '" + TS_FMT + "')";
+}
+
 // Auth and the user bucket are one Neon HTTP call. A separate upsert was
 // a serial round trip on every authenticated GET (~270ms). The bucket is
 // still `user:{id}:{minute}`, shared with the Python worker. An expired
 // token is selected but not counted. A full bucket returns hits NULL.
-const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
+const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, "
+  + tsText("u.created_at") + " AS created_at, "
+  + tsText("t.expires_at") + " AS expires_at "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 
-// Auth and a quota lease are one Neon HTTP call. The upsert adds at most
-// LEASE_BATCH and never moves hits past the limit. `granted` is that
-// increment. It is written into the sweep-only expiry (whole seconds past
-// $3) by the same UPDATE that changes hits. A prior read of hits cannot
-// be subtracted: the statement snapshot stays stale while the row lock
-// waits, so new-minus-old over-counts under concurrency. Sweep compares
-// expires_at to now() and ignores those extra seconds.
-const LEASE_INSERT = `LEAST(${LEASE_BATCH}, $4::int)`;
-const LEASE_UPDATE = `LEAST(${LEASE_BATCH}, $4::int - rate_limits.hits)`;
+// Auth and a quota lease are one Neon HTTP call. $4 is the read cap (the
+// shared limit minus write headroom). $6 is the batch, $7 is unused hits
+// from an expired lease. The upsert adds at most that batch, after giving
+// the unused hits back, and never moves hits past the cap. `granted` is
+// the increment this statement applied. It is written into the sweep-only
+// expiry (whole seconds past $3) by the same UPDATE that changes hits. A
+// prior read of hits cannot be subtracted: the statement snapshot stays
+// stale while the row lock waits.
+const LEASE_INSERT = "LEAST($6::int, $4::int)";
+const LEASE_AFTER = "GREATEST(0, rate_limits.hits - GREATEST($7::int, 0))";
+const LEASE_UPDATE = `LEAST($6::int, GREATEST(0, $4::int - ${LEASE_AFTER}))`;
 const AUTH_RATE_PREFIX = "WITH auth AS ("
-  + "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
+  + "SELECT u.id, u.display_name, u.locale, "
+  + tsText("u.created_at") + " AS created_at, "
+  + tsText("t.expires_at") + " AS expires_at, t.expires_at AS token_expires "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1"
   + "), live AS ("
-  + "SELECT id FROM auth WHERE expires_at >= to_timestamp($5::double precision)"
+  + "SELECT id FROM auth WHERE token_expires >= to_timestamp($5::double precision)"
   + "), bumped AS ("
   + "INSERT INTO rate_limits (bucket, hits, expires_at) "
   + "SELECT 'user:' || auth.id::text || ':' || $2::text, "
   + `${LEASE_INSERT}, to_timestamp($3::double precision) + ${LEASE_INSERT} * interval '1 second' `
   + "FROM auth JOIN live ON live.id = auth.id "
   + "ON CONFLICT (bucket) DO UPDATE SET "
-  + `hits = rate_limits.hits + ${LEASE_UPDATE}, `
+  + `hits = ${LEASE_AFTER} + ${LEASE_UPDATE}, `
   + `expires_at = to_timestamp($3::double precision) + ${LEASE_UPDATE} * interval '1 second' `
-  + "WHERE rate_limits.hits < $4 "
+  + "WHERE $7::int > 0 OR rate_limits.hits < $4::int "
   + "RETURNING hits, "
   + "(EXTRACT(EPOCH FROM expires_at) - $3::double precision)::bigint AS granted"
   + ") ";
@@ -125,34 +156,34 @@ const LIST_SQL = AUTH_RATE_PREFIX
   + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at "
   + "FROM conversations c JOIN live ON live.id = c.user_id "
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
-  + "AND ($6::uuid IS NULL OR c.application_id = $6::uuid) "
-  + "AND ($7::timestamptz IS NULL OR (c.created_at, c.id) < ($7::timestamptz, $8::uuid)) "
-  + "ORDER BY c.created_at DESC, c.id DESC LIMIT $9"
+  + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
+  + "AND ($9::timestamptz IS NULL OR (c.created_at, c.id) < ($9::timestamptz, $10::uuid)) "
+  + "ORDER BY c.created_at DESC, c.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", COALESCE((SELECT json_agg(json_build_object("
   + "'id', page.id, 'revision', page.revision, 'application_id', page.application_id, "
-  + "'title', page.title, 'pinned', page.pinned, 'created_at', page.created_at, "
-  + "'updated_at', page.updated_at"
+  + "'title', page.title, 'pinned', page.pinned, 'created_at', " + tsText("page.created_at") + ", "
+  + "'updated_at', " + tsText("page.updated_at")
   + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $6::uuid AND user_id = (SELECT id FROM live)"
+  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
   + "), page AS ("
   + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
   + "FROM messages m JOIN found ON found.id = m.conversation_id "
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND m.user_id = (SELECT id FROM live) "
-  + "AND ($7::timestamptz IS NULL OR (m.created_at, m.id) < ($7::timestamptz, $8::uuid)) "
-  + "ORDER BY m.created_at DESC, m.id DESC LIMIT $9"
+  + "AND ($9::timestamptz IS NULL OR (m.created_at, m.id) < ($9::timestamptz, $10::uuid)) "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
   + "COALESCE((SELECT json_agg(json_build_object("
   + "'id', page.id, 'conversation_id', page.conversation_id, 'role', page.role, "
   + "'text', page.text, 'attachments', page.attachments, 'operation_id', page.operation_id, "
-  + "'created_at', page.created_at"
+  + "'created_at', " + tsText("page.created_at")
   + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 const STREAM_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $6::uuid AND user_id = (SELECT id FROM live)"
+  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
   + "), job AS ("
   + "SELECT id FROM chat_jobs WHERE user_id = (SELECT id FROM live) "
   + "AND conversation_id = (SELECT id FROM found) "
@@ -170,6 +201,54 @@ export function resetLimits(): void {
   remoteHits.clear();
   leases.clear();
   isolate.reset();
+}
+
+const RELEASE_SQL = "UPDATE rate_limits SET hits = GREATEST(0, hits - $2::int) "
+  + "WHERE bucket = $1 AND $2::int > 0 RETURNING hits";
+
+async function releaseLease(deps: Deps, lease: Lease): Promise<void> {
+  if (lease.remaining <= 0) return;
+  const amount = lease.remaining;
+  lease.remaining = 0;
+  try {
+    await deps.query(RELEASE_SQL, [lease.bucket, amount]);
+  } catch {
+    return;
+  }
+}
+
+// Give unused hits back once the lease has sat idle. Called from the
+// request path and from a waitUntil timer so a quiet isolate does not
+// hold the batch until the minute ends.
+export async function releaseExpired(deps: Deps, nowMs: number, exceptKey = ""): Promise<void> {
+  const currentWindow = exceptKey.includes(":") ? exceptKey.slice(exceptKey.lastIndexOf(":") + 1) : "";
+  const due: [string, Lease][] = [];
+  for (const [key, lease] of leases) {
+    if (key === exceptKey) continue;
+    const window = key.slice(key.lastIndexOf(":") + 1);
+    const minuteRolled = currentWindow !== "" && window !== currentWindow;
+    if (lease.remaining > 0 && (minuteRolled || nowMs >= lease.expiresAt)) due.push([key, lease]);
+  }
+  for (const [key, lease] of due) {
+    await releaseLease(deps, lease);
+    leases.delete(key);
+    remoteHits.delete(key);
+  }
+}
+
+function armRelease(deps: Deps, cacheKey: string, generation: number): void {
+  if (!deps.waitUntil) return;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  deps.waitUntil((async () => {
+    await sleep(LEASE_TTL_MS);
+    const lease = leases.get(cacheKey);
+    if (!lease || lease.generation !== generation || lease.remaining <= 0) return;
+    const nowMs = (deps.now ?? (() => new Date()))().getTime();
+    if (nowMs < lease.expiresAt) return;
+    await releaseLease(deps, lease);
+    leases.delete(cacheKey);
+    remoteHits.delete(cacheKey);
+  })());
 }
 
 function authTtlMs(env: FrontEnv): number {
@@ -330,14 +409,20 @@ async function freshRead(loaded: Response, request: Request, rid: string): Promi
   return conditional(await loaded.text(), request, rid, USER_CACHE_CONTROL);
 }
 
-function clearLease(hash: string): void {
+async function clearLease(deps: Deps, hash: string): Promise<void> {
   const prefix = `user:${hash}:`;
-  for (const key of leases.keys()) {
-    if (key.startsWith(prefix)) leases.delete(key);
+  const owned: [string, Lease][] = [];
+  for (const [key, lease] of leases) {
+    if (key.startsWith(prefix)) owned.push([key, lease]);
+  }
+  for (const [key, lease] of owned) {
+    await releaseLease(deps, lease);
+    leases.delete(key);
+    remoteHits.delete(key);
   }
 }
 
-async function invalidateAfterWrite(request: Request, path: string): Promise<void> {
+async function invalidateAfterWrite(request: Request, path: string, deps: Deps): Promise<void> {
   if (path !== "/api/v1/auth/logout" && path !== "/api/v1/auth/refresh") return;
   const authz = request.headers.get("authorization") || "";
   if (!authz.startsWith("Bearer ")) return;
@@ -346,7 +431,7 @@ async function invalidateAfterWrite(request: Request, path: string): Promise<voi
   try {
     const hash = await sha256Hex(token);
     isolate.dropAuth(hash);
-    clearLease(hash);
+    await clearLease(deps, hash);
   } catch {
     return;
   }
@@ -450,7 +535,7 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
-      await invalidateAfterWrite(request, path);
+      await invalidateAfterWrite(request, path, deps);
     }
   }
   if (request.method === "PUT" || request.method === "DELETE") {
@@ -488,9 +573,13 @@ function windowOf(moment: Date): number {
   return Math.floor(moment.getTime() / 1000 / 60);
 }
 
-function rateParams(hash: string, moment: Date, limit: number): unknown[] {
+function rateParams(hash: string, moment: Date, limit: number, batch: number, release: number): unknown[] {
   const window = windowOf(moment);
-  return [hash, String(window), window * 60 + 120, limit, moment.getTime() / 1000];
+  const size = Math.max(1, Math.min(MAX_LEASE, batch));
+  return [
+    hash, String(window), window * 60 + 120, readCap(limit), moment.getTime() / 1000,
+    size, Math.max(0, release),
+  ];
 }
 
 function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: number, ttlMs: number): void {
@@ -513,6 +602,7 @@ function interpretAuth(
   cacheKey: string,
   shared: boolean,
   rid: string,
+  deps: Deps,
   remember?: { hash: string; ttlMs: number },
 ): User | Response {
   if (!rows.length) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
@@ -529,16 +619,19 @@ function interpretAuth(
     return user;
   }
   if (!Object.prototype.hasOwnProperty.call(row, "hits")) return user;
-  if (!acceptGrant(cacheKey, row, limit)) {
+  const cap = readCap(limit);
+  if (!acceptGrant(cacheKey, row, cap, moment.getTime(), `user:${user.id}:${windowOf(moment)}`, deps)) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   if (remember) rememberAuth(remember.hash, user, expires, moment.getTime(), remember.ttlMs);
   return user;
 }
 
-// The current request spends one granted hit. The rest stay in this isolate.
-// A grant of 0, or a counter already past the limit, closes the bucket.
-function acceptGrant(cacheKey: string, row: Record<string, unknown>, limit: number): boolean {
+// The current request spends one granted hit. The rest stay in this isolate
+// until they are used or the lease expires. A grant of 0 closes the bucket.
+function acceptGrant(
+  cacheKey: string, row: Record<string, unknown>, limit: number, nowMs: number, bucket: string, deps: Deps,
+): boolean {
   rememberHits(cacheKey, row, limit);
   const hitsValue = row.hits;
   if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limit) {
@@ -554,16 +647,26 @@ function acceptGrant(cacheKey: string, row: Record<string, unknown>, limit: numb
     return false;
   }
   const left = granted - 1;
-  if (left > 0) leases.set(cacheKey, left);
-  else leases.delete(cacheKey);
+  const lease: Lease = {
+    remaining: Math.max(0, left),
+    size: granted,
+    expiresAt: nowMs + LEASE_TTL_MS,
+    spent: left <= 0,
+    bucket,
+    generation: ++leaseSeq,
+  };
+  leases.set(cacheKey, lease);
+  if (left > 0) armRelease(deps, cacheKey, lease.generation);
   if (Number(hitsValue) >= limit && left <= 0) remoteHits.set(cacheKey, limit);
   return true;
 }
 
-function spendLease(cacheKey: string): void {
-  const left = (leases.get(cacheKey) ?? 0) - 1;
-  if (left > 0) leases.set(cacheKey, left);
-  else leases.delete(cacheKey);
+function spendLease(cacheKey: string, nowMs: number): void {
+  const lease = leases.get(cacheKey);
+  if (!lease || lease.remaining <= 0) return;
+  lease.remaining -= 1;
+  lease.expiresAt = nowMs + LEASE_TTL_MS;
+  if (lease.remaining === 0) lease.spent = true;
 }
 
 function userFromCached(cached: CachedUser): User {
@@ -593,9 +696,19 @@ type TokenCtx = {
   // A lease is left, but the auth entry is missing or expired. Re-read the
   // token without claiming another batch.
   revalidate?: boolean;
+  batch: number;
+  release: number;
 };
 
-async function tokenContext(request: Request, env: FrontEnv, rid: string, limits: { user: number }, now: () => Date): Promise<TokenCtx | Response> {
+function nextBatch(lease: Lease | undefined, nowMs: number, release: number): number {
+  if (!lease || release > 0) return 1;
+  if (lease.spent && lease.remaining <= 0 && nowMs < lease.expiresAt) {
+    return Math.min(MAX_LEASE, Math.max(1, lease.size) * 2);
+  }
+  return 1;
+}
+
+async function tokenContext(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number }, now: () => Date): Promise<TokenCtx | Response> {
   const authz = request.headers.get("authorization") || "";
   if (!authz.startsWith("Bearer ")) {
     return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
@@ -603,7 +716,7 @@ async function tokenContext(request: Request, env: FrontEnv, rid: string, limits
   const token = authz.slice(7);
   const moment = now();
   if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
-    return { dev: true, hash: "", moment, cacheKey: "" };
+    return { dev: true, hash: "", moment, cacheKey: "", batch: 1, release: 0 };
   }
   let hash: string;
   try {
@@ -612,9 +725,19 @@ async function tokenContext(request: Request, env: FrontEnv, rid: string, limits
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
   const cacheKey = `user:${hash}:${windowOf(moment)}`;
-  const leaseLeft = leases.get(cacheKey) ?? 0;
+  await releaseExpired(deps, moment.getTime(), cacheKey);
+  const lease = leases.get(cacheKey);
+  const expired = !!lease && moment.getTime() >= lease.expiresAt;
+  let release = 0;
+  if (expired && lease) {
+    release = lease.remaining;
+    lease.remaining = 0;
+    lease.spent = false;
+  }
+  const leaseLeft = !expired && lease ? lease.remaining : 0;
   const known = remoteHits.get(cacheKey);
-  if (known !== undefined && known >= limits.user && leaseLeft <= 0) {
+  const cap = readCap(limits.user);
+  if (known !== undefined && known >= cap && leaseLeft <= 0 && release <= 0) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   const cached = isolate.getAuth(hash, moment.getTime());
@@ -623,13 +746,17 @@ async function tokenContext(request: Request, env: FrontEnv, rid: string, limits
       isolate.dropAuth(hash);
       return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
     }
-    spendLease(cacheKey);
-    return { dev: false, hash, moment, cacheKey, user: userFromCached(cached) };
+    spendLease(cacheKey, moment.getTime());
+    return { dev: false, hash, moment, cacheKey, user: userFromCached(cached), batch: 1, release: 0 };
   }
   if (leaseLeft > 0) {
-    return { dev: false, hash, moment, cacheKey, revalidate: true };
+    return { dev: false, hash, moment, cacheKey, revalidate: true, batch: 1, release: 0 };
   }
-  return { dev: false, hash, moment, cacheKey };
+  return {
+    dev: false, hash, moment, cacheKey,
+    batch: nextBatch(lease, moment.getTime(), release),
+    release,
+  };
 }
 
 async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: string): Promise<User | Response> {
@@ -652,7 +779,7 @@ async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: str
     return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
   }
   const user = userFrom(row);
-  spendLease(ctx.cacheKey);
+  spendLease(ctx.cacheKey, ctx.moment.getTime());
   rememberAuth(ctx.hash, user, expires, ctx.moment.getTime(), authTtlMs(env));
   return user;
 }
@@ -662,7 +789,7 @@ function rememberBag(ctx: TokenCtx, env: FrontEnv): { hash: string; ttlMs: numbe
 }
 
 async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number; windowMs: number }, now: () => Date): Promise<User | Response> {
-  const ctx = await tokenContext(request, env, rid, limits, now);
+  const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (ctx.user) return ctx.user;
   if (ctx.revalidate) return revalidateAuth(ctx, env, deps, rid);
@@ -684,7 +811,7 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
   let rows: Record<string, unknown>[];
   let shared = true;
   try {
-    rows = await deps.query(AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user));
+    rows = await deps.query(AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
   } catch {
     shared = false;
     try {
@@ -693,7 +820,7 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
   }
-  return interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, shared, rid, rememberBag(ctx, env));
+  return interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, shared, rid, deps, rememberBag(ctx, env));
 }
 
 function codedError(err: unknown, rid: string): Response {
@@ -706,7 +833,7 @@ function codedError(err: unknown, rid: string): Response {
 
 async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   const rows = await deps.query(
-    "SELECT id, display_name, locale, created_at FROM users WHERE id = $1::uuid",
+    "SELECT id, display_name, locale, " + tsText("created_at") + " AS created_at FROM users WHERE id = $1::uuid",
     [env.DEV_USER_ID || ""],
   );
   if (!rows.length) {
@@ -762,8 +889,9 @@ async function listConversationsFor(deps: Deps, userId: string, appId: string | 
   }
   params.push(limit + 1);
   const rows = await deps.query(
-    "SELECT id, revision, application_id, title, pinned, created_at, updated_at " +
-    "FROM conversations WHERE user_id = $1::uuid AND archived = false" +
+    "SELECT id, revision, application_id, title, pinned, "
+    + tsText("created_at") + " AS created_at, " + tsText("updated_at") + " AS updated_at "
+    + "FROM conversations WHERE user_id = $1::uuid AND archived = false" +
     cursorSql +
     ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
     params,
@@ -782,7 +910,7 @@ async function listConversations(request: Request, env: FrontEnv, deps: Deps, ur
   }
   const cursor = cursorPair(url, rid);
   if (cursor instanceof Response) return cursor;
-  const ctx = await tokenContext(request, env, rid, limits, now);
+  const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (ctx.user || ctx.revalidate) {
     const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
@@ -806,10 +934,10 @@ async function listConversations(request: Request, env: FrontEnv, deps: Deps, ur
   }
   try {
     const rows = await deps.query(LIST_SQL, [
-      ...rateParams(ctx.hash, ctx.moment, limits.user),
+      ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
       appId, cursor.at, cursor.id, page.limit + 1,
     ]);
-    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, rememberBag(ctx, env));
+    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
     if (user instanceof Response) return user;
     const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, conversationJson));
     return conditional(text, request, rid, USER_CACHE_CONTROL);
@@ -850,8 +978,9 @@ async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: {
   }
   params.push(limit + 1);
   const rows = await deps.query(
-    "SELECT id, conversation_id, role, text, attachments, operation_id, created_at " +
-    "FROM messages WHERE user_id = $1::uuid AND conversation_id = $2::uuid" +
+    "SELECT id, conversation_id, role, text, attachments, operation_id, "
+    + tsText("created_at") + " AS created_at "
+    + "FROM messages WHERE user_id = $1::uuid AND conversation_id = $2::uuid" +
     cursorSql +
     ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
     params,
@@ -866,7 +995,7 @@ async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: UR
   if (page instanceof Response) return page;
   const cursor = cursorPair(url, rid);
   if (cursor instanceof Response) return cursor;
-  const ctx = await tokenContext(request, env, rid, limits, now);
+  const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (ctx.user || ctx.revalidate) {
     const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
@@ -890,10 +1019,10 @@ async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: UR
   }
   try {
     const rows = await deps.query(MESSAGES_SQL, [
-      ...rateParams(ctx.hash, ctx.moment, limits.user),
+      ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
       id, cursor.at, cursor.id, page.limit + 1,
     ]);
-    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, rememberBag(ctx, env));
+    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
     if (user instanceof Response) return user;
     const conversationId = rows[0]?.conversation_id;
     if (conversationId == null || conversationId === "") {
@@ -967,7 +1096,7 @@ async function activeJobFor(deps: Deps, userId: string, id: string): Promise<str
 async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
   if (!id) return fieldError("id", "must be a UUID", rid);
-  const ctx = await tokenContext(request, env, rid, limits, now);
+  const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   let jobId: string | null;
   try {
@@ -989,9 +1118,9 @@ async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: UR
       jobId = found;
     } else {
       const rows = await deps.query(STREAM_SQL, [
-        ...rateParams(ctx.hash, ctx.moment, limits.user), id,
+        ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release), id,
       ]);
-      const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, rememberBag(ctx, env));
+      const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
       if (user instanceof Response) return user;
       const conversationId = rows[0]?.conversation_id;
       if (conversationId == null || conversationId === "") {
@@ -1089,7 +1218,7 @@ function sseFrame(row: Record<string, unknown>): string {
 async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const provider = url.searchParams.get("provider") || "";
   const credMode = url.searchParams.get("credentialMode") || "";
-  const ctx = await tokenContext(request, env, rid, limits, now);
+  const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (provider && !validProvider(provider)) return fieldError("provider", "unsupported provider", rid);
   if (credMode && !validCredentialMode(credMode)) return fieldError("credentialMode", "unsupported credentialMode", rid);
@@ -1132,8 +1261,8 @@ async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, r
     }
   } else {
     try {
-      const rows = await deps.query(MODELS_SQL, rateParams(ctx.hash, ctx.moment, limits.user));
-      const authed = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, rememberBag(ctx, env));
+      const rows = await deps.query(MODELS_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
+      const authed = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
       if (authed instanceof Response) return authed;
       byokOpenai = asBool(rows[0]?.has);
     } catch {

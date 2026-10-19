@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 import copy
 import json
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from app.jsonutil import to_jsonable
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 EXPORT_PDF = "PDF"
