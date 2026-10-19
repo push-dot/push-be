@@ -597,7 +597,8 @@ test("many isolates each serving a few requests stay near the cap", async () => 
     assert.equal(Number(params[3]), cap);
     const batch = Number(params[5]);
     const release = Number(params[6]);
-    assert.ok(batch >= 1 && batch <= 32);
+    assert.ok(batch >= 1 && batch <= 8);
+    assert.match(sql, /\/ 16/);
     const after = Math.max(0, counter - release);
     if (release <= 0 && after >= cap) {
       return [{
@@ -629,6 +630,136 @@ test("many isolates each serving a few requests stay near the cap", async () => 
   assert.ok(ok >= Math.floor(limit * 0.9));
   assert.ok(counter <= cap);
   assert.ok(limit - counter >= Math.floor(limit / 10));
+});
+
+function shrunkGrant(batch: number, room: number): number {
+  if (room <= 0) return 0;
+  return Math.min(batch, room, Math.max(1, Math.floor(room / 16)));
+}
+
+function leasedQuery(counter: { hits: number }, cap: number): Query {
+  return async (sql, params) => {
+    if (sql.includes("GREATEST(0, hits")) {
+      counter.hits = Math.max(0, counter.hits - Number(params[1]));
+      return [{ hits: counter.hits }];
+    }
+    if (!sql.includes("access_tokens")) return [];
+    const batch = Number(params[5]);
+    const release = Number(params[6]);
+    const after = Math.max(0, counter.hits - release);
+    if (release <= 0 && after >= cap) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: null, granted: null,
+      }];
+    }
+    const granted = shrunkGrant(batch, Math.max(0, cap - after));
+    counter.hits = after + granted;
+    return [{
+      id: USER, display_name: "Ada", locale: "ko",
+      created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+      hits: counter.hits, granted,
+    }];
+  };
+}
+
+test("a spread burst returns unused leases and serves at least 90% of 540", async () => {
+  resetLimits();
+  const limit = 600;
+  const cap = limit - Math.floor(limit / 10);
+  const counter = { hits: 0 };
+  const headers = { authorization: "Bearer secret-token" };
+  const limits = { user: limit, public: 60, windowMs: 60_000 };
+  let ok = 0;
+  for (let isolate = 0; isolate < 400 && ok < cap; isolate += 1) {
+    resetLimits();
+    const tasks: Promise<unknown>[] = [];
+    const gates: Array<() => void> = [];
+    const d = deps(leasedQuery(counter, cap), {
+      limits,
+      sleep: (ms) => new Promise((resolve) => {
+        if (ms <= 0) resolve();
+        else gates.push(resolve);
+      }),
+      waitUntil: (promise) => { tasks.push(promise); },
+    });
+    for (let n = 0; n < 2; n += 1) {
+      const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+      if (res.status === 200) ok += 1;
+      else assert.equal(res.status, 429);
+    }
+    for (const open of gates.splice(0)) open();
+    await Promise.all(tasks);
+  }
+  assert.ok(ok >= Math.floor(cap * 0.9), `served ${ok} of ${cap}`);
+  assert.ok(counter.hits <= cap);
+  assert.equal(counter.hits, ok);
+  assert.ok(limit - cap >= Math.floor(limit / 10));
+});
+
+test("fifty fresh leases and 300 requests do not false-429", async () => {
+  resetLimits();
+  const limit = 600;
+  const cap = limit - Math.floor(limit / 10);
+  const counter = { hits: 0 };
+  const limits = { user: limit, public: 60, windowMs: 60_000 };
+  const tasks: Promise<unknown>[] = [];
+  const gates: Array<() => void> = [];
+  const slept: number[] = [];
+  const d = deps(leasedQuery(counter, cap), {
+    limits,
+    sleep: (ms) => new Promise((resolve) => {
+      slept.push(ms);
+      if (ms <= 0) resolve();
+      else gates.push(resolve);
+    }),
+    waitUntil: (promise) => { tasks.push(promise); },
+  });
+  let ok = 0;
+  let denied = 0;
+  for (let isolate = 0; isolate < 50; isolate += 1) {
+    const headers = { authorization: `Bearer fresh-token-${isolate}` };
+    for (let n = 0; n < 6; n += 1) {
+      const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+      if (res.status === 200) ok += 1;
+      else {
+        assert.equal(res.status, 429);
+        denied += 1;
+      }
+    }
+  }
+  assert.equal(ok, 300);
+  assert.equal(denied, 0);
+  assert.ok(counter.hits <= cap);
+  assert.ok(counter.hits > ok);
+  for (const open of gates.splice(0)) open();
+  await Promise.all(tasks);
+  assert.equal(counter.hits, ok);
+  assert.ok(slept.some((ms) => ms > 0 && ms <= 1000));
+});
+
+test("a mostly unused lease near the cap returns immediately", async () => {
+  resetLimits();
+  const limit = 600;
+  const cap = limit - Math.floor(limit / 10);
+  const counter = { hits: 500 };
+  const limits = { user: limit, public: 60, windowMs: 60_000 };
+  const slept: number[] = [];
+  const tasks: Promise<unknown>[] = [];
+  const d = deps(leasedQuery(counter, cap), {
+    limits,
+    sleep: async (ms) => { slept.push(ms); },
+    waitUntil: (promise) => { tasks.push(promise); },
+  });
+  const headers = { authorization: "Bearer near-cap-token" };
+  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  await Promise.all(tasks);
+  assert.ok(slept.includes(0));
+  assert.equal(counter.hits, 502);
 });
 
 test("an idle isolate returns the unused lease", async () => {
