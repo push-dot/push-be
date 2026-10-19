@@ -161,7 +161,10 @@ class ConversationService:
         bind_chat_nodes(self)
 
     async def start_worker(self) -> None:
-        recovered = await self.jobs.reset_stale()
+        # A restarted process has no live Workflow. Age 0 recovers immediately.
+        # The cron path keeps the long threshold so it cannot steal a run
+        # that is still inside its step timeout.
+        recovered = await self.jobs.reset_stale(0)
         if recovered:
             logging.getLogger(__name__).info(
                 "requeued %d stale chat jobs", recovered)
@@ -566,17 +569,46 @@ class ConversationService:
                 kind=ent.OP_CHAT_MESSAGE, value={"jobId": str(job_id)}),
             created_at=now, updated_at=now)
 
-    async def claim_for_workflow(self, job_id: str, byok: str = "") -> str:
+    async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
         jid = UUID(str(job_id))
-        job = await self.jobs.claim_id(jid)
-        if job is None:
-            existing = await self.jobs.get(jid)
-            if existing is None or existing.get("status") != "RUNNING":
-                return "skip"
-        return "ok"
+        if not claim:
+            # Workflows scheduled before claim tokens. A RUNNING row is the
+            # same run retrying its prepare step.
+            job = await self.jobs.claim_id(jid)
+            if job is None:
+                existing = await self.jobs.get(jid)
+                if existing is None or existing.get("status") != "RUNNING":
+                    return "skip"
+            return "ok"
+        job = await self.jobs.claim_with_token(jid, claim)
+        if job is not None:
+            return "ok"
+        if await self.jobs.touch_owner(jid, claim):
+            return "ok"
+        existing = await self.jobs.get(jid)
+        if existing is not None and existing.get("status") == "DONE":
+            return "ok"
+        return "skip"
 
-    async def exec_chat_node(self, job_id: str, name: str) -> str:
+    async def exec_chat_node(self, job_id: str, name: str, claim: str = "") -> str:
+        from app.claimctx import LostClaim, claim_job, claim_token
         jid = UUID(str(job_id))
+        token_ctx = claim_token.set(claim or "")
+        job_ctx = claim_job.set(str(jid) if claim else "")
+        try:
+            return await self._exec_chat_node(jid, name, claim)
+        finally:
+            claim_token.reset(token_ctx)
+            claim_job.reset(job_ctx)
+
+    async def _exec_chat_node(self, jid: UUID, name: str, claim: str) -> str:
+        from app.claimctx import LostClaim
+        if claim:
+            if not await self.jobs.touch_owner(jid, claim):
+                existing = await self.jobs.get(jid)
+                if existing is not None and existing.get("status") == "DONE":
+                    return "ok"
+                return "skip"
         job = await self.jobs.get(jid)
         if job is None:
             return "skip"
@@ -588,6 +620,11 @@ class ConversationService:
         payload = job["payload"] if isinstance(job["payload"], dict) else {}
         ck = _checkpoint_dict(job.get("checkpoint"))
         if step_already_done(ck, name):
+            if name == "persist" and status == "RUNNING":
+                try:
+                    await self.jobs.finish(jid, "DONE")
+                except LostClaim:
+                    return "skip"
             return "ok"
         if step_fail_limit_reached(ck):
             await self._fail_step(jid, "step exceeded retry limit")
@@ -595,9 +632,12 @@ class ConversationService:
         # Drop events from a previous attempt of this step. Earlier steps
         # stay; their high-water id is stored on the checkpoint.
         hw = int(ck.get("event_id") or 0)
-        await self.jobs.delete_events_after(jid, hw)
-        fails = int(ck.get("fails") or 0) + 1
-        await self.jobs.save_checkpoint(jid, {**ck, "fails": fails})
+        try:
+            await self.jobs.delete_events_after(jid, hw)
+            fails = int(ck.get("fails") or 0) + 1
+            await self.jobs.save_checkpoint(jid, {**ck, "fails": fails})
+        except LostClaim:
+            return "skip"
         byok = self._byok_keys.get(jid) or self._byok_from_payload(
             job["user_id"], payload)
         token = _BYOK_KEY.set(byok or "")
@@ -614,7 +654,10 @@ class ConversationService:
                 return
             closed = True
             queue.put_nowait(None)
-            await pump
+            try:
+                await pump
+            except LostClaim:
+                pass
 
         sink = event_sink.set(_Sink())
         pump = asyncio.create_task(
@@ -633,39 +676,46 @@ class ConversationService:
                     "job_id": str(jid),
                 }
             self.ensure_chat_nodes()
-            update = await self.chat_nodes[name](state)
-            if update:
-                state.update(update)
-            await close_pump()
-            if name == "persist" and state.get("operation") is not None:
-                from app.jsonutil import to_jsonable
-                await self.jobs.emit(
-                    jid, "done",
-                    {"operation": to_jsonable(state["operation"])})
-                await self.jobs.finish(jid, "DONE")
-                self._byok_keys.pop(jid, None)
-            event_id = await self.jobs.max_event_id(jid)
-            await self.jobs.save_checkpoint(
-                jid, {"state": freeze_state(state), "node": name,
-                      "event_id": event_id, "fails": 0})
-            return "ok"
-        except DomainError as e:
-            await close_pump()
-            await self.jobs.emit(
-                jid, "error",
-                {"error": {"code": e.code, "message": e.message,
-                           "details": e.details}})
-            await self.jobs.finish(jid, "FAILED", e.code)
-            return "error"
-        except Exception:
-            # Leave the incremented fails count in the checkpoint and let
-            # the Workflow retry the step. A CPU-limit kill (Error 1102)
-            # never reaches this handler; the same checkpoint makes that
-            # retry idempotent. Events flushed during this attempt sit
-            # above the saved high-water and are deleted on the retry.
-            await close_pump()
-            logging.getLogger(__name__).exception("chat node %s failed", name)
-            raise
+            try:
+                update = await self.chat_nodes[name](state)
+                if update:
+                    state.update(update)
+                await close_pump()
+                if name == "persist" and state.get("operation") is not None:
+                    from app.jsonutil import to_jsonable
+                    await self.jobs.emit(
+                        jid, "done",
+                        {"operation": to_jsonable(state["operation"])})
+                    await self.jobs.finish(jid, "DONE")
+                    self._byok_keys.pop(jid, None)
+                event_id = await self.jobs.max_event_id(jid)
+                await self.jobs.save_checkpoint(
+                    jid, {"state": freeze_state(state), "node": name,
+                          "event_id": event_id, "fails": 0})
+                return "ok"
+            except LostClaim:
+                await close_pump()
+                return "skip"
+            except DomainError as e:
+                await close_pump()
+                try:
+                    await self.jobs.emit(
+                        jid, "error",
+                        {"error": {"code": e.code, "message": e.message,
+                                   "details": e.details}})
+                    await self.jobs.finish(jid, "FAILED", e.code)
+                except LostClaim:
+                    return "skip"
+                return "error"
+            except Exception:
+                # Leave the incremented fails count in the checkpoint and let
+                # the Workflow retry the step. A CPU-limit kill (Error 1102)
+                # never reaches this handler; the same checkpoint makes that
+                # retry idempotent. Events flushed during this attempt sit
+                # above the saved high-water and are deleted on the retry.
+                await close_pump()
+                logging.getLogger(__name__).exception("chat node %s failed", name)
+                raise
         finally:
             if not closed:
                 closed = True
@@ -679,10 +729,15 @@ class ConversationService:
             _BYOK_KEY.reset(token)
 
     async def _fail_step(self, job_id: UUID, message: str) -> None:
-        await self.jobs.emit(
-            job_id, "error",
-            {"error": {"code": "INTERNAL", "message": message, "details": None}})
-        await self.jobs.finish(job_id, "FAILED", message)
+        from app.claimctx import LostClaim
+        try:
+            await self.jobs.emit(
+                job_id, "error",
+                {"error": {"code": "INTERNAL", "message": message,
+                           "details": None}})
+            await self.jobs.finish(job_id, "FAILED", message)
+        except LostClaim:
+            return
 
     async def nudge_pending(self) -> int:
         await self.jobs.reset_stale()

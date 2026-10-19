@@ -59,13 +59,17 @@ def apply_env(env) -> None:
     _patch_to_thread()
 
 
-async def _create_workflow(env, job_id: str, byok: str) -> None:
+async def _create_workflow(env, job_id: str, byok: str, claim: str = "") -> None:
     binding = getattr(env, "CHAT_WORKFLOW", None)
     if binding is None:
         return
     body = {
         "id": f"chat-{job_id}-{int(time.time() * 1000)}",
-        "params": {"jobId": str(job_id), "byok": byok or ""},
+        "params": {
+            "jobId": str(job_id),
+            "byok": byok or "",
+            "claim": claim or "",
+        },
     }
     try:
         await binding.create(body)
@@ -95,8 +99,8 @@ async def _end_db_scope(scope) -> None:
 
 
 def _install_scheduler(env) -> None:
-    async def schedule(job_id: str, byok: str) -> None:
-        await _create_workflow(env, job_id, byok)
+    async def schedule(job_id: str, byok: str, claim: str = "") -> None:
+        await _create_workflow(env, job_id, byok, claim)
 
     set_job_scheduler(schedule)
 
@@ -115,6 +119,7 @@ def _payload(event) -> dict:
         return {
             "jobId": getattr(raw, "jobId", ""),
             "byok": getattr(raw, "byok", "") or "",
+            "claim": getattr(raw, "claim", "") or "",
         }
 
 
@@ -180,7 +185,7 @@ class ChatWorkflow(WorkflowEntrypoint):
     async def _run(self, event, step):
         payload = _payload(event)
         job_id = str(payload.get("jobId") or "")
-        byok = payload.get("byok") or ""
+        claim = str(payload.get("claim") or "")
         if not job_id:
             return
         svc = app.state.deps.conversations
@@ -193,11 +198,11 @@ class ChatWorkflow(WorkflowEntrypoint):
                 scope = _begin_db_scope()
                 try:
                     if step_name == "prepare":
-                        claimed = await svc.claim_for_workflow(job_id, byok)
+                        claimed = await svc.claim_for_workflow(job_id, claim)
                         if claimed != "ok":
                             return claimed
                     for node in nodes:
-                        result = await svc.exec_chat_node(job_id, node)
+                        result = await svc.exec_chat_node(job_id, node, claim)
                         if result != "ok":
                             return result
                     return "ok"

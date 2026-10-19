@@ -321,14 +321,17 @@ def bind_chat_nodes(svc):
                 try:
                     e = await svc.evidence.get(state["user_id"], eid)
                     texts = _chunk_text(e.source_text)
-                    vecs = await svc.ai.embed(texts, user_id=state["user_id"])
+                    vecs = await svc.ai.embed(
+                        texts, user_id=state["user_id"],
+                        job_id=state.get("job_id"))
                     if len(vecs) == len(texts):
                         await svc.chunks.replace_chunks(
                             state["user_id"], eid, list(zip(texts, vecs)))
                 except Exception:
                     continue
-            qvec = await svc.ai.embed([state["text"][:2000]],
-                                    user_id=state["user_id"])
+            qvec = await svc.ai.embed(
+                [state["text"][:2000]], user_id=state["user_id"],
+                job_id=state.get("job_id"))
             if qvec:
                 hits = await svc.chunks.search(state["user_id"], qvec[0], 6)
                 rag = [h for h in hits
@@ -340,7 +343,10 @@ def bind_chat_nodes(svc):
                         "[관련 근거]\n" + "\n\n".join(
                             "- " + h["title"] + "\n" + h["text"]
                             for h in rag))
-        except Exception:
+        except Exception as rag_err:
+            from app.claimctx import LostClaim
+            if isinstance(rag_err, LostClaim):
+                raise
             import logging
             logging.getLogger(__name__).exception("rag retrieval failed")
         attach_titles = " ".join(
@@ -373,7 +379,7 @@ def bind_chat_nodes(svc):
                 research = await svc.ai.company_research(
                     company, role_models.get("research", ""),
                     state["text"] + "\n" + page_ctx[:2000],
-                    user_id=state["user_id"])
+                    user_id=state["user_id"], job_id=state.get("job_id"))
                 if research:
                     sections.append("[회사 검색] " + company + "\n" + research)
         if hist_lines:
@@ -464,7 +470,8 @@ def bind_chat_nodes(svc):
         if os.environ.get("LLM_STREAM", "1") == "0":
             completion = await svc.ai.complete(
                 state["user_id"], opts, system, user_msg,
-                byok_key=byok_key_var.get(), search_query=state["text"])
+                byok_key=byok_key_var.get(), search_query=state["text"],
+                job_id=state.get("job_id"))
             text = completion.text or ""
             step = 48
             for i in range(0, len(text), step):
@@ -478,7 +485,8 @@ def bind_chat_nodes(svc):
                     state["user_id"], opts, system, user_msg, usage,
                     byok_key=byok_key_var.get(),
                     search_query=state["text"],
-                    assistant_prefix="".join(parts) if round_ else ""):
+                    assistant_prefix="".join(parts) if round_ else "",
+                    job_id=state.get("job_id")):
                 parts.append(tok)
                 if resume_flow:
                     safe = visible_prefix("".join(parts))
@@ -502,6 +510,13 @@ def bind_chat_nodes(svc):
         conv = state["conversation"]
         attachments = state["attachments"]
         completion = state.get("completion")
+        if completion is None:
+            from app.jobs import external_jobs
+            if external_jobs():
+                # A racing run can drop `completion` from the checkpoint.
+                # Storing the local stub there shipped a fake assistant
+                # message. The Workflow retries this step instead.
+                raise RuntimeError("chat completion missing")
         now = _now()
         user_msg_id, assistant_msg_id, op_id = _stable_ids(
             state.get("job_id"))
@@ -588,7 +603,8 @@ def bind_chat_nodes(svc):
                 from app.domain.services.ai import record_usage
                 await record_usage(svc.usage, user_id, op_id,
                                    ent.AiOptions(**state["ai"]), completion,
-                                   state.get("usage_ids") or [])
+                                   state.get("usage_ids") or [],
+                                   job_id=state.get("job_id"))
             if (conv.title or "") in _PLACEHOLDER_TITLES:
                 try:
                     fresh = await svc.conversations.get(user_id, conv.id)

@@ -46,10 +46,11 @@ class DB:
                     _tx.reset(token)
 
     async def run(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+        from app.claimctx import LostClaim
         from app.domain.errors import DomainError, internal
         try:
             return await self.do(fn)
-        except DomainError:
+        except (DomainError, LostClaim):
             raise
         except Exception:
             logger.exception("transaction failed")
