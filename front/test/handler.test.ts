@@ -511,7 +511,7 @@ test("auth cache skips Neon until logout or the TTL", async () => {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
         created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
-        hits: 1,
+        hits: 4, granted: 4,
       }];
     }
     return [];
@@ -551,7 +551,7 @@ test("auth cache expires and the next request syncs Neon", async () => {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
         created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
-        hits: 1,
+        hits: 4, granted: 4,
       }];
     }
     return [];
@@ -561,7 +561,7 @@ test("auth cache expires and the next request syncs Neon", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(ok.status, 200);
-  now = new Date(NOW.getTime() + 11_000);
+  now = new Date(NOW.getTime() + 6_000);
   const again = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -569,32 +569,61 @@ test("auth cache expires and the next request syncs Neon", async () => {
   assert.equal(calls, 2);
 });
 
-test("cached auth still enforces the per-minute limit without another Neon write", async () => {
+test("a quota lease is shared across isolates and stops at the cap", async () => {
   resetLimits();
+  const limit = 50;
+  const batch = 20;
+  let counter = 0;
   let calls = 0;
   const query: Query = async (sql) => {
     calls += 1;
-    if (sql.includes("access_tokens")) {
+    assert.match(sql, /rate_limits\.hits < \$4/);
+    assert.match(sql, /LEAST\(20/);
+    assert.match(sql, /EXTRACT\(EPOCH FROM expires_at\)/);
+    if (!sql.includes("access_tokens")) return [];
+    const room = limit - counter;
+    if (room <= 0) {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
         created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
-        hits: 1,
+        hits: null, granted: null,
       }];
     }
-    return [];
+    const granted = Math.min(batch, room);
+    counter += granted;
+    return [{
+      id: USER, display_name: "Ada", locale: "ko",
+      created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+      hits: counter, granted,
+    }];
   };
-  const d = deps(query, { limits: { user: 2, public: 60, windowMs: 60_000 } });
   const headers = { authorization: "Bearer secret-token" };
-  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-  const third = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-  assert.equal(first.status, 200);
-  assert.equal(second.status, 200);
-  assert.equal(third.status, 429);
-  assert.equal(calls, 1);
+  const limits = { user: limit, public: 60, windowMs: 60_000 };
+  let ok = 0;
+  let denied = 0;
+  for (let isolate = 0; isolate < 4; isolate += 1) {
+    if (isolate > 0) resetLimits();
+    const d = deps(query, { limits });
+    for (let n = 0; n < batch + 2; n += 1) {
+      const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+      if (res.status === 200) ok += 1;
+      else {
+        assert.equal(res.status, 429);
+        denied += 1;
+      }
+    }
+  }
+  assert.equal(counter, limit);
+  assert.ok(ok > 0 && ok <= limit);
+  assert.ok(denied > 0);
+  const afterFull = calls;
+  const d = deps(query, { limits });
+  const again = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(again.status, 429);
+  assert.equal(calls, afterFull);
 });
 
-test("per-user reads are isolated and a write drops that user's cache", async () => {
+test("per-user reads are fresh and isolated", async () => {
   resetLimits();
   const userB = "22345678-1234-5678-1234-567812345678";
   const hashA = await sha256Hex("token-a");
@@ -621,7 +650,6 @@ test("per-user reads are isolated and a write drops that user's cache", async ()
     if (sql.includes("FROM conversations")) return [row];
     return [];
   };
-  const api = { async fetch() { return new Response(null, { status: 202 }); } };
   const d = deps(query);
   const list = (token: string) => handle(new Request("https://push-be.example/api/v1/conversations", {
     headers: { authorization: `Bearer ${token}` },
@@ -629,16 +657,6 @@ test("per-user reads are isolated and a write drops that user's cache", async ()
   const first = await list("token-a");
   assert.equal(first.status, 200);
   assert.equal((await first.json() as { data: { title: string }[] }).data[0].title, "A의 채팅");
-  const cached = await list("token-a");
-  assert.equal((await cached.json() as { data: { title: string }[] }).data[0].title, "A의 채팅");
-  assert.equal(seen.length, 1);
-
-  const post = await handle(new Request("https://push-be.example/api/v1/conversations", {
-    method: "POST",
-    headers: { authorization: "Bearer token-a", "content-type": "application/json" },
-    body: "{}",
-  }), env(api), d);
-  assert.equal(post.status, 202);
   wrote = true;
   const fresh = await list("token-a");
   assert.equal((await fresh.json() as { data: { title: string }[] }).data[0].title, "A의 새 채팅");
@@ -683,23 +701,13 @@ test("message reads stay on that user and refresh after a write", async () => {
   }), env(), d);
   const first = await read();
   assert.equal((await first.json() as { data: { text: string }[] }).data[0].text, "안녕");
-  const cached = await read();
-  assert.equal((await cached.json() as { data: { text: string }[] }).data[0].text, "안녕");
-  assert.equal(calls, 1);
-  const api = { async fetch() { return new Response(null, { status: 202 }); } };
-  const post = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages`, {
-    method: "POST",
-    headers: { authorization: "Bearer secret-token", "content-type": "application/json" },
-    body: "{}",
-  }), env(api), d);
-  assert.equal(post.status, 202);
   wrote = true;
   const fresh = await read();
   assert.equal((await fresh.json() as { data: { text: string }[] }).data[0].text, "다음");
-  assert.equal(calls, 3);
+  assert.equal(calls, 2);
 });
 
-test("a matching list ETag is 304 and does not query", async () => {
+test("a matching list ETag is 304 after a fresh read", async () => {
   resetLimits();
   let calls = 0;
   const query: Query = async (sql) => {
@@ -727,7 +735,7 @@ test("a matching list ETag is 304 and does not query", async () => {
   }), env(), d);
   assert.equal(second.status, 304);
   assert.equal(await second.text(), "");
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 async function sha256Hex(value: string): Promise<string> {

@@ -48,8 +48,10 @@ _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 
 def _stable_ids(job_id) -> tuple:
     if job_id:
-        base = "push:chat:" + str(job_id)
-        return (uuid5(NAMESPACE_URL, base + ":user"),
+        from app.infrastructure.store_chat_jobs import user_message_id
+        jid = job_id if isinstance(job_id, UUID) else UUID(str(job_id))
+        base = "push:chat:" + str(jid)
+        return (user_message_id(jid),
                 uuid5(NAMESPACE_URL, base + ":assistant"),
                 uuid5(NAMESPACE_URL, base + ":op"))
     return uuid4(), uuid4(), uuid4()
@@ -596,7 +598,11 @@ def bind_chat_nodes(svc):
             created_at=now, updated_at=now)
 
         async def work():
-            await svc.conversations.create_message(user_msg)
+            # The queue path already inserted this USER row at enqueue.
+            # Upsert fills attachments and operation_id and does not add
+            # a second row. The local path has no earlier insert, so this
+            # creates the row. The assistant reply is the new message.
+            await svc.conversations.upsert_user_message(user_msg)
             await svc.conversations.create_message(assistant_msg)
             await svc.ops.create(op)
             if completion is not None:

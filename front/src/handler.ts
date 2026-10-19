@@ -30,7 +30,6 @@ export interface FrontEnv {
   MODEL_CACHE_TTL?: string;
   JOB_SITES_CACHE_TTL?: string;
   AUTH_CACHE_TTL?: string;
-  READ_CACHE_TTL?: string;
 }
 
 export interface Deps {
@@ -59,17 +58,16 @@ const ALLOWED_HEADERS = new Set([
 ]);
 
 const hits = new Map<string, number[]>();
-// Last shared count seen in this isolate, keyed by bucket. Once it is at
-// the limit, further requests are rejected here and do not write Neon.
+// Buckets this isolate has seen filled. Further requests are rejected
+// here and do not write Neon.
 const remoteHits = new Map<string, number>();
-// Extra requests served from the isolate after the last Neon rate sync.
-// effective = remoteHits + cacheHits. This keeps the cap roughly intact
-// when auth and list caches skip the shared counter.
-const cacheHits = new Map<string, number>();
-// Windows whose shared counter was read from Neon. A new minute misses
-// this set, so the first request syncs even if the user record is cached.
-const syncedWindows = new Set<string>();
+// Hits already added to the shared counter and not yet served. A request
+// spends one. When this is empty the next request claims another batch.
+const leases = new Map<string, number>();
 const isolate = createIsolateCache();
+
+// One Neon upsert grants this many hits, less when the bucket is near the cap.
+const LEASE_BATCH = 20;
 
 const USER_CACHE_CONTROL = "private, no-cache";
 
@@ -88,8 +86,15 @@ const RATE_SQL = "INSERT INTO rate_limits (bucket, hits, expires_at) "
 const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 
-// Auth and the user bucket. Extra CTEs for a read hang off this prefix so
-// the GET is still one Neon HTTP call.
+// Auth and a quota lease are one Neon HTTP call. The upsert adds at most
+// LEASE_BATCH and never moves hits past the limit. `granted` is that
+// increment. It is written into the sweep-only expiry (whole seconds past
+// $3) by the same UPDATE that changes hits. A prior read of hits cannot
+// be subtracted: the statement snapshot stays stale while the row lock
+// waits, so new-minus-old over-counts under concurrency. Sweep compares
+// expires_at to now() and ignores those extra seconds.
+const LEASE_INSERT = `LEAST(${LEASE_BATCH}, $4::int)`;
+const LEASE_UPDATE = `LEAST(${LEASE_BATCH}, $4::int - rate_limits.hits)`;
 const AUTH_RATE_PREFIX = "WITH auth AS ("
   + "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1"
@@ -97,15 +102,20 @@ const AUTH_RATE_PREFIX = "WITH auth AS ("
   + "SELECT id FROM auth WHERE expires_at >= to_timestamp($5::double precision)"
   + "), bumped AS ("
   + "INSERT INTO rate_limits (bucket, hits, expires_at) "
-  + "SELECT 'user:' || auth.id::text || ':' || $2::text, 1, to_timestamp($3::double precision) "
+  + "SELECT 'user:' || auth.id::text || ':' || $2::text, "
+  + `${LEASE_INSERT}, to_timestamp($3::double precision) + ${LEASE_INSERT} * interval '1 second' `
   + "FROM auth JOIN live ON live.id = auth.id "
-  + "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
+  + "ON CONFLICT (bucket) DO UPDATE SET "
+  + `hits = rate_limits.hits + ${LEASE_UPDATE}, `
+  + `expires_at = to_timestamp($3::double precision) + ${LEASE_UPDATE} * interval '1 second' `
   + "WHERE rate_limits.hits < $4 "
-  + "RETURNING hits"
+  + "RETURNING hits, "
+  + "(EXTRACT(EPOCH FROM expires_at) - $3::double precision)::bigint AS granted"
   + ") ";
 
 const AUTH_COLUMNS = "auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
-  + "(SELECT hits FROM bumped) AS hits";
+  + "(SELECT hits FROM bumped) AS hits, "
+  + "(SELECT granted FROM bumped) AS granted";
 
 const AUTH_RATE_SQL = AUTH_RATE_PREFIX
   + "SELECT " + AUTH_COLUMNS + " FROM auth";
@@ -158,17 +168,14 @@ const MODELS_SQL = AUTH_RATE_PREFIX
 export function resetLimits(): void {
   hits.clear();
   remoteHits.clear();
-  cacheHits.clear();
-  syncedWindows.clear();
+  leases.clear();
   isolate.reset();
 }
 
 function authTtlMs(env: FrontEnv): number {
-  return clampTtl(env.AUTH_CACHE_TTL, 10, 30) * 1000;
-}
-
-function readTtlMs(env: FrontEnv): number {
-  return clampTtl(env.READ_CACHE_TTL, 5, 30) * 1000;
+  // Cross-isolate revocation is bounded by this TTL. Logout on the isolate
+  // that handled it drops the entry immediately.
+  return clampTtl(env.AUTH_CACHE_TTL, 5, 5) * 1000;
 }
 
 function allow(key: string, limit: number, windowMs: number, nowMs: number): boolean {
@@ -302,10 +309,6 @@ function fieldError(field: string, message: string, rid: string): Response {
   return errorResponse(400, "VALIDATION_ERROR", message, rid, { field });
 }
 
-function readUrl(url: URL): string {
-  return url.pathname + url.search;
-}
-
 function conditional(body: string, request: Request, rid: string, cacheControl: string): Response {
   const etag = weakEtag(body);
   const headers = new Headers({
@@ -322,61 +325,30 @@ function conditional(body: string, request: Request, rid: string, cacheControl: 
   return new Response(body, { status: 200, headers });
 }
 
-function storeRead(hash: string, userId: string, url: URL, body: string, nowMs: number, env: FrontEnv): void {
-  if (hash && isolate.isDirty(hash)) {
-    isolate.bump(userId);
-    isolate.clearDirty(hash);
-  }
-  const ttl = readTtlMs(env);
-  if (ttl <= 0 || !userId) return;
-  isolate.putRead(isolate.readKey(userId, readUrl(url)), {
-    body,
-    userId,
-    expires: nowMs + ttl,
-  });
-}
-
-async function cachedUserGet(
-  request: Request,
-  env: FrontEnv,
-  ctx: TokenCtx,
-  url: URL,
-  rid: string,
-  load: () => Promise<Response>,
-): Promise<Response> {
-  const user = ctx.user;
-  if (!user) return load();
-  const nowMs = ctx.moment.getTime();
-  const dirty = Boolean(ctx.hash) && isolate.isDirty(ctx.hash);
-  if (!dirty) {
-    const hit = isolate.getRead(isolate.readKey(user.id, readUrl(url)), nowMs);
-    if (hit && hit.userId === user.id) {
-      return conditional(hit.body, request, rid, USER_CACHE_CONTROL);
-    }
-  }
-  const loaded = await load();
+async function freshRead(loaded: Response, request: Request, rid: string): Promise<Response> {
   if (loaded.status !== 200) return loaded;
-  const body = await loaded.text();
-  storeRead(ctx.hash, user.id, url, body, nowMs, env);
-  return conditional(body, request, rid, USER_CACHE_CONTROL);
+  return conditional(await loaded.text(), request, rid, USER_CACHE_CONTROL);
 }
 
-async function invalidateAfterWrite(request: Request, path: string, nowMs: number): Promise<void> {
+function clearLease(hash: string): void {
+  const prefix = `user:${hash}:`;
+  for (const key of leases.keys()) {
+    if (key.startsWith(prefix)) leases.delete(key);
+  }
+}
+
+async function invalidateAfterWrite(request: Request, path: string): Promise<void> {
+  if (path !== "/api/v1/auth/logout" && path !== "/api/v1/auth/refresh") return;
   const authz = request.headers.get("authorization") || "";
   if (!authz.startsWith("Bearer ")) return;
   const token = authz.slice(7);
   if (!token) return;
-  let hash: string;
   try {
-    hash = await sha256Hex(token);
+    const hash = await sha256Hex(token);
+    isolate.dropAuth(hash);
+    clearLease(hash);
   } catch {
     return;
-  }
-  const cached = isolate.getAuth(hash, nowMs);
-  if (cached) isolate.bump(cached.id);
-  else isolate.markDirty(hash);
-  if (path === "/api/v1/auth/logout" || path === "/api/v1/auth/refresh") {
-    isolate.dropAuth(hash);
   }
 }
 
@@ -478,7 +450,7 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
-      await invalidateAfterWrite(request, path, now().getTime());
+      await invalidateAfterWrite(request, path);
     }
   }
   if (request.method === "PUT" || request.method === "DELETE") {
@@ -521,7 +493,7 @@ function rateParams(hash: string, moment: Date, limit: number): unknown[] {
   return [hash, String(window), window * 60 + 120, limit, moment.getTime() / 1000];
 }
 
-function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: number, ttlMs: number, cacheKey: string): void {
+function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: number, ttlMs: number): void {
   if (!hash || ttlMs <= 0) return;
   const cached: CachedUser = {
     id: user.id,
@@ -531,7 +503,6 @@ function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: numb
     expiresAtMs,
   };
   isolate.putAuth(hash, cached, nowMs, ttlMs);
-  syncedWindows.add(cacheKey);
 }
 
 function interpretAuth(
@@ -558,24 +529,41 @@ function interpretAuth(
     return user;
   }
   if (!Object.prototype.hasOwnProperty.call(row, "hits")) return user;
-  rememberHits(cacheKey, row, limit);
-  const hitsValue = row.hits;
-  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limit) {
+  if (!acceptGrant(cacheKey, row, limit)) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
-  if (remember) rememberAuth(remember.hash, user, expires, moment.getTime(), remember.ttlMs, cacheKey);
+  if (remember) rememberAuth(remember.hash, user, expires, moment.getTime(), remember.ttlMs);
   return user;
 }
 
-function chargeCached(cacheKey: string, limit: number): boolean {
-  const base = remoteHits.get(cacheKey) ?? 0;
-  const extra = cacheHits.get(cacheKey) ?? 0;
-  if (base + extra >= limit) {
-    remoteHits.set(cacheKey, Math.max(base, limit));
+// The current request spends one granted hit. The rest stay in this isolate.
+// A grant of 0, or a counter already past the limit, closes the bucket.
+function acceptGrant(cacheKey: string, row: Record<string, unknown>, limit: number): boolean {
+  rememberHits(cacheKey, row, limit);
+  const hitsValue = row.hits;
+  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limit) {
+    leases.delete(cacheKey);
     return false;
   }
-  cacheHits.set(cacheKey, extra + 1);
+  const granted = Object.prototype.hasOwnProperty.call(row, "granted")
+    ? Number(row.granted)
+    : 1;
+  if (!Number.isFinite(granted) || granted <= 0) {
+    remoteHits.set(cacheKey, limit);
+    leases.delete(cacheKey);
+    return false;
+  }
+  const left = granted - 1;
+  if (left > 0) leases.set(cacheKey, left);
+  else leases.delete(cacheKey);
+  if (Number(hitsValue) >= limit && left <= 0) remoteHits.set(cacheKey, limit);
   return true;
+}
+
+function spendLease(cacheKey: string): void {
+  const left = (leases.get(cacheKey) ?? 0) - 1;
+  if (left > 0) leases.set(cacheKey, left);
+  else leases.delete(cacheKey);
 }
 
 function userFromCached(cached: CachedUser): User {
@@ -596,7 +584,16 @@ function jsonRows(value: unknown): Record<string, unknown>[] {
   return raw.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
 }
 
-type TokenCtx = { dev: boolean; hash: string; moment: Date; cacheKey: string; user?: User };
+type TokenCtx = {
+  dev: boolean;
+  hash: string;
+  moment: Date;
+  cacheKey: string;
+  user?: User;
+  // A lease is left, but the auth entry is missing or expired. Re-read the
+  // token without claiming another batch.
+  revalidate?: boolean;
+};
 
 async function tokenContext(request: Request, env: FrontEnv, rid: string, limits: { user: number }, now: () => Date): Promise<TokenCtx | Response> {
   const authz = request.headers.get("authorization") || "";
@@ -615,22 +612,49 @@ async function tokenContext(request: Request, env: FrontEnv, rid: string, limits
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
   const cacheKey = `user:${hash}:${windowOf(moment)}`;
+  const leaseLeft = leases.get(cacheKey) ?? 0;
   const known = remoteHits.get(cacheKey);
-  if (known !== undefined && known >= limits.user) {
+  if (known !== undefined && known >= limits.user && leaseLeft <= 0) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   const cached = isolate.getAuth(hash, moment.getTime());
-  if (cached && syncedWindows.has(cacheKey)) {
+  if (cached && leaseLeft > 0) {
     if (moment.getTime() > cached.expiresAtMs) {
       isolate.dropAuth(hash);
       return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
     }
-    if (!chargeCached(cacheKey, limits.user)) {
-      return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
-    }
+    spendLease(cacheKey);
     return { dev: false, hash, moment, cacheKey, user: userFromCached(cached) };
   }
+  if (leaseLeft > 0) {
+    return { dev: false, hash, moment, cacheKey, revalidate: true };
+  }
   return { dev: false, hash, moment, cacheKey };
+}
+
+async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: string): Promise<User | Response> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await deps.query(AUTH_SQL, [ctx.hash]);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+  if (!rows.length) {
+    leases.delete(ctx.cacheKey);
+    isolate.dropAuth(ctx.hash);
+    return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+  }
+  const row = rows[0];
+  const expires = new Date(formatJsonTimestamp(row.expires_at)).getTime();
+  if (ctx.moment.getTime() > expires) {
+    leases.delete(ctx.cacheKey);
+    isolate.dropAuth(ctx.hash);
+    return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
+  }
+  const user = userFrom(row);
+  spendLease(ctx.cacheKey);
+  rememberAuth(ctx.hash, user, expires, ctx.moment.getTime(), authTtlMs(env));
+  return user;
 }
 
 function rememberBag(ctx: TokenCtx, env: FrontEnv): { hash: string; ttlMs: number } {
@@ -641,6 +665,7 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
   const ctx = await tokenContext(request, env, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (ctx.user) return ctx.user;
+  if (ctx.revalidate) return revalidateAuth(ctx, env, deps, rid);
   if (ctx.dev) {
     try {
       const resolved = await resolveDevUser(env, deps);
@@ -759,10 +784,13 @@ async function listConversations(request: Request, env: FrontEnv, deps: Deps, ur
   if (cursor instanceof Response) return cursor;
   const ctx = await tokenContext(request, env, rid, limits, now);
   if (ctx instanceof Response) return ctx;
-  if (ctx.user) {
+  if (ctx.user || ctx.revalidate) {
+    const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
+    if (user instanceof Response) return user;
     try {
-      return await cachedUserGet(request, env, ctx, url, rid, () =>
-        listConversationsFor(deps, ctx.user!.id, appId, cursor, page.limit, rid));
+      return await freshRead(
+        await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid),
+        request, rid);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -784,7 +812,6 @@ async function listConversations(request: Request, env: FrontEnv, deps: Deps, ur
     const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, rememberBag(ctx, env));
     if (user instanceof Response) return user;
     const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, conversationJson));
-    storeRead(ctx.hash, user.id, url, text, ctx.moment.getTime(), env);
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
@@ -841,10 +868,13 @@ async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: UR
   if (cursor instanceof Response) return cursor;
   const ctx = await tokenContext(request, env, rid, limits, now);
   if (ctx instanceof Response) return ctx;
-  if (ctx.user) {
+  if (ctx.user || ctx.revalidate) {
+    const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
+    if (user instanceof Response) return user;
     try {
-      return await cachedUserGet(request, env, ctx, url, rid, () =>
-        listMessagesFor(deps, ctx.user!.id, id, cursor, page.limit, rid));
+      return await freshRead(
+        await listMessagesFor(deps, user.id, id, cursor, page.limit, rid),
+        request, rid);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -870,7 +900,6 @@ async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: UR
       return errorResponse(404, "NOT_FOUND", "resource not found", rid);
     }
     const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, messageJson));
-    storeRead(ctx.hash, user.id, url, text, ctx.moment.getTime(), env);
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
@@ -942,8 +971,10 @@ async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: UR
   if (ctx instanceof Response) return ctx;
   let jobId: string | null;
   try {
-    if (ctx.user) {
-      const found = await activeJobFor(deps, ctx.user.id, id);
+    if (ctx.user || ctx.revalidate) {
+      const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
+      if (user instanceof Response) return user;
+      const found = await activeJobFor(deps, user.id, id);
       if (found instanceof Response) {
         return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
       }
@@ -970,7 +1001,7 @@ async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: UR
       jobId = rawJob == null || rawJob === "" ? null : String(rawJob);
     }
   } catch {
-    if (ctx.user) return errorResponse(500, "INTERNAL", "internal error", rid);
+    if (ctx.user || ctx.revalidate) return errorResponse(500, "INTERNAL", "internal error", rid);
     try {
       const user = await requireUser(request, env, deps, rid, limits, now);
       if (user instanceof Response) return user;
@@ -1091,9 +1122,11 @@ async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, r
         return errorResponse(500, "INTERNAL", "internal error", rid);
       }
     }
-  } else if (ctx.user) {
+  } else if (ctx.user || ctx.revalidate) {
+    const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
+    if (user instanceof Response) return user;
     try {
-      byokOpenai = await openaiKey(deps, ctx.user.id);
+      byokOpenai = await openaiKey(deps, user.id);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
