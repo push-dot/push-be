@@ -93,50 +93,21 @@ export interface CachedUser {
   expiresAtMs: number;
 }
 
-export interface CachedRead {
-  body: string;
-  userId: string;
-  expires: number;
-}
-
 const AUTH_CAP = 1024;
-const READ_CAP = 256;
 
 export interface IsolateCache {
   reset(): void;
   getAuth(hash: string, nowMs: number): CachedUser | undefined;
   putAuth(hash: string, user: CachedUser, nowMs: number, ttlMs: number): void;
   dropAuth(hash: string): void;
-  generation(userId: string): number;
-  bump(userId: string): void;
-  markDirty(hash: string): void;
-  isDirty(hash: string): boolean;
-  clearDirty(hash: string): void;
-  readKey(userId: string, url: string): string;
-  getRead(key: string, nowMs: number): CachedRead | undefined;
-  putRead(key: string, rec: CachedRead): void;
 }
 
 export function createIsolateCache(): IsolateCache {
   const auth = new Map<string, { user: CachedUser; until: number }>();
-  const gen = new Map<string, number>();
-  const dirty = new Set<string>();
-  const reads = new Map<string, CachedRead>();
-
-  function trim(map: Map<string, unknown>, cap: number): void {
-    while (map.size > cap) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) return;
-      map.delete(oldest);
-    }
-  }
 
   return {
     reset() {
       auth.clear();
-      gen.clear();
-      dirty.clear();
-      reads.clear();
     },
     getAuth(hash, nowMs) {
       const hit = auth.get(hash);
@@ -150,43 +121,14 @@ export function createIsolateCache(): IsolateCache {
     putAuth(hash, user, nowMs, ttlMs) {
       auth.delete(hash);
       auth.set(hash, { user, until: nowMs + ttlMs });
-      trim(auth, AUTH_CAP);
+      while (auth.size > AUTH_CAP) {
+        const oldest = auth.keys().next().value;
+        if (oldest === undefined) return;
+        auth.delete(oldest);
+      }
     },
     dropAuth(hash) {
       auth.delete(hash);
-    },
-    generation(userId) {
-      return gen.get(userId) ?? 0;
-    },
-    bump(userId) {
-      gen.set(userId, (gen.get(userId) ?? 0) + 1);
-    },
-    markDirty(hash) {
-      dirty.add(hash);
-    },
-    isDirty(hash) {
-      return dirty.has(hash);
-    },
-    clearDirty(hash) {
-      dirty.delete(hash);
-    },
-    readKey(userId, url) {
-      return `${userId}:${gen.get(userId) ?? 0}:${url}`;
-    },
-    getRead(key, nowMs) {
-      const hit = reads.get(key);
-      if (!hit) return undefined;
-      if (hit.expires <= nowMs) {
-        reads.delete(key);
-        return undefined;
-      }
-      if (!key.startsWith(`${hit.userId}:`)) return undefined;
-      return hit;
-    },
-    putRead(key, rec) {
-      reads.delete(key);
-      reads.set(key, rec);
-      trim(reads, READ_CAP);
     },
   };
 }

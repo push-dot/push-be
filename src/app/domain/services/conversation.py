@@ -234,6 +234,7 @@ class ConversationService:
                 await self.jobs.finish(job_id, "DONE")
                 terminal = True
             except DomainError as e:
+                await self._drop_enqueued_user_message(job_id)
                 await self.jobs.emit(
                     job_id, "error",
                     {"error": {"code": e.code, "message": e.message,
@@ -698,6 +699,7 @@ class ConversationService:
                 return "skip"
             except DomainError as e:
                 await close_pump()
+                await self._drop_enqueued_user_message(jid)
                 try:
                     await self.jobs.emit(
                         jid, "error",
@@ -727,6 +729,16 @@ class ConversationService:
                     pass
             event_sink.reset(sink)
             _BYOK_KEY.reset(token)
+
+    async def _drop_enqueued_user_message(self, job_id: UUID) -> None:
+        """A rejected chat must not keep the USER row written at enqueue."""
+        from app.infrastructure.store_chat_jobs import user_message_id
+        try:
+            await self.conversations.delete_unlinked_user_message(
+                user_message_id(job_id))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "user message rollback failed")
 
     async def _fail_step(self, job_id: UUID, message: str) -> None:
         from app.claimctx import LostClaim

@@ -25,6 +25,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# One upsert. The row lock on conflict serializes this +1 with the front
+# Worker's lease, which grants a batch in the same kind of upsert.
 CONSUME_SQL = (
     "INSERT INTO rate_limits (bucket, hits, expires_at) "
     "VALUES ($1, 1, to_timestamp($2::double precision)) "
