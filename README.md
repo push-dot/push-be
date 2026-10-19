@@ -64,7 +64,7 @@ POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
 
 ### 선택한 구조
 
-FastAPI와 LangGraph를 Python Worker(`services/ai/src/worker.py`, `workers.asgi`)에 남겼다. 코어 API의 TypeScript 이전은 나중 작업이다. 이번 배치에서는 라우터·도메인·그래프를 TypeScript로 다시 쓰지 않는다.
+FastAPI와 LangGraph를 Python Worker(`services/ai/src/worker.py`, `workers.asgi`)에 남겼다. AI가 아닌 CRUD(인증, 대화 생성·수정, 결제, 키, 공고, 캘린더)는 TypeScript 코어 Worker `push-be-core`(`services/core-api`)로 옮겼다. 그래프와 AI 경로는 Python에 남는다.
 
 Neon 접속은 앱의 대화형 트랜잭션(`db.run` / `db.do`)을 지키기 위해 Postgres 와이어 프로토콜 클라이언트(`app/pgproto.py`)를 쓴다.
 
@@ -199,7 +199,7 @@ asyncpg 경로:
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다.
+compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다.
 
 ```bash
 cd services/gateway && npx wrangler dev
@@ -224,7 +224,7 @@ uv run pywrangler dev
 # wrangler dev 도 동일하다
 ```
 
-게이트웨이 테스트는 저장소 루트에서 `npm test`다. `npm run typecheck`는 `tsc --noEmit`이다.
+게이트웨이와 코어 테스트는 저장소 루트에서 `npm test`다. `npm run typecheck`는 두 서비스에 `tsc --noEmit`을 돌린다.
 
 ```bash
 cd services/ai
@@ -239,8 +239,10 @@ python -m pytest
 ```bash
 # 1. Python Worker (크론, Workflow, 서비스 바인딩 대상)
 cd services/ai && uv run pywrangler deploy
-# 2. 게이트웨이 Worker (공개 URL). 이름은 그대로 push-be
-cd ../.. && npm ci && npm exec -w push-be-front -- wrangler deploy
+# 2. 코어 Worker (비-AI CRUD, 게이트웨이의 CORE 바인딩 대상)
+cd ../.. && npm ci && npm exec -w push-be-core -- wrangler deploy
+# 3. 게이트웨이 Worker (공개 URL). 이름은 그대로 push-be
+npm exec -w push-be-front -- wrangler deploy
 ```
 
 프런트 배포는 빈 크론 목록으로 `push-be`에 남아 있는 분당 스케줄을 지운다. Python 배포의 크론은 유지된다.
@@ -254,14 +256,14 @@ Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그
 | `GET /healthz` | DB도 Python도 타지 않는다 |
 | `GET /api/v1/healthz` | Python은 타지 않는다. 공개 속도 제한을 Neon에 기록한다. 이 isolate가 이미 한도에 닿았으면 그 분은 다시 쓰지 않는다 |
 | `GET /api/v1/auth/me` | 액세스 토큰 SHA-256과 사용자. 남은 할당량이 있고 인증 캐시가 5초 안이면 Neon을 건너뛴다 |
-| `GET /api/v1/conversations` | 목록. 매번 Neon에서 읽는다. 생성·수정·아카이브는 Python |
+| `GET /api/v1/conversations` | 목록. 매번 Neon에서 읽는다. 생성·수정·아카이브는 코어 |
 | `GET /api/v1/conversations/:id/messages` | 메시지 목록. 매번 Neon에서 읽는다 |
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 다시 보낸다. 생성 시작(`POST .../messages`, `POST .../stream`)은 Python |
 | `GET /api/v1/ai/models` | 정적 카탈로그. `credentialMode=BYOK`이고 `X-Byok-Key`가 있으면 프로바이더 목록이라 Python으로 넘긴다 |
 | `GET /api/v1/integrations/job-sites` | 어댑터가 모두 꺼진 고정 체크리스트 |
 | `OPTIONS` | CORS 프리플라이트 |
 
-그 밖에는 Python이다. 상태 코드, `{"data": ...}` / `{"error": ...}` 모양, `x-request-id`, `Idempotency-Key`는 Python 미들웨어가 그대로 처리한다.
+그 밖의 경로는 `services/gateway/src/routes/owner.ts`의 `ownerOf`가 정한다. AI 경로와 아직 옮기지 않은 CRUD는 Python, 코어가 구현한 CRUD는 코어로 간다. `/internal`은 404다. 상태 코드, `{"data": ...}` / `{"error": ...}` 모양, `x-request-id`, `Idempotency-Key`는 코어도 Python 미들웨어와 같은 모양으로 처리한다.
 
 캐시. Workers KV는 쓰지 않는다. 무료 플랜 쓰기가 하루 1,000번이라 대화가 생길 때마다 키를 쓰면 그 한도가 먼저 끝난다. 대화 목록과 메시지 목록은 isolate에 두지 않는다. 세대 번호가 그 isolate에만 있어서, 다른 isolate나 Workflow가 쓴 행을 최대 몇 초 동안 빠뜨렸다. 그 두 경로는 요청마다 Neon을 읽고, ETag가 같으면 본문 없이 304를 준다.
 
