@@ -24,6 +24,7 @@ jobs:
     outputs:
       ai: ${{ steps.filter.outputs.ai }}
       gateway: ${{ steps.filter.outputs.gateway }}
+      core: ${{ steps.filter.outputs.core }}
       db: ${{ steps.filter.outputs.db }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
@@ -50,19 +51,23 @@ jobs:
           match() { grep -Eq "$1" /tmp/changed; }
           ai=false
           gateway=false
+          core=false
           db=false
           if match '^(services/ai/|packages/contracts/|\.github/workflows/ci\.yml)'; then ai=true; fi
           if match '^(services/gateway/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then gateway=true; fi
+          if match '^(services/core-api/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then core=true; fi
           if match '^(db/|\.github/workflows/migrate\.yml|services/ai/scripts/migrate\.py|\.github/workflows/ci\.yml)'; then db=true; fi
           deploy=false
           if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEPLOY_BRANCH" ]; then
             ai=true
             gateway=true
+            core=true
             db=true
             deploy=true
           fi
           echo "ai=$ai" >> "$GITHUB_OUTPUT"
           echo "gateway=$gateway" >> "$GITHUB_OUTPUT"
+          echo "core=$core" >> "$GITHUB_OUTPUT"
           echo "db=$db" >> "$GITHUB_OUTPUT"
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
 
@@ -180,6 +185,42 @@ jobs:
           uv run pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
           python3 scripts/check_worker_bundle.py /tmp/push-be-bundle
 
+  test-core:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Test core API
+        run: |
+          npm ci
+          npm test -w push-be-core
+          npx tsc -p services/core-api --noEmit
+
+  bundle-core:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install workspace
+        run: npm ci
+      - name: Check core bundle
+        working-directory: services/core-api
+        run: npx wrangler deploy --dry-run --outdir /tmp/push-be-core
+
   bundle-gateway:
     needs: changes
     if: needs.changes.outputs.gateway == 'true'
@@ -199,15 +240,17 @@ jobs:
         run: npx wrangler deploy --dry-run --outdir /tmp/push-be-front
 
   deploy:
-    needs: [changes, test-ai, test-gateway, test-db, bundle-ai, bundle-gateway]
+    needs: [changes, test-ai, test-gateway, test-core, test-db, bundle-ai, bundle-core, bundle-gateway]
     if: |
       always() &&
       needs.changes.outputs.deploy == 'true' &&
       needs.changes.result == 'success' &&
       (needs.test-ai.result == 'success' || needs.test-ai.result == 'skipped') &&
       (needs.test-gateway.result == 'success' || needs.test-gateway.result == 'skipped') &&
+      (needs.test-core.result == 'success' || needs.test-core.result == 'skipped') &&
       (needs.test-db.result == 'success' || needs.test-db.result == 'skipped') &&
       (needs.bundle-ai.result == 'success' || needs.bundle-ai.result == 'skipped') &&
+      (needs.bundle-core.result == 'success' || needs.bundle-core.result == 'skipped') &&
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -232,18 +275,37 @@ jobs:
         run: uv sync --group dev --python 3.12
       - name: Install gateway
         run: npm ci
-      # Uploads the script and wrangler vars only.
-      # Do not map Worker secrets into this step and do not run
-      # `wrangler secret put` / `pywrangler secret put`. Secrets already
-      # stored on each Worker persist across deploys.
-      # Python is deployed first so the gateway's service binding
-      # has a target. The public workers.dev name stays `push-be`.
+      # Uploads the script and wrangler vars. Existing Worker secrets
+      # persist. The core step below writes DATABASE_URL and
+      # BYOK_MASTER_KEY only when those GitHub secrets are non-empty.
+      # Python first, then core, then the gateway. Each service binding
+      # needs its target to exist. The public workers.dev name stays `push-be`.
       - name: Deploy Python worker
         working-directory: services/ai
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: uv run pywrangler deploy
+      - name: Deploy core worker
+        working-directory: services/core-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
+      - name: Set core secrets
+        working-directory: services/core-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+        run: |
+          if [ -n "${DATABASE_URL}" ]; then
+            printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL
+          fi
+          if [ -n "${BYOK_MASTER_KEY}" ]; then
+            printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY
+          fi
       - name: Deploy gateway worker
         working-directory: services/gateway
         env:

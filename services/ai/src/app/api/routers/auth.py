@@ -1,3 +1,5 @@
+"""Auth HTTP routes now live on the core worker and are not mounted."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request

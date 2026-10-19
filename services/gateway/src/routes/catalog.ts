@@ -22,7 +22,7 @@ export async function aiModels(request: Request, env: FrontEnv, deps: Deps, url:
     if (user instanceof Response) return user;
     const key = request.headers.get("x-byok-key") || "";
     if (!key) return jsonResponse(200, { data: [] }, rid);
-    return proxy(request, env, rid);
+    return proxy(request, env.API, rid);
   }
   const authHash = await sha256Hex((request.headers.get("authorization") || "").slice(7));
   const cache = cacheOf(deps);

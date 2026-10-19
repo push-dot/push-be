@@ -13,10 +13,11 @@
   // what clears the schedule. The Python worker keeps `* * * * *`.
   "triggers": { "crons": [] },
   // Public URL stays https://push-be.<account>.workers.dev.
-  // Chat generation and every route not listed in src/handler.ts go to
-  // the Python worker through this binding.
+  // Reads listed in src/handler.ts are answered here. Other non-AI
+  // routes go to push-be-core. AI routes go to push-be-python.
   "services": [
-    { "binding": "API", "service": "push-be-python" }
+    { "binding": "API", "service": "push-be-python" },
+    { "binding": "CORE", "service": "push-be-core" }
   ],
   "vars": {
     "APP_ENV": "production",

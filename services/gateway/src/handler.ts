@@ -11,6 +11,7 @@ import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
 import { listConversations, listMessages, streamActive } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
+import { ownerOf } from "./routes/owner.ts";
 import { invalidateAfterWrite, proxy, purgeModelCache } from "./routes/proxy.ts";
 
 export type { Deps, FrontEnv, Query } from "./types.ts";
@@ -70,7 +71,9 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (request.method === "GET" && path === "/api/v1/integrations/job-sites") {
     return jobSites(request, env, deps, rid, limits, now);
   }
-  const proxied = await proxy(request, env, rid);
+  const owner = ownerOf(request.method, path);
+  if (owner === "deny") return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  const proxied = await proxy(request, owner === "core" ? env.CORE : env.API, rid);
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {

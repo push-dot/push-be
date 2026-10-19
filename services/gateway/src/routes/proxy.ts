@@ -3,9 +3,10 @@ import { errorResponse, sha256Hex } from "../http.ts";
 import { cacheOf, modelCacheUrls } from "../middleware/cache.ts";
 import { clearLease, isolate } from "../middleware/ratelimit.ts";
 
-export async function proxy(request: Request, env: FrontEnv, rid: string): Promise<Response> {
-  if (!env.API) return errorResponse(500, "INTERNAL", "internal error", rid);
+export async function proxy(request: Request, binding: FrontEnv["API"] | undefined, rid: string): Promise<Response> {
+  if (!binding) return errorResponse(500, "INTERNAL", "internal error", rid);
   const headers = new Headers(request.headers);
+  headers.delete("x-push-internal");
   headers.set("x-request-id", rid);
   const init: RequestInit = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -14,7 +15,7 @@ export async function proxy(request: Request, env: FrontEnv, rid: string): Promi
   const forwarded = new Request(request.url, init);
   let res: Response;
   try {
-    res = await env.API.fetch(forwarded);
+    res = await binding.fetch(forwarded);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
