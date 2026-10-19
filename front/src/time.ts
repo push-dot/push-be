@@ -70,12 +70,9 @@ export function formatJsonTimestamp(value: unknown): string {
   return base(p) + "." + pad(p.micros, 6) + "Z";
 }
 
-/** Cursors strip trailing zeros in the fractional second. */
+/** Cursors keep every microsecond. The id after the timestamp breaks ties. */
 export function formatCursorTimestamp(value: unknown): string {
-  const p = parseUtc(value);
-  if (!p.micros) return base(p) + "Z";
-  const frac = pad(p.micros, 6).replace(/0+$/, "");
-  return base(p) + "." + frac + "Z";
+  return formatJsonTimestamp(value);
 }
 
 export function encodeCursor(createdAt: unknown, id: string): string {

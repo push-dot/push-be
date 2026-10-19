@@ -18,9 +18,7 @@ class Cursor:
 
     def encode(self) -> str:
         ts = self.created_at.astimezone(timezone.utc)
-        frac = ""
-        if ts.microsecond:
-            frac = f".{ts.microsecond:06d}".rstrip("0")
+        frac = f".{ts.microsecond:06d}" if ts.microsecond else ""
         raw = ts.strftime("%Y-%m-%dT%H:%M:%S") + frac + "Z|" + str(self.id)
         return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
 

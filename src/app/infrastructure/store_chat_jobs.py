@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -17,7 +18,7 @@ NUDGE_PENDING_AGE_S = 60
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 def _affected(tag) -> int:

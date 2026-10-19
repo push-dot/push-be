@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -18,7 +19,7 @@ from app.infrastructure.store_operations import OperationStore
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 class ResumeWorkflowService:

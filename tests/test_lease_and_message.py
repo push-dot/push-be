@@ -17,20 +17,20 @@ DSN = os.environ.get(
     "PGPROTO_DSN", "postgresql://push:push@127.0.0.1:5432/push?sslmode=disable")
 
 LEASE_BATCH = 20
-# Same grant as front/src/handler.ts. The increment is stored as whole
-# seconds on expires_at because a snapshot read of hits is stale once the
-# row lock waits. Subtracting that read over-counts the grant.
-_INSERT = "LEAST(" + str(LEASE_BATCH) + ", $2::int)"
-_UPDATE = "LEAST(" + str(LEASE_BATCH) + ", $2::int - rate_limits.hits)"
+# Same grant as front/src/handler.ts. $4 is the batch, $5 is unused hits
+# being returned. The increment is stored as whole seconds on expires_at.
+_AFTER = "GREATEST(0, rate_limits.hits - GREATEST($5::int, 0))"
+_INSERT = "LEAST($4::int, $2::int)"
+_UPDATE = "LEAST($4::int, GREATEST(0, $2::int - " + _AFTER + "))"
 LEASE_SQL = (
     "WITH bumped AS ("
     "INSERT INTO rate_limits (bucket, hits, expires_at) "
     "VALUES ($1, " + _INSERT + ", "
     "to_timestamp($3::double precision) + " + _INSERT + " * interval '1 second') "
     "ON CONFLICT (bucket) DO UPDATE SET "
-    "hits = rate_limits.hits + " + _UPDATE + ", "
+    "hits = " + _AFTER + " + " + _UPDATE + ", "
     "expires_at = to_timestamp($3::double precision) + " + _UPDATE + " * interval '1 second' "
-    "WHERE rate_limits.hits < $2 "
+    "WHERE $5::int > 0 OR rate_limits.hits < $2 "
     "RETURNING hits, "
     "(EXTRACT(EPOCH FROM expires_at) - $3::double precision)::bigint AS granted"
     ") SELECT hits, granted FROM bumped"
@@ -147,7 +147,7 @@ async def test_lease_claims_never_pass_the_limit():
             "expires_at timestamptz NOT NULL)")
 
         async def claim(pool: PgPool) -> int:
-            row = await pool.fetchrow(LEASE_SQL, bucket, limit, 2_000_000_000)
+            row = await pool.fetchrow(LEASE_SQL, bucket, limit, 2_000_000_000, LEASE_BATCH, 0)
             if row is None or row["hits"] is None:
                 return 0
             return int(row["granted"] or 0)
@@ -167,6 +167,10 @@ async def test_lease_claims_never_pass_the_limit():
         assert hits <= limit
         assert hits == sum(grants)
         assert hits == limit
+        returned = await pools[0].fetchrow(
+            LEASE_SQL, bucket, limit, 2_000_000_000, LEASE_BATCH, 5)
+        assert int(returned["granted"]) == 5
+        assert int(returned["hits"]) == limit
     finally:
         try:
             await pools[0].execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { memoryCache } from "../src/cache.ts";
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -34,10 +34,19 @@ function deps(query: Query, extra: Partial<Deps> = {}): Deps {
 test("timestamps and cursors match the Python API", () => {
   const stamp = "2026-10-17T21:57:28.172000+00";
   assert.equal(formatJsonTimestamp(stamp), "2026-10-17T21:57:28.172000Z");
-  assert.equal(formatCursorTimestamp(stamp), "2026-10-17T21:57:28.172Z");
+  assert.equal(formatCursorTimestamp(stamp), "2026-10-17T21:57:28.172000Z");
   const encoded = encodeCursor(stamp, USER);
-  assert.equal(encoded, "MjAyNi0xMC0xN1QyMTo1NzoyOC4xNzJafDEyMzQ1Njc4LTEyMzQtNTY3OC0xMjM0LTU2NzgxMjM0NTY3OA");
-  assert.deepEqual(decodeCursor(encoded), { createdAt: "2026-10-17T21:57:28.172Z", id: USER });
+  assert.deepEqual(decodeCursor(encoded), {
+    createdAt: "2026-10-17T21:57:28.172000Z", id: USER,
+  });
+  const precise = "2026-10-19T05:47:05.644999Z";
+  assert.equal(formatJsonTimestamp(precise), precise);
+  assert.equal(formatCursorTimestamp(precise), precise);
+  const preciseCursor = encodeCursor(precise, USER);
+  assert.deepEqual(decodeCursor(preciseCursor), { createdAt: precise, id: USER });
+  const truncated = formatJsonTimestamp(new Date(precise));
+  assert.equal(truncated, "2026-10-19T05:47:05.644000Z");
+  assert.notEqual(truncated, precise);
   assert.equal(formatJsonTimestamp("2026-10-17T21:57:28Z"), "2026-10-17T21:57:28Z");
   assert.equal(
     encodeCursor("2026-10-17T21:57:28Z", USER),
@@ -137,6 +146,7 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.match(listSql, /archived = false/);
   assert.match(listSql, /ORDER BY c\.created_at DESC, c\.id DESC/);
   assert.match(listSql, /ORDER BY page\.created_at DESC, page\.id DESC/);
+  assert.match(listSql, /to_char\(page\.created_at AT TIME ZONE 'UTC'/);
 });
 
 test("message reads 404 when the conversation is missing and omit null attachments", async () => {
@@ -538,7 +548,8 @@ test("auth cache skips Neon until logout or the TTL", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(after.status, 401);
-  assert.equal(seen.length, 2);
+  assert.equal(seen.length, 3);
+  assert.ok(seen.some((sql) => sql.includes("GREATEST(0, hits")));
 });
 
 test("auth cache expires and the next request syncs Neon", async () => {
@@ -569,28 +580,34 @@ test("auth cache expires and the next request syncs Neon", async () => {
   assert.equal(calls, 2);
 });
 
-test("a quota lease is shared across isolates and stops at the cap", async () => {
+test("many isolates each serving a few requests stay near the cap", async () => {
   resetLimits();
-  const limit = 50;
-  const batch = 20;
+  const limit = 600;
+  const cap = limit - Math.floor(limit / 10);
   let counter = 0;
-  let calls = 0;
-  const query: Query = async (sql) => {
-    calls += 1;
-    assert.match(sql, /rate_limits\.hits < \$4/);
-    assert.match(sql, /LEAST\(20/);
-    assert.match(sql, /EXTRACT\(EPOCH FROM expires_at\)/);
+  const query: Query = async (sql, params) => {
+    if (sql.includes("GREATEST(0, hits")) {
+      counter = Math.max(0, counter - Number(params[1]));
+      return [{ hits: counter }];
+    }
     if (!sql.includes("access_tokens")) return [];
-    const room = limit - counter;
-    if (room <= 0) {
+    assert.match(sql, /\$7::int > 0 OR rate_limits\.hits < \$4/);
+    assert.match(sql, /LEAST\(\$6::int/);
+    assert.match(sql, /EXTRACT\(EPOCH FROM expires_at\)/);
+    assert.equal(Number(params[3]), cap);
+    const batch = Number(params[5]);
+    const release = Number(params[6]);
+    assert.ok(batch >= 1 && batch <= 32);
+    const after = Math.max(0, counter - release);
+    if (release <= 0 && after >= cap) {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
         created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
         hits: null, granted: null,
       }];
     }
-    const granted = Math.min(batch, room);
-    counter += granted;
+    const granted = Math.min(batch, Math.max(0, cap - after));
+    counter = after + granted;
     return [{
       id: USER, display_name: "Ada", locale: "ko",
       created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
@@ -600,27 +617,66 @@ test("a quota lease is shared across isolates and stops at the cap", async () =>
   const headers = { authorization: "Bearer secret-token" };
   const limits = { user: limit, public: 60, windowMs: 60_000 };
   let ok = 0;
-  let denied = 0;
-  for (let isolate = 0; isolate < 4; isolate += 1) {
-    if (isolate > 0) resetLimits();
+  for (let isolate = 0; isolate < 200; isolate += 1) {
+    resetLimits();
     const d = deps(query, { limits });
-    for (let n = 0; n < batch + 2; n += 1) {
+    for (let n = 0; n < 3; n += 1) {
       const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
       if (res.status === 200) ok += 1;
-      else {
-        assert.equal(res.status, 429);
-        denied += 1;
-      }
+      else assert.equal(res.status, 429);
     }
   }
-  assert.equal(counter, limit);
-  assert.ok(ok > 0 && ok <= limit);
-  assert.ok(denied > 0);
-  const afterFull = calls;
-  const d = deps(query, { limits });
+  assert.ok(ok >= Math.floor(limit * 0.9));
+  assert.ok(counter <= cap);
+  assert.ok(limit - counter >= Math.floor(limit / 10));
+});
+
+test("an idle isolate returns the unused lease", async () => {
+  resetLimits();
+  let counter = 0;
+  const cap = 90;
+  let now = NOW;
+  const query: Query = async (sql, params) => {
+    if (sql.includes("GREATEST(0, hits")) {
+      counter = Math.max(0, counter - Number(params[1]));
+      return [{ hits: counter }];
+    }
+    if (!sql.includes("access_tokens")) return [];
+    const batch = Number(params[5]);
+    const release = Number(params[6]);
+    const after = Math.max(0, counter - release);
+    const granted = Math.min(batch, Math.max(0, cap - after));
+    counter = after + granted;
+    return [{
+      id: USER, display_name: "Ada", locale: "ko",
+      created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+      hits: counter, granted,
+    }];
+  };
+  const d = deps(query, {
+    limits: { user: 100, public: 60, windowMs: 60_000 },
+    now: () => now,
+  });
+  const headers = { authorization: "Bearer secret-token" };
+  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(counter, 3);
+  now = new Date(NOW.getTime() + 6_000);
+  await releaseExpired(d, now.getTime());
+  assert.equal(counter, 2);
+
+  now = new Date(NOW.getTime() + 58_000);
+  const late = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
   const again = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-  assert.equal(again.status, 429);
-  assert.equal(calls, afterFull);
+  assert.equal(late.status, 200);
+  assert.equal(again.status, 200);
+  const held = counter;
+  now = new Date(NOW.getTime() + 60_000);
+  const rolled = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(rolled.status, 200);
+  assert.equal(counter, held);
 });
 
 test("per-user reads are fresh and isolated", async () => {

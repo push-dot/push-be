@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -23,7 +24,7 @@ SUBMISSION_SUCCEEDED = "SUCCEEDED"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 class ApplicationService:

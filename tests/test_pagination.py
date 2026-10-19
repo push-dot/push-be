@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -19,6 +20,19 @@ def test_cursor_roundtrip():
     assert dec.id == c.id
     with pytest.raises(Exception):
         decode_cursor("!!!notbase64!!!")
+
+
+def test_cursor_keeps_microseconds_and_the_id():
+    precise = datetime(2026, 10, 19, 5, 47, 5, 644999, tzinfo=timezone.utc)
+    ident = uuid4()
+    encoded = Cursor(created_at=precise, id=ident).encode()
+    raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    assert raw.startswith("2026-10-19T05:47:05.644999Z|" + str(ident))
+    dec = decode_cursor(encoded)
+    assert dec.created_at == precise
+    assert dec.id == ident
+    earlier = datetime(2026, 10, 19, 5, 47, 5, 644000, tzinfo=timezone.utc)
+    assert Cursor(created_at=earlier, id=ident).encode() != encoded
 
 
 def test_new_page():
