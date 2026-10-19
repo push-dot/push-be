@@ -198,6 +198,125 @@ async def test_external_post_message_returns_queued_without_polling(monkeypatch)
     assert svc._compiled is None
 
 
+def _managed_ai():
+    return ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-luna",
+                         credential_mode="MANAGED", effort="LOW")
+
+
+def _gate_for(user_id, plan, embeds):
+    from app.domain.services.ai import AIGate
+    from tests.stubs import StubChatCompleter, StubUserStore
+
+    gate = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    gate.users = StubUserStore(ent.User(
+        id=user_id, provider="dev", provider_subject="d", display_name="Ada",
+        created_at=_now(), plan=plan))
+    gate.usage = StubAiUsageStore()
+
+    async def embed(*args, **kwargs):
+        embeds["n"] += 1
+        return []
+
+    gate.embed = embed
+    return gate
+
+
+async def test_external_free_plan_chat_is_rejected_before_enqueue(monkeypatch):
+    monkeypatch.setattr(
+        "app.domain.services.conversation.external_jobs", lambda: True)
+    scheduled = []
+
+    async def schedule(job_id, byok):
+        scheduled.append(job_id)
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.schedule_chat_job", schedule)
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    convs = StubConversationStore(conv=conv)
+    embeds = {"n": 0}
+    gate = _gate_for(user_id, "FREE", embeds)
+    svc = _svc(convs, gate=gate, usage=gate.usage)
+    jobs = StubChatJobStore()
+    enqueued = {"n": 0}
+
+    async def enqueue_started(*args, **kwargs):
+        enqueued["n"] += 1
+        return jobs.job_id
+
+    jobs.enqueue_started = enqueue_started
+    svc.jobs = jobs
+    with pytest.raises(DomainError) as e:
+        await svc.post_message(
+            user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST", "")
+    assert e.value.status == 403
+    assert e.value.code == "FEATURE_DISABLED"
+    assert "FREE" in e.value.message
+    assert enqueued["n"] == 0
+    assert scheduled == []
+    assert embeds["n"] == 0
+    assert gate.usage.items == []
+    assert convs.messages == []
+
+
+async def test_external_stream_rejects_free_plan_before_enqueue(monkeypatch):
+    monkeypatch.setattr(
+        "app.domain.services.conversation.external_jobs", lambda: True)
+    scheduled = []
+
+    async def schedule(job_id, byok):
+        scheduled.append(job_id)
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.schedule_chat_job", schedule)
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    embeds = {"n": 0}
+    gate = _gate_for(user_id, "FREE", embeds)
+    svc = _svc(StubConversationStore(conv=conv), gate=gate, usage=gate.usage)
+    jobs = StubChatJobStore()
+    enqueued = {"n": 0}
+
+    async def enqueue_started(*args, **kwargs):
+        enqueued["n"] += 1
+        return jobs.job_id
+
+    jobs.enqueue_started = enqueue_started
+    svc.jobs = jobs
+    with pytest.raises(DomainError) as e:
+        async for _ in svc.stream_message(
+                user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST"):
+            pass
+    assert e.value.status == 403
+    assert e.value.code == "FEATURE_DISABLED"
+    assert enqueued["n"] == 0
+    assert scheduled == []
+    assert embeds["n"] == 0
+
+
+async def test_external_paid_plan_still_enqueues(monkeypatch):
+    monkeypatch.setattr(
+        "app.domain.services.conversation.external_jobs", lambda: True)
+
+    async def schedule(job_id, byok):
+        return None
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.schedule_chat_job", schedule)
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    embeds = {"n": 0}
+    gate = _gate_for(user_id, "PRO", embeds)
+    svc = _svc(StubConversationStore(conv=conv), gate=gate, usage=gate.usage)
+    jobs = StubChatJobStore()
+    svc.jobs = jobs
+    op = await svc.post_message(
+        user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST", "")
+    assert op.status == ent.OP_QUEUED
+    assert embeds["n"] == 0
+    assert gate.usage.items == []
+
+
 async def test_stream_message_stub_tokens_and_done():
     user_id = uuid4()
     conv = _conv(user_id=user_id)
