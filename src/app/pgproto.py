@@ -733,112 +733,147 @@ class _Transaction:
         return False
 
 
-# Cloudflare Workers ties every socket to the request that opened it; using a
-# WebSocket from an earlier request throws "Cannot perform I/O on behalf of a
-# different request". worker.py sets a fresh scope per fetch / cron / workflow
-# run so the pool reconnects instead of reusing another request's socket.
-_request_scope: contextvars.ContextVar = contextvars.ContextVar(
-    "pg_request_scope", default=None)
+# Workers binds a socket to the request that opened it. A connection stored
+# on the isolate is visible to every concurrent invocation; the next request
+# treats it as stale, opens another WebSocket, and the two invocations steal
+# the socket until the runtime reports "Too many subrequests" or resolves a
+# promise on the wrong request. The connection therefore lives in a ContextVar
+# set for that fetch, cron run, or workflow step, and is closed before the
+# invocation ends. Local uvicorn has no per-request socket rule, so it keeps
+# one TCP connection behind its own lock.
+class _ScopeState:
+    def __init__(self) -> None:
+        self.conn: Optional[PgConnection] = None
+        self.lock = asyncio.Lock()
+        self.token: Optional[contextvars.Token] = None
 
 
-def begin_request_scope() -> object:
-    scope = object()
-    _request_scope.set(scope)
-    return scope
+_request_state: contextvars.ContextVar[Optional[_ScopeState]] = contextvars.ContextVar(
+    "pg_request_state", default=None)
+
+
+def begin_request_scope() -> _ScopeState:
+    state = _ScopeState()
+    state.token = _request_state.set(state)
+    return state
 
 
 class PgPool:
-    """Single-connection pool. Workers handle one request at a time per lock."""
+    """Postgres connections that are never shared across Workers requests."""
 
     def __init__(self, database_url: str, transport: str = "tcp"):
         self.database_url = database_url
         self.transport = transport
         self.dsn = parse_dsn(database_url)
-        self._conn: Optional[PgConnection] = None
-        self._lock = asyncio.Lock()
+        self._local: Optional[_ScopeState] = None
 
     def acquire(self):
         return _Acquire(self)
 
-    async def _ensure(self) -> PgConnection:
-        scope = _request_scope.get()
-        conn = self._conn
-        if conn is not None and not conn.closed and scope is not None \
-                and getattr(conn, "scope", None) is not scope:
-            # Owned by another request: abandon it without touching the socket.
-            conn.closed = True
-        if self._conn is None or self._conn.closed:
-            self._conn = await connect(self.database_url, self.transport)
-            self._conn.scope = scope
-        return self._conn
+    def _current_state(self) -> _ScopeState:
+        state = _request_state.get()
+        if state is not None:
+            return state
+        if self._local is None:
+            self._local = _ScopeState()
+        return self._local
 
-    async def end_request_scope(self, scope: object) -> None:
-        """Close the connection opened by *scope* before its request ends."""
-        async with self._lock:
-            conn = self._conn
-            if conn is not None and getattr(conn, "scope", None) is scope:
-                await self._drop()
+    async def _ensure_locked(self, state: _ScopeState) -> PgConnection:
+        conn = state.conn
+        if conn is None or conn.closed:
+            state.conn = await connect(self.database_url, self.transport)
+            state.conn.scope = state
+        return state.conn
 
-    async def _drop(self) -> None:
-        conn = self._conn
-        self._conn = None
+    async def _drop_state(self, state: _ScopeState) -> None:
+        conn = state.conn
+        state.conn = None
         if conn is not None:
             await conn.close()
 
+    async def end_request_scope(self, scope: object) -> None:
+        """Close only the connection opened for this request scope."""
+        if not isinstance(scope, _ScopeState):
+            return
+        async with scope.lock:
+            await self._drop_state(scope)
+        if _request_state.get() is scope and scope.token is not None:
+            token = scope.token
+            scope.token = None
+            try:
+                _request_state.reset(token)
+            except ValueError:
+                _request_state.set(None)
+
     async def execute(self, sql: str, *args) -> str:
-        async with self._lock:
-            conn = await self._ensure()
+        state = self._current_state()
+        async with state.lock:
+            conn = await self._ensure_locked(state)
             try:
                 return await conn.execute(sql, *args)
             except (ConnectionError, asyncio.IncompleteReadError, OSError):
-                await self._drop()
+                await self._drop_state(state)
                 raise
 
     async def executemany(self, sql: str, seq) -> None:
-        async with self._lock:
-            conn = await self._ensure()
+        state = self._current_state()
+        async with state.lock:
+            conn = await self._ensure_locked(state)
             await conn.executemany(sql, seq)
 
     async def fetch(self, sql: str, *args):
-        async with self._lock:
-            conn = await self._ensure()
+        state = self._current_state()
+        async with state.lock:
+            conn = await self._ensure_locked(state)
             return await conn.fetch(sql, *args)
 
     async def fetchrow(self, sql: str, *args):
-        async with self._lock:
-            conn = await self._ensure()
+        state = self._current_state()
+        async with state.lock:
+            conn = await self._ensure_locked(state)
             return await conn.fetchrow(sql, *args)
 
     async def fetchval(self, sql: str, *args):
-        async with self._lock:
-            conn = await self._ensure()
+        state = self._current_state()
+        async with state.lock:
+            conn = await self._ensure_locked(state)
             return await conn.fetchval(sql, *args)
 
     async def close(self) -> None:
-        async with self._lock:
-            await self._drop()
+        current = _request_state.get()
+        local = self._local
+        if local is not None:
+            async with local.lock:
+                await self._drop_state(local)
+        if current is not None and current is not local:
+            async with current.lock:
+                await self._drop_state(current)
 
 
 class _Acquire:
     def __init__(self, pool: PgPool):
         self.pool = pool
         self.conn: Optional[PgConnection] = None
+        self.state: Optional[_ScopeState] = None
 
     async def __aenter__(self) -> PgConnection:
-        await self.pool._lock.acquire()
+        self.state = self.pool._current_state()
+        await self.state.lock.acquire()
         try:
-            self.conn = await self.pool._ensure()
+            self.conn = await self.pool._ensure_locked(self.state)
             return self.conn
         except Exception:
-            self.pool._lock.release()
+            self.state.lock.release()
             raise
 
     async def __aexit__(self, exc_type, exc, tb):
+        state = self.state
         try:
-            if exc_type is not None and not isinstance(exc, PgError):
-                await self.pool._drop()
+            if state is not None and exc_type is not None and not isinstance(exc, PgError):
+                await self.pool._drop_state(state)
         finally:
-            self.pool._lock.release()
+            if state is not None and state.lock.locked():
+                state.lock.release()
         return False
 
 
