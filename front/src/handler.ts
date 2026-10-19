@@ -62,21 +62,24 @@ const hits = new Map<string, number[]>();
 // Buckets this isolate has seen filled. Further requests are rejected
 // here and do not write Neon.
 const remoteHits = new Map<string, number>();
-// Hits already added to the shared counter and not yet served.
+// Hits already added to the shared counter and not yet handed to a request.
+// One number per token and minute. Concurrent grants add to it; they do not
+// replace it. A request takes its unit out before it awaits, so a timer
+// cannot give that unit back.
 interface Lease {
   remaining: number;
   size: number;
   expiresAt: number;
   spent: boolean;
   bucket: string;
-  generation: number;
-  // Counter and read cap after this grant. The return timer uses them to
-  // decide whether unused hits should go back immediately.
+  // Debounce token. An older timer sees a newer value and leaves the pool
+  // untouched. The newest timer releases whatever `remaining` is then.
+  timer: number;
+  // Counter and read cap after the latest grant.
   hits: number;
   cap: number;
 }
 const leases = new Map<string, Lease>();
-let leaseSeq = 1;
 const isolate = createIsolateCache();
 
 // A cold isolate claims 1. The batch doubles only after that grant is used
@@ -221,6 +224,7 @@ async function releaseLease(deps: Deps, lease: Lease): Promise<void> {
   if (lease.remaining <= 0) return;
   const amount = lease.remaining;
   lease.remaining = 0;
+  lease.spent = false;
   try {
     await deps.query(RELEASE_SQL, [lease.bucket, amount]);
   } catch {
@@ -247,32 +251,43 @@ export async function releaseExpired(deps: Deps, nowMs: number, exceptKey = ""):
   }
 }
 
+function nearCap(lease: Lease): boolean {
+  const room = lease.cap - lease.hits;
+  return lease.hits >= lease.cap - Math.floor(lease.cap / 8)
+    || room < Math.max(lease.size, 1) * 16;
+}
+
+// A lone unused hit is not worth a Neon update while most of the cap is
+// still free. Anything larger, and any leftover once the counter has
+// climbed, still goes back.
+function worthReturning(lease: Lease): boolean {
+  if (lease.remaining <= 0) return false;
+  if (lease.remaining <= 1 && lease.hits < Math.floor(lease.cap / 4)) return false;
+  return true;
+}
+
 function releaseDelayMs(lease: Lease): number {
   const mostlyUnused = lease.remaining >= lease.size - 1 || lease.remaining * 2 >= lease.size;
-  const room = lease.cap - lease.hits;
-  const nearCap = lease.hits >= lease.cap - Math.floor(lease.cap / 8)
-    || room < Math.max(lease.size, 1) * 16;
-  if (mostlyUnused && nearCap) return 0;
+  if (mostlyUnused && nearCap(lease)) return 0;
   return RELEASE_DELAY_MS;
 }
 
-// Return whatever this generation still holds. A later spend bumps the
-// generation, so an older timer does not take hits the isolate is using.
-// The delay stays inside the post-response window. Near the cap, a lease
-// that this response barely touched goes back immediately.
-function armRelease(deps: Deps, cacheKey: string, generation: number): void {
+// One timer per key. Whichever waitUntil fires last subtracts the whole
+// unused pool, after taking it out of the local number so a second timer
+// cannot subtract it again. The bucket is `user:{id}:{minute}`.
+function armRelease(deps: Deps, cacheKey: string): void {
   if (!deps.waitUntil) return;
   const lease = leases.get(cacheKey);
-  if (!lease || lease.generation !== generation || lease.remaining <= 0) return;
+  if (!lease || !worthReturning(lease)) return;
+  const epoch = ++lease.timer;
   const delay = releaseDelayMs(lease);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   deps.waitUntil((async () => {
     await sleep(delay);
     const current = leases.get(cacheKey);
-    if (!current || current.generation !== generation || current.remaining <= 0) return;
-    current.spent = false;
+    if (!current || current.timer !== epoch || !worthReturning(current)) return;
     await releaseLease(deps, current);
-    if (leases.get(cacheKey) === current) {
+    if (leases.get(cacheKey) === current && current.remaining <= 0) {
       leases.delete(cacheKey);
       remoteHits.delete(cacheKey);
     }
@@ -674,20 +689,22 @@ function acceptGrant(
     leases.delete(cacheKey);
     return false;
   }
-  const left = granted - 1;
+  const left = Math.max(0, granted - 1);
+  const prev = leases.get(cacheKey);
+  const remaining = (prev?.remaining ?? 0) + left;
   const lease: Lease = {
-    remaining: Math.max(0, left),
+    remaining,
     size: granted,
     expiresAt: nowMs + LEASE_TTL_MS,
-    spent: left <= 0,
+    spent: remaining === 0,
     bucket,
-    generation: ++leaseSeq,
+    timer: prev?.timer ?? 0,
     hits: Number(hitsValue),
     cap: limit,
   };
   leases.set(cacheKey, lease);
-  if (left > 0) armRelease(deps, cacheKey, lease.generation);
-  if (Number(hitsValue) >= limit && left <= 0) remoteHits.set(cacheKey, limit);
+  if (remaining > 0) armRelease(deps, cacheKey);
+  if (Number(hitsValue) >= limit && remaining <= 0) remoteHits.set(cacheKey, limit);
   return true;
 }
 
@@ -696,12 +713,11 @@ function spendLease(cacheKey: string, nowMs: number, deps: Deps): void {
   if (!lease || lease.remaining <= 0) return;
   lease.remaining -= 1;
   lease.expiresAt = nowMs + LEASE_TTL_MS;
-  lease.generation = ++leaseSeq;
   if (lease.remaining === 0) {
     lease.spent = true;
     return;
   }
-  armRelease(deps, cacheKey, lease.generation);
+  armRelease(deps, cacheKey);
 }
 
 function userFromCached(cached: CachedUser): User {
@@ -785,6 +801,9 @@ async function tokenContext(request: Request, env: FrontEnv, deps: Deps, rid: st
     return { dev: false, hash, moment, cacheKey, user: userFromCached(cached), batch: 1, release: 0 };
   }
   if (leaseLeft > 0) {
+    // Take the unit before the auth read awaits, so the return timer keeps
+    // it on the counter for this request.
+    spendLease(cacheKey, moment.getTime(), deps);
     return { dev: false, hash, moment, cacheKey, revalidate: true, batch: 1, release: 0 };
   }
   return {
@@ -814,7 +833,6 @@ async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: str
     return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
   }
   const user = userFrom(row);
-  spendLease(ctx.cacheKey, ctx.moment.getTime(), deps);
   rememberAuth(ctx.hash, user, expires, ctx.moment.getTime(), authTtlMs(env));
   return user;
 }
