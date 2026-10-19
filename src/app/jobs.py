@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 from typing import Awaitable, Callable, Optional
+from uuid import uuid4
 
-Scheduler = Callable[[str, str], Awaitable[None]]
+# (job_id, byok, claim). A 2-argument scheduler still works.
+Scheduler = Callable[..., Awaitable[None]]
 _scheduler: Optional[Scheduler] = None
 
 
@@ -26,7 +28,12 @@ def set_job_scheduler(fn: Scheduler) -> None:
 
 
 async def schedule_chat_job(job_id, byok: str = "") -> None:
-    if _scheduler is not None:
+    if _scheduler is None:
+        return
+    claim = str(uuid4())
+    try:
+        await _scheduler(str(job_id), byok or "", claim)
+    except TypeError:
         await _scheduler(str(job_id), byok or "")
 
 
