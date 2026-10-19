@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.graph.chat import byok_key_var
 from app.presentation.errors import error_body
+from app.ratelimit import allow as allow_shared
 
 _PUBLIC_EXACT = {
     "/api/v1/healthz",
@@ -42,6 +44,17 @@ def _public_error(exc: BaseException) -> str:
 
 def _is_public(path: str) -> bool:
     return path in _PUBLIC_EXACT or bool(_PUBLIC_PATTERN.match(path))
+
+
+def _client_ip(scope: Scope) -> str:
+    headers = dict(scope.get("headers") or [])
+    forwarded = headers.get(b"cf-connecting-ip", b"").decode(errors="replace").strip()
+    if forwarded:
+        return forwarded
+    chain = headers.get(b"x-forwarded-for", b"").decode(errors="replace")
+    if chain.strip():
+        return chain.split(",")[0].strip()
+    return (scope.get("client") or ("", 0))[0] or ""
 
 
 class _RateLimiter:
@@ -86,8 +99,8 @@ class ApiMiddleware:
         rid = (scope.get("state") or {}).get("request_id", "")
         now = datetime.now(timezone.utc).timestamp()
         if _is_public(path):
-            client = (scope.get("client") or ("", 0))[0]
-            if not self._public_rl.allow(client, now):
+            if not await self._limited(
+                    scope, "ip", _client_ip(scope), self._public_rl, 60, now):
                 await self._error(send, 429, "RATE_LIMITED",
                                   "too many requests", rid)
                 return
@@ -114,7 +127,8 @@ class ApiMiddleware:
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         scope.setdefault("state", {})["user"] = user
-        if not self._user_rl.allow(str(user.id), now):
+        if not await self._limited(
+                scope, "user", str(user.id), self._user_rl, 600, now):
             await self._error(send, 429, "RATE_LIMITED",
                               "too many requests", rid)
             return
@@ -126,6 +140,15 @@ class ApiMiddleware:
             await self.app(scope, receive, send)
             return
         await self._idempotent(scope, receive, send, user, path, rid)
+
+    async def _limited(self, scope: Scope, kind: str, key: str,
+                       memory: _RateLimiter, limit: int, now: float) -> bool:
+        # Local uvicorn and the test suite stay on the in-process window.
+        # Workers set CF_WORKER and share one Neon counter across isolates.
+        if os.environ.get("CF_WORKER") == "1":
+            pool = getattr(getattr(scope["app"].state, "db", None), "pool", None)
+            return await allow_shared(pool, kind, key, limit, now)
+        return memory.allow(key or "unknown", now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
                           user, path: str, rid: str):

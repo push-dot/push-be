@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from datetime import datetime, timezone
@@ -8,7 +9,8 @@ from uuid import uuid4
 import pytest
 
 from app.pgproto import (
-    PgPool, UniqueViolationError, parse_dsn, scram_client_proof,
+    PgPool, UniqueViolationError, begin_request_scope, parse_dsn,
+    scram_client_proof,
 )
 
 
@@ -104,3 +106,100 @@ async def test_roundtrip_types_transaction_and_unique():
             await pool.execute(f"DROP TABLE IF EXISTS {name}")
         finally:
             await pool.close()
+
+
+class _FakeConn:
+    def __init__(self, n: int, opened: list):
+        self.n = n
+        self.closed = False
+        self.scope = None
+        self.opened = opened
+
+    async def fetchval(self, sql, *args):
+        if self.closed:
+            raise ConnectionError("closed")
+        return self.n
+
+    async def close(self):
+        self.closed = True
+
+
+def _patch_connect(monkeypatch):
+    opened: list[_FakeConn] = []
+
+    async def fake_connect(url, transport="tcp"):
+        conn = _FakeConn(len(opened) + 1, opened)
+        opened.append(conn)
+        await asyncio.sleep(0)
+        return conn
+
+    monkeypatch.setattr("app.pgproto.connect", fake_connect)
+    return opened
+
+
+async def test_concurrent_requests_keep_separate_connections(monkeypatch):
+    opened = _patch_connect(monkeypatch)
+    pool = PgPool("postgresql://user:pass@localhost/db", transport="websocket")
+
+    async def one():
+        scope = begin_request_scope()
+        try:
+            first = await pool.fetchval("SELECT 1")
+            await asyncio.sleep(0)
+            second = await pool.fetchval("SELECT 1")
+            return first, second
+        finally:
+            await pool.end_request_scope(scope)
+
+    (a1, a2), (b1, b2) = await asyncio.gather(one(), one())
+    assert a1 == a2
+    assert b1 == b2
+    assert a1 != b1
+    assert len(opened) == 2
+    assert all(conn.closed for conn in opened)
+
+
+async def test_ending_one_request_does_not_close_the_other(monkeypatch):
+    opened = _patch_connect(monkeypatch)
+    pool = PgPool("postgresql://user:pass@localhost/db", transport="websocket")
+    started = asyncio.Event()
+    finish_a = asyncio.Event()
+
+    async def request_a():
+        scope = begin_request_scope()
+        try:
+            seen = await pool.fetchval("SELECT 1")
+            started.set()
+            await finish_a.wait()
+            return seen
+        finally:
+            await pool.end_request_scope(scope)
+
+    async def request_b():
+        await started.wait()
+        scope = begin_request_scope()
+        try:
+            first = await pool.fetchval("SELECT 1")
+            finish_a.set()
+            await asyncio.sleep(0)
+            second = await pool.fetchval("SELECT 1")
+            mine = next(conn for conn in opened if conn.n == first)
+            assert mine.closed is False
+            return first, second
+        finally:
+            await pool.end_request_scope(scope)
+
+    a, (b1, b2) = await asyncio.gather(request_a(), request_b())
+    assert a != b1
+    assert b1 == b2
+    assert len(opened) == 2
+
+
+async def test_without_a_request_scope_one_connection_is_reused(monkeypatch):
+    opened = _patch_connect(monkeypatch)
+    pool = PgPool("postgresql://user:pass@localhost/db")
+    assert await pool.fetchval("SELECT 1") == 1
+    assert await pool.fetchval("SELECT 1") == 1
+    assert len(opened) == 1
+    await pool.close()
+    assert opened[0].closed is True

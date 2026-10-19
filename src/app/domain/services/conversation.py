@@ -315,7 +315,7 @@ class ConversationService:
                            byok_key: str = "") -> ent.Operation:
         self._validate_message(text, access_mode)
         if external_jobs():
-            return await self._enqueue_and_wait(
+            return await self._enqueue(
                 user_id, conversation_id, text, context, ai, access_mode, byok_key)
         token = _BYOK_KEY.set(byok_key)
         try:
@@ -479,7 +479,7 @@ class ConversationService:
         except Exception:
             return ""
 
-    async def _enqueue_and_wait(self, user_id, conversation_id, text, context,
+    async def _enqueue(self, user_id, conversation_id, text, context,
                                 ai, access_mode, byok_key) -> ent.Operation:
         await self.get(user_id, conversation_id)
         payload = self._stash_byok(user_id, {
@@ -492,9 +492,10 @@ class ConversationService:
         if byok_key:
             self._byok_keys[job_id] = byok_key
         await schedule_chat_job(job_id, byok_key)
-        op = await self._wait_operation(job_id)
-        if op is not None:
-            return op
+        # The Workflow emits tokens and the finished operation. Waiting here
+        # held the HTTP request for the whole model call (~10s plus a Neon
+        # poll per tick). Clients already treat QUEUED as a 202 body and
+        # follow the stream or the active SSE replay.
         now = _now()
         return ent.Operation(
             id=job_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
@@ -502,29 +503,6 @@ class ConversationService:
             result=ent.OperationResult(
                 kind=ent.OP_CHAT_MESSAGE, value={"jobId": str(job_id)}),
             created_at=now, updated_at=now)
-
-    async def _wait_operation(self, job_id: UUID):
-        last = 0
-        for _ in range(sse_max_polls()):
-            for row in await self.jobs.events_since(job_id, last):
-                last = row["id"]
-                if row["type"] == "done":
-                    op = (row["payload"] or {}).get("operation")
-                    if isinstance(op, dict) and op.get("status"):
-                        data = dict(op)
-                        data.setdefault(
-                            "userId", "00000000-0000-4000-8000-000000000000")
-                        return ent.Operation.model_validate(data)
-                    return None
-                if row["type"] == "error":
-                    err = (row["payload"] or {}).get("error") or {}
-                    raise DomainError(
-                        500 if err.get("code") in (None, "INTERNAL") else 400,
-                        err.get("code") or "INTERNAL",
-                        err.get("message") or "job failed",
-                        err.get("details"))
-            await asyncio.sleep(0.25)
-        return None
 
     async def claim_for_workflow(self, job_id: str, byok: str = "") -> str:
         jid = UUID(str(job_id))
