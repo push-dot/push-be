@@ -73,7 +73,9 @@ const RATE_SQL = "INSERT INTO rate_limits (bucket, hits, expires_at) "
 const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 
-const AUTH_RATE_SQL = "WITH auth AS ("
+// Auth and the user bucket. Extra CTEs for a read hang off this prefix so
+// the GET is still one Neon HTTP call.
+const AUTH_RATE_PREFIX = "WITH auth AS ("
   + "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1"
   + "), live AS ("
@@ -85,9 +87,58 @@ const AUTH_RATE_SQL = "WITH auth AS ("
   + "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
   + "WHERE rate_limits.hits < $4 "
   + "RETURNING hits"
-  + ") "
-  + "SELECT auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
-  + "(SELECT hits FROM bumped) AS hits FROM auth";
+  + ") ";
+
+const AUTH_COLUMNS = "auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
+  + "(SELECT hits FROM bumped) AS hits";
+
+const AUTH_RATE_SQL = AUTH_RATE_PREFIX
+  + "SELECT " + AUTH_COLUMNS + " FROM auth";
+
+const LIST_SQL = AUTH_RATE_PREFIX
+  + ", page AS ("
+  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at "
+  + "FROM conversations c JOIN live ON live.id = c.user_id "
+  + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
+  + "AND ($6::uuid IS NULL OR c.application_id = $6::uuid) "
+  + "AND ($7::timestamptz IS NULL OR (c.created_at, c.id) < ($7::timestamptz, $8::uuid)) "
+  + "ORDER BY c.created_at DESC, c.id DESC LIMIT $9"
+  + ") SELECT " + AUTH_COLUMNS + ", COALESCE((SELECT json_agg(json_build_object("
+  + "'id', page.id, 'revision', page.revision, 'application_id', page.application_id, "
+  + "'title', page.title, 'pinned', page.pinned, 'created_at', page.created_at, "
+  + "'updated_at', page.updated_at"
+  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
+
+const MESSAGES_SQL = AUTH_RATE_PREFIX
+  + ", found AS ("
+  + "SELECT id FROM conversations WHERE id = $6::uuid AND user_id = (SELECT id FROM live)"
+  + "), page AS ("
+  + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
+  + "FROM messages m JOIN found ON found.id = m.conversation_id "
+  + "WHERE EXISTS (SELECT 1 FROM bumped) AND m.user_id = (SELECT id FROM live) "
+  + "AND ($7::timestamptz IS NULL OR (m.created_at, m.id) < ($7::timestamptz, $8::uuid)) "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT $9"
+  + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
+  + "COALESCE((SELECT json_agg(json_build_object("
+  + "'id', page.id, 'conversation_id', page.conversation_id, 'role', page.role, "
+  + "'text', page.text, 'attachments', page.attachments, 'operation_id', page.operation_id, "
+  + "'created_at', page.created_at"
+  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
+
+const STREAM_SQL = AUTH_RATE_PREFIX
+  + ", found AS ("
+  + "SELECT id FROM conversations WHERE id = $6::uuid AND user_id = (SELECT id FROM live)"
+  + "), job AS ("
+  + "SELECT id FROM chat_jobs WHERE user_id = (SELECT id FROM live) "
+  + "AND conversation_id = (SELECT id FROM found) "
+  + "AND status IN ('PENDING', 'RUNNING') AND EXISTS (SELECT 1 FROM bumped) "
+  + "ORDER BY created_at DESC LIMIT 1"
+  + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
+  + "(SELECT id FROM job) AS job_id FROM auth";
+
+const MODELS_SQL = AUTH_RATE_PREFIX
+  + "SELECT " + AUTH_COLUMNS + ", EXISTS(SELECT 1 FROM ai_keys k "
+  + "WHERE k.user_id = auth.id AND k.provider = 'OPENAI') AS has FROM auth";
 
 export function resetLimits(): void {
   hits.clear();
@@ -346,54 +397,24 @@ async function proxy(request: Request, env: FrontEnv, rid: string): Promise<Resp
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
 }
 
-async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number; windowMs: number }, now: () => Date): Promise<User | Response> {
-  const authz = request.headers.get("authorization") || "";
-  if (!authz.startsWith("Bearer ")) {
-    return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
-  }
-  const token = authz.slice(7);
-  const moment = now();
-  const window = Math.floor(moment.getTime() / 1000 / 60);
-  if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
-    try {
-      const resolved = await resolveDevUser(env, deps);
-      if (!resolved) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
-      if (!await allowShared(deps, "user", resolved.id, limits.user, limits.windowMs, moment)) {
-        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
-      }
-      return resolved;
-    } catch (err) {
-      return codedError(err, rid);
-    }
-  }
-  let hash: string;
-  try {
-    hash = await sha256Hex(token);
-  } catch {
-    return errorResponse(500, "INTERNAL", "internal error", rid);
-  }
-  // The local key is the token hash; the Neon bucket is the user id.
-  // After this isolate has seen a full bucket, the rest of the minute
-  // is rejected without another upsert (and without re-reading the token).
-  const cacheKey = `user:${hash}:${window}`;
-  const known = remoteHits.get(cacheKey);
-  if (known !== undefined && known >= limits.user) {
-    return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
-  }
-  let rows: Record<string, unknown>[];
-  let shared = true;
-  try {
-    rows = await deps.query(AUTH_RATE_SQL, [
-      hash, String(window), window * 60 + 120, limits.user, moment.getTime() / 1000,
-    ]);
-  } catch {
-    shared = false;
-    try {
-      rows = await deps.query(AUTH_SQL, [hash]);
-    } catch {
-      return errorResponse(500, "INTERNAL", "internal error", rid);
-    }
-  }
+function windowOf(moment: Date): number {
+  return Math.floor(moment.getTime() / 1000 / 60);
+}
+
+function rateParams(hash: string, moment: Date, limit: number): unknown[] {
+  const window = windowOf(moment);
+  return [hash, String(window), window * 60 + 120, limit, moment.getTime() / 1000];
+}
+
+function interpretAuth(
+  rows: Record<string, unknown>[],
+  moment: Date,
+  limit: number,
+  windowMs: number,
+  cacheKey: string,
+  shared: boolean,
+  rid: string,
+): User | Response {
   if (!rows.length) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
   const row = rows[0];
   const expires = new Date(formatJsonTimestamp(row.expires_at)).getTime();
@@ -402,18 +423,86 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
   }
   const user = userFrom(row);
   if (!shared) {
-    if (!allow(`user:${user.id}:${window}`, limits.user, limits.windowMs, moment.getTime())) {
+    if (!allow(`user:${user.id}:${windowOf(moment)}`, limit, windowMs, moment.getTime())) {
       return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
     }
     return user;
   }
   if (!Object.prototype.hasOwnProperty.call(row, "hits")) return user;
-  rememberHits(cacheKey, row, limits.user);
+  rememberHits(cacheKey, row, limit);
   const hitsValue = row.hits;
-  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limits.user) {
+  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limit) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   return user;
+}
+
+function jsonRows(value: unknown): Record<string, unknown>[] {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+}
+
+type TokenCtx = { dev: boolean; hash: string; moment: Date; cacheKey: string };
+
+async function tokenContext(request: Request, env: FrontEnv, rid: string, limits: { user: number }, now: () => Date): Promise<TokenCtx | Response> {
+  const authz = request.headers.get("authorization") || "";
+  if (!authz.startsWith("Bearer ")) {
+    return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
+  }
+  const token = authz.slice(7);
+  const moment = now();
+  if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
+    return { dev: true, hash: "", moment, cacheKey: "" };
+  }
+  let hash: string;
+  try {
+    hash = await sha256Hex(token);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+  const cacheKey = `user:${hash}:${windowOf(moment)}`;
+  const known = remoteHits.get(cacheKey);
+  if (known !== undefined && known >= limits.user) {
+    return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+  }
+  return { dev: false, hash, moment, cacheKey };
+}
+
+async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number; windowMs: number }, now: () => Date): Promise<User | Response> {
+  const ctx = await tokenContext(request, env, rid, limits, now);
+  if (ctx instanceof Response) return ctx;
+  if (ctx.dev) {
+    try {
+      const resolved = await resolveDevUser(env, deps);
+      if (!resolved) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+      if (!await allowShared(deps, "user", resolved.id, limits.user, limits.windowMs, ctx.moment)) {
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      return resolved;
+    } catch (err) {
+      return codedError(err, rid);
+    }
+  }
+  // The local key is the token hash; the Neon bucket is the user id.
+  // After this isolate has seen a full bucket, the rest of the minute
+  // is rejected without another upsert (and without re-reading the token).
+  let rows: Record<string, unknown>[];
+  let shared = true;
+  try {
+    rows = await deps.query(AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user));
+  } catch {
+    shared = false;
+    try {
+      rows = await deps.query(AUTH_SQL, [ctx.hash]);
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
+  }
+  return interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, shared, rid);
 }
 
 function codedError(err: unknown, rid: string): Response {
@@ -455,9 +544,42 @@ async function authMe(request: Request, env: FrontEnv, deps: Deps, rid: string, 
   }, rid);
 }
 
+function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
+  const cur = url.searchParams.get("cursor");
+  if (!cur) return { at: null, id: null };
+  try {
+    const decoded = decodeCursor(cur);
+    const id = parseUuid(decoded.id);
+    if (!id) throw new Error("bad cursor");
+    return { at: decoded.createdAt, id };
+  } catch {
+    return fieldError("cursor", "invalid cursor", rid);
+  }
+}
+
+async function listConversationsFor(deps: Deps, userId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string): Promise<Response> {
+  let cursorSql = "";
+  const params: unknown[] = [userId];
+  if (appId) {
+    params.push(appId);
+    cursorSql += ` AND application_id = $${params.length}::uuid`;
+  }
+  if (cursor.at && cursor.id) {
+    params.push(cursor.at, cursor.id);
+    cursorSql += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+  }
+  params.push(limit + 1);
+  const rows = await deps.query(
+    "SELECT id, revision, application_id, title, pinned, created_at, updated_at " +
+    "FROM conversations WHERE user_id = $1::uuid AND archived = false" +
+    cursorSql +
+    ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+    params,
+  );
+  return jsonResponse(200, pageBody(rows, limit, conversationJson), rid);
+}
+
 async function listConversations(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
-  const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
   const page = pageLimit(url, rid);
   if (page instanceof Response) return page;
   const appRaw = url.searchParams.get("applicationId") || "";
@@ -466,37 +588,36 @@ async function listConversations(request: Request, env: FrontEnv, deps: Deps, ur
     appId = parseUuid(appRaw);
     if (!appId) return fieldError("applicationId", "must be a UUID", rid);
   }
-  let cursorSql = "";
-  const params: unknown[] = [user.id];
-  if (appId) {
-    params.push(appId);
-    cursorSql += ` AND application_id = $${params.length}::uuid`;
-  }
-  const cur = url.searchParams.get("cursor");
-  if (cur) {
+  const cursor = cursorPair(url, rid);
+  if (cursor instanceof Response) return cursor;
+  const ctx = await tokenContext(request, env, rid, limits, now);
+  if (ctx instanceof Response) return ctx;
+  if (ctx.dev) {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
     try {
-      const decoded = decodeCursor(cur);
-      if (!parseUuid(decoded.id)) throw new Error("bad cursor");
-      params.push(decoded.createdAt, decoded.id);
-      cursorSql += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid);
     } catch {
-      return fieldError("cursor", "invalid cursor", rid);
+      return errorResponse(500, "INTERNAL", "internal error", rid);
     }
   }
-  params.push(page.limit + 1);
-  let rows: Record<string, unknown>[];
   try {
-    rows = await deps.query(
-      "SELECT id, revision, application_id, title, pinned, created_at, updated_at " +
-      "FROM conversations WHERE user_id = $1::uuid AND archived = false" +
-      cursorSql +
-      ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
-      params,
-    );
+    const rows = await deps.query(LIST_SQL, [
+      ...rateParams(ctx.hash, ctx.moment, limits.user),
+      appId, cursor.at, cursor.id, page.limit + 1,
+    ]);
+    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid);
+    if (user instanceof Response) return user;
+    return jsonResponse(200, pageBody(jsonRows(rows[0]?.rows), page.limit, conversationJson), rid);
   } catch {
-    return errorResponse(500, "INTERNAL", "internal error", rid);
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
+    try {
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid);
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
   }
-  return jsonResponse(200, pageBody(rows, page.limit, conversationJson), rid);
 }
 
 function conversationJson(row: Record<string, unknown>): Record<string, unknown> {
@@ -511,43 +632,67 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
   };
 }
 
+async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string): Promise<Response> {
+  const found = await deps.query(
+    "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
+    [id, userId],
+  );
+  if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  const params: unknown[] = [userId, id];
+  let cursorSql = "";
+  if (cursor.at && cursor.id) {
+    params.push(cursor.at, cursor.id);
+    cursorSql = ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+  }
+  params.push(limit + 1);
+  const rows = await deps.query(
+    "SELECT id, conversation_id, role, text, attachments, operation_id, created_at " +
+    "FROM messages WHERE user_id = $1::uuid AND conversation_id = $2::uuid" +
+    cursorSql +
+    ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+    params,
+  );
+  return jsonResponse(200, pageBody(rows, limit, messageJson), rid);
+}
+
 async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
-  const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
   const id = parseUuid(rawId);
   if (!id) return fieldError("id", "must be a UUID", rid);
   const page = pageLimit(url, rid);
   if (page instanceof Response) return page;
-  try {
-    const found = await deps.query(
-      "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
-      [id, user.id],
-    );
-    if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    const params: unknown[] = [user.id, id];
-    let cursorSql = "";
-    const cur = url.searchParams.get("cursor");
-    if (cur) {
-      try {
-        const decoded = decodeCursor(cur);
-        if (!parseUuid(decoded.id)) throw new Error("bad cursor");
-        params.push(decoded.createdAt, decoded.id);
-        cursorSql = ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
-      } catch {
-        return fieldError("cursor", "invalid cursor", rid);
-      }
+  const cursor = cursorPair(url, rid);
+  if (cursor instanceof Response) return cursor;
+  const ctx = await tokenContext(request, env, rid, limits, now);
+  if (ctx instanceof Response) return ctx;
+  if (ctx.dev) {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
+    try {
+      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid);
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
     }
-    params.push(page.limit + 1);
-    const rows = await deps.query(
-      "SELECT id, conversation_id, role, text, attachments, operation_id, created_at " +
-      "FROM messages WHERE user_id = $1::uuid AND conversation_id = $2::uuid" +
-      cursorSql +
-      ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
-      params,
-    );
-    return jsonResponse(200, pageBody(rows, page.limit, messageJson), rid);
+  }
+  try {
+    const rows = await deps.query(MESSAGES_SQL, [
+      ...rateParams(ctx.hash, ctx.moment, limits.user),
+      id, cursor.at, cursor.id, page.limit + 1,
+    ]);
+    const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid);
+    if (user instanceof Response) return user;
+    const conversationId = rows[0]?.conversation_id;
+    if (conversationId == null || conversationId === "") {
+      return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    }
+    return jsonResponse(200, pageBody(jsonRows(rows[0]?.rows), page.limit, messageJson), rid);
   } catch {
-    return errorResponse(500, "INTERNAL", "internal error", rid);
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
+    try {
+      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid);
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
   }
 }
 
@@ -589,26 +734,60 @@ function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Rec
   return { data: items, page: { nextCursor, hasMore: more } };
 }
 
+async function activeJobFor(deps: Deps, userId: string, id: string): Promise<string | null | Response> {
+  const found = await deps.query(
+    "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
+    [id, userId],
+  );
+  if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", "");
+  const jobs = await deps.query(
+    "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid " +
+    "AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1",
+    [userId, id],
+  );
+  return jobs.length ? String(jobs[0].id) : null;
+}
+
 async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
-  const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
   const id = parseUuid(rawId);
   if (!id) return fieldError("id", "must be a UUID", rid);
+  const ctx = await tokenContext(request, env, rid, limits, now);
+  if (ctx instanceof Response) return ctx;
   let jobId: string | null;
   try {
-    const found = await deps.query(
-      "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
-      [id, user.id],
-    );
-    if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    const jobs = await deps.query(
-      "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid " +
-      "AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1",
-      [user.id, id],
-    );
-    jobId = jobs.length ? String(jobs[0].id) : null;
+    if (ctx.dev) {
+      const user = await requireUser(request, env, deps, rid, limits, now);
+      if (user instanceof Response) return user;
+      const found = await activeJobFor(deps, user.id, id);
+      if (found instanceof Response) {
+        return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
+      }
+      jobId = found;
+    } else {
+      const rows = await deps.query(STREAM_SQL, [
+        ...rateParams(ctx.hash, ctx.moment, limits.user), id,
+      ]);
+      const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid);
+      if (user instanceof Response) return user;
+      const conversationId = rows[0]?.conversation_id;
+      if (conversationId == null || conversationId === "") {
+        return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+      }
+      const rawJob = rows[0]?.job_id;
+      jobId = rawJob == null || rawJob === "" ? null : String(rawJob);
+    }
   } catch {
-    return errorResponse(500, "INTERNAL", "internal error", rid);
+    try {
+      const user = await requireUser(request, env, deps, rid, limits, now);
+      if (user instanceof Response) return user;
+      const found = await activeJobFor(deps, user.id, id);
+      if (found instanceof Response) {
+        return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
+      }
+      jobId = found;
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
   }
   if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
   const afterRaw = url.searchParams.get("after") || request.headers.get("last-event-id") || "";
@@ -683,13 +862,15 @@ function sseFrame(row: Record<string, unknown>): string {
 }
 
 async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
-  const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
   const provider = url.searchParams.get("provider") || "";
   const credMode = url.searchParams.get("credentialMode") || "";
+  const ctx = await tokenContext(request, env, rid, limits, now);
+  if (ctx instanceof Response) return ctx;
   if (provider && !validProvider(provider)) return fieldError("provider", "unsupported provider", rid);
   if (credMode && !validCredentialMode(credMode)) return fieldError("credentialMode", "unsupported credentialMode", rid);
   if (credMode === "BYOK" && provider) {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
     const key = request.headers.get("x-byok-key") || "";
     if (!key) return jsonResponse(200, { data: [] }, rid);
     return proxy(request, env, rid);
@@ -700,6 +881,8 @@ async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, r
   const cacheReq = new Request(modelCacheUrl(authHash, provider, credMode));
   const hit = await cache.match(cacheReq);
   if (hit) {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
     const text = await hit.text();
     return new Response(text, {
       status: 200,
@@ -711,15 +894,38 @@ async function aiModels(request: Request, env: FrontEnv, deps: Deps, url: URL, r
     });
   }
   let byokOpenai = false;
-  if (credMode !== "MANAGED") {
+  if (credMode === "MANAGED" || ctx.dev) {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
+    if (ctx.dev && credMode !== "MANAGED") {
+      try {
+        const rows = await deps.query(
+          "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE user_id = $1::uuid AND provider = 'OPENAI') AS has",
+          [user.id],
+        );
+        byokOpenai = asBool(rows[0]?.has);
+      } catch {
+        return errorResponse(500, "INTERNAL", "internal error", rid);
+      }
+    }
+  } else {
     try {
-      const rows = await deps.query(
-        "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE user_id = $1::uuid AND provider = 'OPENAI') AS has",
-        [user.id],
-      );
+      const rows = await deps.query(MODELS_SQL, rateParams(ctx.hash, ctx.moment, limits.user));
+      const authed = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid);
+      if (authed instanceof Response) return authed;
       byokOpenai = asBool(rows[0]?.has);
     } catch {
-      return errorResponse(500, "INTERNAL", "internal error", rid);
+      const user = await requireUser(request, env, deps, rid, limits, now);
+      if (user instanceof Response) return user;
+      try {
+        const rows = await deps.query(
+          "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE user_id = $1::uuid AND provider = 'OPENAI') AS has",
+          [user.id],
+        );
+        byokOpenai = asBool(rows[0]?.has);
+      } catch {
+        return errorResponse(500, "INTERNAL", "internal error", rid);
+      }
     }
   }
   const body = {

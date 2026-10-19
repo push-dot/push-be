@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
@@ -19,6 +19,14 @@ from app.infrastructure.store_operations import OperationStore
 
 _SEARCH_MODEL = "deepseek/deepseek-v4.1-flash"
 _GO_PREFIX = "opencode-go/"
+_USAGE_NS = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+
+
+def usage_row_id(job_id, purpose: str) -> UUID:
+    """One ai_usage row per chat job and purpose, stable across retries."""
+    if not job_id:
+        return uuid4()
+    return uuid5(_USAGE_NS, f"push:ai-usage:{job_id}:{purpose}")
 
 
 def _byok_key_var():
@@ -72,24 +80,29 @@ class AIGate:
         self.byok_enabled = cipher is not None
 
     async def _meter(self, user_id: Optional[UUID], model: str,
-                     input_tokens: int, output_tokens: int) -> None:
+                     input_tokens: int, output_tokens: int,
+                     job_id=None) -> None:
         if user_id is None:
             return
+        from app.claimctx import LostClaim
         try:
             await self.usage.create(ent.AiUsage(
-                id=uuid4(), user_id=user_id, provider="OPENAI", model=model,
-                managed=True, input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                id=usage_row_id(job_id, "meter:" + model), user_id=user_id,
+                provider="OPENAI", model=model, managed=True,
+                input_tokens=input_tokens, output_tokens=output_tokens,
                 cost_micro_credits=ent.ai_cost_micro_credits(
                     "OPENAI", model, input_tokens, output_tokens),
                 status=ent.USAGE_SETTLED, created_at=_now()))
+        except LostClaim:
+            raise
         except Exception:
             logging.getLogger(__name__).exception(
                 "usage metering failed user=%s model=%s", user_id, model)
 
     async def embed(self, texts: list[str],
                     model: str = "openai/text-embedding-3-small",
-                    user_id: Optional[UUID] = None) -> list[list[float]]:
+                    user_id: Optional[UUID] = None,
+                    job_id=None) -> list[list[float]]:
         if not self.managed_key or self.chat is None or not texts:
             return []
         try:
@@ -97,12 +110,13 @@ class AIGate:
         except Exception:
             return []
         await self._meter(user_id, model, sum(
-            code_point_len(t) for t in texts) // 4, 0)
+            code_point_len(t) for t in texts) // 4, 0, job_id)
         return vecs
 
     async def company_research(self, company: str, model: str = "",
                                context: str = "",
-                               user_id: Optional[UUID] = None) -> str:
+                               user_id: Optional[UUID] = None,
+                               job_id=None) -> str:
         if not self.managed_key or self.chat is None:
             return ""
         try:
@@ -119,7 +133,7 @@ class AIGate:
         except Exception:
             return ""
         await self._meter(user_id, model or _SEARCH_MODEL,
-                          c.input_tokens, c.output_tokens)
+                          c.input_tokens, c.output_tokens, job_id)
         return c.text
 
     async def check(self, user_id: UUID, ai: Optional[ent.AiOptions],
@@ -173,7 +187,7 @@ class AIGate:
             raise integration_required("BYOK key could not be decrypted")
 
     async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
-                       system: str, user: str) -> Optional[UUID]:
+                       system: str, user: str, job_id=None) -> Optional[UUID]:
         if ai.credential_mode != "MANAGED":
             return None
         out = None
@@ -192,7 +206,8 @@ class AIGate:
                     "monthly managed AI usage limit reached for plan " + u.plan)
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
-                id=uuid4(), user_id=user_id, provider="OPENAI", model=ai.model,
+                id=usage_row_id(job_id, "chat"), user_id=user_id,
+                provider="OPENAI", model=ai.model,
                 managed=True, input_tokens=est_in, output_tokens=2048,
                 cost_micro_credits=ent.ai_cost_micro_credits(
                     "OPENAI", ai.model, est_in, 2048),
@@ -226,7 +241,7 @@ class AIGate:
                 "usage release failed id=%s", usage_id)
 
     async def _search_context(self, user_id: UUID, ai: ent.AiOptions,
-                              user: str) -> str:
+                              user: str, job_id=None) -> str:
         if not ai.web_search:
             return ""
         if not self.managed_key or self.chat is None:
@@ -241,7 +256,7 @@ class AIGate:
         except Exception:
             raise provider_error("web search failed")
         await self._meter(user_id, _SEARCH_MODEL,
-                          c.input_tokens, c.output_tokens)
+                          c.input_tokens, c.output_tokens, job_id)
         return "\n\n[웹 검색 결과]\n" + c.text
 
     async def _route(self, user_id: UUID, ai: ent.AiOptions,
@@ -277,16 +292,18 @@ class AIGate:
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str,
                        byok_key: str = "",
-                       search_query: str = "") -> ent.AICompletion:
+                       search_query: str = "",
+                       job_id=None) -> ent.AICompletion:
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(user_id, ai, search_query or user)
+        system += await self._search_context(
+            user_id, ai, search_query or user, job_id)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
-        usage_id = await self._reserve(user_id, ai, system, user)
+        usage_id = await self._reserve(user_id, ai, system, user, job_id)
         try:
             c = await chat.chat(key, model, system, user, reasoning, headers)
         except Exception:
@@ -298,16 +315,17 @@ class AIGate:
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
                      system: str, user: str, usage: dict,
                      byok_key: str = "", search_query: str = "",
-                     assistant_prefix: str = ""):
+                     assistant_prefix: str = "", job_id=None):
         await self.check(user_id, ai, byok_key)
         providers = ({"OPENAI"} if ai.credential_mode == "MANAGED"
                      else _BYOK_PROVIDERS)
         if ai.provider not in providers or self.chat is None:
             raise not_configured("AI provider " + ai.provider + " is not supported")
-        system += await self._search_context(user_id, ai, search_query or user)
+        system += await self._search_context(
+            user_id, ai, search_query or user, job_id)
         chat, key, model, headers = await self._route(user_id, ai, byok_key)
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
-        usage_id = await self._reserve(user_id, ai, system, user)
+        usage_id = await self._reserve(user_id, ai, system, user, job_id)
         if usage_id is not None:
             usage.setdefault("usage_ids", []).append(usage_id)
         settled = False
@@ -339,12 +357,13 @@ class AIGate:
 
 async def record_usage(usage: AiUsageStore, user_id: UUID, op_id: UUID,
                        ai: ent.AiOptions, c: ent.AICompletion,
-                       usage_ids=()) -> None:
+                       usage_ids=(), job_id=None) -> None:
     if ai.credential_mode == "MANAGED":
         await usage.attach_operations(op_id, list(usage_ids))
         return
     await usage.create(ent.AiUsage(
-        id=uuid4(), user_id=user_id, operation_id=op_id, provider=ai.provider,
+        id=usage_row_id(job_id, "byok"), user_id=user_id, operation_id=op_id,
+        provider=ai.provider,
         model=ai.model, managed=ai.credential_mode == "MANAGED",
         input_tokens=c.input_tokens, output_tokens=c.output_tokens,
         cost_micro_credits=ent.ai_cost_micro_credits(

@@ -116,7 +116,11 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   }), env(), deps(async (sql, params) => {
     seen.push([sql, params]);
     if (sql.includes("access_tokens")) {
-      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows,
+      }];
     }
     return rows;
   }));
@@ -126,9 +130,13 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.equal(body.data[0].title, "채팅");
   assert.equal(body.page.hasMore, true);
   assert.equal(body.page.nextCursor, encodeCursor("2026-10-17T21:57:28.172000Z", USER));
-  const listSql = String(seen.find((c) => String(c[0]).includes("FROM conversations"))?.[0]);
+  assert.equal(seen.length, 1);
+  const listSql = String(seen[0][0]);
+  assert.match(listSql, /access_tokens/);
+  assert.match(listSql, /FROM conversations/);
   assert.match(listSql, /archived = false/);
-  assert.match(listSql, /ORDER BY created_at DESC, id DESC/);
+  assert.match(listSql, /ORDER BY c\.created_at DESC, c\.id DESC/);
+  assert.match(listSql, /ORDER BY page\.created_at DESC, page\.id DESC/);
 });
 
 test("message reads 404 when the conversation is missing and omit null attachments", async () => {
@@ -145,20 +153,28 @@ test("message reads 404 when the conversation is missing and omit null attachmen
   assert.equal(missing.status, 404);
   assert.equal((await missing.json() as { error: { code: string } }).error.code, "NOT_FOUND");
 
+  const message = {
+    id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    conversation_id: USER,
+    role: "USER",
+    text: "안녕",
+    attachments: [{ type: "EVIDENCE", id: USER, documentId: null, title: "이력" }],
+    operation_id: null,
+    created_at: "2026-10-17T21:57:28Z",
+  };
   const found: Query = async (sql) => {
+    if (sql.includes("json_agg")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, conversation_id: USER, rows: [message],
+      }];
+    }
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
     if (sql.includes("FROM conversations")) return [{ id: USER }];
-    return [{
-      id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-      conversation_id: USER,
-      role: "USER",
-      text: "안녕",
-      attachments: [{ type: "EVIDENCE", id: USER, documentId: null, title: "이력" }],
-      operation_id: null,
-      created_at: "2026-10-17T21:57:28Z",
-    }];
+    return [message];
   };
   const ok = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages`, {
     headers: { authorization: "Bearer secret-token" },
@@ -169,9 +185,10 @@ test("message reads 404 when the conversation is missing and omit null attachmen
 
 test("SSE replay returns 204 or the stored chat_events", async () => {
   resetLimits();
-  const authRow = { id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" };
+  const authRow = { id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z", hits: 1 };
   const empty: Query = async (sql) => {
-    if (sql.includes("access_tokens")) return [authRow];
+    if (sql.includes("chat_events")) return [];
+    if (sql.includes("access_tokens")) return [{ ...authRow, conversation_id: USER, job_id: null }];
     if (sql.includes("FROM conversations")) return [{ id: USER }];
     return [];
   };
@@ -182,10 +199,15 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.equal(await none.text(), "");
 
   const live: Query = async (sql) => {
-    if (sql.includes("access_tokens")) return [authRow];
+    if (sql.includes("chat_events")) {
+      return [{ id: 7, type: "token", payload: { text: "안녕" } }, { id: 8, type: "done", payload: { operation: { status: "SUCCEEDED" } } }];
+    }
+    if (sql.includes("access_tokens")) {
+      return [{ ...authRow, conversation_id: USER, job_id: "cccccccc-cccc-cccc-cccc-cccccccccccc" }];
+    }
     if (sql.includes("FROM conversations")) return [{ id: USER }];
     if (sql.includes("FROM chat_jobs")) return [{ id: "cccccccc-cccc-cccc-cccc-cccccccccccc" }];
-    return [{ id: 7, type: "token", payload: { text: "안녕" } }, { id: 8, type: "done", payload: { operation: { status: "SUCCEEDED" } } }];
+    return [];
   };
   const res = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active?after=3`, {
     headers: { authorization: "Bearer secret-token" },
@@ -450,8 +472,13 @@ test("a rejected python proxy and a broken cache still return a response", async
   const empty = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active`, {
     headers: { authorization: "Bearer secret-token", origin: "http://localhost:5173" },
   }), env(), deps(async (sql) => {
+    if (sql.includes("chat_events")) return [];
     if (sql.includes("access_tokens")) {
-      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, conversation_id: USER, job_id: null,
+      }];
     }
     if (sql.includes("rate_limits")) return [{ hits: 1 }];
     if (sql.includes("FROM conversations")) return [{ id: USER }];

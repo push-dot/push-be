@@ -44,12 +44,54 @@ class AiKeyStore(Store):
             user_id, provider)
 
 
+_USAGE_UPSERT = (
+    " ON CONFLICT (id) DO UPDATE SET "
+    "operation_id = COALESCE(EXCLUDED.operation_id, ai_usage.operation_id), "
+    "provider = EXCLUDED.provider, model = EXCLUDED.model, "
+    "managed = EXCLUDED.managed, input_tokens = EXCLUDED.input_tokens, "
+    "output_tokens = EXCLUDED.output_tokens, "
+    "cost_micro_credits = EXCLUDED.cost_micro_credits, "
+    "status = EXCLUDED.status "
+    "WHERE (ai_usage.status <> 'SETTLED' OR EXCLUDED.status = 'SETTLED')"
+)
+
+
 class AiUsageStore(Store):
     async def create(self, u: AiUsage) -> None:
-        await self.q().execute(
-            f"INSERT INTO ai_usage ({_USAGE_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        from uuid import UUID
+        from app.claimctx import LostClaim, claim_job, claim_token
+        values = (
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
-            u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status, u.created_at)
+            u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
+            u.created_at)
+        token = ""
+        job = ""
+        if claim_token.get() and claim_job.get():
+            token = claim_token.get()
+            job = claim_job.get()
+        if token and job:
+            tag = await self.q().execute(
+                f"INSERT INTO ai_usage ({_USAGE_COLS}) "
+                "SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 FROM chat_jobs "
+                "WHERE id=$12::uuid AND status='RUNNING' "
+                "AND checkpoint->>'claim'=$13"
+                + _USAGE_UPSERT
+                + " AND EXISTS (SELECT 1 FROM chat_jobs WHERE id=$12::uuid "
+                "AND status='RUNNING' AND checkpoint->>'claim'=$13)",
+                *values, UUID(str(job)), token)
+            if str(tag).split()[-1] != "0":
+                return
+            owned = await self.q().fetchval(
+                "SELECT EXISTS(SELECT 1 FROM chat_jobs WHERE id=$1::uuid "
+                "AND status='RUNNING' AND checkpoint->>'claim'=$2)",
+                UUID(str(job)), token)
+            if not owned:
+                raise LostClaim()
+            return
+        await self.q().execute(
+            f"INSERT INTO ai_usage ({_USAGE_COLS}) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)" + _USAGE_UPSERT,
+            *values)
 
     async def sum_cost_since(self, user_id: UUID, since: datetime) -> int:
         return await self.q().fetchval(
@@ -68,7 +110,7 @@ class AiUsageStore(Store):
         await self.q().execute(
             "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, "
             "cost_micro_credits = $4, status = 'SETTLED' "
-            "WHERE id = $1 AND status = 'RESERVED'",
+            "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED')",
             id_, input_tokens, output_tokens, cost_micro_credits)
 
     async def release(self, id_: UUID) -> None:
