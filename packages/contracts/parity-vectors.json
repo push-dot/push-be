@@ -1,0 +1,28 @@
+{
+  "timestamp": {
+    "input": "2026-10-17T21:57:28.172000+00",
+    "json": "2026-10-17T21:57:28.172000Z"
+  },
+  "userMessageId": {
+    "jobId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "id": "55989f62-191b-5378-b874-af78426423be"
+  },
+  "pkce": {
+    "verifier": "verifier-value",
+    "challenge": "GPXfFfmq30W8w5PWMLNtzZR2q9pxnxZ4FkY2A8xIsF4"
+  },
+  "aes": {
+    "master": "test-master-key",
+    "userId": "12345678-1234-5678-1234-567812345678",
+    "provider": "OPENAI",
+    "plaintext": "secret-token",
+    "nonce": "AAECAwQFBgcICQoL",
+    "ciphertext": "IBtq8d9uPWG2OWduPVTsADLpiMPTewALdVD7WA=="
+  },
+  "stripe": {
+    "payload": "{\"id\":\"evt_1\"}",
+    "secret": "whsec_test",
+    "timestamp": 1760000000,
+    "header": "t=1760000000,v1=66e880d7175fffb43ce10c4e14db1cfb230c8804b5aafb116affbc9a836c7690"
+  }
+}

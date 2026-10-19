@@ -12,9 +12,26 @@
 
 **push-be**는 Push의 API 서버다. 채팅 요청을 `chat_jobs` 큐에 넣고 워커가 LangGraph 워크플로를 실행하며, 각 Phase는 구조적 interrupt 게이트로 사용자 승인을 기다린다. 토큰은 `chat_events`를 통해 SSE로 스트리밍되고, 클라이언트가 끊겨도 이벤트가 DB에 남아 재연결할 수 있다.
 
+## 저장소 배치
+
+```
+services/gateway     TypeScript Worker `push-be`. 인증 캐시, 속도 제한, 캐시, 라우팅
+services/core-api    TypeScript Worker `push-be-core`. 인증, 대화, 결제, 키 저장, 공고, 캘린더
+services/ai          Python Worker `push-be-python`. LangGraph, LLM, 임베딩, 크론, 사용량 기록
+packages/contracts   FastAPI OpenAPI와 그 스펙으로 만든 TypeScript 타입
+db/migrations        SQL 마이그레이션
+infra                로컬 docker compose
+```
+
+`packages/ts-shared`는 두지 않았다. 게이트웨이와 코어가 각자 타임스탬프 도우미를 둔다. 응답 바이트를 바꾸지 않으려고 게이트웨이 읽기 경로를 공유 패키지로 옮기지 않았다.
+
+게이트웨이가 직접 답하는 읽기(건강 확인, `/auth/me`, 대화 목록, 메시지 목록, 활성 스트림, 모델 목록, 채용 사이트)는 그대로다. 그 외 비-AI 경로 중 코어가 구현한 것은 `CORE` 바인딩으로 `push-be-core`에 간다. AI 경로와 아직 옮기지 않은 CRUD는 `API` 바인딩으로 `push-be-python`에 간다. `POST /conversations/:id/messages`는 코어가 크레딧을 확인하고 잡을 넣은 뒤, Python의 `POST /internal/chat/schedule`로 Workflow만 예약한다. 게이트웨이는 `/internal`을 404로 막고 `x-push-internal`을 넘기지 않는다.
+
+Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`로, PDF·웹 페이지 파싱을 `app/ingest`로 옮겼다. 도메인과 인프라 계층은 그대로다. RAG는 `app/graphs/chat.py`의 답변 준비와 `app/infrastructure/store_evidence_chunks.py`에 남아 있다. 검색이 프롬프트 조립과 한 함수 안에 있고, 청크 저장소는 인프라 어댑터라 `app/rag`로 자르면 경계만 생기고 호출은 그대로다.
+
 ## 핵심 설계
 
-- **단계 게이트 워크플로** — `app/graph/chat.py`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
+- **단계 게이트 워크플로** — `app/graphs/chat.py`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
 - **내구 큐 + 워커** — `chat_jobs` 테이블 + `FOR UPDATE SKIP LOCKED` 워커. 서버가 재시작돼도 잡이 PENDING으로 돌아가 재실행
 - **재연결 가능한 SSE** — `GET /conversations/{id}/messages/stream/active`가 진행 중 잡의 이벤트를 처음부터 재생해 이탈→복귀해도 스트림 복원
 - **근거 RAG** — evidence를 청킹·임베딩해 pgvector로 top-k 검색 후 프롬프트 주입
@@ -39,7 +56,7 @@ POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
                      documents, chat_jobs, chat_events
 ```
 
-계층은 Presentation(라우터·스키마) → Domain(서비스·상태기계) → Infrastructure(DB·외부 API 클라이언트) 방향으로만 의존한다.
+계층은 `app/api`(라우터·스키마) → Domain(서비스·상태기계) → Infrastructure(DB·외부 API 클라이언트) 방향으로만 의존한다. 파싱은 `app/ingest`, 그래프는 `app/graphs`다.
 
 ## Cloudflare Workers + Neon 배포
 
@@ -47,7 +64,7 @@ POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
 
 ### 선택한 구조
 
-FastAPI와 LangGraph를 Python Worker(`src/worker.py`, `workers.asgi`)에 남겼다. 라우터·도메인·그래프를 TypeScript로 다시 쓰지 않는다.
+FastAPI와 LangGraph를 Python Worker(`services/ai/src/worker.py`, `workers.asgi`)에 남겼다. 코어 API의 TypeScript 이전은 나중 작업이다. 이번 배치에서는 라우터·도메인·그래프를 TypeScript로 다시 쓰지 않는다.
 
 Neon 접속은 앱의 대화형 트랜잭션(`db.run` / `db.do`)을 지키기 위해 Postgres 와이어 프로토콜 클라이언트(`app/pgproto.py`)를 쓴다.
 
@@ -118,7 +135,7 @@ BYOK 키는 `BYOK_MASTER_KEY`가 있으면 잡 payload에 암호화해 넣고, W
 postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require
 ```
 
-pgvector는 모든 Neon 플랜에 있다. `migrations/0009_evidence_vectors.sql`이 `CREATE EXTENSION IF NOT EXISTS vector;`를 실행한다. SQL Editor에서 미리 켜도 된다.
+pgvector는 모든 Neon 플랜에 있다. `db/migrations/0009_evidence_vectors.sql`이 `CREATE EXTENSION IF NOT EXISTS vector;`를 실행한다. SQL Editor에서 미리 켜도 된다.
 
 ### 2. 마이그레이션
 
@@ -129,31 +146,33 @@ Worker 안에서 마이그레이션을 돌리지 않는다. CPU 한도와 매 �
 ```bash
 PG_TRANSPORT=websocket \
 DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require' \
-  python scripts/migrate.py
+  python services/ai/scripts/migrate.py
 ```
 
 ```bash
+cd services/ai
 pip install -e ".[local]"
 DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require' \
   python scripts/migrate.py
 ```
 
-`migrations/`의 `0001`–`0015`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다. `0015_rate_limits.sql`은 공유 속도 제한 카운터다.
+`db/migrations/`의 `0001`–`0015`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다. `0015_rate_limits.sql`은 공유 속도 제한 카운터다.
 
 ### 3. 시크릿
 
-`wrangler.jsonc`의 `vars`는 비밀이 아닌 기본값이다 (`DB_DRIVER=neon`, `PG_TRANSPORT=websocket`, `CHAT_EXECUTOR=workflow`, `LLM_STREAM=1`, `BLOB_STORE=db`, `SSE_MAX_POLLS=20`, `RUN_MIGRATIONS=0`). `DATABASE_URL`은 vars에 넣지 않는다.
+`services/ai/wrangler.jsonc`의 `vars`는 비밀이 아닌 기본값이다 (`DB_DRIVER=neon`, `PG_TRANSPORT=websocket`, `CHAT_EXECUTOR=workflow`, `LLM_STREAM=1`, `BLOB_STORE=db`, `SSE_MAX_POLLS=20`, `RUN_MIGRATIONS=0`). `DATABASE_URL`은 vars에 넣지 않는다.
 
 [uv](https://docs.astral.sh/uv/)로 Workers 도구를 설치한 뒤 시크릿을 넣는다.
 
 ```bash
+cd services/ai
 uv sync --group dev
 printf '%s' 'postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require' \
   | uv run pywrangler secret put DATABASE_URL
 uv run pywrangler secret put OPENROUTER_API_KEY
 ```
 
-`uv run pywrangler secret put`은 `wrangler.jsonc`의 이름인 `push-be-python`에 넣는다. 프런트 Worker `push-be`에는 `DATABASE_URL`만 따로 넣는다. `npx wrangler secret put DATABASE_URL --name push-be`. Python 의존성 번들은 `pywrangler`가 맞춘다.
+`uv run pywrangler secret put`은 `services/ai/wrangler.jsonc`의 이름인 `push-be-python`에 넣는다. 프런트 Worker `push-be`에는 `DATABASE_URL`만 따로 넣는다. `npx wrangler secret put DATABASE_URL --name push-be`. Python 의존성 번들은 `pywrangler`가 맞춘다.
 
 | 이름 | 필요 |
 | --- | --- |
@@ -170,31 +189,45 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | Browser Rendering. 없으면 정적 추출만 |
 | `EXPERIMENTS` | JSON. 5 KB를 넘으면 시크릿으로 둔다. 예시 값은 `.env.example`에 있다 |
 
-`AI_BASE_URL`, Stripe 리다이렉트 URL, `GOOGLE_GMAIL_BETA_ENABLED`는 `wrangler.jsonc` vars다.
+`AI_BASE_URL`, Stripe 리다이렉트 URL, `GOOGLE_GMAIL_BETA_ENABLED`는 `services/ai/wrangler.jsonc` vars다.
 
 ### 4. 로컬 개발
 
 asyncpg 경로:
 
 ```bash
-docker compose up -d
-pip install -e ".[local,test]"
-# .env.example 을 .env 로 복사. DATABASE_URL 은 localhost:5434
-python scripts/migrate.py
-uvicorn app.main:app --port 8080
+docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-Workers 런타임 (`wrangler dev`). 시크릿은 `.dev.vars` 또는 이미 넣은 Worker 시크릿을 쓴다. `.dev.vars`는 커밋하지 않는다.
+compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다.
 
 ```bash
+cd services/gateway && npx wrangler dev
+```
+
+노트북에서 AI만 직접 띄울 때:
+
+```bash
+cd services/ai
+pip install -e ".[local,test]"
+# 저장소 루트의 .env.example 을 .env 로 복사. DATABASE_URL 은 localhost:5434
+python scripts/migrate.py
+PYTHONPATH=src uvicorn app.main:app --port 8080
+```
+
+Workers 런타임 (`wrangler dev`). 시크릿은 `.dev.vars` 또는 이미 넣은 Worker 시크릿을 쓴다. `.dev.vars`는 커밋하지 않는다. 명령은 `services/ai`에서 실행한다. 엔트리가 `src/worker.py`라 업로드 루트는 `src/`다.
+
+```bash
+cd services/ai
 uv sync --group dev
 uv run pywrangler dev
 # wrangler dev 도 동일하다
 ```
 
-테스트:
+게이트웨이 테스트는 저장소 루트에서 `npm test`다. `npm run typecheck`는 `tsc --noEmit`이다.
 
 ```bash
+cd services/ai
 pip install -e ".[local,test]"
 python -m pytest
 ```
@@ -205,14 +238,14 @@ python -m pytest
 
 ```bash
 # 1. Python Worker (크론, Workflow, 서비스 바인딩 대상)
-uv run pywrangler deploy
-# 2. 프런트 Worker (공개 URL)
-cd front && npm ci && npx wrangler deploy
+cd services/ai && uv run pywrangler deploy
+# 2. 게이트웨이 Worker (공개 URL). 이름은 그대로 push-be
+cd ../.. && npm ci && npm exec -w push-be-front -- wrangler deploy
 ```
 
 프런트 배포는 빈 크론 목록으로 `push-be`에 남아 있는 분당 스케줄을 지운다. Python 배포의 크론은 유지된다.
 
-Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 있는 `src/`만 올리고, 저장소 루트의 `.venv`와 `.venv-workers`는 번들에 넣지 않는다. 루트에 엔트리를 두면 가상환경까지 올라가 `multipart: message too large`로 배포가 실패한다. 이력서 지시문 `app/resources/**/*.md`는 `wrangler.jsonc`의 Data 규칙으로 같이 올라가고, Worker 안에서는 `Path(__file__)`로 읽는다.
+Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그 파일이 있는 `services/ai/src/`만 올리고, `services/ai` 밖의 `.venv`와 `.venv-workers`는 번들에 넣지 않는다. `services/ai` 루트에 엔트리를 두면 가상환경까지 올라가 `multipart: message too large`로 배포가 실패한다. 이력서 지시문 `app/resources/**/*.md`는 `services/ai/wrangler.jsonc`의 Data 규칙으로 같이 올라가고, Worker 안에서는 `Path(__file__)`로 읽는다.
 
 프런트 Worker가 직접 처리하는 경로:
 
@@ -237,7 +270,7 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 | 액세스 토큰 → 사용자 | isolate. 키는 토큰 SHA-256 | `AUTH_CACHE_TTL` 초, 기본 5, 최대 5. `0`이면 끈다 | 그 isolate의 `POST /api/v1/auth/logout`와 `POST /api/v1/auth/refresh`가 2xx이면 바로 지우고 남은 할당량도 버린다. 다른 isolate는 최대 5초 동안 이전 토큰을 인정할 수 있다. 만료된 토큰, 429, `hits`가 없는 행은 넣지 않는다 |
 | `GET /api/v1/conversations`, `GET .../messages` | 캐시하지 않는다 | | 사용자 본인의 쓰기 직후에도 다음 읽기가 Neon의 현재 행을 본다 |
 | `GET /api/v1/ai/models` | Cache API | `MODEL_CACHE_TTL` 초, 기본 600. 응답은 `private` | 같은 토큰으로 `PUT`/`DELETE /api/v1/ai/keys/:provider`가 2xx이면 그 토큰의 카탈로그 키를 지운다. BYOK 가능 여부가 사용자마다 달라 `public`이 아니다 |
-| `GET /api/v1/integrations/job-sites` | Cache API | `JOB_SITES_CACHE_TTL` 초, 기본 3600. 응답은 `public` | 체크리스트가 바뀌면 `front/src/cache.ts`의 캐시 URL 버전을 올린다 |
+| `GET /api/v1/integrations/job-sites` | Cache API | `JOB_SITES_CACHE_TTL` 초, 기본 3600. 응답은 `public` | 체크리스트가 바뀌면 `services/gateway/src/middleware/cache.ts`의 캐시 URL 버전을 올린다 |
 | `GET .../messages/stream/active` | 캐시하지 않는다 | | 이벤트는 요청 시점의 `chat_events`여야 한다 |
 
 요금제 이름(`PLAN_FREE`, `PLAN_PRO`, `PLAN_ULTRA`)과 크레딧은 Python 상수다. Neon에 요금제 카탈로그가 없고, `GET /billing`은 사용자별이라 프런트가 캐시하지 않고 Python으로 넘긴다.
@@ -252,24 +285,31 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 
 채팅 Workflow 호출은 `prepare`, `generate_reply`, `persist` 세 번이다. `prepare` 안에서 claim, `resolve_context`, `prepare_reply`가 같은 Neon 연결을 쓴다. 각 호출은 재시도 5회, 2초에서 지수 백오프다. 타임아웃은 prepare 3분, generate 3분, persist 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 노드는 건너뛴다. 같은 노드가 3번 실패하면 잡을 `FAILED`로 닫는다. 예약마다 claim 토큰이 하나 생기고, 그 토큰이 `chat_jobs.checkpoint`에 들어간다. generate와 persist는 `UPDATE ... WHERE claim = $토큰`으로 주인만 이벤트, 사용량, 상태를 쓴다. 토큰을 잃은 실행은 조용히 멈춘다. `DONE`과 `FAILED`는 덮어쓰지 않는다. 프로덕션에서 `completion`이 없으면 로컬 스텁 문장을 저장하지 않고 스텝을 재시도한다. `ai_usage`는 잡과 용도마다 한 행이다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
 
-`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 멱등 키와 BYOK 암호화는 Python에 그대로 있다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
+`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 큐에 넣는 요청의 멱등 키와 BYOK 암호화는 코어 Worker가 처리한다. 스트림과 사용량 기록은 Python에 남는다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
 
 Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
 
-속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 할당량이 없으면 사용자 조회와 1건부터 커지는 선점을 SQL 한 문으로 보낸다. 선점 상한은 8이고, 읽기 상한 근처에서는 `(상한 - hits) / 16`보다 크게 받지 않는다. 읽기 상한은 공유 한도의 90%다. 쓰지 않은 수는 응답 뒤 `waitUntil` 한 번으로 모아 돌려준다. 남은 수가 1이고 카운터가 읽기 상한에서 멀면 그 조회는 생략한다. 그 문은 `hits`를 한도 위로 올리지 않는다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙일 수 있다. 할당량이 남아 있으면 목록과 메시지는 데이터만 Neon에서 읽고, `/auth/me`와 캐시에 있는 카탈로그는 Neon을 건너뛴다. 모델과 채용 사이트의 Cache API가 맞고 인증 캐시와 할당량도 있으면 Neon은 0번이다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
+속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 할당량이 없으면 사용자 조회와 1건부터 커지는 선점을 SQL 한 문으로 보낸다. 선점 상한은 8이고, 읽기 상한 근처에서는 `(상한 - hits) / 16`보다 크게 받지 않는다. 읽기 상한은 공유 한도의 90%다. 쓰지 않은 수는 응답 뒤 `waitUntil` 한 번으로 모아 돌려준다. 남은 수가 1이고 카운터가 읽기 상한에서 멀면 그 조회는 생략한다. 그 문은 `hits`를 한도 위로 올리지 않는다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙일 수 있다. 할당량이 남아 있으면 목록과 메시지는 데이터만 Neon에서 읽고, `/auth/me`와 캐시에 있는 카탈로그는 Neon을 건너뛴다. 모델과 채용 사이트의 Cache API가 맞고 인증 캐시와 할당량도 있으면 Neon은 0번이다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `db/migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
 
-프런트 Worker `front/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
+게이트웨이 Worker `services/gateway/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
 
 ### 6. GitHub Actions
 
 `.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. `actions/checkout`와 `actions/setup-python`은 존재하는 메이저 태그 `v7`에, `actions/setup-node`는 `v6`에 고정한다. `astral-sh/setup-uv`는 떠 있는 `v10` 태그가 없어서 `v10.3.0`에 고정한다. pip, npm, uv 캐시를 쓴다.
 
-- **CI** — pull request, 그리고 `develop`와 `main` push에서 `python -m pytest`와 `front`의 `npm test`를 실행한다. Postgres 16 서비스가 와이어 프로토콜 테스트까지 포함한다. 같은 워크플로가 Python 번들과 프런트 Worker `wrangler deploy --dry-run`을 확인한다. Python 번들에 `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다.
-- **CD** — push가 `main`일 때만 배포한다. 순서는 `push-be-python` (`uv run pywrangler deploy`) 다음 `push-be` (`npx wrangler deploy`, `front/`에서)다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
+- **CI** — pull request, 그리고 `develop`와 `main` push에서 바뀐 서비스만 돌린다. `services/ai`는 `python -m pytest`(Postgres 16), `services/gateway`와 `services/core-api`는 `npm test`와 `tsc --noEmit`, `db`는 pgvector에 `services/ai/scripts/migrate.py`를 적용한다. 같은 워크플로가 Python, 코어, 게이트웨이의 `wrangler deploy --dry-run`을 확인한다. Python 번들에 `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다. `main` 푸시는 경로와 상관없이 이 검사를 모두 돌린다.
+- **CD** — push가 `main`일 때만 배포한다. 순서는 `push-be-python`, `push-be-core`, `push-be`다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
 
 배포 잡은 코드와 wrangler vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않고, KV 네임스페이스도 만들지 않는다. Worker에 이미 넣어 둔 런타임 시크릿은 배포를 거듭해도 그대로다.
 
-프런트 Worker(`push-be`)에도 `DATABASE_URL`이 필요하다. Neon HTTP(`@neondatabase/serverless`)로 읽기 전용 쿼리를 보낸다. 이름이 같은 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다. 처음 배포 뒤에 `npx wrangler secret list`로 확인하고, 없으면 넣는다.
+프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 AI 키와 채팅 BYOK를 암호화하므로 `BYOK_MASTER_KEY`도 필요하다. 저장소 시크릿 `DATABASE_URL`과 `BYOK_MASTER_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
+
+```bash
+printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-core
+printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY --name push-be-core
+```
+
+OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
 
 Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
 
@@ -288,4 +328,4 @@ GitHub 저장소 시크릿 (Settings → Secrets and variables → Actions):
 
 `OPENROUTER_API_KEY`는 GitHub 시크릿으로 두지 않는다. Worker 시크릿으로 한 번 넣으면 된다.
 
-마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 기본 전송은 websocket(`wss://<direct-host>/v2`)이고, 5432가 열리면 입력에서 tcp를 고른다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.
+마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 기본 전송은 websocket(`wss://<direct-host>/v2`)이고, 5432가 열리면 입력에서 tcp를 고른다. 이 작업은 `services/ai/scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.

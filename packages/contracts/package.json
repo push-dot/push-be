@@ -1,0 +1,14 @@
+{
+  "name": "@push/contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/schema.ts"
+  },
+  "scripts": {
+    "generate": "python3 scripts/export_openapi.py && openapi-typescript openapi.json -o src/schema.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.10.1"
+  }
+}
