@@ -8,7 +8,6 @@ data/
 .wrangler/
 python_modules/
 node_modules/
-front/node_modules/
 pylock.toml
 uv.lock
-src/*.egg-info/
+*.egg-info/
