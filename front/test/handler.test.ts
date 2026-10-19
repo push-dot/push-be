@@ -694,7 +694,9 @@ test("a spread burst returns unused leases and serves at least 90% of 540", asyn
   }
   assert.ok(ok >= Math.floor(cap * 0.9), `served ${ok} of ${cap}`);
   assert.ok(counter.hits <= cap);
-  assert.equal(counter.hits, ok);
+  assert.ok(counter.hits >= ok);
+  // A single leftover under a quarter of the cap is left in place.
+  assert.ok(counter.hits - ok <= Math.floor(cap / 4));
   assert.ok(limit - cap >= Math.floor(limit / 10));
 });
 
@@ -735,7 +737,8 @@ test("fifty fresh leases and 300 requests do not false-429", async () => {
   assert.ok(counter.hits > ok);
   for (const open of gates.splice(0)) open();
   await Promise.all(tasks);
-  assert.equal(counter.hits, ok);
+  assert.ok(counter.hits >= ok);
+  assert.ok(counter.hits - ok <= Math.floor(cap / 4));
   assert.ok(slept.some((ms) => ms > 0 && ms <= 1000));
 });
 
@@ -760,6 +763,101 @@ test("a mostly unused lease near the cap returns immediately", async () => {
   await Promise.all(tasks);
   assert.ok(slept.includes(0));
   assert.equal(counter.hits, 502);
+});
+
+async function settle(gates: Array<() => void>, tasks: Promise<unknown>[]): Promise<void> {
+  for (let turn = 0; turn < 8; turn += 1) {
+    const pending = tasks.splice(0);
+    const open = gates.splice(0);
+    if (pending.length === 0 && open.length === 0) return;
+    for (const release of open) release();
+    await Promise.all(pending);
+  }
+}
+
+test("concurrent requests in one isolate return the whole unused pool", async () => {
+  resetLimits();
+  const limit = 600;
+  const cap = limit - Math.floor(limit / 10);
+  const counter = { hits: 0 };
+  let releases = 0;
+  let hold = false;
+  const waiting: Array<() => void> = [];
+  const query: Query = async (sql, params) => {
+    if (hold && sql.includes("access_tokens")) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    }
+    if (sql.includes("GREATEST(0, hits")) {
+      releases += 1;
+      counter.hits = Math.max(0, counter.hits - Number(params[1]));
+      return [{ hits: counter.hits }];
+    }
+    return leasedQuery(counter, cap)(sql, params);
+  };
+  const limits = { user: limit, public: 60, windowMs: 60_000 };
+  const tasks: Promise<unknown>[] = [];
+  const gates: Array<() => void> = [];
+  const d = deps(query, {
+    limits,
+    sleep: (ms) => new Promise((resolve) => {
+      if (ms <= 0) resolve();
+      else gates.push(resolve);
+    }),
+    waitUntil: (promise) => { tasks.push(promise); },
+  });
+  const headers = { authorization: "Bearer same-isolate" };
+  const one = () => handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  for (let n = 0; n < 7; n += 1) {
+    const primed = await one();
+    assert.equal(primed.status, 200);
+  }
+  hold = true;
+  const burstPromise = Promise.all(Array.from({ length: 40 }, () => one()));
+  for (let spin = 0; waiting.length < 40 && spin < 1000; spin += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(waiting.length, 40);
+  for (const go of waiting.splice(0)) go();
+  const burst = await burstPromise;
+  const ok = burst.filter((res) => res.status === 200).length + 7;
+  assert.equal(ok, 47);
+  await settle(gates, tasks);
+  assert.equal(counter.hits, ok);
+  assert.ok(releases >= 1);
+  assert.ok(releases < ok / 2, `release queries ${releases} for ${ok} served`);
+});
+
+test("one unused hit far from the cap skips the return query", async () => {
+  resetLimits();
+  const cap = 540;
+  const counter = { hits: 0 };
+  let releases = 0;
+  const query: Query = async (sql, params) => {
+    if (sql.includes("GREATEST(0, hits")) {
+      releases += 1;
+      counter.hits = Math.max(0, counter.hits - Number(params[1]));
+      return [{ hits: counter.hits }];
+    }
+    return leasedQuery(counter, cap)(sql, params);
+  };
+  const tasks: Promise<unknown>[] = [];
+  const gates: Array<() => void> = [];
+  const d = deps(query, {
+    limits: { user: 600, public: 60, windowMs: 60_000 },
+    sleep: (ms) => new Promise((resolve) => {
+      if (ms <= 0) resolve();
+      else gates.push(resolve);
+    }),
+    waitUntil: (promise) => { tasks.push(promise); },
+  });
+  const headers = { authorization: "Bearer quiet-token" };
+  const first = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  const second = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  await settle(gates, tasks);
+  assert.equal(releases, 0);
+  assert.equal(counter.hits, 3);
 });
 
 test("an idle isolate returns the unused lease", async () => {
