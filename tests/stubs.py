@@ -79,6 +79,13 @@ class StubConversationStore:
     async def create_message(self, m):
         self.messages.append(m)
 
+    async def upsert_user_message(self, m):
+        await self.create_message(m)
+
+    async def delete_unlinked_user_message(self, message_id):
+        self.messages = [m for m in self.messages
+                         if getattr(m, "id", None) != message_id]
+
     async def list_messages(self, user_id, conversation_id, page):
         return self.messages
 

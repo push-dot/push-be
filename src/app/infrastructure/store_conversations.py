@@ -57,6 +57,26 @@ class ConversationStore(Store):
             m.id, m.user_id, m.conversation_id, m.role, m.text, dump(m.attachments),
             m.operation_id, m.created_at)
 
+    async def upsert_user_message(self, m: Message) -> None:
+        """Insert the user message, or fill in the row written at enqueue.
+
+        ``created_at`` stays at the enqueue time so the list order does not
+        jump when the assistant reply is stored.
+        """
+        await self.q().execute(
+            f"INSERT INTO messages ({_MSG_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+            "ON CONFLICT (id) DO UPDATE SET attachments = EXCLUDED.attachments, "
+            "operation_id = EXCLUDED.operation_id, text = EXCLUDED.text",
+            m.id, m.user_id, m.conversation_id, m.role, m.text, dump(m.attachments),
+            m.operation_id, m.created_at)
+
+    async def delete_unlinked_user_message(self, message_id: UUID) -> None:
+        """Drop a USER row that never became part of a finished operation."""
+        await self.q().execute(
+            "DELETE FROM messages WHERE id = $1 AND role = 'USER' "
+            "AND operation_id IS NULL",
+            message_id)
+
     async def list_messages(self, user_id: UUID, conversation_id: UUID, page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)
