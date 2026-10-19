@@ -13,6 +13,9 @@
   "observability": {
     "enabled": true
   },
+  // Keep this cron. The public `push-be` worker deploys `"crons": []`
+  // only to delete the schedule left on that name; this worker still
+  // nudges pending chats and sweeps rate-limit rows.
   "triggers": {
     "crons": ["* * * * *"]
   },
@@ -29,7 +32,7 @@
     "PG_TRANSPORT": "websocket",
     "RUN_MIGRATIONS": "0",
     "CHAT_EXECUTOR": "workflow",
-    "LLM_STREAM": "0",
+    "LLM_STREAM": "1",
     "BLOB_STORE": "db",
     "SSE_MAX_POLLS": "20",
     "AI_BASE_URL": "https://openrouter.ai/api/v1",

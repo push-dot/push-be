@@ -322,16 +322,17 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
   assert.ok(calls.length > after);
 });
 
-test("shared rate limit rejects once the neon counter is over the limit", async () => {
+test("shared rate limit is one query with auth and a full bucket is not written again", async () => {
   resetLimits();
-  let hits = 0;
+  const seen: string[] = [];
   const query: Query = async (sql) => {
+    seen.push(sql);
     if (sql.includes("access_tokens")) {
-      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
-    }
-    if (sql.includes("rate_limits")) {
-      hits += 1;
-      return [{ hits }];
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1,
+      }];
     }
     return [];
   };
@@ -340,11 +341,57 @@ test("shared rate limit rejects once the neon counter is over the limit", async 
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(ok.status, 200);
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /access_tokens/);
+  assert.match(seen[0], /rate_limits\.hits < \$4/);
   const denied = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(denied.status, 429);
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+  assert.equal(seen.length, 1);
+});
+
+test("a counter another isolate already filled does not increment", async () => {
+  resetLimits();
+  let calls = 0;
+  const query: Query = async (sql) => {
+    calls += 1;
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: null,
+      }];
+    }
+    return [];
+  };
+  const d = deps(query);
+  const denied = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(denied.status, 429);
+  const again = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), d);
+  assert.equal(again.status, 429);
+  assert.equal(calls, 1);
+});
+
+test("auth still succeeds when the shared counter query fails", async () => {
+  resetLimits();
+  const query: Query = async (sql) => {
+    if (sql.includes("rate_limits")) throw new Error("undefined_table");
+    if (sql.includes("access_tokens")) {
+      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+    }
+    return [];
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /"displayName": "Ada"/);
 });
 
 test("api healthz uses the shared public counter", async () => {
@@ -359,7 +406,27 @@ test("api healthz uses the shared public counter", async () => {
   assert.equal(res.status, 200);
   assert.equal(seen.length, 1);
   assert.match(seen[0].sql, /rate_limits/);
+  assert.match(seen[0].sql, /rate_limits\.hits < \$3/);
   assert.equal(seen[0].params[0], `ip:203.0.113.5:${Math.floor(NOW.getTime() / 1000 / 60)}`);
+  assert.equal(seen[0].params[2], 60);
+});
+
+test("a full public counter does not write again", async () => {
+  resetLimits();
+  let calls = 0;
+  const d = deps(async () => {
+    calls += 1;
+    return [];
+  }, { limits: { user: 600, public: 1, windowMs: 60_000 } });
+  const first = await handle(new Request("https://push-be.example/api/v1/healthz", {
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+  }), env(), d);
+  assert.equal(first.status, 429);
+  const second = await handle(new Request("https://push-be.example/api/v1/healthz", {
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+  }), env(), d);
+  assert.equal(second.status, 429);
+  assert.equal(calls, 1);
 });
 
 test("a rejected python proxy and a broken cache still return a response", async () => {

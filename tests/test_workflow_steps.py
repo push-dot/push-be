@@ -5,11 +5,19 @@ from app.domain.services.conversation import (
     step_already_done,
     step_fail_limit_reached,
 )
-from worker import _NODE_TIMEOUTS, _step_config
+from worker import WORKFLOW_STEP_PLAN, _NODE_TIMEOUTS, _step_config
 
 
 def test_every_workflow_node_has_a_timeout():
     assert tuple(_NODE_TIMEOUTS) == WORKFLOW_NODES
+
+
+def test_claim_and_context_share_one_step():
+    assert [name for name, _nodes, _timeout in WORKFLOW_STEP_PLAN] == [
+        "prepare", "generate_reply", "persist"]
+    assert WORKFLOW_STEP_PLAN[0][1] == ("resolve_context", "prepare_reply")
+    assert WORKFLOW_STEP_PLAN[1][2] == "3 minutes"
+    assert WORKFLOW_STEP_PLAN[2][2] == "1 minute"
 
 
 def test_step_retry_uses_exponential_backoff():

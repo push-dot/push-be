@@ -173,15 +173,16 @@ async def test_external_post_message_returns_queued_without_polling(monkeypatch)
     jobs = StubChatJobStore()
     polls = {"n": 0}
 
-    async def enqueue(uid, cid, payload):
+    async def enqueue_started(uid, cid, payload, status_text):
         jobs.payload = payload
+        jobs.status_text = status_text
         return jobs.job_id
 
     async def events_since(job_id, after):
         polls["n"] += 1
         return []
 
-    jobs.enqueue = enqueue
+    jobs.enqueue_started = enqueue_started
     jobs.events_since = events_since
     svc.jobs = jobs
     op = await svc.post_message(
@@ -191,6 +192,7 @@ async def test_external_post_message_returns_queued_without_polling(monkeypatch)
     assert op.result is not None
     assert op.result.value == {"jobId": str(jobs.job_id)}
     assert scheduled == [(str(jobs.job_id), "")]
+    assert jobs.status_text == "대기 중"
     assert polls["n"] == 0
     assert convs.messages == []
     assert svc._compiled is None
@@ -326,3 +328,54 @@ async def test_feature_disabled_does_not_save_user_message(monkeypatch):
         event_sink.reset(sink)
     assert e.value.code == "FEATURE_DISABLED"
     assert store.messages == []
+
+
+async def test_external_post_message_missing_conversation(monkeypatch):
+    monkeypatch.setattr(
+        "app.domain.services.conversation.external_jobs", lambda: True)
+
+    async def schedule(job_id, byok):
+        return None
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.schedule_chat_job", schedule)
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    jobs = StubChatJobStore()
+
+    async def enqueue_started(uid, cid, payload, status_text):
+        return None
+
+    jobs.enqueue_started = enqueue_started
+    svc.jobs = jobs
+    with pytest.raises(DomainError) as e:
+        await svc.post_message(user_id, conv.id, "hi", {}, None, "SUGGEST", "")
+    assert e.value.code == "NOT_FOUND"
+
+
+async def test_flush_chat_events_publishes_status_and_token_chunks():
+    import asyncio
+    from app.domain.services.conversation import flush_chat_events
+
+    calls = []
+
+    async def emit_many(job_id, events):
+        calls.append(list(events))
+
+    queue: asyncio.Queue = asyncio.Queue()
+    job_id = uuid4()
+    task = asyncio.create_task(flush_chat_events(
+        emit_many, job_id, queue, batch_chars=5, flush_s=0.02))
+    queue.put_nowait({"status": "응답 작성 중"})
+    queue.put_nowait({"token": "a"})
+    queue.put_nowait({"token": "bb"})
+    queue.put_nowait({"token": "ccc"})
+    queue.put_nowait({"token": "d"})
+    await asyncio.sleep(0.08)
+    queue.put_nowait(None)
+    await task
+    assert calls[0] == [("status", {"text": "응답 작성 중"})]
+    assert calls[1] == [("token", {"text": "a"})]
+    assert calls[2] == [("token", {"text": "bb"}), ("token", {"text": "ccc"})]
+    assert calls[3] == [("token", {"text": "d"})]

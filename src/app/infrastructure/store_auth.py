@@ -100,6 +100,19 @@ class SessionStore(Store):
             "SELECT id, user_id, token_hash, refresh_token_id, expires_at, created_at "
             "FROM access_tokens WHERE token_hash = $1", token_hash))
 
+    async def get_user_by_access_token(self, token_hash: str):
+        """User plus access-token expiry, in one query."""
+        row = await self.one(
+            "SELECT u.id, u.provider, u.provider_subject, u.display_name, "
+            "u.locale, u.plan, u.subscription_status, u.stripe_customer_id, "
+            "u.period_ends_at, u.created_at, t.expires_at AS token_expires_at "
+            "FROM access_tokens t JOIN users u ON u.id = t.user_id "
+            "WHERE t.token_hash = $1",
+            token_hash)
+        data = dict(row)
+        expires = data.pop("token_expires_at")
+        return to_model(User, data), expires
+
     async def save_refresh_token(self, t: RefreshToken) -> None:
         await self.q().execute(
             "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, "

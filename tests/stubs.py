@@ -224,6 +224,16 @@ class StubChatJobStore:
         self.events.append({"id": len(self.events) + 1, "type": type_,
                             "payload": payload})
 
+    async def enqueue_started(self, user_id: UUID, conversation_id: UUID,
+                              payload: dict, status_text: str = "대기 중"):
+        self.payload = payload
+        self.status_text = status_text
+        self.events.append({
+            "id": len(self.events) + 1, "type": "status",
+            "payload": {"text": status_text},
+        })
+        return self.job_id
+
     async def finish(self, job_id: UUID, status: str, error=None):
         self.finished.append((status, error))
         self.status = status

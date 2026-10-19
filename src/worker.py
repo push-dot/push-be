@@ -53,7 +53,7 @@ def apply_env(env) -> None:
     os.environ.setdefault("PG_TRANSPORT", "websocket")
     os.environ.setdefault("RUN_MIGRATIONS", "0")
     os.environ.setdefault("CHAT_EXECUTOR", "workflow")
-    os.environ.setdefault("LLM_STREAM", "0")
+    os.environ.setdefault("LLM_STREAM", "1")
     os.environ.setdefault("BLOB_STORE", "db")
     os.environ.setdefault("SSE_MAX_POLLS", "20")
     _patch_to_thread()
@@ -151,9 +151,20 @@ _NODE_TIMEOUTS = {
     "persist": "1 minute",
 }
 
+# One Workflow invocation per entry. claim, resolve_context, and
+# prepare_reply share the first invocation: each extra step was a new
+# worker start plus a Neon WebSocket, and that gap is what the client
+# waited through before the first status. generate and persist stay
+# apart so the model call and the write each get a CPU budget.
+WORKFLOW_STEP_PLAN = (
+    ("prepare", ("resolve_context", "prepare_reply"), "3 minutes"),
+    ("generate_reply", ("generate_reply",), _NODE_TIMEOUTS["generate_reply"]),
+    ("persist", ("persist",), _NODE_TIMEOUTS["persist"]),
+)
+
 
 class ChatWorkflow(WorkflowEntrypoint):
-    """One graph node per step so each step gets a fresh free-plan CPU budget."""
+    """Three steps: prepare (claim + context), generate, persist."""
 
     async def run(self, event, step):
         apply_env(self.env)
@@ -174,33 +185,29 @@ class ChatWorkflow(WorkflowEntrypoint):
             return
         svc = app.state.deps.conversations
 
-        @step.do("claim", config=_step_config("30 seconds"))
-        async def claim():
-            scope = _begin_db_scope()
-            try:
-                return await svc.claim_for_workflow(job_id, byok)
-            finally:
-                await _end_db_scope(scope)
-
-        if await claim() != "ok":
-            return
-
-        # step.do injects dependencies by parameter name, so the node name
-        # must be closed over rather than passed as a default argument.
-        def make_step(node):
-            @step.do(node, config=_step_config(_NODE_TIMEOUTS[node]))
-            async def run_node():
+        # step.do injects dependencies by parameter name, so names are
+        # closed over rather than passed as default arguments.
+        def make_step(step_name, nodes, timeout):
+            @step.do(step_name, config=_step_config(timeout))
+            async def run_step():
                 scope = _begin_db_scope()
                 try:
-                    return await svc.exec_chat_node(job_id, node)
+                    if step_name == "prepare":
+                        claimed = await svc.claim_for_workflow(job_id, byok)
+                        if claimed != "ok":
+                            return claimed
+                    for node in nodes:
+                        result = await svc.exec_chat_node(job_id, node)
+                        if result != "ok":
+                            return result
+                    return "ok"
                 finally:
                     await _end_db_scope(scope)
 
-            return run_node
+            return run_step
 
-        for node in ("resolve_context", "prepare_reply", "generate_reply",
-                     "persist"):
-            if await make_step(node)() != "ok":
+        for step_name, nodes, timeout in WORKFLOW_STEP_PLAN:
+            if await make_step(step_name, nodes, timeout)() != "ok":
                 return
 
 

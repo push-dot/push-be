@@ -130,6 +130,48 @@ async def test_refresh_unknown_token():
 
 
 @pytest.mark.asyncio
+async def test_resolve_access_token_is_one_lookup():
+    user = _user()
+    sessions = StubSessionStore()
+    calls = []
+
+    async def get_user_by_access_token(token_hash):
+        calls.append(token_hash)
+        return user, datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    sessions.get_user_by_access_token = get_user_by_access_token
+    svc = _svc(sessions, user)
+    svc.app_env = "production"
+    out = await svc.resolve_access_token("secret-token")
+    assert out.id == user.id
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_access_token_expired_and_missing():
+    user = _user()
+    sessions = StubSessionStore()
+
+    async def expired(token_hash):
+        return user, datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    sessions.get_user_by_access_token = expired
+    svc = _svc(sessions, user)
+    svc.app_env = "production"
+    with pytest.raises(DomainError) as exc:
+        await svc.resolve_access_token("secret-token")
+    assert exc.value.code == "TOKEN_EXPIRED"
+
+    async def missing(token_hash):
+        raise NotFoundError()
+
+    sessions.get_user_by_access_token = missing
+    with pytest.raises(DomainError) as exc:
+        await svc.resolve_access_token("secret-token")
+    assert exc.value.code == "UNAUTHENTICATED"
+
+
+@pytest.mark.asyncio
 async def test_oauth_concurrent_first_login():
     import asyncio
     svc = _svc(StubSessionStore(), None)
