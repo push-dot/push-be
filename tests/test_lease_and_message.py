@@ -19,9 +19,12 @@ DSN = os.environ.get(
 LEASE_BATCH = 20
 # Same grant as front/src/handler.ts. $4 is the batch, $5 is unused hits
 # being returned. The increment is stored as whole seconds on expires_at.
+# Near the cap the grant shrinks to max(1, room / 16) and never past room.
 _AFTER = "GREATEST(0, rate_limits.hits - GREATEST($5::int, 0))"
-_INSERT = "LEAST($4::int, $2::int)"
-_UPDATE = "LEAST($4::int, GREATEST(0, $2::int - " + _AFTER + "))"
+_ROOM = "GREATEST(0, $2::int - " + _AFTER + ")"
+_SHRINK = "CASE WHEN " + _ROOM + " = 0 THEN 0 ELSE GREATEST(1, " + _ROOM + " / 16) END"
+_INSERT = "LEAST($4::int, $2::int, CASE WHEN $2::int = 0 THEN 0 ELSE GREATEST(1, $2::int / 16) END)"
+_UPDATE = "LEAST($4::int, " + _ROOM + ", " + _SHRINK + ")"
 LEASE_SQL = (
     "WITH bumped AS ("
     "INSERT INTO rate_limits (bucket, hits, expires_at) "
@@ -167,10 +170,14 @@ async def test_lease_claims_never_pass_the_limit():
         assert hits <= limit
         assert hits == sum(grants)
         assert hits == limit
+        assert "/ 16" in LEASE_SQL
+        # Releasing 5 at a full bucket leaves room 5. 5/16 is 0, so the
+        # grant is 1 and the row stays under the limit.
         returned = await pools[0].fetchrow(
             LEASE_SQL, bucket, limit, 2_000_000_000, LEASE_BATCH, 5)
-        assert int(returned["granted"]) == 5
-        assert int(returned["hits"]) == limit
+        assert int(returned["granted"]) == 1
+        assert int(returned["hits"]) == limit - 5 + 1
+        assert int(returned["hits"]) <= limit
     finally:
         try:
             await pools[0].execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
