@@ -1,10 +1,22 @@
 name: Migrate database
 
 # Manual only. Pushes to develop/main deploy the Worker and do not migrate.
-# This job uses the GitHub secret DATABASE_URL over TCP. It does not call
+# This job uses the GitHub secret DATABASE_URL. It does not call
 # `wrangler secret put`, so Worker runtime secrets stay as they are.
+#
+# Default transport is websocket (Neon wss://<direct-host>/v2), so the
+# job does not need outbound port 5432. Choose tcp when 5432 is open.
 on:
   workflow_dispatch:
+    inputs:
+      transport:
+        description: "tcp uses port 5432. websocket uses Neon wss://host/v2."
+        type: choice
+        required: true
+        default: websocket
+        options:
+          - websocket
+          - tcp
 
 permissions:
   contents: read
@@ -21,13 +33,26 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install dependencies
-        run: python -m pip install -e .
+        env:
+          MIGRATE_TRANSPORT: ${{ inputs.transport }}
+        run: |
+          python -m pip install -e .
+          case "$MIGRATE_TRANSPORT" in
+            websocket) python -m pip install 'websockets>=13,<17' ;;
+            tcp) ;;
+            *) echo "transport must be tcp or websocket." >&2; exit 1 ;;
+          esac
       - name: Apply migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PG_TRANSPORT: ${{ inputs.transport }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "Repository secret DATABASE_URL is not set."
             exit 1
           fi
+          case "$PG_TRANSPORT" in
+            tcp|websocket) ;;
+            *) echo "PG_TRANSPORT must be tcp or websocket." >&2; exit 1 ;;
+          esac
           python scripts/migrate.py

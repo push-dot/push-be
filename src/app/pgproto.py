@@ -316,27 +316,52 @@ class BufferedStream(ByteStream):
         await self._close()
 
 
-def _tcp_socket(host: str, port: int, sslmode: str) -> socket.socket:
-    sock = socket.create_connection((host, port), timeout=20)
-    if sslmode == "disable":
-        return sock
-    sock.sendall(struct.pack("!II", 8, 80877103))
-    resp = sock.recv(1)
-    if resp != b"S":
-        if sslmode == "prefer":
-            return sock
-        raise ConnectionError("server refused SSL")
+def _ssl_context(sslmode: str) -> ssl.SSLContext:
+    """Match libpq: ``require`` encrypts without verifying the certificate."""
     ctx = ssl.create_default_context()
     if sslmode == "require":
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    return ctx.wrap_socket(sock, server_hostname=host)
+    return ctx
+
+
+def _negotiate_tls(host: str, port: int, sslmode: str
+                   ) -> tuple[socket.socket, Optional[ssl.SSLContext]]:
+    """Open TCP and finish the Postgres SSLRequest.
+
+    The returned socket is still a plain ``socket.socket``. Python 3.12
+    rejects an ``SSLSocket`` in ``asyncio.open_connection`` (``TypeError:
+    Socket cannot be of type SSLSocket``), so TLS is started by asyncio
+    with ``ssl=`` and ``server_hostname``.
+    """
+    sock = socket.create_connection((host, port), timeout=20)
+    try:
+        if sslmode == "disable":
+            sock.settimeout(None)
+            return sock, None
+        sock.sendall(struct.pack("!II", 8, 80877103))
+        resp = sock.recv(1)
+        if resp != b"S":
+            if sslmode == "prefer":
+                sock.settimeout(None)
+                return sock, None
+            raise ConnectionError("server refused SSL")
+        sock.settimeout(None)
+        return sock, _ssl_context(sslmode)
+    except Exception:
+        sock.close()
+        raise
 
 
 async def open_tcp_stream(dsn: dict) -> ByteStream:
-    sock = await asyncio.to_thread(
-        _tcp_socket, dsn["host"], dsn["port"], dsn["sslmode"])
-    reader, writer = await asyncio.open_connection(sock=sock)
+    sock, ctx = await asyncio.to_thread(
+        _negotiate_tls, dsn["host"], dsn["port"], dsn["sslmode"])
+    kwargs: dict[str, Any] = {"sock": sock}
+    if ctx is not None:
+        kwargs["ssl"] = ctx
+        kwargs["server_hostname"] = dsn["host"]
+    # asyncio closes the socket if the handshake fails.
+    reader, writer = await asyncio.open_connection(**kwargs)
     return _ReaderStream(reader, writer)
 
 

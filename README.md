@@ -124,7 +124,7 @@ pgvector는 모든 Neon 플랜에 있다. `migrations/0009_evidence_vectors.sql`
 
 Worker 안에서 마이그레이션을 돌리지 않는다. CPU 한도와 매 콜드 스타트 실행을 피하기 위해 `RUN_MIGRATIONS=0`이다. `develop`나 `main`에 푸시해도 스키마는 바뀌지 않는다. 5432로 나가는 노트북에서 실행하거나, Actions의 **Migrate database**를 수동 실행한다.
 
-기본 전송은 TCP다. 나가는 5432가 막혀 있으면 `PG_TRANSPORT=websocket`으로 Neon의 `wss://<host>/v2`를 쓴다. 프로토콜은 같고, 호스트는 여전히 pooler가 아닌 Direct다.
+노트북에서 직접 돌릴 때의 기본 전송은 TCP다. `sslmode=require`는 암호화를 하고 인증서는 검사하지 않는다. TLS는 asyncio가 시작한다. 나가는 5432가 막혀 있으면 `PG_TRANSPORT=websocket`으로 Neon의 `wss://<host>/v2`를 쓴다. 프로토콜은 같고, 호스트는 여전히 pooler가 아닌 Direct다. Actions의 **Migrate database**는 기본이 websocket이고, 실행할 때 tcp로 바꿀 수 있다.
 
 ```bash
 PG_TRANSPORT=websocket \
@@ -138,7 +138,7 @@ DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?ssl
   python scripts/migrate.py
 ```
 
-`migrations/`의 `0001`–`0014`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다.
+`migrations/`의 `0001`–`0015`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다. `0015_rate_limits.sql`은 공유 속도 제한 카운터다.
 
 ### 3. 시크릿
 
@@ -273,4 +273,4 @@ GitHub 저장소 시크릿 (Settings → Secrets and variables → Actions):
 
 `OPENROUTER_API_KEY`는 GitHub 시크릿으로 두지 않는다. Worker 시크릿으로 한 번 넣으면 된다.
 
-마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.
+마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 기본 전송은 websocket(`wss://<direct-host>/v2`)이고, 5432가 열리면 입력에서 tcp를 고른다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.
