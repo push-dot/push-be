@@ -28,6 +28,32 @@ class ChatJobStore:
             job_id, user_id, conversation_id, _dump(payload))
         return job_id
 
+    async def enqueue_started(self, user_id: UUID, conversation_id: UUID,
+                              payload: dict, status_text: str) -> Optional[UUID]:
+        """Insert the job and a status event, or return None if the chat is gone.
+
+        The conversation check, the insert, and the first SSE status are
+        one round trip. Archived chats are still inserted; resolve_context
+        rejects them later, matching ``conversations.get``.
+        """
+        job_id = uuid4()
+        row = await self.db.q().fetchrow(
+            "WITH conv AS ("
+            "SELECT id FROM conversations WHERE id = $2 AND user_id = $1"
+            "), job AS ("
+            "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
+            "SELECT $3, $1, conv.id, $4 FROM conv RETURNING id"
+            "), ev AS ("
+            "INSERT INTO chat_events (job_id, type, payload) "
+            "SELECT job.id, 'status', $5 FROM job RETURNING job_id"
+            ") "
+            "SELECT job.id FROM job JOIN ev ON ev.job_id = job.id",
+            user_id, conversation_id, job_id, _dump(payload),
+            _dump({"text": status_text}))
+        if row is None:
+            return None
+        return row["id"]
+
     async def claim(self) -> Optional[dict]:
         row = await self.db.pool.fetchrow(
             "UPDATE chat_jobs SET status='RUNNING', attempt=attempt+1, "

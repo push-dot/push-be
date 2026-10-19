@@ -30,6 +30,16 @@ async def test_shared_counter_allows_until_limit():
     bucket = pool.calls[0][1][0]
     assert bucket.startswith("user:u1:")
     assert "rate_limits" in pool.calls[0][0]
+    assert "hits <" in pool.calls[0][0]
+    assert pool.calls[0][1][2] == 2
+    assert pool.calls[1][1][2] == 2
+
+
+async def test_full_bucket_does_not_increment():
+    reset_for_tests()
+    pool = _Pool(hits=None)
+    assert await allow(pool, "user", "u1", 2, now=1_700_000_000.0) is False
+    assert pool.calls[0][1][2] == 2
 
 
 async def test_missing_table_falls_back_to_memory_then_retries():

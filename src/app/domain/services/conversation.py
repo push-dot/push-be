@@ -53,6 +53,62 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
     return fails >= MAX_STEP_FAILS
 
 
+_TOKEN_BATCH = 160
+_TOKEN_FLUSH_S = 0.05
+
+
+async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
+                            *, batch_chars: int = _TOKEN_BATCH,
+                            flush_s: float = _TOKEN_FLUSH_S) -> None:
+    """Write status immediately, the first token immediately, then chunks.
+
+    ``emit_many`` is awaited between model deltas, so a streaming step
+    publishes ``chat_events`` before the step returns. A retry deletes
+    events after the checkpoint high-water, so a partial flush is safe.
+    """
+    batch: list[tuple[str, dict]] = []
+    chars = 0
+    saw_token = False
+
+    async def flush() -> None:
+        nonlocal batch, chars
+        if not batch:
+            return
+        pending = batch
+        batch = []
+        chars = 0
+        await emit_many(job_id, pending)
+
+    while True:
+        try:
+            if batch:
+                item = await asyncio.wait_for(queue.get(), flush_s)
+            else:
+                item = await queue.get()
+        except asyncio.TimeoutError:
+            await flush()
+            continue
+        if item is None:
+            await flush()
+            return
+        if "status" in item:
+            await flush()
+            await emit_many(job_id, [("status", {"text": item["status"]})])
+            continue
+        if "token" not in item:
+            continue
+        text = item["token"]
+        if not saw_token:
+            await flush()
+            await emit_many(job_id, [("token", {"text": text})])
+            saw_token = True
+            continue
+        batch.append(("token", {"text": text}))
+        chars += len(text or "")
+        if chars >= batch_chars:
+            await flush()
+
+
 def _checkpoint_dict(raw) -> dict:
     if isinstance(raw, dict):
         return raw
@@ -377,7 +433,6 @@ class ConversationService:
 
     async def _stream_via_queue(self, user_id, conversation_id, text, context,
                                 ai, access_mode, byok_key):
-        await self.get(user_id, conversation_id)
         payload = {
             "text": text,
             "context": context or {},
@@ -385,7 +440,10 @@ class ConversationService:
             "access_mode": access_mode,
         }
         payload = self._stash_byok(user_id, payload, byok_key)
-        job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
+        job_id = await self.jobs.enqueue_started(
+            user_id, conversation_id, payload, "대기 중")
+        if job_id is None:
+            raise not_found()
         if byok_key:
             self._byok_keys[job_id] = byok_key
         if external_jobs():
@@ -481,14 +539,18 @@ class ConversationService:
 
     async def _enqueue(self, user_id, conversation_id, text, context,
                                 ai, access_mode, byok_key) -> ent.Operation:
-        await self.get(user_id, conversation_id)
         payload = self._stash_byok(user_id, {
             "text": text,
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
         }, byok_key)
-        job_id = await self.jobs.enqueue(user_id, conversation_id, payload)
+        # One statement checks the conversation, inserts the job, and writes
+        # the first status so SSE shows progress before the Workflow starts.
+        job_id = await self.jobs.enqueue_started(
+            user_id, conversation_id, payload, "대기 중")
+        if job_id is None:
+            raise not_found()
         if byok_key:
             self._byok_keys[job_id] = byok_key
         await schedule_chat_job(job_id, byok_key)
@@ -539,8 +601,24 @@ class ConversationService:
         byok = self._byok_keys.get(jid) or self._byok_from_payload(
             job["user_id"], payload)
         token = _BYOK_KEY.set(byok or "")
-        events: list[dict] = []
-        sink = event_sink.set(events)
+        queue: asyncio.Queue = asyncio.Queue()
+        closed = False
+
+        class _Sink:
+            def append(self, item: dict) -> None:
+                queue.put_nowait(item)
+
+        async def close_pump() -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            queue.put_nowait(None)
+            await pump
+
+        sink = event_sink.set(_Sink())
+        pump = asyncio.create_task(
+            flush_chat_events(self.jobs.emit_many, jid, queue))
         try:
             state = thaw_state((ck or {}).get("state") or {})
             if not state:
@@ -558,13 +636,7 @@ class ConversationService:
             update = await self.chat_nodes[name](state)
             if update:
                 state.update(update)
-            mapped = []
-            for ev in events:
-                if "token" in ev:
-                    mapped.append(("token", {"text": ev["token"]}))
-                elif "status" in ev:
-                    mapped.append(("status", {"text": ev["status"]}))
-            await self.jobs.emit_many(jid, mapped)
+            await close_pump()
             if name == "persist" and state.get("operation") is not None:
                 from app.jsonutil import to_jsonable
                 await self.jobs.emit(
@@ -578,6 +650,7 @@ class ConversationService:
                       "event_id": event_id, "fails": 0})
             return "ok"
         except DomainError as e:
+            await close_pump()
             await self.jobs.emit(
                 jid, "error",
                 {"error": {"code": e.code, "message": e.message,
@@ -588,10 +661,20 @@ class ConversationService:
             # Leave the incremented fails count in the checkpoint and let
             # the Workflow retry the step. A CPU-limit kill (Error 1102)
             # never reaches this handler; the same checkpoint makes that
-            # retry idempotent.
+            # retry idempotent. Events flushed during this attempt sit
+            # above the saved high-water and are deleted on the retry.
+            await close_pump()
             logging.getLogger(__name__).exception("chat node %s failed", name)
             raise
         finally:
+            if not closed:
+                closed = True
+                queue.put_nowait(None)
+                pump.cancel()
+                try:
+                    await pump
+                except (asyncio.CancelledError, Exception):
+                    pass
             event_sink.reset(sink)
             _BYOK_KEY.reset(token)
 

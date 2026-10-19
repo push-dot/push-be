@@ -199,15 +199,13 @@ class AuthService:
             except NotFoundError:
                 raise unauthenticated("dev user not seeded")
         try:
-            rec = await self.sessions.get_access_token(token_hash(token))
+            user, expires_at = await self.sessions.get_user_by_access_token(
+                token_hash(token))
         except NotFoundError:
             raise unauthenticated("invalid access token")
-        if _now() > rec.expires_at:
+        if _now() > expires_at:
             raise token_expired()
-        try:
-            return await self.users.get(rec.user_id)
-        except NotFoundError:
-            raise unauthenticated("invalid access token")
+        return user
 
     async def me(self, user_id: UUID) -> ent.User:
         try:

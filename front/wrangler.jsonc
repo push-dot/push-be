@@ -6,6 +6,12 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true },
+  // This script used to be the Python worker and still has that worker's
+  // once-a-minute cron on Cloudflare. Omitting `triggers` does not delete
+  // it, so the platform invokes this worker every minute and records
+  // "Handler does not export a scheduled() function". An empty list is
+  // what clears the schedule. The Python worker keeps `* * * * *`.
+  "triggers": { "crons": [] },
   // Public URL stays https://push-be.<account>.workers.dev.
   // Chat generation and every route not listed in src/handler.ts go to
   // the Python worker through this binding.

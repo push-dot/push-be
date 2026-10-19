@@ -54,14 +54,44 @@ const ALLOWED_HEADERS = new Set([
 ]);
 
 const hits = new Map<string, number[]>();
+// Last shared count seen in this isolate, keyed by bucket. Once it is at
+// the limit, further requests are rejected here and do not write Neon.
+const remoteHits = new Map<string, number>();
 
+// The update runs only while the row is still under the limit, so a 429
+// does not keep incrementing the counter. An empty RETURNING means full.
 const RATE_SQL = "INSERT INTO rate_limits (bucket, hits, expires_at) "
   + "VALUES ($1, 1, to_timestamp($2::double precision)) "
   + "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
+  + "WHERE rate_limits.hits < $3 "
   + "RETURNING hits";
+
+// Auth and the user bucket are one Neon HTTP call. A separate upsert was
+// a serial round trip on every authenticated GET (~270ms). The bucket is
+// still `user:{id}:{minute}`, shared with the Python worker. An expired
+// token is selected but not counted. A full bucket returns hits NULL.
+const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
+  + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
+
+const AUTH_RATE_SQL = "WITH auth AS ("
+  + "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at "
+  + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1"
+  + "), live AS ("
+  + "SELECT id FROM auth WHERE expires_at >= to_timestamp($5::double precision)"
+  + "), bumped AS ("
+  + "INSERT INTO rate_limits (bucket, hits, expires_at) "
+  + "SELECT 'user:' || auth.id::text || ':' || $2::text, 1, to_timestamp($3::double precision) "
+  + "FROM auth JOIN live ON live.id = auth.id "
+  + "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
+  + "WHERE rate_limits.hits < $4 "
+  + "RETURNING hits"
+  + ") "
+  + "SELECT auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
+  + "(SELECT hits FROM bumped) AS hits FROM auth";
 
 export function resetLimits(): void {
   hits.clear();
+  remoteHits.clear();
 }
 
 function allow(key: string, limit: number, windowMs: number, nowMs: number): boolean {
@@ -82,15 +112,31 @@ function allow(key: string, limit: number, windowMs: number, nowMs: number): boo
   return true;
 }
 
+function rememberHits(bucket: string, row: Record<string, unknown> | undefined, limit: number): void {
+  if (!row || row.hits == null || row.hits === "") {
+    remoteHits.set(bucket, limit);
+    return;
+  }
+  remoteHits.set(bucket, Number(row.hits));
+}
+
 async function allowShared(
   deps: Deps, kind: string, key: string, limit: number, windowMs: number, now: Date,
 ): Promise<boolean> {
   const window = Math.floor(now.getTime() / 1000 / 60);
   const bucket = `${kind}:${key || "unknown"}:${window}`;
+  const known = remoteHits.get(bucket);
+  if (known !== undefined && known >= limit) return false;
   try {
-    const rows = await deps.query(RATE_SQL, [bucket, window * 60 + 120]);
+    const rows = await deps.query(RATE_SQL, [bucket, window * 60 + 120, limit]);
     const row = rows[0];
-    if (row && row.hits != null && row.hits !== "") return Number(row.hits) <= limit;
+    if (!row || row.hits == null || row.hits === "") {
+      remoteHits.set(bucket, limit);
+      return false;
+    }
+    const n = Number(row.hits);
+    remoteHits.set(bucket, n);
+    return n <= limit;
   } catch {
     // Missing table or a Neon blip: count in this isolate and try the
     // shared counter again on the next request.
@@ -306,45 +352,87 @@ async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: str
     return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
   }
   const token = authz.slice(7);
-  let user: User;
-  try {
-    const resolved = await resolveUser(token, env, deps, now());
-    if (!resolved) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
-    if (resolved.expired) return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
-    user = resolved.user;
-  } catch (err) {
-    const coded = err as { status?: number; code?: string; message?: string };
-    if (coded.status && coded.code) {
-      return errorResponse(coded.status, coded.code, coded.message || "internal error", rid);
+  const moment = now();
+  const window = Math.floor(moment.getTime() / 1000 / 60);
+  if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
+    try {
+      const resolved = await resolveDevUser(env, deps);
+      if (!resolved) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+      if (!await allowShared(deps, "user", resolved.id, limits.user, limits.windowMs, moment)) {
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      return resolved;
+    } catch (err) {
+      return codedError(err, rid);
     }
+  }
+  let hash: string;
+  try {
+    hash = await sha256Hex(token);
+  } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
-  if (!await allowShared(deps, "user", user.id, limits.user, limits.windowMs, now())) {
+  // The local key is the token hash; the Neon bucket is the user id.
+  // After this isolate has seen a full bucket, the rest of the minute
+  // is rejected without another upsert (and without re-reading the token).
+  const cacheKey = `user:${hash}:${window}`;
+  const known = remoteHits.get(cacheKey);
+  if (known !== undefined && known >= limits.user) {
+    return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+  }
+  let rows: Record<string, unknown>[];
+  let shared = true;
+  try {
+    rows = await deps.query(AUTH_RATE_SQL, [
+      hash, String(window), window * 60 + 120, limits.user, moment.getTime() / 1000,
+    ]);
+  } catch {
+    shared = false;
+    try {
+      rows = await deps.query(AUTH_SQL, [hash]);
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
+  }
+  if (!rows.length) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+  const row = rows[0];
+  const expires = new Date(formatJsonTimestamp(row.expires_at)).getTime();
+  if (moment.getTime() > expires) {
+    return errorResponse(401, "TOKEN_EXPIRED", "access token expired", rid);
+  }
+  const user = userFrom(row);
+  if (!shared) {
+    if (!allow(`user:${user.id}:${window}`, limits.user, limits.windowMs, moment.getTime())) {
+      return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+    }
+    return user;
+  }
+  if (!Object.prototype.hasOwnProperty.call(row, "hits")) return user;
+  rememberHits(cacheKey, row, limits.user);
+  const hitsValue = row.hits;
+  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limits.user) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
   return user;
 }
 
-async function resolveUser(token: string, env: FrontEnv, deps: Deps, now: Date): Promise<{ user: User; expired: boolean } | null> {
-  if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
-    const rows = await deps.query(
-      "SELECT id, display_name, locale, created_at FROM users WHERE id = $1::uuid",
-      [env.DEV_USER_ID || ""],
-    );
-    if (!rows.length) {
-      throw Object.assign(new Error("dev user not seeded"), { status: 401, code: "UNAUTHENTICATED" });
-    }
-    return { user: userFrom(rows[0]), expired: false };
+function codedError(err: unknown, rid: string): Response {
+  const coded = err as { status?: number; code?: string; message?: string };
+  if (coded.status && coded.code) {
+    return errorResponse(coded.status, coded.code, coded.message || "internal error", rid);
   }
-  const hash = await sha256Hex(token);
+  return errorResponse(500, "INTERNAL", "internal error", rid);
+}
+
+async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   const rows = await deps.query(
-    "SELECT u.id, u.display_name, u.locale, u.created_at, t.expires_at " +
-    "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1",
-    [hash],
+    "SELECT id, display_name, locale, created_at FROM users WHERE id = $1::uuid",
+    [env.DEV_USER_ID || ""],
   );
-  if (!rows.length) return null;
-  const expires = new Date(formatJsonTimestamp(rows[0].expires_at)).getTime();
-  return { user: userFrom(rows[0]), expired: now.getTime() > expires };
+  if (!rows.length) {
+    throw Object.assign(new Error("dev user not seeded"), { status: 401, code: "UNAUTHENTICATED" });
+  }
+  return userFrom(rows[0]);
 }
 
 function userFrom(row: Record<string, unknown>): User {

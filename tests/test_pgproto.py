@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import socket
+import ssl
+import struct
+import subprocess
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from app.pgproto import (
-    PgPool, UniqueViolationError, begin_request_scope, parse_dsn,
-    scram_client_proof,
+    PgPool, UniqueViolationError, begin_request_scope, open_tcp_stream,
+    parse_dsn, scram_client_proof,
 )
 
 
@@ -203,3 +209,151 @@ async def test_without_a_request_scope_one_connection_is_reused(monkeypatch):
     assert len(opened) == 1
     await pool.close()
     assert opened[0].closed is True
+
+
+_SSL_REQUEST = struct.pack("!II", 8, 80877103)
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("closed")
+        buf += chunk
+    return buf
+
+
+def _self_signed(tmp: Path) -> tuple[Path, Path]:
+    cert, key = tmp / "cert.pem", tmp / "key.pem"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+         "-keyout", str(key), "-out", str(cert), "-days", "1", "-nodes",
+         "-subj", "/CN=localhost"],
+        check=True, capture_output=True)
+    return cert, key
+
+
+def _listen() -> socket.socket:
+    sock = socket.create_server(("127.0.0.1", 0))
+    sock.settimeout(10)
+    return sock
+
+
+async def test_tcp_tls_is_started_by_asyncio_not_a_prewrapped_socket(tmp_path, monkeypatch):
+    openssl = subprocess.run(["openssl", "version"], capture_output=True)
+    if openssl.returncode != 0:
+        pytest.skip("openssl is not available")
+    cert, key = _self_signed(tmp_path)
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cert, key)
+    gate = threading.Event()
+    seen: dict = {}
+    listener = _listen()
+    port = listener.getsockname()[1]
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+            conn.settimeout(10)
+            try:
+                assert _recv_exact(conn, 8) == _SSL_REQUEST
+                conn.sendall(b"S")
+                tls = server_ctx.wrap_socket(conn, server_side=True)
+                try:
+                    seen["payload"] = _recv_exact(tls, 4)
+                finally:
+                    tls.close()
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+        except Exception as exc:
+            seen["error"] = exc
+        finally:
+            gate.set()
+            listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    calls = []
+    original = asyncio.open_connection
+
+    async def spy(*args, **kwargs):
+        sock = kwargs.get("sock")
+        calls.append(kwargs)
+        assert not isinstance(sock, ssl.SSLSocket)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", spy)
+    stream = await open_tcp_stream({
+        "host": "127.0.0.1", "port": port, "sslmode": "require",
+        "user": "u", "password": "p", "database": "db",
+    })
+    await stream.write(b"ping")
+    await stream.close()
+    assert gate.wait(10)
+    assert "error" not in seen, seen.get("error")
+    assert seen["payload"] == b"ping"
+    assert calls[0]["ssl"] is not None
+    assert calls[0]["server_hostname"] == "127.0.0.1"
+    assert calls[0]["ssl"].verify_mode == ssl.CERT_NONE
+    assert calls[0]["ssl"].check_hostname is False
+
+
+async def test_prefer_stays_plaintext_when_the_server_refuses_ssl():
+    gate = threading.Event()
+    seen: dict = {}
+    listener = _listen()
+    port = listener.getsockname()[1]
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+            conn.settimeout(10)
+            try:
+                assert _recv_exact(conn, 8) == _SSL_REQUEST
+                conn.sendall(b"N")
+                seen["payload"] = _recv_exact(conn, 4)
+            finally:
+                conn.close()
+        except Exception as exc:
+            seen["error"] = exc
+        finally:
+            gate.set()
+            listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    stream = await open_tcp_stream({
+        "host": "127.0.0.1", "port": port, "sslmode": "prefer",
+        "user": "u", "password": "p", "database": "db",
+    })
+    await stream.write(b"ping")
+    await stream.close()
+    assert gate.wait(10)
+    assert "error" not in seen, seen.get("error")
+    assert seen["payload"] == b"ping"
+
+
+async def test_require_reports_a_server_that_refuses_ssl():
+    listener = _listen()
+    port = listener.getsockname()[1]
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+            conn.settimeout(10)
+            try:
+                _recv_exact(conn, 8)
+                conn.sendall(b"N")
+            finally:
+                conn.close()
+        finally:
+            listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    with pytest.raises(ConnectionError, match="refused SSL"):
+        await open_tcp_stream({
+            "host": "127.0.0.1", "port": port, "sslmode": "require",
+            "user": "u", "password": "p", "database": "db",
+        })

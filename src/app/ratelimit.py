@@ -12,6 +12,10 @@ every isolate and colo. The window is the UTC minute, so a burst at the
 minute boundary can be allowed twice. When ``rate_limits`` is not there
 yet, the call falls back to the in-isolate limiter for that request and
 tries Neon again on the next one.
+
+A request that is already at the limit does not increment the row. The
+``ON CONFLICT`` update runs only while ``hits`` is still below the
+limit, and an empty ``RETURNING`` means the bucket is full.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ CONSUME_SQL = (
     "INSERT INTO rate_limits (bucket, hits, expires_at) "
     "VALUES ($1, 1, to_timestamp($2::double precision)) "
     "ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1 "
+    "WHERE rate_limits.hits < $3 "
     "RETURNING hits"
 )
 
@@ -62,7 +67,11 @@ def _missing_table(exc: BaseException) -> bool:
 
 async def allow(pool, kind: str, key: str, limit: int,
                 now: float | None = None) -> bool:
-    """Return whether this key may proceed. Increments the shared counter."""
+    """Return whether this key may proceed.
+
+    Allowed requests increment the shared counter. A full bucket returns
+    no row and is left unchanged.
+    """
     global _warned_missing
     moment = time.time() if now is None else now
     window = int(moment) // 60
@@ -71,7 +80,10 @@ async def allow(pool, kind: str, key: str, limit: int,
     if pool is None:
         return _memory_allow(bucket, limit, moment)
     try:
-        hits = await pool.fetchval(CONSUME_SQL, bucket, window * 60 + 120)
+        hits = await pool.fetchval(
+            CONSUME_SQL, bucket, window * 60 + 120, limit)
+        if hits is None:
+            return False
         return int(hits) <= limit
     except Exception as exc:
         if _missing_table(exc):

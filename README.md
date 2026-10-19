@@ -56,14 +56,14 @@ Neon 접속은 앱의 대화형 트랜잭션(`db.run` / `db.do`)을 지키기 �
 
 Hyperdrive는 무료 플랜(쿼리 10만/일)에 포함되지만 클라이언트가 node-postgres / postgres.js다. Python Worker는 `asyncpg`·`psycopg` 네이티브 확장을 로드하지 못한다. Neon의 HTTP `/sql`은 한 요청 안의 비대화형 배치만 받는다. 둘 다 이 앱의 트랜잭션 형태와 맞지 않아 와이어 클라이언트를 택했다.
 
-채팅 잡은 요청이 끝나면 사라지는 Worker 안에서 `FOR UPDATE SKIP LOCKED` 루프를 돌리지 않는다. Cloudflare Workflow `ChatWorkflow`가 `claim` → `resolve_context` → `generate_reply` → `persist`를 스텝으로 나눈다. 스텝마다 무료 플랜 CPU 10ms가 새로 주어진다. I/O(LLM, Neon, DNS) 대기 시간은 CPU에 포함되지 않는다. 크론 `* * * * *`가 남아 있는 PENDING 잡을 `nudge_pending`으로 다시 깨운다. 큐는 컨슈머 호출 하나에 CPU 예산이 하나라 스텝 분리에 쓰지 않았다.
+채팅 잡은 요청이 끝나면 사라지는 Worker 안에서 `FOR UPDATE SKIP LOCKED` 루프를 돌리지 않는다. Cloudflare Workflow `ChatWorkflow`는 호출 세 번이다. `prepare`가 claim과 `resolve_context`, `prepare_reply`를 한 번에 돌리고, 그 다음 `generate_reply`, `persist`다. 스텝마다 무료 플랜 CPU 10ms가 새로 주어지고, 스텝을 나눌 때마다 Worker 기동과 Neon WebSocket이 한 번씩 더 든다. I/O(LLM, Neon, DNS) 대기 시간은 CPU에 포함되지 않는다. 크론 `* * * * *`가 남아 있는 PENDING 잡을 `nudge_pending`으로 다시 깨운다. 큐는 컨슈머 호출 하나에 CPU 예산이 하나라 스텝 분리에 쓰지 않았다.
 
 ### Workers에서 바뀌는 동작
 
 | 영역 | 로컬 | Workers |
 | --- | --- | --- |
 | DB 드라이버 | `asyncpg` | `app/pgproto.py` (Neon WebSocket) |
-| 잡 실행 | 프로세스 안 루프, 토큰 스트리밍 | Workflow 스텝, `LLM_STREAM=0` |
+| 잡 실행 | 프로세스 안 루프, 토큰 스트리밍 | Workflow 스텝 3개, `LLM_STREAM=1` |
 | 체크포인터 | `langgraph-checkpoint-postgres` | `MemorySaver` + `chat_jobs.checkpoint` |
 | SSE | 폴링 최대 1500 | 폴링 최대 20, `retry: 400`, `id` / `Last-Event-ID` |
 | 파일 | `./data/sources`, 워크스페이스 파일 | `sources.content`, `workspace_files` |
@@ -73,7 +73,7 @@ Hyperdrive는 무료 플랜(쿼리 10만/일)에 포함되지만 클라이언트
 | 페이지 수집 | IP 고정 httpx, 짧으면 Playwright | HTTPS + DNS-over-HTTPS, 짧으면 Browser Rendering |
 | 암호 | AES-256-GCM (순수 Python, `cryptography`와 동일 포맷) | 동일 |
 
-`LLM_STREAM=0`은 완성 응답을 한 번 받은 뒤 48자 단위로 `chat_events`에 토큰 이벤트를 넣는다. 글자가 나오는 순간의 라이브 스트림은 로컬에만 있다. 클라이언트는 `retry: 400`과 `id:`를 보고 `GET /conversations/{id}/messages/stream/active?after=` 또는 `Last-Event-ID`로 이어서 재생한다.
+`LLM_STREAM=1`은 generate 스텝에서 모델 응답을 한 번의 HTTP 스트림으로 받는다. 상태 이벤트는 바로 `chat_events`에 넣고, 첫 토큰도 바로 넣는다. 그 다음 토큰은 약 160자 또는 50ms 단위로 묶는다. 글자마다 INSERT를 하지 않고, 스텝이 끝날 때까지 한 덩어리로 두지도 않는다. 소켓은 그 스텝의 Neon 연결 하나다. `LLM_STREAM=0`이면 완성문을 받은 뒤 48자 단위로 넣는다. 클라이언트는 `retry: 400`과 `id:`를 보고 `GET /conversations/{id}/messages/stream/active?after=` 또는 `Last-Event-ID`로 이어서 재생한다.
 
 BYOK 키는 `BYOK_MASTER_KEY`가 있으면 잡 payload에 암호화해 넣고, Workflow 파라미터로도 넘긴다. 크론이 마스터 키 없이 재시도하면 그 키는 복호화되지 않는다.
 
@@ -124,7 +124,7 @@ pgvector는 모든 Neon 플랜에 있다. `migrations/0009_evidence_vectors.sql`
 
 Worker 안에서 마이그레이션을 돌리지 않는다. CPU 한도와 매 콜드 스타트 실행을 피하기 위해 `RUN_MIGRATIONS=0`이다. `develop`나 `main`에 푸시해도 스키마는 바뀌지 않는다. 5432로 나가는 노트북에서 실행하거나, Actions의 **Migrate database**를 수동 실행한다.
 
-기본 전송은 TCP다. 나가는 5432가 막혀 있으면 `PG_TRANSPORT=websocket`으로 Neon의 `wss://<host>/v2`를 쓴다. 프로토콜은 같고, 호스트는 여전히 pooler가 아닌 Direct다.
+노트북에서 직접 돌릴 때의 기본 전송은 TCP다. `sslmode=require`는 암호화를 하고 인증서는 검사하지 않는다. TLS는 asyncio가 시작한다. 나가는 5432가 막혀 있으면 `PG_TRANSPORT=websocket`으로 Neon의 `wss://<host>/v2`를 쓴다. 프로토콜은 같고, 호스트는 여전히 pooler가 아닌 Direct다. Actions의 **Migrate database**는 기본이 websocket이고, 실행할 때 tcp로 바꿀 수 있다.
 
 ```bash
 PG_TRANSPORT=websocket \
@@ -138,11 +138,11 @@ DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?ssl
   python scripts/migrate.py
 ```
 
-`migrations/`의 `0001`–`0014`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다.
+`migrations/`의 `0001`–`0015`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다. `0015_rate_limits.sql`은 공유 속도 제한 카운터다.
 
 ### 3. 시크릿
 
-`wrangler.jsonc`의 `vars`는 비밀이 아닌 기본값이다 (`DB_DRIVER=neon`, `PG_TRANSPORT=websocket`, `CHAT_EXECUTOR=workflow`, `LLM_STREAM=0`, `BLOB_STORE=db`, `SSE_MAX_POLLS=20`, `RUN_MIGRATIONS=0`). `DATABASE_URL`은 vars에 넣지 않는다.
+`wrangler.jsonc`의 `vars`는 비밀이 아닌 기본값이다 (`DB_DRIVER=neon`, `PG_TRANSPORT=websocket`, `CHAT_EXECUTOR=workflow`, `LLM_STREAM=1`, `BLOB_STORE=db`, `SSE_MAX_POLLS=20`, `RUN_MIGRATIONS=0`). `DATABASE_URL`은 vars에 넣지 않는다.
 
 [uv](https://docs.astral.sh/uv/)로 Workers 도구를 설치한 뒤 시크릿을 넣는다.
 
@@ -210,6 +210,8 @@ uv run pywrangler deploy
 cd front && npm ci && npx wrangler deploy
 ```
 
+프런트 배포는 빈 크론 목록으로 `push-be`에 남아 있는 분당 스케줄을 지운다. Python 배포의 크론은 유지된다.
+
 Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 있는 `src/`만 올리고, 저장소 루트의 `.venv`와 `.venv-workers`는 번들에 넣지 않는다. 루트에 엔트리를 두면 가상환경까지 올라가 `multipart: message too large`로 배포가 실패한다. 이력서 지시문 `app/resources/**/*.md`는 `wrangler.jsonc`의 Data 규칙으로 같이 올라가고, Worker 안에서는 `Path(__file__)`로 읽는다.
 
 프런트 Worker가 직접 처리하는 경로:
@@ -217,8 +219,8 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 | 메서드와 경로 | 이유 |
 | --- | --- |
 | `GET /healthz` | DB도 Python도 타지 않는다 |
-| `GET /api/v1/healthz` | Python은 타지 않는다. 공개 속도 제한 한 번만 Neon에 기록한다 |
-| `GET /api/v1/auth/me` | 액세스 토큰 SHA-256과 사용자 한 줄 |
+| `GET /api/v1/healthz` | Python은 타지 않는다. 공개 속도 제한을 Neon에 기록한다. 이 isolate가 이미 한도에 닿았으면 그 분은 다시 쓰지 않는다 |
+| `GET /api/v1/auth/me` | 액세스 토큰 SHA-256, 사용자, 사용자 속도 제한을 Neon HTTP 한 번으로 처리한다 |
 | `GET /api/v1/conversations` | 목록. 생성·수정·아카이브는 Python |
 | `GET /api/v1/conversations/:id/messages` | 메시지 목록 |
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 다시 보낸다. 생성 시작(`POST .../messages`, `POST .../stream`)은 Python |
@@ -237,13 +239,15 @@ Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 �
 
 `MANAGED_AI`와 `MANAGED_GO`는 프런트 Worker vars다. 시크릿이 아니다. Python Worker에 `OPENROUTER_API_KEY` 또는 `OPENAI_API_KEY`가 있으면 `MANAGED_AI=1`, `OPENCODE_GO_API_KEY`가 있으면 `MANAGED_GO=1`로 맞춘다. 기본값은 `1`과 `0`이다.
 
-채팅 Workflow 스텝은 `claim`, `resolve_context`, `prepare_reply`, `generate_reply`, `persist`다. 각 스텝은 재시도 5회, 2초에서 지수 백오프, 타임아웃은 claim 30초, prepare 2분, generate 3분, 나머지 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 스텝은 건너뛴다. 같은 스텝이 3번 실패하면 잡을 `FAILED`로 닫는다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
+채팅 Workflow 호출은 `prepare`, `generate_reply`, `persist` 세 번이다. `prepare` 안에서 claim, `resolve_context`, `prepare_reply`가 같은 Neon 연결을 쓴다. 각 호출은 재시도 5회, 2초에서 지수 백오프다. 타임아웃은 prepare 3분, generate 3분, persist 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 노드는 건너뛴다. 같은 노드가 3번 실패하면 잡을 `FAILED`로 닫는다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
 
-`POST /api/v1/conversations/:id/messages`는 대화를 확인하고 `chat_jobs`에 넣은 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. 토큰과 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 멱등 키와 BYOK 암호화는 Python에 그대로 있다.
+`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 멱등 키와 BYOK 암호화는 Python에 그대로 있다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
 
 Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
 
-속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. isolate 메모리는 프로세스가 나뉘면 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터 때문에 `rate_limits`를 한 번 조회한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 기존 크론이 지운다.
+속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 사용자 조회와 카운터 증가를 SQL 한 문으로 보낸다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
+
+프런트 Worker `front/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
 
 ### 6. GitHub Actions
 
@@ -273,4 +277,4 @@ GitHub 저장소 시크릿 (Settings → Secrets and variables → Actions):
 
 `OPENROUTER_API_KEY`는 GitHub 시크릿으로 두지 않는다. Worker 시크릿으로 한 번 넣으면 된다.
 
-마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.
+마이그레이션은 배포에 붙이지 않았다. 스키마 변경은 코드 푸시와 별개로 Neon을 바꾸고, 잘못된 SQL이 매 배포마다 적용되면 코드보다 되돌리기 어렵다. Actions 탭에서 **Migrate database**를 직접 실행한다. 기본 전송은 websocket(`wss://<direct-host>/v2`)이고, 5432가 열리면 입력에서 tcp를 고른다. 이 작업은 `scripts/migrate.py`만 돌리고 Worker 시크릿은 갱신하지 않는다.
