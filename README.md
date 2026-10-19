@@ -153,7 +153,7 @@ printf '%s' 'postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslm
 uv run pywrangler secret put OPENROUTER_API_KEY
 ```
 
-`wrangler`가 PATH에 있으면 같은 설정으로 `wrangler secret put DATABASE_URL`, `wrangler deploy`를 실행해도 된다. Python 의존성 번들은 `pywrangler`가 맞춘다.
+`uv run pywrangler secret put`은 `wrangler.jsonc`의 이름인 `push-be-python`에 넣는다. 프런트 Worker `push-be`에는 `DATABASE_URL`만 따로 넣는다. `npx wrangler secret put DATABASE_URL --name push-be`. Python 의존성 번들은 `pywrangler`가 맞춘다.
 
 | 이름 | 필요 |
 | --- | --- |
@@ -201,23 +201,60 @@ python -m pytest
 
 ### 5. 배포
 
+트래픽은 TypeScript 프런트 Worker `push-be`가 먼저 받는다. 공개 주소는 그대로 `https://push-be.<account>.workers.dev`다. 채팅 생성처럼 CPU가 무거운 요청만 서비스 바인딩으로 Python Worker `push-be-python`에 넘긴다. Python Worker는 `workers.dev` 주소를 열지 않는다.
+
 ```bash
+# 1. Python Worker (크론, Workflow, 서비스 바인딩 대상)
 uv run pywrangler deploy
-# 또는 wrangler deploy
+# 2. 프런트 Worker (공개 URL)
+cd front && npm ci && npx wrangler deploy
 ```
 
-엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 있는 `src/`만 올리고, 저장소 루트의 `.venv`와 `.venv-workers`는 번들에 넣지 않는다. 루트에 엔트리를 두면 가상환경까지 올라가 `multipart: message too large`로 배포가 실패한다. 이력서 지시문 `app/resources/**/*.md`는 `wrangler.jsonc`의 Data 규칙으로 같이 올라가고, Worker 안에서는 `Path(__file__)`로 읽는다.
+Python 엔트리포인트는 `src/worker.py`다. `pywrangler`는 그 파일이 있는 `src/`만 올리고, 저장소 루트의 `.venv`와 `.venv-workers`는 번들에 넣지 않는다. 루트에 엔트리를 두면 가상환경까지 올라가 `multipart: message too large`로 배포가 실패한다. 이력서 지시문 `app/resources/**/*.md`는 `wrangler.jsonc`의 Data 규칙으로 같이 올라가고, Worker 안에서는 `Path(__file__)`로 읽는다.
 
-배포된 주소는 `https://push-be.<account>.workers.dev` 형태다. `workers_dev`가 켜져 있다.
+프런트 Worker가 직접 처리하는 경로:
+
+| 메서드와 경로 | 이유 |
+| --- | --- |
+| `GET /healthz`, `GET /api/v1/healthz` | DB도 Python도 타지 않는다 |
+| `GET /api/v1/auth/me` | 액세스 토큰 SHA-256과 사용자 한 줄 |
+| `GET /api/v1/conversations` | 목록. 생성·수정·아카이브는 Python |
+| `GET /api/v1/conversations/:id/messages` | 메시지 목록 |
+| `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 다시 보낸다. 생성 시작(`POST .../messages`, `POST .../stream`)은 Python |
+| `GET /api/v1/ai/models` | 정적 카탈로그. `credentialMode=BYOK`이고 `X-Byok-Key`가 있으면 프로바이더 목록이라 Python으로 넘긴다 |
+| `GET /api/v1/integrations/job-sites` | 어댑터가 모두 꺼진 고정 체크리스트 |
+| `OPTIONS` | CORS 프리플라이트 |
+
+그 밖에는 Python이다. 상태 코드, `{"data": ...}` / `{"error": ...}` 모양, `x-request-id`, `Idempotency-Key`는 Python 미들웨어가 그대로 처리한다.
+
+캐시 (Cloudflare Cache API, KV 네임스페이스는 만들지 않는다):
+
+| 응답 | TTL | 무효화 |
+| --- | --- | --- |
+| `GET /api/v1/ai/models` | `MODEL_CACHE_TTL` 초, 기본 600 | 같은 토큰으로 `PUT`/`DELETE /api/v1/ai/keys/:provider`가 2xx이면 그 사용자의 카탈로그 키를 지운다. TTL이 지나도 지워진다 |
+| `GET /api/v1/integrations/job-sites` | `JOB_SITES_CACHE_TTL` 초, 기본 3600 | 체크리스트가 바뀌면 `front/src/cache.ts`의 캐시 URL 버전을 올린다 |
+
+`MANAGED_AI`와 `MANAGED_GO`는 프런트 Worker vars다. 시크릿이 아니다. Python Worker에 `OPENROUTER_API_KEY` 또는 `OPENAI_API_KEY`가 있으면 `MANAGED_AI=1`, `OPENCODE_GO_API_KEY`가 있으면 `MANAGED_GO=1`로 맞춘다. 기본값은 `1`과 `0`이다.
+
+채팅 Workflow 스텝은 `claim`, `resolve_context`, `prepare_reply`, `generate_reply`, `persist`다. 각 스텝은 재시도 5회, 2초에서 지수 백오프, 타임아웃은 claim 30초, prepare 2분, generate 3분, 나머지 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 스텝은 건너뛴다. 같은 스텝이 3번 실패하면 잡을 `FAILED`로 닫는다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
 
 ### 6. GitHub Actions
 
-`.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. `actions/checkout`와 `actions/setup-python`은 존재하는 메이저 태그 `v7`에 고정한다. `astral-sh/setup-uv`는 떠 있는 `v10` 태그가 없어서 `v10.3.0`에 고정한다. pip와 uv 캐시를 쓴다.
+`.github/workflows/ci.yml`이 테스트를 돌리고, 그 테스트가 통과한 뒤 Workers에 배포한다. 러너는 GitHub 무료 분량의 `ubuntu-latest`다. `actions/checkout`와 `actions/setup-python`은 존재하는 메이저 태그 `v7`에, `actions/setup-node`는 `v6`에 고정한다. `astral-sh/setup-uv`는 떠 있는 `v10` 태그가 없어서 `v10.3.0`에 고정한다. pip, npm, uv 캐시를 쓴다.
 
-- **CI** — pull request, 그리고 `develop`와 `main` push에서 `python -m pytest`를 실행한다. Postgres 16 서비스가 와이어 프로토콜 테스트까지 포함한다. 같은 워크플로가 `pywrangler deploy --dry-run`으로 번들 크기를 확인하고, `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다.
-- **CD** — push가 `main`일 때만 `uv run pywrangler deploy`를 실행한다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
+- **CI** — pull request, 그리고 `develop`와 `main` push에서 `python -m pytest`와 `front`의 `npm test`를 실행한다. Postgres 16 서비스가 와이어 프로토콜 테스트까지 포함한다. 같은 워크플로가 Python 번들과 프런트 Worker `wrangler deploy --dry-run`을 확인한다. Python 번들에 `.venv`가 들어 있거나 40 MiB를 넘으면 배포로 넘어가지 않는다.
+- **CD** — push가 `main`일 때만 배포한다. 순서는 `push-be-python` (`uv run pywrangler deploy`) 다음 `push-be` (`npx wrangler deploy`, `front/`에서)다. 배포 브랜치를 바꾸려면 저장소 Actions 변수 `DEPLOY_BRANCH`를 설정한다. 변수가 없으면 `main`이다. 그 브랜치가 `develop`나 `main`이 아니면 `on.push.branches`에도 추가한다.
 
-배포 잡은 코드와 `wrangler.jsonc`의 vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않는다. Worker에 이미 넣어 둔 `DATABASE_URL`, `OPENROUTER_API_KEY` 같은 런타임 시크릿은 배포를 거듭해도 그대로다.
+배포 잡은 코드와 wrangler vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않고, KV 네임스페이스도 만들지 않는다. Worker에 이미 넣어 둔 런타임 시크릿은 배포를 거듭해도 그대로다.
+
+프런트 Worker(`push-be`)에도 `DATABASE_URL`이 필요하다. Neon HTTP(`@neondatabase/serverless`)로 읽기 전용 쿼리를 보낸다. 이름이 같은 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다. 처음 배포 뒤에 `npx wrangler secret list`로 확인하고, 없으면 넣는다.
+
+Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
+
+```bash
+printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-python
+printf '%s' "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY --name push-be-python
+```
 
 GitHub 저장소 시크릿 (Settings → Secrets and variables → Actions):
 

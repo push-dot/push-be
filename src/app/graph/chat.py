@@ -134,9 +134,17 @@ class ChatState(TypedDict, total=False):
     resume_flow: bool
     phase: int
     evidence_kinds: list
+    prepared: bool
+    prompt_user: str
+    prompt_system: str
 
 
-def build_chat_graph(svc, checkpointer=None):
+def bind_chat_nodes(svc):
+    """Register node callables without importing LangGraph.
+
+    Workflow steps call these directly so a step does not pay for graph
+    compile. ``build_chat_graph`` compiles the local graph afterwards.
+    """
     async def resolve_context(state: ChatState) -> dict:
         user_id = state["user_id"]
         try:
@@ -231,9 +239,20 @@ def build_chat_graph(svc, checkpointer=None):
             operation_id=None, created_at=_now())
         await svc.db.run(lambda: svc.conversations.create_message(user_msg))
 
+    async def prepare_reply(state: ChatState) -> dict:
+        # Own workflow step: page fetch, RAG, and prompt assembly.
+        # The local graph does not call this; generate_reply does it inline.
+        if state.get("prepared"):
+            return {}
+        return await _prepare_reply(state)
+
     async def generate_reply(state: ChatState) -> dict:
         try:
-            return await _generate_reply(state)
+            extra = {}
+            if not state.get("prepared"):
+                extra = await _prepare_reply(state)
+            result = await _complete_prepared({**state, **extra})
+            return {**extra, **result}
         except DomainError:
             # A rejected request (FEATURE_DISABLED and other 4xx) must not
             # leave the user's message in the conversation.
@@ -245,18 +264,15 @@ def build_chat_graph(svc, checkpointer=None):
                 pass
             raise
 
-    async def _generate_reply(state: ChatState) -> dict:
+    async def _prepare_reply(state: ChatState) -> dict:
         from app.infrastructure.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
         ai = state.get("ai")
         if ai is None:
-            _emit({"token": stub_reply(state["text"])})
-            return {"completion": None}
+            return {"prepared": True, "prompt_user": "", "prompt_system": "",
+                    "resume_flow": False, "phase": 0}
         opts = ent.AiOptions(**ai)
         role_models = opts.models or {}
-        if role_models.get("generate"):
-            opts.model = role_models["generate"]
-        usage = {"input_tokens": 0, "output_tokens": 0}
         sections = []
         if state.get("context_text"):
             sections.append(state["context_text"])
@@ -422,6 +438,24 @@ def build_chat_graph(svc, checkpointer=None):
                     user_msg = "\n\n".join(sections)
         system = (await asyncio.to_thread(_phase_prompt, phase)
                   if resume_flow else "")
+        return {"prepared": True, "prompt_user": user_msg,
+                "prompt_system": system, "resume_flow": resume_flow,
+                "phase": phase, "conversation": conv}
+
+    async def _complete_prepared(state: ChatState) -> dict:
+        ai = state.get("ai")
+        if ai is None:
+            _emit({"token": stub_reply(state["text"])})
+            return {"completion": None}
+        opts = ent.AiOptions(**ai)
+        role_models = opts.models or {}
+        if role_models.get("generate"):
+            opts.model = role_models["generate"]
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        user_msg = state.get("prompt_user") or ""
+        system = state.get("prompt_system") or ""
+        resume_flow = bool(state.get("resume_flow"))
+        phase = int(state.get("phase") or 0)
         from app.infrastructure.resume_workspace import visible_prefix
         parts = []
         emitted = 0
@@ -568,19 +602,26 @@ def build_chat_graph(svc, checkpointer=None):
         await svc.db.run(work)
         return {"operation": op}
 
+    svc.chat_nodes = {
+        "resolve_context": resolve_context,
+        "prepare_reply": prepare_reply,
+        "generate_reply": generate_reply,
+        "persist": persist,
+    }
+    return svc.chat_nodes
+
+
+def build_chat_graph(svc, checkpointer=None):
+    nodes = bind_chat_nodes(svc)
+    # Imported here so workflow steps that only bind nodes skip LangGraph.
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(ChatState)
-    g.add_node("resolve_context", resolve_context)
-    g.add_node("generate_reply", generate_reply)
-    g.add_node("persist", persist)
+    g.add_node("resolve_context", nodes["resolve_context"])
+    g.add_node("generate_reply", nodes["generate_reply"])
+    g.add_node("persist", nodes["persist"])
     g.add_edge(START, "resolve_context")
     g.add_edge("resolve_context", "generate_reply")
     g.add_edge("generate_reply", "persist")
     g.add_edge("persist", END)
-    svc.chat_nodes = {
-        "resolve_context": resolve_context,
-        "generate_reply": generate_reply,
-        "persist": persist,
-    }
     return g.compile(checkpointer=checkpointer)
