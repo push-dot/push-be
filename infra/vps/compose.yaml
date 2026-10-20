@@ -39,6 +39,8 @@ services:
       STRIPE_PRICE_ULTRA: ${STRIPE_PRICE_ULTRA:-}
     volumes:
       - ai-data:/data
+    networks:
+      - dokploy-network
     expose:
       - "8080"
     healthcheck:
@@ -53,6 +55,7 @@ services:
       start_period: 40s
     labels:
       - traefik.enable=true
+      - traefik.docker.network=dokploy-network
       - traefik.http.routers.push-ai.rule=Host(`${AI_HOST}`)
       - traefik.http.routers.push-ai.entrypoints=websecure
       - traefik.http.routers.push-ai.tls=true
@@ -61,3 +64,7 @@ services:
 
 volumes:
   ai-data:
+
+networks:
+  dokploy-network:
+    external: true
