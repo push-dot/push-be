@@ -20,7 +20,7 @@ services/core-api    TypeScript Worker `push-be-core`. 인증, 대화, 결제, �
 services/ai          Python Worker `push-be-python`. LangGraph, LLM, 임베딩, 크론, 사용량 기록
 packages/contracts   FastAPI OpenAPI와 그 스펙으로 만든 TypeScript 타입
 db/migrations        SQL 마이그레이션
-infra                로컬 docker compose
+infra                로컬 docker compose. VPS는 infra/vps
 ```
 
 `packages/ts-shared`는 두지 않았다. 게이트웨이와 코어가 각자 타임스탬프 도우미를 둔다. 응답 바이트를 바꾸지 않으려고 게이트웨이 읽기 경로를 공유 패키지로 옮기지 않았다.
@@ -199,7 +199,7 @@ asyncpg 경로:
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다.
+compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다. Hostinger KVM에 같은 이미지를 올리는 절차는 `infra/vps/README.md`에 있다. `AI_ORIGIN`을 비워 두면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩을 쓴다.
 
 ```bash
 cd services/gateway && npx wrangler dev

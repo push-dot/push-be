@@ -26,6 +26,43 @@ export async function proxy(request: Request, binding: FrontEnv["API"] | undefin
   }
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
 }
+
+function copied(res: Response, rid: string): Response {
+  const out = new Headers(res.headers);
+  if (!out.has("x-request-id")) out.set("x-request-id", rid);
+  if (res.status === 204 || res.status === 205 || res.status === 304) {
+    return new Response(null, { status: res.status, headers: out });
+  }
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
+}
+
+/**
+ * AI routes stay on the `API` service binding unless AI_ORIGIN is set.
+ * The origin is the Hostinger VPS. The shared secret is not logged.
+ */
+export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> {
+  const origin = (env.AI_ORIGIN || "").trim().replace(/\/$/, "");
+  if (!origin) return proxy(request, env.API, rid);
+  const url = new URL(request.url);
+  const headers = new Headers(request.headers);
+  headers.delete("x-push-internal");
+  headers.delete("host");
+  headers.set("x-request-id", rid);
+  const secret = (env.AI_SHARED_SECRET || "").trim();
+  if (secret) headers.set("x-push-ai-secret", secret);
+  const init: RequestInit = { method: request.method, headers, redirect: "manual" };
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    init.body = await request.arrayBuffer();
+  }
+  const fetchImpl = deps.fetch ?? fetch;
+  let res: Response;
+  try {
+    res = await fetchImpl(origin + url.pathname + url.search, init);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+  return copied(res, rid);
+}
 export async function invalidateAfterWrite(request: Request, path: string, deps: Deps): Promise<void> {
   if (path !== "/api/v1/auth/logout" && path !== "/api/v1/auth/refresh") return;
   const authz = request.headers.get("authorization") || "";

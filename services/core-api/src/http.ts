@@ -37,8 +37,20 @@ export function data(status: number, value: unknown, rid: string): Response {
   return jsonResponse(status, { data: value }, rid);
 }
 
-export function pageBody(items: unknown[], nextCursor: string | null, hasMore: boolean, rid: string): Response {
-  return jsonResponse(200, { data: items, page: { nextCursor, hasMore } }, rid);
+export function pageBody(
+  items: unknown[],
+  nextCursor: string | null,
+  hasMore: boolean,
+  rid: string,
+  total?: number,
+): Response {
+  const page: Record<string, unknown> = { nextCursor, hasMore };
+  if (total !== undefined) page.total = total;
+  return jsonResponse(200, { data: items, page }, rid);
+}
+
+export function noContent(rid: string): Response {
+  return new Response(null, { status: 204, headers: { "x-request-id": rid } });
 }
 
 export function errorResponse(status: number, code: string, message: string, rid: string, details: unknown = null): Response {
