@@ -1,7 +1,7 @@
 import { isUnique, one, query } from "./db.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
-import { exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
+import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
 import { billingStatus, checkout, ledger, portal, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
@@ -78,6 +78,7 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && path === "/api/v1/auth/refresh") return refresh(ctx);
   if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
   if (method === "GET" && path === "/api/v1/auth/me") return me(ctx);
+  if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
