@@ -150,3 +150,21 @@ test("an unknown post category is 422", async () => {
   assert.equal(body.error.details.field, "category");
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO posts")), false);
 });
+
+test("posting list queries reference every bound parameter", async () => {
+  resetLimits();
+  // Postgres rejects a bind whose parameter count differs from the statement's placeholders.
+  for (const qs of ["sort=latest&limit=10", "category=dev&careerYears=1-3&limit=1"]) {
+    const seen: Call[] = [];
+    const res = await handle(
+      new Request("https://core.example/api/v1/postings?" + qs, { headers: { authorization: "Bearer secret-token" } }),
+      env(),
+      deps(authed(seen, false)),
+    );
+    assert.equal(res.status, 200);
+    for (const call of seen.filter((c) => c.sql.includes("job_postings"))) {
+      const max = Math.max(0, ...[...call.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+      assert.equal(max, call.params.length, call.sql);
+    }
+  }
+});
