@@ -182,7 +182,10 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
   let subject = "";
   let name = "";
   try {
-    const ident = await fetchImpl(cfg.user, { headers: { authorization: "Bearer " + access, accept: "application/json" } });
+    // GitHub's API rejects requests without a User-Agent (403); Workers' fetch sends none by default.
+    const ident = await fetchImpl(cfg.user, {
+      headers: { authorization: "Bearer " + access, accept: "application/json", "user-agent": "push-be" },
+    });
     if (!ident.ok) throw new Error("identity");
     const body = await ident.json() as { sub?: string; id?: string | number; name?: string; login?: string; email?: string };
     subject = body.sub || (body.id != null ? String(body.id) : "");
