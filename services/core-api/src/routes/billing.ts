@@ -38,11 +38,11 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   }, ctx.rid);
 }
 
-async function stripePost(ctx: Ctx, path: string, form: URLSearchParams): Promise<Record<string, unknown>> {
+async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchParams): Promise<Record<string, unknown>> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const secret = ctx.env.STRIPE_SECRET_KEY || "";
   const res = await fetchImpl("https://api.stripe.com" + path, {
-    method: "POST",
+    method,
     headers: {
       authorization: "Basic " + btoa(secret + ":"),
       "content-type": "application/x-www-form-urlencoded",
@@ -74,7 +74,7 @@ export async function checkout(ctx: Ctx): Promise<Response> {
       "metadata[planId]": body.planId,
     });
     if (ctx.user.stripeCustomerId) form.set("customer", ctx.user.stripeCustomerId);
-    const session = await stripePost(ctx, "/v1/checkout/sessions", form);
+    const session = await stripe(ctx, "POST", "/v1/checkout/sessions", form);
     if (typeof session.url !== "string" || !session.url) throw new Error("url");
     return data(200, {
       url: session.url,
@@ -86,6 +86,19 @@ export async function checkout(ctx: Ctx): Promise<Response> {
   }
 }
 
+/** Cancels every live subscription now (no refund). Called before an account is marked for deletion. */
+export async function cancelSubscriptions(ctx: Ctx): Promise<void> {
+  if (!configured(ctx) || !ctx.user.stripeCustomerId) return;
+  try {
+    // Without a status filter Stripe lists every subscription that is not already canceled.
+    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(ctx.user.stripeCustomerId));
+    const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
+    for (const sub of subs) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+  } catch {
+    throw new HttpError(502, "PROVIDER_ERROR", "stripe subscription cancel failed");
+  }
+}
+
 export async function portal(ctx: Ctx): Promise<Response> {
   if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   if (!ctx.user.stripeCustomerId) throw new HttpError(409, "INVALID_TRANSITION", "no billing account");
@@ -94,7 +107,7 @@ export async function portal(ctx: Ctx): Promise<Response> {
       customer: ctx.user.stripeCustomerId,
       return_url: ctx.env.STRIPE_PORTAL_RETURN_URL || "",
     });
-    const session = await stripePost(ctx, "/v1/billing_portal/sessions", form);
+    const session = await stripe(ctx, "POST", "/v1/billing_portal/sessions", form);
     if (typeof session.url !== "string" || !session.url) throw new Error("url");
     return data(200, { url: session.url }, ctx.rid);
   } catch (err) {
