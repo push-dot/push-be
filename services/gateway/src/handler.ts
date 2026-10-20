@@ -12,7 +12,7 @@ import { health } from "./routes/health.ts";
 import { listConversations, listMessages, streamActive } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
-import { invalidateAfterWrite, proxy, purgeModelCache } from "./routes/proxy.ts";
+import { invalidateAfterWrite, proxy, proxyPython, purgeModelCache } from "./routes/proxy.ts";
 
 export type { Deps, FrontEnv, Query } from "./types.ts";
 export { releaseExpired, resetLimits } from "./middleware/ratelimit.ts";
@@ -73,7 +73,9 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   }
   const owner = ownerOf(request.method, path);
   if (owner === "deny") return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  const proxied = await proxy(request, owner === "core" ? env.CORE : env.API, rid);
+  const proxied = owner === "core"
+    ? await proxy(request, env.CORE, rid)
+    : await proxyPython(request, env, deps, rid);
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {

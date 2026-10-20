@@ -26,6 +26,10 @@ export interface FrontEnv {
   MODEL_CACHE_TTL?: string;
   JOB_SITES_CACHE_TTL?: string;
   AUTH_CACHE_TTL?: string;
+  /** HTTPS origin of the AI service on the VPS. Unset keeps the API service binding. */
+  AI_ORIGIN?: string;
+  /** Shared secret sent as x-push-ai-secret when AI_ORIGIN is set. */
+  AI_SHARED_SECRET?: string;
 }
 
 export interface Deps {
@@ -35,6 +39,7 @@ export interface Deps {
   now?: () => Date;
   limits?: { user: number; public: number; windowMs: number };
   waitUntil?: (promise: Promise<unknown>) => void;
+  fetch?: typeof fetch;
 }
 
 export interface User {

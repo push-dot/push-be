@@ -43,11 +43,12 @@ from app.api.errors import (
     BodyLimitMiddleware, RequestIDMiddleware, domain_error_handler,
     http_error_handler, unhandled_error_handler, validation_error_handler,
 )
+from app.api.gateway_secret import SharedSecretMiddleware
 from app.api.middleware import ApiMiddleware
 from app.api.routers import (
     ai, applications, approvals, conversations, documents, evidence,
     experiments, integrations, internal, interviews, jobs, operations,
-    projects,
+    projects, uploads,
 )
 
 
@@ -265,13 +266,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
     from app.api.routers.evidence import MAX_SOURCE_BYTES
     app.add_middleware(BodyLimitMiddleware, limit=MAX_SOURCE_BYTES)
+    app.add_middleware(SharedSecretMiddleware)
     app.add_middleware(RequestIDMiddleware)
 
     for r in (evidence.router, jobs.router, applications.router,
               documents.router, projects.router, interviews.router,
               conversations.router, approvals.router,
               operations.router, integrations.router, ai.router,
-              experiments.router):
+              experiments.router, uploads.router):
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

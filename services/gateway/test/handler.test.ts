@@ -1059,3 +1059,46 @@ test("CORS preflight is answered without calling Python", async () => {
   assert.match(res.headers.get("access-control-allow-headers") || "", /authorization/);
   assert.equal(proxied, 0);
 });
+
+test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async () => {
+  resetLimits();
+  const forwarded: string[] = [];
+  const python = {
+    async fetch(request: Request) {
+      forwarded.push("python " + new URL(request.url).pathname);
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const core = {
+    async fetch(request: Request) {
+      forwarded.push("core " + new URL(request.url).pathname);
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const postings = await handle(new Request("https://push-be.example/api/v1/postings"), env(python, core), deps(async () => []));
+  assert.equal(postings.status, 200);
+  const upload = await handle(new Request("https://push-be.example/api/v1/uploads/images", { method: "POST" }), env(python, core), deps(async () => []));
+  assert.equal(upload.status, 200);
+  assert.deepEqual(forwarded, ["core /api/v1/postings", "python /api/v1/uploads/images"]);
+
+  let target = "";
+  let secret = "";
+  const hosted = env(python, core);
+  hosted.AI_ORIGIN = "https://ai.example.test";
+  hosted.AI_SHARED_SECRET = "test-secret";
+  const generated = await handle(new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }), hosted, deps(async () => [], {
+    fetch: async (input, init) => {
+      target = String(input);
+      secret = new Headers(init?.headers).get("x-push-ai-secret") || "";
+      return new Response("{}", { status: 202 });
+    },
+  }));
+  assert.equal(generated.status, 202);
+  assert.equal(target, "https://ai.example.test/api/v1/ai/generate");
+  assert.equal(secret, "test-secret");
+  assert.equal(forwarded.length, 2);
+});

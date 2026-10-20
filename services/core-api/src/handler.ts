@@ -7,6 +7,7 @@ import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calen
 import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
+import { dispatchRecruiting } from "./routes/recruiting.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
 const PUBLIC = new Set([
@@ -108,6 +109,9 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "GET" && job) return getJob(ctx, job[1]);
   if (method === "PATCH" && job) return patchJob(ctx, job[1]);
 
+  const recruited = await dispatchRecruiting(ctx, path);
+  if (recruited) return recruited;
+
   if (method === "GET" && path === "/api/v1/calendar/events") return listEvents(ctx);
   if (method === "POST" && path === "/api/v1/calendar/events") return createEvent(ctx);
   const event = path.match(/^\/api\/v1\/calendar\/events\/([^/]+)$/);
@@ -173,6 +177,17 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   if (response.status < 200 || response.status >= 300) {
     await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [id]);
     return response;
+  }
+  if (response.status === 204 || response.status === 205 || response.status === 304) {
+    const headers = [...response.headers.entries()];
+    try {
+      await query(ctx.deps.query,
+        "UPDATE idempotency_keys SET response_status = $2, response_body = $3, response_headers = $4::jsonb WHERE id = $1",
+        [id, response.status, new Uint8Array(), JSON.stringify(headers)]);
+    } catch {
+      // The client still receives the result. A later retry may run again.
+    }
+    return new Response(null, { status: response.status, headers: response.headers });
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   const headers = [...response.headers.entries()];
