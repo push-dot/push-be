@@ -12,6 +12,8 @@ permissions:
 # Path filters skip a service when the diff does not touch it.
 # A push to DEPLOY_BRANCH (default main) still runs every service
 # before deploy. Deploys run only for that branch.
+# The VPS image is the exception: it deploys only when services/ai or
+# infra/vps changed, after the Python Worker and before core.
 # Set the repository variable DEPLOY_BRANCH to retarget CD. If the new
 # branch is not develop or main, add it under on.push.branches as well.
 concurrency:
@@ -27,6 +29,7 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       db: ${{ steps.filter.outputs.db }}
       deploy: ${{ steps.filter.outputs.deploy }}
+      vps: ${{ steps.filter.outputs.vps }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -53,10 +56,12 @@ jobs:
           gateway=false
           core=false
           db=false
+          vps=false
           if match '^(services/ai/|packages/contracts/|\.github/workflows/ci\.yml)'; then ai=true; fi
           if match '^(services/gateway/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then gateway=true; fi
           if match '^(services/core-api/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then core=true; fi
           if match '^(db/|\.github/workflows/migrate\.yml|services/ai/scripts/migrate\.py|\.github/workflows/ci\.yml)'; then db=true; fi
+          if match '^(services/ai/|infra/vps/)'; then vps=true; fi
           deploy=false
           if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEPLOY_BRANCH" ]; then
             ai=true
@@ -70,10 +75,11 @@ jobs:
           echo "core=$core" >> "$GITHUB_OUTPUT"
           echo "db=$db" >> "$GITHUB_OUTPUT"
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "vps=$vps" >> "$GITHUB_OUTPUT"
 
   test-ai:
     needs: changes
-    if: needs.changes.outputs.ai == 'true'
+    if: needs.changes.outputs.ai == 'true' || needs.changes.outputs.vps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -253,7 +259,7 @@ jobs:
       (needs.bundle-core.result == 'success' || needs.bundle-core.result == 'skipped') &&
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     concurrency:
       group: deploy-${{ vars.DEPLOY_BRANCH || 'main' }}
       cancel-in-progress: false
@@ -278,14 +284,69 @@ jobs:
       # Uploads the script and wrangler vars. Existing Worker secrets
       # persist. The core step below writes DATABASE_URL and
       # BYOK_MASTER_KEY only when those GitHub secrets are non-empty.
-      # Python first, then core, then the gateway. Each service binding
-      # needs its target to exist. The public workers.dev name stays `push-be`.
+      # Python worker first, then the VPS image when services/ai or
+      # infra/vps changed, then core, then the gateway. Each service
+      # binding needs its target to exist. The public workers.dev name
+      # stays `push-be`.
       - name: Deploy Python worker
         working-directory: services/ai
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: uv run pywrangler deploy
+      - name: Deploy AI service to VPS
+        if: needs.changes.outputs.vps == 'true'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          HEALTH_URL: https://ai.187-127-112-169.sslip.io/healthz
+        run: |
+          set -euo pipefail
+          if [ -z "${VPS_HOST}" ] || [ -z "${VPS_SSH_KEY}" ]; then
+            echo "VPS_HOST and VPS_SSH_KEY must be set on the repository"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%b\n' "$VPS_SSH_KEY" > ~/.ssh/id_vps
+          chmod 600 ~/.ssh/id_vps
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh_vps() {
+            ssh -i ~/.ssh/id_vps \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=accept-new \
+              "root@${VPS_HOST}" "$@"
+          }
+          ssh_vps "mkdir -p /opt/push-be && if [ -f /opt/push-be/.env ]; then cp -a /opt/push-be/.env /tmp/push-be.env.keep; fi"
+          git archive --format=tar HEAD | ssh_vps "tar -x -C /opt/push-be"
+          ssh_vps "set -euo pipefail
+            if [ -f /tmp/push-be.env.keep ]; then mv /tmp/push-be.env.keep /opt/push-be/.env; fi
+            if [ ! -f /opt/push-be/.env ]; then
+              echo '/opt/push-be/.env is missing; refusing to deploy' >&2
+              exit 1
+            fi
+            cd /opt/push-be
+            set -a
+            . ./.env
+            set +a
+            docker compose -p push-ai -f infra/vps/compose.yaml up -d --build"
+          ok=0
+          for _ in $(seq 1 36); do
+            code="$(curl -sS -o /tmp/healthz -w "%{http_code}" --max-time 15 "$HEALTH_URL" || true)"
+            if [ "$code" = "200" ]; then
+              ok=1
+              break
+            fi
+            echo "healthz status=${code:-000}; retrying"
+            sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "healthz did not return 200: $HEALTH_URL" >&2
+            cat /tmp/healthz >&2 || true
+            exit 1
+          fi
+          echo "healthz ok"
       - name: Deploy core worker
         working-directory: services/core-api
         env:
