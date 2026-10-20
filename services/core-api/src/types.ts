@@ -7,6 +7,8 @@ export interface Fetcher {
 export interface CoreEnv {
   DATABASE_URL?: string;
   API?: Fetcher;
+  /** When set, the VPS worker consumes chat_jobs and core skips the Workflow. */
+  AI_ORIGIN?: string;
   APP_ENV?: string;
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
