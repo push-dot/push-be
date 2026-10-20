@@ -274,7 +274,8 @@ async function listPostings(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [ctx.user.id];
   let where = " FROM job_postings p WHERE p.closed_at IS NULL";
   where = appendPostingFilters(where, params, ctx.url, true);
-  const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where, params.slice());
+  // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
+  const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
   const total = Number(count?.total ?? 0);
   let sql = `SELECT ${POSTING_COLS}, ${postingFlags("$1")}` + where;
   if (page.cursor) {
