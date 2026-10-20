@@ -1,0 +1,70 @@
+# Hostinger KVM 2 (2 vCPU / 8 GB) via Dokploy.
+# Dokploy supplies Docker and Traefik. This file does not run Postgres:
+# DATABASE_URL points at Neon. Migrations stay manual (RUN_MIGRATIONS=0).
+# CHAT_EXECUTOR=local keeps the in-process FOR UPDATE SKIP LOCKED worker.
+# Do not set CF_WORKER or CHAT_EXECUTOR=workflow on this host.
+
+services:
+  ai:
+    build:
+      context: ../../services/ai
+      dockerfile: Dockerfile
+    image: push-ai:local
+    restart: unless-stopped
+    mem_limit: 6g
+    shm_size: 1gb
+    environment:
+      APP_ENV: production
+      PORT: "8080"
+      STORAGE_DIR: /data/sources
+      CHAT_EXECUTOR: local
+      CHECKPOINTER: postgres
+      DB_DRIVER: asyncpg
+      PG_TRANSPORT: tcp
+      RUN_MIGRATIONS: "0"
+      PLAYWRIGHT_NO_SANDBOX: "1"
+      DATABASE_URL: ${DATABASE_URL}
+      AI_SHARED_SECRET: ${AI_SHARED_SECRET}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
+      BYOK_MASTER_KEY: ${BYOK_MASTER_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_ULTRA: ${STRIPE_PRICE_ULTRA:-}
+    volumes:
+      - ai-data:/data
+    networks:
+      - dokploy-network
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.push-ai.rule=Host(`${AI_HOST}`)
+      - traefik.http.routers.push-ai.entrypoints=websecure
+      - traefik.http.routers.push-ai.tls=true
+      - traefik.http.routers.push-ai.tls.certresolver=letsencrypt
+      - traefik.http.services.push-ai.loadbalancer.server.port=8080
+
+volumes:
+  ai-data:
+
+networks:
+  dokploy-network:
+    external: true

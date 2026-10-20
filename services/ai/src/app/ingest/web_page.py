@@ -221,8 +221,10 @@ async def _render_text(url: str) -> str:
     proxy_server, proxy_port = await _start_egress_proxy()
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                proxy={"server": f"http://127.0.0.1:{proxy_port}"})
+            launch: dict = {"proxy": {"server": f"http://127.0.0.1:{proxy_port}"}}
+            if os.environ.get("PLAYWRIGHT_NO_SANDBOX") == "1":
+                launch["args"] = ["--no-sandbox", "--disable-dev-shm-usage"]
+            browser = await p.chromium.launch(**launch)
             try:
                 page = await browser.new_page(
                     user_agent=_UA, locale="ko-KR")

@@ -51,5 +51,16 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/jobs\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
   if (path === "/api/v1/calendar/events") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/calendar\/events\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (isRecruiting(path)) return true;
+  return false;
+}
+
+function isRecruiting(path: string): boolean {
+  if (path === "/api/v1/postings" || path.startsWith("/api/v1/postings/")) return true;
+  if (path === "/api/v1/search") return true;
+  if (path === "/api/v1/profiles" || path.startsWith("/api/v1/profiles/")) return true;
+  if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
+  if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;
+  if (path === "/api/v1/posts" || path.startsWith("/api/v1/posts/")) return true;
   return false;
 }

@@ -42,8 +42,15 @@ def _public_error(exc: BaseException) -> str:
     return text[:400]
 
 
-def _is_public(path: str) -> bool:
-    return path in _PUBLIC_EXACT or bool(_PUBLIC_PATTERN.match(path))
+def _is_public(path: str, method: str = "GET") -> bool:
+    if path in _PUBLIC_EXACT or _PUBLIC_PATTERN.match(path):
+        return True
+    # Image bytes are loaded by <img>. POST /uploads/images stays authenticated.
+    return (
+        method == "GET"
+        and path.startswith("/api/v1/uploads/images/")
+        and ".." not in path
+    )
 
 
 def _client_ip(scope: Scope) -> str:
@@ -98,7 +105,7 @@ class ApiMiddleware:
             return
         rid = (scope.get("state") or {}).get("request_id", "")
         now = datetime.now(timezone.utc).timestamp()
-        if _is_public(path):
+        if _is_public(path, scope.get("method", "GET")):
             if not await self._limited(
                     scope, "ip", _client_ip(scope), self._public_rl, 60, now):
                 await self._error(send, 429, "RATE_LIMITED",

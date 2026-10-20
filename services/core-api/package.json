@@ -6,7 +6,8 @@
     "test": "node --experimental-strip-types --test test/**/*.ts"
   },
   "dependencies": {
-    "@neondatabase/serverless": "1.0.2"
+    "@neondatabase/serverless": "1.0.2",
+    "es-hangul": "2.4.0"
   },
   "devDependencies": {
     "typescript": "5.9.3",
