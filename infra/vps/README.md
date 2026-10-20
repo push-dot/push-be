@@ -7,7 +7,7 @@
 1. Hostinger에서 KVM 2를 만들고 Ubuntu를 설치한다.
 2. Dokploy를 설치한다. Dokploy가 Docker와 Traefik을 같이 띄운다.
 3. AI 호스트 이름(예: `ai.example.com`)의 A 레코드를 이 VPS로 보낸다.
-4. Neon에 `db/migrations/0016_recruiting.sql`까지 직접 적용한다. 컨테이너는 `RUN_MIGRATIONS=0`이라 기동 때 스키마를 바꾸지 않는다.
+4. Neon에 `db/migrations/0017_rag_chunks.sql`까지 직접 적용한다. 컨테이너는 `RUN_MIGRATIONS=0`이라 기동 때 스키마를 바꾸지 않는다. `AI_FRAMEWORK`는 `legacy`로 둔다.
 5. `services/ai/scripts/seed_local.py`는 `APP_ENV=development`가 아니면 종료한다. 프로덕션에서 실행하지 않는다.
 
 ## Dokploy
