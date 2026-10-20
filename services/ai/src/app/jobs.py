@@ -22,6 +22,17 @@ def external_jobs() -> bool:
     return os.environ.get("CF_WORKER") == "1" or mode in ("workflow", "external")
 
 
+def remote_executor() -> bool:
+    """The VPS worker claims chat_jobs. Cloudflare must not schedule them too.
+
+    Clearing ``AI_ORIGIN`` and ``CHAT_EXECUTOR_REMOTE`` restores the Workflow.
+    """
+    flag = os.environ.get("CHAT_EXECUTOR_REMOTE", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("AI_ORIGIN", "").strip())
+
+
 def set_job_scheduler(fn: Scheduler) -> None:
     global _scheduler
     _scheduler = fn

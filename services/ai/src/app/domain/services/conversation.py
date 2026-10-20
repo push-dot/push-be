@@ -763,6 +763,11 @@ class ConversationService:
             return
 
     async def nudge_pending(self) -> int:
+        from app.jobs import remote_executor
+        # The resident VPS loop claims PENDING rows. A cron nudge here would
+        # start a second Workflow on the same job.
+        if remote_executor():
+            return 0
         await self.jobs.reset_stale()
         ids = await self.jobs.pending_ids(5)
         for pending in ids:
