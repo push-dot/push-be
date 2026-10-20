@@ -318,34 +318,11 @@ def bind_chat_nodes(svc):
                 except Exception:
                     continue
         try:
-            missing = await svc.chunks.evidence_ids_missing(
-                state["user_id"], limit=10)
-            for eid in missing:
-                try:
-                    e = await svc.evidence.get(state["user_id"], eid)
-                    texts = _chunk_text(e.source_text)
-                    vecs = await svc.ai.embed(
-                        texts, user_id=state["user_id"],
-                        job_id=state.get("job_id"))
-                    if len(vecs) == len(texts):
-                        await svc.chunks.replace_chunks(
-                            state["user_id"], eid, list(zip(texts, vecs)))
-                except Exception:
-                    continue
-            qvec = await svc.ai.embed(
-                [state["text"][:2000]], user_id=state["user_id"],
-                job_id=state.get("job_id"))
-            if qvec:
-                hits = await svc.chunks.search(state["user_id"], qvec[0], 6)
-                rag = [h for h in hits
-                       if str(h["evidence_id"]) not in seen_evidence
-                       and (h["dist"] or 0) < 0.6]
-                if rag:
-                    _emit({"status": "관련 근거 검색 완료"})
-                    sections.append(
-                        "[관련 근거]\n" + "\n\n".join(
-                            "- " + h["title"] + "\n" + h["text"]
-                            for h in rag))
+            from app.framework.rag import collect_evidence
+            section = await collect_evidence(svc, state, seen_evidence)
+            if section:
+                _emit({"status": "관련 근거 검색 완료"})
+                sections.append(section)
         except Exception as rag_err:
             from app.claimctx import LostClaim
             if isinstance(rag_err, LostClaim):

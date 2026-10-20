@@ -306,7 +306,11 @@ class AIGate:
         reasoning = ai.effort.lower() if ai.credential_mode == "MANAGED" else ""
         usage_id = await self._reserve(user_id, ai, system, user, job_id)
         try:
-            c = await chat.chat(key, model, system, user, reasoning, headers)
+            from app.framework.models import complete_or_none
+            c = await complete_or_none(
+                chat, key, model, system, user, reasoning, headers)
+            if c is None:
+                c = await chat.chat(key, model, system, user, reasoning, headers)
         except Exception:
             await self._release(usage_id)
             raise provider_error("AI provider request failed")
@@ -331,18 +335,35 @@ class AIGate:
             usage.setdefault("usage_ids", []).append(usage_id)
         settled = False
         try:
-            chat_stream = getattr(chat, "chat_stream", None)
-            if chat_stream is None:
-                c = await chat.chat(key, model, system, user, reasoning,
-                                    headers)
-                usage["input_tokens"] = c.input_tokens
-                usage["output_tokens"] = c.output_tokens
-                yield c.text
-            else:
-                async for tok in chat_stream(key, model, system, user, usage,
-                                             reasoning, headers,
-                                             assistant_prefix):
-                    yield tok
+            from app.framework.models import stream_or_none
+            lc = stream_or_none(
+                chat, key, model, system, user, usage, reasoning, headers,
+                assistant_prefix)
+            ran_legacy = True
+            if lc is not None:
+                produced = False
+                try:
+                    async for tok in lc:
+                        produced = True
+                        yield tok
+                except ImportError:
+                    if produced:
+                        raise
+                else:
+                    ran_legacy = False
+            if ran_legacy:
+                chat_stream = getattr(chat, "chat_stream", None)
+                if chat_stream is None:
+                    c = await chat.chat(key, model, system, user, reasoning,
+                                        headers)
+                    usage["input_tokens"] = c.input_tokens
+                    usage["output_tokens"] = c.output_tokens
+                    yield c.text
+                else:
+                    async for tok in chat_stream(
+                            key, model, system, user, usage,
+                            reasoning, headers, assistant_prefix):
+                        yield tok
             await self._settle(usage_id, model,
                                usage.get("input_tokens", 0),
                                usage.get("output_tokens", 0))
