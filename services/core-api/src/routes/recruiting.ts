@@ -525,7 +525,7 @@ function profileSelect(extra: string): string {
     (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count
     ${extra}
     FROM profiles p
-    JOIN users u ON u.id = p.user_id
+    JOIN users u ON u.id = p.user_id AND u.deletion_requested_at IS NULL
     LEFT JOIN user_settings s ON s.user_id = p.user_id`;
 }
 
@@ -1193,7 +1193,7 @@ function postDto(row: Record<string, unknown>): Record<string, unknown> {
 
 const POST_SQL = `p.id, p.user_id, u.display_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
   (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count
-  FROM posts p JOIN users u ON u.id = p.user_id`;
+  FROM posts p JOIN users u ON u.id = p.user_id AND u.deletion_requested_at IS NULL`;
 
 async function listPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);

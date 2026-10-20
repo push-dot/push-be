@@ -40,3 +40,51 @@ test("github callback sends a User-Agent when fetching the user", async () => {
   assert.equal(res.status, 302);
   assert.match(res.headers.get("location") ?? "", /^push:\/\/auth\/callback\?code=/);
 });
+
+function deletionDeps(stripeOk: boolean) {
+  const sqls: string[] = [];
+  const stripeCalls: string[] = [];
+  const query: Deps["query"] = async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("FROM users WHERE id")) {
+      return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "PRO", subscription_status: "ACTIVE", stripe_customer_id: "cus_1", period_ends_at: null, created_at: NOW.toISOString() }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 1 };
+  };
+  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    stripeCalls.push(`${init?.method} ${String(input).replace("https://api.stripe.com", "")}`);
+    if (!stripeOk) return Response.json({ error: {} }, { status: 500 });
+    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1" }, { id: "sub_2" }] });
+    return Response.json({ id: "sub", status: "canceled" });
+  };
+  const env = { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: "u1", STRIPE_SECRET_KEY: "sk" } as CoreEnv;
+  const call = () => handle(
+    new Request("https://core.example/api/v1/me", { method: "DELETE", headers: { authorization: "Bearer dev" } }),
+    env,
+    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+  );
+  return { sqls, stripeCalls, call };
+}
+
+test("DELETE /me cancels subscriptions, marks the account, and revokes tokens", async () => {
+  resetLimits();
+  const d = deletionDeps(true);
+  const res = await d.call();
+  assert.equal(res.status, 204);
+  assert.deepEqual(d.stripeCalls, [
+    "GET /v1/subscriptions?limit=100&customer=cus_1",
+    "DELETE /v1/subscriptions/sub_1",
+    "DELETE /v1/subscriptions/sub_2",
+  ]);
+  assert.ok(d.sqls.some((s) => s.includes("SET deletion_requested_at = $2")));
+  assert.ok(d.sqls.some((s) => s.includes("UPDATE refresh_tokens SET revoked_at")));
+});
+
+test("DELETE /me keeps the account when Stripe cancel fails", async () => {
+  resetLimits();
+  const d = deletionDeps(false);
+  const res = await d.call();
+  assert.equal(res.status, 502);
+  assert.ok(!d.sqls.some((s) => s.includes("deletion_requested_at")));
+});

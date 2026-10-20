@@ -241,5 +241,7 @@ class Default(WorkerEntrypoint):
             await app.state.deps.conversations.nudge_pending()
             from app.ratelimit import sweep
             await sweep(app.state.db.pool)
+            from app.account_purge import purge_deleted
+            await purge_deleted(app.state.db.pool)
         finally:
             await _end_db_scope(scope)
