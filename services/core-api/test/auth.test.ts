@@ -86,5 +86,35 @@ test("DELETE /me keeps the account when Stripe cancel fails", async () => {
   const d = deletionDeps(false);
   const res = await d.call();
   assert.equal(res.status, 502);
-  assert.ok(!d.sqls.some((s) => s.includes("deletion_requested_at")));
+  assert.ok(d.sqls.some((s) => s.includes("SET deletion_requested_at = NULL WHERE id = $1")), "mark is undone");
+});
+
+test("login still works before migration 0018 is applied", async () => {
+  resetLimits();
+  const env = {
+    APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0",
+    GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
+  } as CoreEnv;
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("deletion_requested_at")) throw Object.assign(new Error('column "deletion_requested_at" does not exist'), { code: "42703" });
+    if (sql.includes("FROM oauth_states")) {
+      return {
+        rows: [{
+          state: "s1", provider: "github", code_challenge: "c", redirect_uri: "https://x/cb",
+          final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z",
+        }],
+        rowCount: 1,
+      };
+    }
+    return { rows: [], rowCount: 1 };
+  };
+  const fetch = async (input: RequestInfo | URL) =>
+    String(input).includes("access_token") ? Response.json({ access_token: "gho_x" }) : Response.json({ id: 42, login: "ada" });
+  const res = await handle(
+    new Request("https://core.example/api/v1/auth/github/callback?code=abc&state=s1"),
+    env,
+    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+  );
+  assert.equal(res.status, 302);
 });

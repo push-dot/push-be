@@ -517,6 +517,10 @@ function profileDto(row: Record<string, unknown>, viewerId: string): Record<stri
   };
 }
 
+// Hides accounts in the deletion grace period. Read through to_jsonb so it also runs before migration 0018.
+// shortcut: per-row jsonb cast, switch to u.deletion_requested_at IS NULL once 0018 is on Neon.
+const NOT_DELETING = "to_jsonb(u) ->> 'deletion_requested_at' IS NULL";
+
 function profileSelect(extra: string): string {
   return `SELECT ${PROFILE_COLS},
     COALESCE(s.career_status_visibility, 'everyone') AS career_status_visibility,
@@ -525,7 +529,7 @@ function profileSelect(extra: string): string {
     (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count
     ${extra}
     FROM profiles p
-    JOIN users u ON u.id = p.user_id AND u.deletion_requested_at IS NULL
+    JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
     LEFT JOIN user_settings s ON s.user_id = p.user_id`;
 }
 
@@ -1193,7 +1197,7 @@ function postDto(row: Record<string, unknown>): Record<string, unknown> {
 
 const POST_SQL = `p.id, p.user_id, u.display_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
   (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count
-  FROM posts p JOIN users u ON u.id = p.user_id AND u.deletion_requested_at IS NULL`;
+  FROM posts p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}`;
 
 async function listPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);

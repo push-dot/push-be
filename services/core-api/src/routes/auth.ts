@@ -1,4 +1,4 @@
-import { query, one } from "../db.ts";
+import { isUndefinedColumn, query, one } from "../db.ts";
 import { HttpError, data, randomToken, requireUuid, sha256Hex } from "../http.ts";
 import { verifyPkce } from "../crypto.ts";
 import { ts } from "../page.ts";
@@ -199,8 +199,11 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
   const expires = new Date(ctx.now.getTime() + EXCHANGE_MS).toISOString();
   const userId = crypto.randomUUID();
   await query(ctx.deps.query,
-    "WITH upsert AS (INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at) VALUES ($1,$2,$3,$4,'ko',$5) ON CONFLICT (provider, provider_subject) DO NOTHING RETURNING id), existing AS (UPDATE users SET deletion_requested_at = NULL WHERE provider = $2 AND provider_subject = $3 RETURNING id) INSERT INTO exchange_codes (code, user_id, code_challenge, expires_at, used_at, created_at) SELECT $6, COALESCE((SELECT id FROM upsert), (SELECT id FROM existing)), $7, $8, NULL, $5",
+    "WITH upsert AS (INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at) VALUES ($1,$2,$3,$4,'ko',$5) ON CONFLICT (provider, provider_subject) DO NOTHING RETURNING id), existing AS (SELECT id FROM users WHERE provider = $2 AND provider_subject = $3) INSERT INTO exchange_codes (code, user_id, code_challenge, expires_at, used_at, created_at) SELECT $6, COALESCE((SELECT id FROM upsert), (SELECT id FROM existing)), $7, $8, NULL, $5",
     [userId, provider, subject, name, ctx.now.toISOString(), exchange, String(rec.code_challenge), expires]);
+  // Logging in during the 30-day grace period restores the account.
+  await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE provider = $1 AND provider_subject = $2 AND deletion_requested_at IS NOT NULL", [provider, subject])
+    .catch((err) => { if (!isUndefinedColumn(err)) throw err; });
   const finalUri = String(rec.final_uri || "push://auth/callback");
   return new Response(null, {
     status: 302,
@@ -278,8 +281,14 @@ export async function logout(ctx: Ctx): Promise<Response> {
 
 /** Marks the account for deletion; logging in within 30 days restores it, then the cron purges it. */
 export async function deleteAccount(ctx: Ctx): Promise<Response> {
-  await cancelSubscriptions(ctx);
+  // Mark first so a missing migration fails before Stripe is touched; undo the mark if Stripe fails.
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = $2 WHERE id = $1", [ctx.user.id, ctx.now.toISOString()]);
+  try {
+    await cancelSubscriptions(ctx);
+  } catch (err) {
+    await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1", [ctx.user.id]);
+    throw err;
+  }
   await revokeAll(ctx, ctx.user.id);
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }

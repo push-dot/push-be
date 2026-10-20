@@ -242,6 +242,6 @@ class Default(WorkerEntrypoint):
             from app.ratelimit import sweep
             await sweep(app.state.db.pool)
             from app.account_purge import purge_deleted
-            await purge_deleted(app.state.db.pool)
+            await purge_deleted(app.state.db.pool, app.state.deps.storage_dir)
         finally:
             await _end_db_scope(scope)
