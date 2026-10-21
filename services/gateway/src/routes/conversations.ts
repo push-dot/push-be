@@ -334,7 +334,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
           for (const row of rows) {
             after = Number(row.id);
             send(sseFrame(row));
-            if (row.type === "done" || row.type === "error") {
+            if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
             }
@@ -375,7 +375,9 @@ function sseFrame(row: Record<string, unknown>): string {
   if (row.type === "token") body = { type: "token", text: String(p.text ?? "") };
   else if (row.type === "status") body = { type: "status", text: String(p.text ?? "") };
   else if (row.type === "error") body = { type: "error", error: p.error ?? {} };
-  else body = { type: "done", operation: p.operation ?? null };
+  else if (row.type === "done") body = { type: "done", operation: p.operation ?? null };
+  else if (row.type === "cancelled") body = { type: "cancelled" };
+  else body = { type: row.type, ...p };
   body.seq = seq;
   return `id: ${seq}\ndata: ${pyJson(body)}\n\n`;
 }

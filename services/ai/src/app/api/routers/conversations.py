@@ -8,7 +8,8 @@ from fastapi.responses import StreamingResponse
 from app.domain.errors import DomainError
 from app.jsonutil import to_jsonable
 from app.api import schemas as s
-from app.api.deps import deps, ai_options, bind_json, current_user, param_id
+from app.graphs.chat_surface import resolve_chat_approval
+from app.api.deps import deps, ai_options, bind_json, current_user, data, param_id
 
 router = APIRouter()
 
@@ -70,3 +71,17 @@ def _sse_response(gen):
     return StreamingResponse(
         gen, media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class _ResolveApprovalReq(s.Req):
+    option_id: str
+
+
+@router.post("/conversations/{id}/approvals/{approval_id}")
+async def resolve_conversation_approval(id: str, approval_id: str, request: Request):
+    req = await bind_json(request, _ResolveApprovalReq)
+    body = await resolve_chat_approval(
+        request.app.state.db, current_user(request).id,
+        param_id(id, "id"), param_id(approval_id, "approvalId"),
+        req.option_id)
+    return data(200, body)

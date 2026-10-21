@@ -229,6 +229,12 @@ class ConversationService:
                         elif "status" in chunk:
                             await self.jobs.emit(
                                 job_id, "status", {"text": chunk["status"]})
+                        elif chunk.get("type") in {
+                                "tool", "todo", "diff", "approval", "choice",
+                                "fit", "cancelled"}:
+                            await self.jobs.emit(
+                                job_id, chunk["type"],
+                                {k: v for k, v in chunk.items() if k != "type"})
                     elif mode == "values" and chunk.get("operation"):
                         from app.jsonutil import to_jsonable
                         await self.jobs.emit(

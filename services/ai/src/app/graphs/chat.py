@@ -246,6 +246,12 @@ def bind_chat_nodes(svc):
             operation_id=None, created_at=_now())
         await svc.db.run(lambda: svc.conversations.create_message(user_msg))
 
+    def _emit_prepared(state: dict) -> None:
+        from app.graphs.chat_surface import surface_events
+        for event in surface_events(state):
+            if event["type"] in ("tool", "todo", "choice"):
+                _emit(event)
+
     async def prepare_reply(state: ChatState) -> dict:
         # Own workflow step: page fetch, RAG, and prompt assembly.
         # The local graph does not call this; generate_reply does it inline.
@@ -342,6 +348,7 @@ def bind_chat_nodes(svc):
         return prompt_lines(picked)
 
     async def _prepare_reply(state: ChatState) -> dict:
+        _emit_prepared(state)
         from app.ingest.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
         conv = state.get("conversation")
@@ -583,6 +590,28 @@ def bind_chat_nodes(svc):
             if token is not None:
                 reset_employer_plan(token)
 
+    async def _emit_persisted(state: dict) -> bool:
+        from app.graphs.chat_surface import insert_chat_approval, surface_events
+        events = [
+            event for event in surface_events(state)
+            if event["type"] in ("diff", "approval", "fit")]
+        for event in events:
+            _emit(event)
+        approval = next((event for event in events if event["type"] == "approval"), None)
+        if approval is not None:
+            conv = state.get("conversation")
+            user_id = state.get("user_id")
+            if conv is not None and user_id is not None:
+                diff = state.get("diff") or {}
+                await insert_chat_approval(
+                    svc.db, user_id, conv.id, approval, diff.get("documentId"))
+            return True
+        diff_event = next((event for event in events if event["type"] == "diff"), None)
+        apply = getattr(getattr(svc, "documents", None), "apply_hunks", None)
+        if diff_event is not None and apply is not None:
+            await apply(diff_event)
+        return False
+
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
         conv = state["conversation"]
@@ -595,6 +624,7 @@ def bind_chat_nodes(svc):
                 # Storing the local stub there shipped a fake assistant
                 # message. The Workflow retries this step instead.
                 raise RuntimeError("chat completion missing")
+        blocked = await _emit_persisted(state)
         now = _now()
         user_msg_id, assistant_msg_id, op_id = _stable_ids(
             state.get("job_id"))
@@ -613,7 +643,7 @@ def bind_chat_nodes(svc):
             reply = completion.text
         assistant_text = reply
         doc_attachments: list[ent.MessageAttachment] = []
-        if state.get("resume_flow") and completion is not None:
+        if state.get("resume_flow") and completion is not None and not blocked:
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
             try:
