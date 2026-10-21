@@ -282,3 +282,60 @@ async def test_run_job_inserts_ai_done_only_after_done():
     })
     assert failed.jobs.finished == ["REQUEUE"]
     assert failed.db.query.calls == []
+
+
+async def test_workflow_persist_inserts_ai_done():
+    from app.domain.services.conversation import ConversationService
+
+    user_id = uuid4()
+    conversation_id = uuid4()
+    job_id = uuid4()
+
+    class Jobs(_Jobs):
+        def __init__(self):
+            super().__init__()
+            self.job = {
+                "id": job_id,
+                "status": "RUNNING",
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "payload": {"text": "hi"},
+                "checkpoint": {},
+            }
+
+        async def get(self, jid):
+            return self.job
+
+        async def delete_events_after(self, jid, hw):
+            return None
+
+        async def save_checkpoint(self, jid, ck):
+            self.job["checkpoint"] = ck
+
+        async def max_event_id(self, jid):
+            return 1
+
+        async def emit_many(self, jid, items):
+            return None
+
+        async def finish(self, jid, status, error=None):
+            self.finished.append(status)
+            self.job["status"] = status
+
+    svc = ConversationService.__new__(ConversationService)
+    svc.db = _DB()
+    svc.jobs = Jobs()
+    svc.ai = SimpleNamespace(cipher=None)
+    svc._byok_keys = {}
+
+    async def persist(state):
+        return {"operation": {"status": "SUCCEEDED"}}
+
+    svc.chat_nodes = {"persist": persist}
+    result = await svc.exec_chat_node(str(job_id), "persist", "")
+    assert result == "ok"
+    assert svc.jobs.finished == ["DONE"]
+    sql, args = svc.db.query.calls[0]
+    assert "AI_DONE" in sql
+    assert "AI 작업이 끝났어요" in args
+    assert '{"kind":"conversation","id":"' + str(conversation_id) + '"}' in args

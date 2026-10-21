@@ -213,6 +213,13 @@ class ConversationService:
             self._inflight.add(t)
             t.add_done_callback(self._inflight.discard)
 
+    async def _notify_ai_done(self, user_id, conversation_id) -> None:
+        try:
+            from app.domain.chat_settings import insert_ai_done
+            await insert_ai_done(self.db.q(), user_id, conversation_id)
+        except Exception:
+            logging.getLogger(__name__).exception("AI_DONE insert failed")
+
     async def _run_job(self, job: dict) -> None:
         log = logging.getLogger(__name__)
         job_id = job["id"]
@@ -263,13 +270,8 @@ class ConversationService:
                         terminal = True
                     else:
                         await self.jobs.finish(job_id, "DONE")
-                        try:
-                            from app.domain.chat_settings import insert_ai_done
-                            await insert_ai_done(
-                                self.db.q(), job["user_id"],
-                                job["conversation_id"])
-                        except Exception:
-                            log.exception("AI_DONE insert failed")
+                        await self._notify_ai_done(
+                            job["user_id"], job["conversation_id"])
                         terminal = True
             except DomainError as e:
                 await self._drop_enqueued_user_message(job_id)
@@ -685,6 +687,8 @@ class ConversationService:
             if name == "persist" and status == "RUNNING":
                 try:
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                 except LostClaim:
                     return "skip"
             return "ok"
@@ -750,6 +754,8 @@ class ConversationService:
                         jid, "done",
                         {"operation": to_jsonable(state["operation"])})
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                     self._byok_keys.pop(jid, None)
                 event_id = await self.jobs.max_event_id(jid)
                 await self.jobs.save_checkpoint(
