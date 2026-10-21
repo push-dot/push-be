@@ -11,6 +11,9 @@
   "services": [
     { "binding": "API", "service": "push-be-python" }
   ],
+  "send_email": [
+    { "name": "EMAIL" }
+  ],
   "vars": {
     "APP_ENV": "production",
     "MANAGED_AI": "1",

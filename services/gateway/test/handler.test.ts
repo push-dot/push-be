@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { ownerOf } from "../src/routes/owner.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -107,7 +108,7 @@ test("auth/me preserves unauthenticated, expired, and success bodies", async () 
   }), env(), deps(okQuery));
   assert.equal(ok.status, 200);
   assert.equal(await ok.text(),
-    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z"}}');
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null}}');
 });
 
 test("conversation list pages with a Python-compatible cursor", async () => {
@@ -1101,4 +1102,43 @@ test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async (
   assert.equal(target, "https://ai.example.test/api/v1/ai/generate");
   assert.equal(secret, "test-secret");
   assert.equal(forwarded.length, 2);
+});
+
+test("auth/me returns employer membership from the joined row", async () => {
+  resetLimits();
+  let sql = "";
+  const query: Query = async (text) => {
+    sql = text;
+    if (text.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05.000001Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true,
+        company_id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        company_role: "ADMIN",
+      }];
+    }
+    return [];
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.match(sql, /company_members/);
+  assert.match(sql, /is_employer/);
+  assert.equal(await res.text(),
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN"}}');
+});
+
+test("email auth posts are owned by core", () => {
+  for (const path of [
+    "/api/v1/auth/email/signup",
+    "/api/v1/auth/email/verify",
+    "/api/v1/auth/email/login",
+    "/api/v1/auth/email/password-reset",
+    "/api/v1/auth/email/password-reset/confirm",
+  ]) {
+    assert.equal(ownerOf("POST", path), "core");
+  }
 });

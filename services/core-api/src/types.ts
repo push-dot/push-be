@@ -1,4 +1,5 @@
 import type { Query } from "./db.ts";
+import type { Mailer } from "./mail/mailer.ts";
 
 export interface Fetcher {
   fetch(input: Request): Promise<Response>;
@@ -26,12 +27,20 @@ export interface CoreEnv {
   STRIPE_SUCCESS_URL?: string;
   STRIPE_CANCEL_URL?: string;
   STRIPE_PORTAL_RETURN_URL?: string;
+  MAIL_FROM?: string;
+  APP_WEB_ORIGIN?: string;
+  OAUTH_REDIRECT_ORIGINS?: string;
+  NTS_SERVICE_KEY?: string;
+  EMAIL?: {
+    send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
+  };
 }
 
 export interface Deps {
   query: Query;
   now?: () => Date;
   fetch?: typeof fetch;
+  mailer?: Mailer;
 }
 
 export interface UserRow {
@@ -43,6 +52,9 @@ export interface UserRow {
   stripeCustomerId: string | null;
   periodEndsAt: string | null;
   createdAt: string;
+  accountType: "PERSONAL" | "EMPLOYER";
+  companyId: string | null;
+  companyRole: string | null;
 }
 
 export interface Ctx {

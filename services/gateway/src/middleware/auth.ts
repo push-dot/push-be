@@ -25,6 +25,9 @@ function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: numb
     displayName: user.displayName,
     locale: user.locale,
     createdAt: user.createdAt,
+    accountType: user.accountType,
+    companyId: user.companyId,
+    companyRole: user.companyRole,
     expiresAtMs,
   };
   isolate.putAuth(hash, cached, nowMs, ttlMs);
@@ -68,6 +71,9 @@ function userFromCached(cached: CachedUser): User {
     displayName: cached.displayName,
     locale: cached.locale,
     createdAt: cached.createdAt,
+    accountType: cached.accountType,
+    companyId: cached.companyId,
+    companyRole: cached.companyRole,
   };
 }
 type TokenCtx = {
@@ -200,7 +206,7 @@ export async function requireUser(request: Request, env: FrontEnv, deps: Deps, r
 }
 async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   const rows = await deps.query(
-    "SELECT id, display_name, locale, " + tsText("created_at") + " AS created_at FROM users WHERE id = $1::uuid",
+    "SELECT u.id, u.display_name, u.locale, " + tsText("u.created_at") + " AS created_at, u.is_employer, m.company_id, m.role AS company_role FROM users u LEFT JOIN company_members m ON m.user_id = u.id WHERE u.id = $1::uuid",
     [env.DEV_USER_ID || ""],
   );
   if (!rows.length) {
@@ -209,11 +215,20 @@ async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   return userFrom(rows[0]);
 }
 
+const employerFlag = (value: unknown): boolean =>
+  value === true || value === "t" || value === "true" || value === 1;
+
+const textOrNull = (value: unknown): string | null =>
+  value == null || value === "" ? null : String(value);
+
 export function userFrom(row: Record<string, unknown>): User {
   return {
     id: String(row.id),
     displayName: String(row.display_name ?? ""),
     locale: String(row.locale ?? "ko"),
     createdAt: formatJsonTimestamp(row.created_at),
+    accountType: employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL",
+    companyId: textOrNull(row.company_id),
+    companyRole: textOrNull(row.company_role),
   };
 }

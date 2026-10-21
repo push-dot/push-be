@@ -26,6 +26,9 @@ const REQUIRED = [
   "company_id",
   "password_hash",
   "email_verified_at",
+  "ALTER COLUMN user_id DROP NOT NULL",
+  "provider_subject",
+  "email_verified boolean",
 ];
 
 test("fo-web employer migration defines the schema later tasks select", () => {

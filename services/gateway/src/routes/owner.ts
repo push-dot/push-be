@@ -33,6 +33,13 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/auth/exchange" || path === "/api/v1/auth/refresh" || path === "/api/v1/auth/logout") {
     return method === "POST";
   }
+  if (method === "POST" && (
+    path === "/api/v1/auth/email/signup"
+    || path === "/api/v1/auth/email/verify"
+    || path === "/api/v1/auth/email/login"
+    || path === "/api/v1/auth/email/password-reset"
+    || path === "/api/v1/auth/email/password-reset/confirm"
+  )) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH";

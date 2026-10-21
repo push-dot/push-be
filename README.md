@@ -183,6 +183,9 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `BYOK_MASTER_KEY` | 저장된 BYOK를 재시도·크론에서 복호화할 때 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
+| `MAIL_FROM` | 이메일 발신 주소. 비우면 로컬 로거는 `noreply@push.local` |
+| `APP_WEB_ORIGIN` | 인증·재설정 링크 origin. 비우면 `http://localhost:5174` |
+| `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 결제 |
 | `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | Pro/Ultra 가격 ID |
 | `DEV_AUTH_TOKEN`, `DEV_USER_ID` | 개발 인증. 프로덕션에서는 비운다 |

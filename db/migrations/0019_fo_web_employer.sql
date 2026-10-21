@@ -142,3 +142,11 @@ ALTER TABLE user_settings ADD COLUMN notify_application_stage boolean NOT NULL D
 
 ALTER TABLE notifications DROP CONSTRAINT notifications_type_chk;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_chk CHECK (type IN ('DEADLINE', 'OFFER', 'COMMENT', 'AI_DONE', 'APPLICATION_STAGE'));
+
+ALTER TABLE exchange_codes ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE exchange_codes ADD COLUMN provider text;
+ALTER TABLE exchange_codes ADD COLUMN provider_subject text;
+ALTER TABLE exchange_codes ADD COLUMN email text;
+ALTER TABLE exchange_codes ADD COLUMN email_verified boolean NOT NULL DEFAULT false;
+ALTER TABLE exchange_codes ADD COLUMN display_name text;
+ALTER TABLE exchange_codes ADD COLUMN account_type text NOT NULL DEFAULT 'PERSONAL';

@@ -47,4 +47,7 @@ export interface User {
   displayName: string;
   locale: string;
   createdAt: string;
+  accountType: "PERSONAL" | "EMPLOYER";
+  companyId: string | null;
+  companyRole: string | null;
 }

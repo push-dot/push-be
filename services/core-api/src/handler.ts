@@ -2,6 +2,7 @@ import { isUnique, one, query } from "./db.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
+import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { billingStatus, checkout, ledger, portal, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
@@ -15,6 +16,13 @@ const PUBLIC = new Set([
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
   "/api/v1/billing/webhook",
+]);
+const EMAIL_PUBLIC = new Set([
+  "/api/v1/auth/email/signup",
+  "/api/v1/auth/email/verify",
+  "/api/v1/auth/email/login",
+  "/api/v1/auth/email/password-reset",
+  "/api/v1/auth/email/password-reset/confirm",
 ]);
 const PENDING_MS = 5 * 60 * 1000;
 
@@ -57,6 +65,7 @@ function anonymous(): UserRow {
   return {
     id: "", displayName: "", locale: "ko", plan: "FREE", subscriptionStatus: "NONE",
     stripeCustomerId: null, periodEndsAt: null, createdAt: "",
+    accountType: "PERSONAL", companyId: null, companyRole: null,
   };
 }
 
@@ -66,6 +75,7 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
 
 function isPublic(method: string, path: string): boolean {
   if (PUBLIC.has(path)) return true;
+  if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
   return method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path);
 }
 
@@ -79,6 +89,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
   if (method === "GET" && path === "/api/v1/auth/me") return me(ctx);
   if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
+  const emailed = await dispatchEmailAuth(ctx, path);
+  if (emailed) return emailed;
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);

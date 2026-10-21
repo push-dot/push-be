@@ -10,6 +10,7 @@ export async function authMe(request: Request, env: FrontEnv, deps: Deps, rid: s
     data: {
       id: user.id, displayName: user.displayName,
       locale: user.locale, createdAt: user.createdAt,
+      accountType: user.accountType, companyId: user.companyId, companyRole: user.companyRole,
     },
   });
   return conditional(text, request, rid, USER_CACHE_CONTROL);
