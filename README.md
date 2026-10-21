@@ -188,7 +188,12 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
 | `NTS_SERVICE_KEY` | 국세청 사업자 진위확인 serviceKey. 비우면 사업자 확인은 503 |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 결제 |
-| `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | 개인 Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA` | 기업 Basic/Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_TOPUP` | 크레딧 충전 가격 ID |
+| `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP` | 앱 상품 ID |
+| `IAP_TOPUP_CREDITS` | 인앱 충전 크레딧. 비우면 300 |
+| `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE` | 영수증 검증. 비우면 503 |
 | `DEV_AUTH_TOKEN`, `DEV_USER_ID` | 개발 인증. 프로덕션에서는 비운다 |
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | Browser Rendering. 없으면 정적 추출만 |
 | `EXPERIMENTS` | JSON. 5 KB를 넘으면 시크릿으로 둔다. 예시 값은 `.env.example`에 있다 |
@@ -315,7 +320,7 @@ printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-b
 printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY --name push-be-core
 ```
 
-OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
+OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_TOPUP`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP`, `IAP_TOPUP_CREDITS`, `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
 
 Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
 

@@ -3,7 +3,7 @@ import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } f
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
-import { billingStatus, checkout, ledger, portal, webhook } from "./routes/billing.ts";
+import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
@@ -18,6 +18,8 @@ const PUBLIC = new Set([
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
   "/api/v1/billing/webhook",
+  "/api/v1/billing/webhook/app-store",
+  "/api/v1/billing/webhook/google-play",
 ]);
 const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/signup",
@@ -118,9 +120,13 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
 
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
+  if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
   if (method === "POST" && path === "/api/v1/billing/portal") return portal(ctx);
+  if (method === "POST" && path === "/api/v1/billing/iap/verify") return verifyIap(ctx);
   if (method === "GET" && path === "/api/v1/billing/ledger") return ledger(ctx);
   if (method === "POST" && path === "/api/v1/billing/webhook") return webhook(ctx);
+  if (method === "POST" && path === "/api/v1/billing/webhook/app-store") return appleWebhook(ctx);
+  if (method === "POST" && path === "/api/v1/billing/webhook/google-play") return googleWebhook(ctx);
 
   if (method === "GET" && path === "/api/v1/ai/keys") return listKeys(ctx);
   const key = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)$/);

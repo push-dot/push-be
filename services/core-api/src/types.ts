@@ -1,3 +1,4 @@
+import type { StoreReceipts } from "./billing/stores.ts";
 import type { Query } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 
@@ -24,6 +25,10 @@ export interface CoreEnv {
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PRICE_PRO?: string;
   STRIPE_PRICE_ULTRA?: string;
+  STRIPE_PRICE_EMPLOYER_BASIC?: string;
+  STRIPE_PRICE_EMPLOYER_PRO?: string;
+  STRIPE_PRICE_EMPLOYER_ULTRA?: string;
+  STRIPE_PRICE_TOPUP?: string;
   STRIPE_SUCCESS_URL?: string;
   STRIPE_CANCEL_URL?: string;
   STRIPE_PORTAL_RETURN_URL?: string;
@@ -31,6 +36,13 @@ export interface CoreEnv {
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
   NTS_SERVICE_KEY?: string;
+  IAP_PRODUCT_PRO?: string;
+  IAP_PRODUCT_ULTRA?: string;
+  IAP_PRODUCT_TOPUP?: string;
+  IAP_TOPUP_CREDITS?: string;
+  APPLE_IAP_KEY?: string;
+  GOOGLE_PLAY_KEY?: string;
+  GOOGLE_PLAY_PACKAGE?: string;
   EMAIL?: {
     send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
   };
@@ -41,6 +53,7 @@ export interface Deps {
   now?: () => Date;
   fetch?: typeof fetch;
   mailer?: Mailer;
+  stores?: StoreReceipts;
 }
 
 export interface UserRow {

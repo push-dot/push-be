@@ -64,6 +64,11 @@
 31. **Posting conflicts and AI fitScore.** A stale posting patch compares `revision` in the handler and throws 409 before any `UPDATE`. Closing an already closed company posting is 409 `REVISION_CONFLICT` with `details.currentRevision`, even when `expectedRevision` matches. Another company's posting is 404. `GET /companies/me/postings` allows any member, including an unverified company. An applicant stage patch to the same stage returns the row and does not bump revision or insert a notification, including `REJECTED` to `REJECTED`, before the terminal check. AI `Application` omits `fitScore` when there is no score. `ApplicationStore` selects the latest `gap_analyses.fit_score` on read only. `can_patch_stage` stays sequential.
 32. **Closed detail and pre-migration reads.** `GET /postings/{id}` returns a closed posting only to a member of that company. Guests and everyone else still get 404. RAG indexes a user's open company postings through `company_members`, not `company_id = user id`. Post reads retry without the company join when `company_members` is missing, and `companyName` is null. Settings reads and writes retry without `notify_application_stage` when that column is missing, and the response still sends `notifyApplicationStage: true`.
 33. **Consents dispatch.** `routes/consents.ts` exports `dispatchConsents`. `handler.ts` calls it before the 404, not from `dispatchRecruiting`. `PUT /me/consents` is not an idempotent POST. Opt-out upserts `reference_data = false` before deleting `reference_samples`. There is no multi-statement transaction. A failed delete can be retried.
+34. **Employer periodEndsAt.** Employer `GET /billing` returns `periodEndsAt: null`. `companies` has no period column. Do not add one.
+35. **Employer source.** `source` is `"STRIPE"` only when `companies.plan` is set. A null plan returns `source: null` and `subscriptionStatus: "NONE"`.
+36. **IAP top-up credits.** The verify body has no amount. Grant `IAP_TOPUP_CREDITS` displayed credits, default 300 (`1_800_000` micro). A top-up does not change `users.plan` and is allowed while Stripe `subscription_status` is `ACTIVE`.
+37. **Monthly grant is separate.** `GET /billing` inserts one `PURCHASE` with `reference_id` `monthly:YYYY-MM`. Checkout keeps a separate `PURCHASE` whose `reference_id` is the Stripe session id. Do not merge them.
+38. **Personal monthly amounts.** Personal PRO stays `30_000_000` and personal ULTRA stays `100_000_000`. Personal FREE monthly is `1_800_000`. Employer BASIC, PRO, and ULTRA are `18_000_000`, `90_000_000`, and `180_000_000`.
 
 ## File map
 
@@ -462,11 +467,11 @@ export interface StoreReceipts {
 - `GET /billing` lazily grants the current month's plan credits once. The ledger `reference_id` is `monthly:YYYY-MM` and the unique index stops a second grant. Personal FREE uses `1_800_000`. Employer uses the company plan amount. A null employer plan grants nothing.
 - Document every new env var.
 
-- [ ] **Step 1: Failing tests** using fake `fetch` for Stripe and a fake `StoreReceipts`. Cover employer admin checkout, member checkout 403, personal checkout of `BASIC` 400, IAP while Stripe is active 409, Apple webhook ledger insert, duplicate webhook no second insert.
+- [x] **Step 1: Failing tests** using fake `fetch` for Stripe and a fake `StoreReceipts`. Cover employer admin checkout, member checkout 403, personal checkout of `BASIC` 400, IAP while Stripe is active 409, Apple webhook ledger insert, duplicate webhook no second insert.
 
-- [ ] **Step 2–4: TDD, then** core and gateway tests and `tsc`. Existing billing tests must pass. If they assert the exact status JSON, add the new fields to the expected object.
+- [x] **Step 2–4: TDD, then** core and gateway tests and `tsc`. Existing billing tests must pass. If they assert the exact status JSON, add the new fields to the expected object.
 
-- [ ] **Step 5: Commit** `feat(billing): add employer checkout and iap ledger`
+- [x] **Step 5: Commit** `feat(billing): add employer checkout and iap ledger`
 
 ---
 

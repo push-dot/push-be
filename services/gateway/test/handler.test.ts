@@ -1185,3 +1185,11 @@ test("company routes are owned by core", () => {
   }
   assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
 });
+
+test("billing top-up, iap, and store webhooks are owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/billing/topup"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/iap/verify"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/webhook/app-store"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
+});

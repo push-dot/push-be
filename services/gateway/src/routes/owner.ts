@@ -46,7 +46,15 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/messages$/.test(path)) return method === "POST";
   if (path === "/api/v1/billing" || path === "/api/v1/billing/ledger") return method === "GET";
-  if (path === "/api/v1/billing/checkout" || path === "/api/v1/billing/portal" || path === "/api/v1/billing/webhook") {
+  if (
+    path === "/api/v1/billing/checkout"
+    || path === "/api/v1/billing/portal"
+    || path === "/api/v1/billing/webhook"
+    || path === "/api/v1/billing/topup"
+    || path === "/api/v1/billing/iap/verify"
+    || path === "/api/v1/billing/webhook/app-store"
+    || path === "/api/v1/billing/webhook/google-play"
+  ) {
     return method === "POST";
   }
   if (path === "/api/v1/ai/keys") return method === "GET";
