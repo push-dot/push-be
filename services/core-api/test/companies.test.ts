@@ -90,6 +90,8 @@ const get = (path: string): Request => new Request("https://core.example" + path
   headers: { authorization: "Bearer dev" },
 });
 
+const bare = (path: string): Request => new Request("https://core.example" + path);
+
 const del = (path: string): Request => new Request("https://core.example" + path, {
   method: "DELETE",
   headers: { authorization: "Bearer dev" },
@@ -168,6 +170,29 @@ const seat = (plan: string | null, role: string, members: number, invites: numbe
   role,
   member_count: members,
   invite_count: invites,
+});
+
+const undefinedColumn = (column: string): Error => {
+  const err = new Error(`column "${column}" does not exist`) as Error & { code: string };
+  err.code = "42703";
+  return err;
+};
+
+const PROFILE = {
+  logoKey: "logo.png",
+  industry: "소프트웨어",
+  website: "https://push.app",
+  intro: "소개",
+  representativeName: "김대표",
+};
+
+const profileRow = () => ({
+  ...seat("PRO", "ADMIN", 0, 0),
+  logo_key: PROFILE.logoKey,
+  industry: PROFILE.industry,
+  website: PROFILE.website,
+  intro: PROFILE.intro,
+  representative_name: PROFILE.representativeName,
 });
 
 test("verified NTS response creates a company the caller admins", async () => {
@@ -906,4 +931,350 @@ test("email login clears the company deletion mark", async () => {
   );
   assert.equal(res.status, 200);
   assert.ok(sqls.some((sql) => sql.includes("UPDATE companies SET deletion_requested_at = NULL") && sql.includes("role = 'ADMIN'")));
+});
+
+test("admin PATCH sets company profile fields and GET returns logoUrl", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [profileRow()], rowCount: 1 };
+    return empty;
+  });
+  const res = await handle(patch("/api/v1/companies/me", PROFILE), env(), deps(query));
+  assert.equal(res.status, 200);
+  const expected = {
+    id: COMPANY,
+    bNo: BNO,
+    name: "푸시",
+    plan: "PRO",
+    verifiedAt: "2026-10-21T00:00:00Z",
+    role: "ADMIN",
+    seats: { used: 0, limit: 2 },
+    logoKey: PROFILE.logoKey,
+    logoUrl: "/api/v1/uploads/images/" + encodeURIComponent(PROFILE.logoKey),
+    industry: PROFILE.industry,
+    website: PROFILE.website,
+    intro: PROFILE.intro,
+    representativeName: PROFILE.representativeName,
+  };
+  assert.deepEqual(await res.json(), { data: expected });
+  const update = seen.find((call) => call.sql.startsWith("UPDATE companies"));
+  assert.ok(update);
+  assert.equal(update.params[0], COMPANY);
+  for (const value of Object.values(PROFILE)) assert.equal(update.params.includes(value), true);
+  assert.match(update.sql, /logo_key/);
+  assert.match(update.sql, /representative_name/);
+  assert.equal(update.sql.includes("b_no"), false);
+  assert.equal(/\bname\s*=/.test(update.sql), false);
+  assert.equal(update.sql.includes("verified_at"), false);
+  const got = await handle(get("/api/v1/companies/me"), env(), deps(query));
+  assert.equal(got.status, 200);
+  assert.deepEqual(await got.json(), { data: expected });
+
+  resetLimits();
+  const memberSeen: Call[] = [];
+  const member = gate(memberSeen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };
+    return empty;
+  });
+  const denied = await handle(patch("/api/v1/companies/me", PROFILE), env(), deps(member));
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json() as Err).error.code, "FORBIDDEN");
+  assert.equal(memberSeen.some((call) => call.sql.startsWith("UPDATE companies")), false);
+
+  resetLimits();
+  const badSeen: Call[] = [];
+  const badQuery = gate(badSeen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [profileRow()], rowCount: 1 };
+    return empty;
+  });
+  const bad = await handle(patch("/api/v1/companies/me", { bNo: BNO, name: "다른회사" }), env(), deps(badQuery));
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json() as Err).error.code, "VALIDATION_ERROR");
+  assert.equal(badSeen.some((call) => call.sql.startsWith("UPDATE companies")), false);
+});
+
+test("GET /companies/me omits profile keys when the profile columns are missing", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  let profileAttempts = 0;
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.includes("logo_key") || sql.includes("representative_name")) {
+      profileAttempts += 1;
+      throw undefinedColumn("logo_key");
+    }
+    if (sql.includes("AS member_count")) {
+      return {
+        rows: [{
+          id: COMPANY,
+          b_no: null,
+          name: "백필",
+          plan: null,
+          verified_at: null,
+          role: "ADMIN",
+          member_count: 0,
+          invite_count: 0,
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  });
+  const res = await handle(get("/api/v1/companies/me"), env(), deps(query));
+  assert.equal(profileAttempts, 1);
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: Company };
+  assert.deepEqual(Object.keys(body.data), ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats"]);
+  assert.equal(body.data.id, COMPANY);
+  assert.equal(body.data.bNo, "");
+  assert.equal(body.data.name, "백필");
+  assert.equal(body.data.plan, null);
+  assert.equal(body.data.verifiedAt, null);
+  assert.equal(body.data.role, "ADMIN");
+  assert.deepEqual(body.data.seats, { used: 0, limit: 0 });
+  assert.equal(seen.some((call) => call.sql.includes("AS member_count") && !call.sql.includes("logo_key")), true);
+});
+
+test("GET /companies/me/invites returns pending invites for an admin only", async () => {
+  resetLimits();
+  const memberSeen: Call[] = [];
+  const member = gate(memberSeen, employer(), async (sql) => {
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };
+    return empty;
+  });
+  const denied = await handle(get("/api/v1/companies/me/invites"), env(), deps(member));
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json() as Err).error.code, "FORBIDDEN");
+  assert.equal(memberSeen.some((call) => call.sql.includes("FROM company_invites") && !call.sql.includes("AS member_count")), false);
+
+  resetLimits();
+  const missing = await handle(get("/api/v1/companies/me/invites"), env(), deps(gate([], employer(), async () => empty)));
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json() as Err).error.code, "NOT_FOUND");
+
+  resetLimits();
+  const seen: Call[] = [];
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) {
+      return {
+        rows: [
+          { id: "i1", email: "a@push.app", expires_at: "2026-10-22T00:00:00.000Z", token: "raw-token", token_hash: "hash-1" },
+          { id: "i2", email: "b@push.app", expires_at: "2026-10-28T00:00:00.000Z", token: "other-token", token_hash: "hash-2" },
+        ],
+        rowCount: 2,
+      };
+    }
+    return empty;
+  });
+  const res = await handle(get("/api/v1/companies/me/invites"), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    data: [
+      { id: "i1", email: "a@push.app", expiresAt: "2026-10-22T00:00:00Z" },
+      { id: "i2", email: "b@push.app", expiresAt: "2026-10-28T00:00:00Z" },
+    ],
+  });
+  const list = seen.find((call) => call.sql.includes("FROM company_invites") && !call.sql.includes("AS member_count"));
+  assert.ok(list);
+  assert.match(list.sql, /accepted_at IS NULL/);
+  assert.match(list.sql, /expires_at > /);
+  assert.match(list.sql, /ORDER BY expires_at ASC, id ASC/);
+  assert.equal(list.sql.includes("token"), false);
+  assert.equal(list.params[0], COMPANY);
+  assert.equal(list.params[1], NOW.toISOString());
+});
+
+test("POST invite resends a pending invite and records the inviter on insert", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const sent: Mail[] = [];
+  const pendingId = "iiiiiiii-iiii-4iii-8iii-iiiiiiiiiiii";
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE company_invites")) {
+      assert.equal(sent.length, 1);
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: pendingId, email: "m@push.app" }], rowCount: 1 };
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    return empty;
+  });
+  const res = await handle(
+    post("/api/v1/companies/me/invites", { email: "M@Push.app" }, "11111111-1111-4111-8111-111111111201"),
+    env(),
+    deps(query, undefined, mailer),
+  );
+  assert.equal(res.status, 201);
+  assert.deepEqual(await res.json(), { data: { email: "m@push.app" } });
+  assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
+  assert.equal(sent.length, 1);
+  const token = sent[0].text.slice("http://localhost:5174/invites/".length);
+  const hash = await sha256Hex(token);
+  const update = seen.find((call) => call.sql.startsWith("UPDATE company_invites"));
+  assert.ok(update);
+  assert.match(update.sql, /token_hash/);
+  assert.match(update.sql, /inviter_user_id/);
+  assert.equal(update.params.includes(pendingId), true);
+  assert.equal(update.params.includes(hash), true);
+  assert.equal(update.params.includes(token), false);
+  assert.equal(update.params.includes(WEEK), true);
+  assert.equal(update.params.includes(USER), true);
+
+  resetLimits();
+  const failSeen: Call[] = [];
+  const failMail = { send: async () => { throw new Error("smtp down"); } };
+  const failQuery = gate(failSeen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE company_invites") || sql.startsWith("DELETE FROM company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: pendingId }], rowCount: 1 };
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    return empty;
+  });
+  const failed = await handle(
+    post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-111111111202"),
+    env(),
+    deps(failQuery, undefined, failMail),
+  );
+  assert.equal(failed.status, 502);
+  assert.equal((await failed.json() as Err).error.code, "PROVIDER_ERROR");
+  assert.equal(failSeen.some((call) => call.sql.startsWith("UPDATE company_invites") || call.sql.startsWith("DELETE FROM company_invites")), false);
+
+  resetLimits();
+  const insertSeen: Call[] = [];
+  const insertSent: Mail[] = [];
+  const insertQuery = gate(insertSeen, employer(), async (sql) => {
+    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return empty;
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    return empty;
+  });
+  const created = await handle(
+    post("/api/v1/companies/me/invites", { email: "new@push.app" }, "11111111-1111-4111-8111-111111111203"),
+    env(),
+    deps(insertQuery, undefined, { send: async (mail) => { insertSent.push(mail); } }),
+  );
+  assert.equal(created.status, 201);
+  assert.deepEqual(await created.json(), { data: { email: "new@push.app" } });
+  const insert = insertSeen.find((call) => call.sql.startsWith("INSERT INTO company_invites"));
+  assert.ok(insert);
+  assert.match(insert.sql, /inviter_user_id/);
+  assert.equal(insert.params.includes(USER), true);
+  assert.equal(insert.params.includes("new@push.app"), true);
+  assert.equal(insert.params.includes(WEEK), true);
+  const raw = insertSent[0].text.slice("http://localhost:5174/invites/".length);
+  assert.equal(insert.params.includes(raw), false);
+  assert.equal(insert.params.includes(await sha256Hex(raw)), true);
+
+  resetLimits();
+  const legacySeen: Call[] = [];
+  const legacySent: Mail[] = [];
+  const legacy = gate(legacySeen, employer(), async (sql) => {
+    if (sql.startsWith("INSERT INTO company_invites") && sql.includes("inviter_user_id")) {
+      assert.equal(legacySent.length, 0);
+      throw undefinedColumn("inviter_user_id");
+    }
+    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return empty;
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    return empty;
+  });
+  const legacyRes = await handle(
+    post("/api/v1/companies/me/invites", { email: "old@push.app" }, "11111111-1111-4111-8111-111111111204"),
+    env(),
+    deps(legacy, undefined, { send: async (mail) => { legacySent.push(mail); } }),
+  );
+  assert.equal(legacyRes.status, 201);
+  const inserts = legacySeen.filter((call) => call.sql.startsWith("INSERT INTO company_invites"));
+  assert.equal(inserts.length, 2);
+  assert.match(inserts[0].sql, /inviter_user_id/);
+  assert.equal(inserts[1].sql.includes("inviter_user_id"), false);
+  assert.equal(inserts[1].params.includes(USER), false);
+  assert.equal(legacySent.length, 1);
+});
+
+test("GET /companies/invites/{token} previews the invite without accepting it", async () => {
+  const token = "preview-token";
+  const hash = await sha256Hex(token);
+  const inviteRow = {
+    id: "inv",
+    company_id: COMPANY,
+    email: "m@push.app",
+    expires_at: "2026-11-01T00:00:00.000Z",
+    accepted_at: null,
+    deletion_requested_at: null,
+    company_name: "푸시",
+  };
+  const previewQuery = (
+    seen: Call[],
+    row: Record<string, unknown> | null,
+    inviter: Record<string, unknown> | null,
+    expectedHash = hash,
+  ): Deps["query"] => gate(seen, employer(), async (sql, params = []) => {
+    if (sql.includes("token_hash")) {
+      assert.equal(params[0], expectedHash);
+      return row ? { rows: [row], rowCount: 1 } : empty;
+    }
+    if (sql.includes("m.user_id = $2")) return inviter ? { rows: [inviter], rowCount: 1 } : empty;
+    if (sql.includes("m.role = 'ADMIN'") && sql.includes("display_name")) {
+      return { rows: [{ display_name: "Ada", role: "ADMIN" }], rowCount: 1 };
+    }
+    return empty;
+  });
+
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(previewQuery(seen, {
+    ...inviteRow,
+    inviter_user_id: OTHER,
+  }, { display_name: "민수", role: "MEMBER" })));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    data: {
+      companyName: "푸시",
+      inviterName: "민수",
+      inviterRole: "MEMBER",
+      email: "m@push.app",
+      expiresAt: "2026-11-01T00:00:00Z",
+    },
+  });
+  assert.equal(seen.some((call) => call.sql.includes("SET accepted_at")), false);
+  assert.equal(seen.some((call) => call.sql.startsWith("UPDATE")), false);
+
+  resetLimits();
+  const nullSeen: Call[] = [];
+  const nullRes = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(previewQuery(nullSeen, {
+    ...inviteRow,
+    inviter_user_id: null,
+  }, null)));
+  assert.equal(nullRes.status, 200);
+  assert.deepEqual(await nullRes.json(), {
+    data: {
+      companyName: "푸시",
+      inviterName: "Ada",
+      inviterRole: "ADMIN",
+      email: "m@push.app",
+      expiresAt: "2026-11-01T00:00:00Z",
+    },
+  });
+  const adminSql = nullSeen.find((call) => call.sql.includes("m.role = 'ADMIN'") && call.sql.includes("display_name"));
+  assert.ok(adminSql);
+  assert.match(adminSql.sql, /ORDER BY m\.created_at ASC, m\.user_id ASC/);
+  assert.equal(nullSeen.some((call) => call.sql.startsWith("UPDATE")), false);
+
+  resetLimits();
+  const unknown = await handle(
+    bare("/api/v1/companies/invites/missing-token"),
+    env(),
+    deps(previewQuery([], null, null, await sha256Hex("missing-token"))),
+  );
+  assert.equal(unknown.status, 404);
+  assert.equal((await unknown.json() as Err).error.code, "NOT_FOUND");
 });

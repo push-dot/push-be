@@ -97,6 +97,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   return authorization === "" && isGuestRead(method, path);
 }
 
