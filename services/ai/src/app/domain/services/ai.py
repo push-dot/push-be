@@ -11,6 +11,7 @@ from app.domain.errors import (
     DomainError, feature_disabled, integration_required, internal, not_configured,
     not_found, provider_error, validation_field,
 )
+from app.domain.plan_levers import levers_for
 from app.domain.validators import code_point_len
 from app.infrastructure.store_ai import AiKeyStore, AiUsageStore
 from app.infrastructure.store_auth import UserStore
@@ -39,6 +40,10 @@ def _now() -> datetime:
     return utcnow()
 
 
+def managed_allowance(plan: str | None) -> int:
+    return ent.PLAN_CREDITS_MICRO.get(plan or ent.PLAN_FREE, 0)
+
+
 def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
     if ai is None:
         return
@@ -60,7 +65,7 @@ _BYOK_PROVIDERS = {"OPENAI", "OPENROUTER", "GROK", "CLAUDE"}
 class AIGate:
     def __init__(self, db: DB, managed_key: str, cipher, chat, byok_chat=None,
                  go_chat=None, go_key: str = "", openrouter_chat=None,
-                 grok_chat=None, claude_chat=None):
+                 grok_chat=None, claude_chat=None, config=None):
         self.db = db
         self.keys = AiKeyStore(db)
         self.users = UserStore(db)
@@ -79,6 +84,13 @@ class AIGate:
             "CLAUDE": claude_chat if claude_chat is not None else self.byok_chat,
         }
         self.byok_enabled = cipher is not None
+        self.config = config
+
+    def _levers_config(self):
+        if self.config is not None:
+            return self.config
+        from app.config import Config
+        return Config()
 
     async def _meter(self, user_id: Optional[UUID], model: str,
                      input_tokens: int, output_tokens: int,
@@ -142,21 +154,26 @@ class AIGate:
         if ai is None:
             return
         validate_ai_options(ai)
+        u = None
         if ai.ultra_resume or ai.credential_mode == "MANAGED":
             try:
                 u = await self.users.get(user_id)
             except NotFoundError:
                 raise not_found()
-            if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:
-                raise feature_disabled("ultraResume requires the ULTRA plan")
+        if ai.credential_mode == "MANAGED":
+            levers = levers_for("PERSONAL", u.plan, self._levers_config())
+            ai.model = levers.model
+            ai.effort = levers.effort
+        if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:
+            raise feature_disabled("ultraResume requires the ULTRA plan")
         if ai.credential_mode == "MANAGED":
             now = _now()
             month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                       microsecond=0)
             spent = await self.usage.sum_cost_since(user_id, month_start)
-            if spent >= ent.PLAN_CREDITS_MICRO.get(u.plan, 0):
+            if spent >= managed_allowance(u.plan):
                 raise feature_disabled(
-                    "monthly managed AI usage limit reached for plan " + u.plan)
+                    "monthly managed AI usage limit reached for plan " + (u.plan or ent.PLAN_FREE))
             if ai.model.startswith(_GO_PREFIX):
                 if not self.go_key or self.go_chat is None:
                     raise not_configured("OpenCode Go is not configured")
@@ -202,9 +219,9 @@ class AIGate:
             month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                       microsecond=0)
             spent = await self.usage.sum_cost_since(user_id, month_start)
-            if spent >= ent.PLAN_CREDITS_MICRO.get(u.plan, 0):
+            if spent >= managed_allowance(u.plan):
                 raise feature_disabled(
-                    "monthly managed AI usage limit reached for plan " + u.plan)
+                    "monthly managed AI usage limit reached for plan " + (u.plan or ent.PLAN_FREE))
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
                 id=usage_row_id(job_id, "chat"), user_id=user_id,

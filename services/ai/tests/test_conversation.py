@@ -236,6 +236,11 @@ async def test_external_free_plan_chat_is_rejected_before_enqueue(monkeypatch):
     convs = StubConversationStore(conv=conv)
     embeds = {"n": 0}
     gate = _gate_for(user_id, "FREE", embeds)
+    gate.usage.items.append(ent.AiUsage(
+        id=uuid4(), user_id=user_id, provider="OPENAI", model="m",
+        managed=True, input_tokens=1, output_tokens=1,
+        cost_micro_credits=1_800_000, status="SETTLED", created_at=_now()))
+    spent = list(gate.usage.items)
     svc = _svc(convs, gate=gate, usage=gate.usage)
     jobs = StubChatJobStore()
     enqueued = {"n": 0}
@@ -255,7 +260,7 @@ async def test_external_free_plan_chat_is_rejected_before_enqueue(monkeypatch):
     assert enqueued["n"] == 0
     assert scheduled == []
     assert embeds["n"] == 0
-    assert gate.usage.items == []
+    assert gate.usage.items == spent
     assert convs.messages == []
 
 
@@ -273,6 +278,10 @@ async def test_external_stream_rejects_free_plan_before_enqueue(monkeypatch):
     conv = _conv(user_id=user_id)
     embeds = {"n": 0}
     gate = _gate_for(user_id, "FREE", embeds)
+    gate.usage.items.append(ent.AiUsage(
+        id=uuid4(), user_id=user_id, provider="OPENAI", model="m",
+        managed=True, input_tokens=1, output_tokens=1,
+        cost_micro_credits=1_800_000, status="SETTLED", created_at=_now()))
     svc = _svc(StubConversationStore(conv=conv), gate=gate, usage=gate.usage)
     jobs = StubChatJobStore()
     enqueued = {"n": 0}

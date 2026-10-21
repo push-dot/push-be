@@ -2,7 +2,9 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from app.domain.entities import CliRun, ProjectBlueprint, ProjectEvidence
+from app.domain.entities import (
+    BLUEPRINT_ARCHIVED, CliRun, ProjectBlueprint, ProjectEvidence,
+)
 from app.domain.pagination import Cursor, Page, new_page
 from app.jsonutil import dump
 from app.infrastructure.store_common import Conds, Store
@@ -52,6 +54,12 @@ class ProjectStore(Store):
         return _blueprint(await self.one(
             f"SELECT {_BP_COLS} FROM project_blueprints WHERE id = $1 AND user_id = $2",
             id_, user_id))
+
+    async def count_blueprints(self, user_id: UUID) -> int:
+        return await self.q().fetchval(
+            "SELECT count(*) FROM project_blueprints "
+            "WHERE user_id = $1 AND state <> $2",
+            user_id, BLUEPRINT_ARCHIVED)
 
     async def list_blueprints(self, user_id: UUID, application_id: Optional[UUID], page) -> Page:
         c = Conds()

@@ -2,7 +2,7 @@
 
 export const AI_PROVIDERS = ["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"] as const;
 export const CREDENTIAL_MODES = ["MANAGED", "BYOK"] as const;
-export const EFFORTS = ["LOW", "MEDIUM", "HIGH"];
+export const EFFORTS = ["LOW", "MEDIUM", "HIGH", "MAX"];
 
 export interface ModelRow {
   provider: string;

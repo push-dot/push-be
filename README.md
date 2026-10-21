@@ -178,6 +178,11 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | --- | --- |
 | `DATABASE_URL` | 필수. Direct 호스트, `sslmode=require` |
 | `OPENROUTER_API_KEY` | 관리형 모델. `OPENAI_API_KEY`와 하나 이상 |
+| `MODEL_FREE` | 개인 FREE 모델. 비우면 `deepseek/deepseek-v4.1-flash` |
+| `MODEL_PRO` | 개인 PRO와 기업 BASIC 모델. 비우면 `anthropic/claude-sonnet-5-5` |
+| `MODEL_ULTRA` | 개인 ULTRA와 기업 PRO 모델. 비우면 `anthropic/claude-opus-5-5` |
+| `MODEL_EMPLOYER_ULTRA` | 기업 ULTRA 모델. 비우면 `anthropic/claude-fable-5-1` |
+| `OPENROUTER_DEEPSEEK_PROVIDERS` | FREE 모델 OpenRouter `provider.order`. 쉼표로 구분. 비우면 `Together,Fireworks,Novita`. FREE 요청은 `provider.ignore`에 `DeepSeek`을 넣는다 |
 | `OPENAI_API_KEY` | OpenAI 호환 관리형 호출을 쓸 때 |
 | `OPENCODE_GO_API_KEY` | OpenCode Go 모델을 쓸 때 |
 | `BYOK_MASTER_KEY` | 저장된 BYOK를 재시도·크론에서 복호화할 때 |

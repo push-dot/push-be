@@ -123,7 +123,7 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
     if cfg.byok_master_key:
         cipher = new_key_cipher(cfg.byok_master_key)
     oauth = OAuthClient()
-    openai = OpenAIClient(base_url=cfg.ai_base_url)
+    openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)
     openai_byok = OpenAIClient()
     openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
     grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
@@ -137,7 +137,8 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
     gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
                   go_chat=openai_go, go_key=cfg.opencode_go_key,
                   openrouter_chat=openrouter_byok,
-                  grok_chat=grok_byok, claude_chat=claude_byok)
+                  grok_chat=grok_byok, claude_chat=claude_byok,
+                  config=cfg)
     auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                         cfg.dev_auth_token, cfg.dev_user_id)
     approvals = ApprovalService(db)

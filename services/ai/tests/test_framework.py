@@ -559,7 +559,7 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
     assert done.text == "from-langchain"
     assert done.input_tokens == 2 and done.output_tokens == 3
     assert holder["kwargs"]["base_url"] == "https://openrouter.ai/api/v1"
-    assert holder["kwargs"]["model"] == "openai/gpt-test"
+    assert holder["kwargs"]["model"] == "anthropic/claude-opus-5-5"
     assert holder["model"].messages[-1]["content"] == POISON
     assert "tools" not in holder["kwargs"]
 
@@ -619,7 +619,7 @@ async def test_gate_import_error_falls_back(monkeypatch):
     gate.usage = StubAiUsageStore()
     done = await gate.complete(user_id, _managed(), "", "hi")
     assert done.text == "legacy"
-    assert called["model"] == "openai/gpt-test"
+    assert called["model"] == "anthropic/claude-opus-5-5"
 
 
 async def test_gate_stream_frames_stay_token_strings(monkeypatch):

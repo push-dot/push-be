@@ -3,6 +3,7 @@ VALIDATION = "VALIDATION_ERROR"
 UNAUTHENTICATED = "UNAUTHENTICATED"
 TOKEN_EXPIRED = "TOKEN_EXPIRED"
 FEATURE_DISABLED = "FEATURE_DISABLED"
+PLAN_REQUIRED = "PLAN_REQUIRED"
 INSUFFICIENT_SCOPE = "INSUFFICIENT_SCOPE"
 NOT_FOUND = "NOT_FOUND"
 REVISION_CONFLICT = "REVISION_CONFLICT"
@@ -50,6 +51,10 @@ def token_expired() -> DomainError:
 
 def feature_disabled(msg: str) -> DomainError:
     return DomainError(403, FEATURE_DISABLED, msg)
+
+
+def plan_required(msg: str) -> DomainError:
+    return DomainError(403, PLAN_REQUIRED, msg)
 
 
 def insufficient_scope(msg: str) -> DomainError:
