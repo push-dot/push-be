@@ -63,7 +63,7 @@ const requireConsent = (value: unknown): boolean => {
   return value;
 };
 
-const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env);
+const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env, ctx.deps.fetch);
 
 const originOf = (ctx: Ctx): string => (ctx.env.APP_WEB_ORIGIN || "http://localhost:5174").replace(/\/$/, "");
 
@@ -73,7 +73,7 @@ const sendLink = async (ctx: Ctx, to: string, kind: "verify" | "reset", token: s
   const subject = kind === "verify" ? "이메일 인증" : "비밀번호 재설정";
   const text = url;
   const html = `<p><a href="${url}">${url}</a></p>`;
-  await mailerOf(ctx).send({ to, subject, text, html });
+  await mailerOf(ctx).send({ to, subject, text, html, idempotencyKey: token });
 };
 
 const issueEmailToken = async (ctx: Ctx, kind: "VERIFY" | "RESET", userId: string | null, signupId: string | null): Promise<string> => {

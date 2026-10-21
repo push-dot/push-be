@@ -1278,3 +1278,42 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
   assert.equal(unknown.status, 404);
   assert.equal((await unknown.json() as Err).error.code, "NOT_FOUND");
 });
+
+test("RESEND_API_KEY uses the invite token as the idempotency key", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    return empty;
+  });
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("live fetch");
+  }) as typeof fetch;
+  try {
+    const res = await handle(
+      post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-111111111121"),
+      env({ RESEND_API_KEY: "re_invite_secret", MAIL_FROM: "Push <no-reply@push.app>" }),
+      deps(query, fetchImpl),
+    );
+    assert.equal(res.status, 201);
+    assert.equal(calls.length, 1);
+    const request = calls[0].input instanceof Request ? calls[0].input : new Request(calls[0].input, calls[0].init);
+    const body = await request.json() as { from: string; to: string; text: string };
+    assert.equal(request.url, "https://api.resend.com/emails");
+    assert.equal(request.headers.get("authorization"), "Bearer re_invite_secret");
+    assert.equal(body.from, "Push <no-reply@push.app>");
+    assert.equal(body.to, "m@push.app");
+    assert.match(body.text, /^http:\/\/localhost:5174\/invites\/[^/]+$/);
+    assert.equal(request.headers.get("idempotency-key"), body.text.slice("http://localhost:5174/invites/".length));
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -601,7 +601,7 @@ Record failures that were already present on `origin/develop` separately from ne
 - Apply `db/migrations/0019_fo_web_employer.sql` by hand on Neon. Deploy does not run it.
 - Create Stripe products with `metadata.audience=EMPLOYER` and `metadata.plan=BASIC|PRO|ULTRA`, plus a one-time top-up price of one displayed credit. Checkout quantity is the requested amount. Put the price ids in the env vars from task 7.
 - App Store Server Notifications V2 and Google Play RTDN point at `POST /api/v1/billing/webhook/app-store` and `POST /api/v1/billing/webhook/google-play`. Only a JWS that `crypto.subtle.verify` accepts with the env SPKI public key is granted (Decision 39). A plain Pub/Sub JSON body is rejected.
-- Set `NTS_SERVICE_KEY`, `MAIL_FROM`, `APP_WEB_ORIGIN`, and the Cloudflare `EMAIL` binding.
+- Set `NTS_SERVICE_KEY`, `MAIL_FROM`, `APP_WEB_ORIGIN`, and `RESEND_API_KEY`. Production mail uses Resend when `RESEND_API_KEY` is set. The Cloudflare `EMAIL` binding is optional because this account has no Cloudflare zone.
 - Confirm OpenRouter provider slugs for DeepSeek US hosting and set `OPENROUTER_DEEPSEEK_PROVIDERS` if the default is wrong.
 
 ## Contract differences versus api-spec

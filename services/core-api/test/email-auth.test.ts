@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { pkceChallenge } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { createMailer } from "../src/mail/mailer.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 
 const NOW = new Date("2026-10-21T00:00:00Z");
@@ -764,4 +765,149 @@ test("the EMAIL binding sends mail from MAIL_FROM", async () => {
   assert.equal(sent[0].from, "noreply@push.app");
   assert.equal(sent[0].to, EMAIL);
   assert.match(sent[0].html, /\/auth\/verify\?token=/);
+});
+
+const KEY = "re_test_secret";
+const FROM = "Push <no-reply@push.app>";
+
+const asRequest = (input: RequestInfo | URL, init?: RequestInit): Request =>
+  input instanceof Request ? input : new Request(input, init);
+
+const blockLiveFetch = (): (() => void) => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("live fetch");
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+};
+
+test("RESEND_API_KEY posts the signup mail through the injected fetch", async () => {
+  resetLimits();
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const restore = blockLiveFetch();
+  try {
+    const db = createDb();
+    const res = await handle(
+      post("/api/v1/auth/email/signup", signupBody()),
+      env({ RESEND_API_KEY: KEY, MAIL_FROM: FROM }),
+      deps(db, undefined, fetchImpl),
+    );
+    assert.equal(res.status, 202);
+    assert.equal(calls.length, 1);
+    const request = asRequest(calls[0].input, calls[0].init);
+    const body = await request.json() as { from: string; to: string; subject: string; html: string; text: string };
+    const token = new URL(body.text).searchParams.get("token");
+    assert.equal(request.url, "https://api.resend.com/emails");
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.get("authorization"), `Bearer ${KEY}`);
+    assert.equal(typeof body.to, "string");
+    assert.equal(body.from, FROM);
+    assert.equal(body.to, EMAIL);
+    assert.equal(body.subject, "이메일 인증");
+    assert.match(body.text, /^http:\/\/localhost:5174\/auth\/verify\?token=/);
+    assert.equal(body.html, `<p><a href="${body.text}">${body.text}</a></p>`);
+    assert.ok(token);
+    assert.equal(request.headers.get("idempotency-key"), token);
+  } finally {
+    restore();
+  }
+});
+
+test("a Resend error status throws and the log has the status without the key", async () => {
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  const fetchImpl = (async () => new Response(KEY, { status: 422 })) as typeof fetch;
+  try {
+    const mailer = createMailer({ RESEND_API_KEY: KEY, MAIL_FROM: FROM }, fetchImpl);
+    await assert.rejects(() => mailer.send({
+      to: EMAIL,
+      subject: "이메일 인증",
+      text: "http://localhost:5174/auth/verify?token=abc",
+      html: "<p>x</p>",
+      idempotencyKey: "abc",
+    }));
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /422/);
+    assert.equal(logs[0].includes(KEY), false);
+    assert.equal(logs[0].includes("Bearer"), false);
+    assert.equal(logs[0].includes("Authorization"), false);
+  } finally {
+    console.log = original;
+  }
+});
+
+test("RESEND_API_KEY skips the EMAIL binding", async () => {
+  resetLimits();
+  const sent: { to: string }[] = [];
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const restore = blockLiveFetch();
+  try {
+    const db = createDb();
+    const res = await handle(
+      post("/api/v1/auth/email/signup", signupBody()),
+      env({
+        RESEND_API_KEY: KEY,
+        MAIL_FROM: FROM,
+        EMAIL: { send: async (message) => { sent.push(message); } },
+      }),
+      deps(db, undefined, fetchImpl),
+    );
+    assert.equal(res.status, 202);
+    assert.equal(sent.length, 0);
+    assert.equal(calls.length, 1);
+    const request = asRequest(calls[0].input, calls[0].init);
+    assert.equal(request.url, "https://api.resend.com/emails");
+  } finally {
+    restore();
+  }
+});
+
+test("a whitespace RESEND_API_KEY keeps the local mail log", async () => {
+  resetLimits();
+  const calls: unknown[] = [];
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  const fetchImpl = (async () => {
+    calls.push(1);
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const restore = blockLiveFetch();
+  try {
+    const db = createDb();
+    const res = await handle(
+      post("/api/v1/auth/email/signup", signupBody()),
+      env({ RESEND_API_KEY: " \t\n " }),
+      deps(db, undefined, fetchImpl),
+    );
+    assert.equal(res.status, 202);
+    assert.equal(calls.length, 0);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /noreply@push.local/);
+  } finally {
+    console.log = original;
+    restore();
+  }
+});
+
+test("mail without an idempotency key sends a uuid key", async () => {
+  let header = "";
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    header = asRequest(input, init).headers.get("idempotency-key") ?? "";
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const mailer = createMailer({ RESEND_API_KEY: KEY, MAIL_FROM: FROM }, fetchImpl);
+  await mailer.send({ to: EMAIL, subject: "s", text: "t", html: "h" });
+  assert.match(header, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 });

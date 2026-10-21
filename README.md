@@ -188,7 +188,8 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `BYOK_MASTER_KEY` | 저장된 BYOK를 재시도·크론에서 복호화할 때 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
-| `MAIL_FROM` | 이메일 발신 주소. 비우면 로컬 로거는 `noreply@push.local` |
+| `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
+| `RESEND_API_KEY` | 키가 있으면 운영 메일은 Resend로 보낸다. 키가 없고 EMAIL 바인딩이 있으면 그 바인딩으로 보낸다. 둘 다 없으면 로컬 로거를 쓴다 |
 | `APP_WEB_ORIGIN` | 인증·재설정 링크 origin. 비우면 `http://localhost:5174` |
 | `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
 | `NTS_SERVICE_KEY` | 국세청 사업자 진위확인 serviceKey. 비우면 사업자 확인은 503 |
@@ -213,7 +214,7 @@ asyncpg 경로:
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다. Hostinger KVM에 같은 이미지를 올리는 절차는 `infra/vps/README.md`에 있다. `AI_ORIGIN`을 비워 두면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩을 쓴다.
+compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다. Hostinger KVM에 같은 이미지를 올리는 절차는 `infra/vps/README.md`에 있다. `AI_ORIGIN`을 비워 두면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩을 쓴다. 오리진 예시는 `https://push.devcyjoon.tech`다.
 
 ```bash
 cd services/gateway && npx wrangler dev

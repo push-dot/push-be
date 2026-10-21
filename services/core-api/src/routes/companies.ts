@@ -15,7 +15,7 @@ const INVITE_SEAT = `WHERE (
        + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)
      ) < $7`;
 
-const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env);
+const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env, ctx.deps.fetch);
 
 const originOf = (ctx: Ctx): string => (ctx.env.APP_WEB_ORIGIN || "http://localhost:5174").replace(/\/+$/, "");
 
@@ -283,6 +283,7 @@ const sendInvite = async (ctx: Ctx, email: string, raw: string): Promise<void> =
     subject: "회사 초대",
     text: url,
     html: `<p><a href="${url}">${url}</a></p>`,
+    idempotencyKey: raw,
   });
 };
 
