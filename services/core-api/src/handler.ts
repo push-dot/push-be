@@ -9,6 +9,7 @@ import { archiveConversation, createConversation, patchConversation, postMessage
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
+import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchRecruiting } from "./routes/recruiting.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
@@ -147,6 +148,9 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const event = path.match(/^\/api\/v1\/calendar\/events\/([^/]+)$/);
   if (method === "PATCH" && event) return patchEvent(ctx, event[1]);
   if (method === "DELETE" && event) return deleteEvent(ctx, event[1]);
+
+  const consents = await dispatchConsents(ctx, path);
+  if (consents) return consents;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

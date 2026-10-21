@@ -63,6 +63,7 @@
 30. **Unverified shell.** `POST /companies/verify` updates the caller's existing company when they are `ADMIN` and `verified_at` is null (the migration backfill). Any other membership is 409 `CONFLICT` before NTS. A seat insert is one statement that rechecks the count, so a lost race is 403 `SEAT_LIMIT` and sends no mail. An invite to a company with `deletion_requested_at` set is 409. Login clears that mark only when the caller is `ADMIN`.
 31. **Posting conflicts and AI fitScore.** A stale posting patch compares `revision` in the handler and throws 409 before any `UPDATE`. Closing an already closed company posting is 409 `REVISION_CONFLICT` with `details.currentRevision`, even when `expectedRevision` matches. Another company's posting is 404. `GET /companies/me/postings` allows any member, including an unverified company. An applicant stage patch to the same stage returns the row and does not bump revision or insert a notification, including `REJECTED` to `REJECTED`, before the terminal check. AI `Application` omits `fitScore` when there is no score. `ApplicationStore` selects the latest `gap_analyses.fit_score` on read only. `can_patch_stage` stays sequential.
 32. **Closed detail and pre-migration reads.** `GET /postings/{id}` returns a closed posting only to a member of that company. Guests and everyone else still get 404. RAG indexes a user's open company postings through `company_members`, not `company_id = user id`. Post reads retry without the company join when `company_members` is missing, and `companyName` is null. Settings reads and writes retry without `notify_application_stage` when that column is missing, and the response still sends `notifyApplicationStage: true`.
+33. **Consents dispatch.** `routes/consents.ts` exports `dispatchConsents`. `handler.ts` calls it before the 404, not from `dispatchRecruiting`. `PUT /me/consents` is not an idempotent POST.
 
 ## File map
 
@@ -422,9 +423,9 @@ Routes:
 - `PUT /me/consents` body `{ referenceData: boolean }` → the same object. `false` runs `DELETE FROM reference_samples WHERE source_user_id = $1`.
 - Email verify with `consent_reference` inserts the consent row.
 
-- [ ] **Step 1–4: TDD, then** core tests and `tsc`.
+- [x] **Step 1–4: TDD, then** core tests and `tsc`.
 
-- [ ] **Step 5: Commit** `feat(consents): store reference-data choice`
+- [x] **Step 5: Commit** `feat(consents): store reference-data choice`
 
 ---
 
