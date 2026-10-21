@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import re
 
-_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_EMAIL = re.compile(r"\S+@\S+")
 _PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,}\d)(?!\d)")
 _QUOTED = re.compile(r"[\"“「『][^\"”」』]+[\"”」』]")
 _COMPANY = re.compile(
     r"(?:주식회사|㈜|\(주\))\s*[0-9A-Za-z가-힣.&+-]+"
     r"|[0-9A-Za-z가-힣.&+-]+\s*(?:주식회사|회사)"
-    r"|[0-9A-Za-z가-힣.&+-]+\s*(?:Corp|Inc|Ltd|Company)(?![A-Za-z])"
+    r"|[0-9A-Za-z가-힣.&+-]+(?:\s+Co\.,)?\s*(?:Corporation|Corp|Inc|Ltd|Company)(?![A-Za-z])"
     r"|[0-9A-Za-z가-힣.&+-]+\s*프로젝트"
     r"|프로젝트\s*[0-9A-Za-z가-힣.&+-]+",
     re.IGNORECASE,

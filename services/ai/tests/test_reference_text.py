@@ -43,14 +43,23 @@ def _sample(category="dev", tenure=5, band=80, metric=True,
 
 
 def test_template_masks_company_number_email_and_phone():
-    templates = templates_of(_SENTENCE)
-    assert templates
-    assert _SENTENCE not in templates
-    blob = " ".join(templates)
-    assert not any(ch.isdigit() for ch in blob)
-    assert "@" not in blob
-    for leaked in ("H2O", "Corp", "민수", "결제", "ada", "example.com", "010"):
-        assert leaked not in blob
+    samples = [
+        _SENTENCE,
+        "문의는 홍길동@kakao.com, user@회사.kr, a@b.c 입니다",
+        "Samsung Co., Ltd에서 매출을 12% 올렸다. H2O Corporation에서 일했다",
+    ]
+    for text in samples:
+        templates = templates_of(text)
+        assert templates
+        assert text not in templates
+        blob = " ".join(templates)
+        assert not any(ch.isdigit() for ch in blob)
+        assert "@" not in blob
+        for leaked in (
+            "H2O", "Corp", "Corporation", "Ltd", "민수", "결제",
+            "ada", "example.com", "kakao", "010",
+        ):
+            assert leaked not in blob, leaked
 
 
 def test_features_are_counts_not_the_sentence():
