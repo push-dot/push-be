@@ -1376,6 +1376,23 @@ async function deleteLink(ctx: Ctx, idRaw: string): Promise<Response> {
   return noContent(ctx.rid);
 }
 
+const updateLink = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const body = await readObject(ctx.request);
+  rejectFields(body, ["userId", "createdAt", "id", "status", "fitCount"]);
+  const url = "url" in body ? textOf(body.url, "url", 1, 2000) : null;
+  if (url != null && !httpsUrl(url)) throw fieldError("url", "must be an http(s) URL without credentials");
+  const kind = "kind" in body ? String(body.kind) : null;
+  if (kind != null && !LINK_KINDS.has(kind)) throw unprocessable("kind", "unsupported kind");
+  const title = "title" in body ? textOf(body.title ?? "", "title", 0, 300) : null;
+  const aiRead = "aiRead" in body ? boolOf(body.aiRead, "aiRead") : null;
+  const row = await one(ctx.deps.query,
+    `UPDATE user_links SET title = COALESCE($3, title), kind = COALESCE($4, kind), url = COALESCE($5, url), ai_read = COALESCE($6, ai_read) WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at`,
+    [id, ctx.user.id, title, kind, url, aiRead]);
+  if (!row) throw notFound();
+  return data(200, linkDto(row), ctx.rid);
+};
+
 async function registerDevice(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   const token = textOf(body.token, "token", 1, 4096);
@@ -1874,6 +1891,7 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (path === "/api/v1/me/links" && method === "GET") return listLinks(ctx);
   if (path === "/api/v1/me/links" && method === "POST") return createLink(ctx);
   const link = path.match(/^\/api\/v1\/me\/links\/([^/]+)$/);
+  if (link && method === "PATCH") return updateLink(ctx, link[1]);
   if (link && method === "DELETE") return deleteLink(ctx, link[1]);
   if (path === "/api/v1/me/devices" && method === "POST") return registerDevice(ctx);
   const device = path.match(/^\/api\/v1\/me\/devices\/([^/]+)$/);
