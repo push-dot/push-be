@@ -530,6 +530,12 @@ function applicationDto(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+const companyApplicationDto = (row: Record<string, unknown>): Record<string, unknown> => {
+  const dto = applicationDto(row);
+  delete dto.notes;
+  return dto;
+};
+
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
   if (ctx.user.accountType === "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "employer account required");
@@ -833,7 +839,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   await requirePostingMember(ctx, postingId);
   const application = await loadApplicant(ctx, postingId, applicationId);
   const documents = await snapshotDocuments(ctx, applicationId);
-  return data(200, { application: applicationDto(application), documents }, ctx.rid);
+  return data(200, { application: companyApplicationDto(application), documents }, ctx.rid);
 };
 
 const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
@@ -845,7 +851,7 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
   }
   await requirePostingMember(ctx, postingId);
   const current = await loadApplicant(ctx, postingId, applicationId);
-  if (String(current.stage) === body.stage) return data(200, applicationDto(current), ctx.rid);
+  if (String(current.stage) === body.stage) return data(200, companyApplicationDto(current), ctx.rid);
   if (TERMINAL_STAGES.has(String(current.stage))) {
     throw new HttpError(409, "INVALID_TRANSITION", "terminal stage");
   }
@@ -857,7 +863,7 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
     [applicationId, String(current.user_id), body.stage, now]);
   if (!updated) throw notFound();
   await notify(ctx, String(current.user_id), "APPLICATION_STAGE", "지원 상태가 바뀌었어요", "", { kind: "activity", id: applicationId });
-  return data(200, applicationDto(updated), ctx.rid);
+  return data(200, companyApplicationDto(updated), ctx.rid);
 };
 
 async function search(ctx: Ctx): Promise<Response> {
@@ -911,11 +917,11 @@ async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
 const PROFILE_COLS = `p.user_id, u.display_name, p.avatar_key, p.headline, p.job_category, p.tenure_years, p.career_status,
   p.open_to_offers, p.intro, p.careers, p.skills, p.resume_source_id, p.updated_at`;
 
-function profileDto(row: Record<string, unknown>, viewerId: string): Record<string, unknown> {
+function profileDto(row: Record<string, unknown>, viewerId: string, viewer: ViewerCompany): Record<string, unknown> {
   const visibility = String(row.career_status_visibility ?? "everyone");
   const following = asBool(row.following);
   const self = String(row.user_id) === viewerId;
-  const showStatus = self || visibility === "everyone" || (visibility === "followers" && following);
+  const showStatus = !sameCompanyHidden(row, viewerId, viewer) && (self || visibility === "everyone" || (visibility === "followers" && following));
   return {
     userId: String(row.user_id),
     displayName: String(row.display_name ?? ""),
@@ -942,6 +948,8 @@ function profileSelect(extra: string): string {
   return `SELECT ${PROFILE_COLS},
     COALESCE(s.career_status_visibility, 'everyone') AS career_status_visibility,
     COALESCE(s.profile_public, true) AS profile_public,
+    COALESCE(s.hide_from_current_company, false) AS hide_from_current_company,
+    split_part(lower(COALESCE(u.email, '')), '@', 2) AS email_domain,
     EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id) AS following,
     (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count
     ${extra}
@@ -949,6 +957,23 @@ function profileSelect(extra: string): string {
     JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
     LEFT JOIN user_settings s ON s.user_id = p.user_id`;
 }
+
+type ViewerCompany = { domain: string; freeMail: boolean };
+
+const viewerCompanyOf = async (ctx: Ctx): Promise<ViewerCompany> => {
+  const me = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]);
+  const email = me?.email == null ? "" : String(me.email);
+  const domain = email.includes("@") ? email.split("@")[1].toLowerCase() : "";
+  return { domain, freeMail: FREE_MAIL.has(domain) };
+};
+
+const sameCompanyHidden = (row: Record<string, unknown>, viewerId: string, viewer: ViewerCompany): boolean => {
+  if (String(row.user_id) === viewerId) return false;
+  if (!asBool(row.hide_from_current_company) && !asBool(row.hide_career_from_viewer)) return false;
+  if (asBool(row.hide_career_from_viewer)) return true;
+  if (!viewer.domain || viewer.freeMail) return false;
+  return String(row.email_domain ?? "") === viewer.domain;
+};
 
 async function listProfiles(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
@@ -959,19 +984,15 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
   if (status && !CAREER_STATUS.has(status)) throw unprocessable("status", "unsupported status");
   const explore = ctx.url.searchParams.get("explore");
   if (explore && explore !== "recommended" && explore !== "offers") throw unprocessable("explore", "unsupported explore");
-  const me = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]);
-  const email = me?.email == null ? "" : String(me.email);
-  const domain = email.includes("@") ? email.split("@")[1].toLowerCase() : "";
-  const params: unknown[] = [ctx.user.id, domain, FREE_MAIL.has(domain)];
-  let sql = profileSelect("") + `
-    WHERE COALESCE(s.profile_public, true) = true
-      AND p.user_id <> $1
-      AND NOT (
+  const viewer = await viewerCompanyOf(ctx);
+  const params: unknown[] = [ctx.user.id, viewer.domain, viewer.freeMail];
+  let sql = profileSelect(`, (
         COALESCE(s.hide_from_current_company, false)
         AND $2 <> '' AND $3 = false
-        AND u.email IS NOT NULL
-        AND split_part(lower(u.email), '@', 2) = $2
-      )`;
+        AND split_part(lower(COALESCE(u.email, '')), '@', 2) = $2
+      ) AS hide_career_from_viewer`) + `
+    WHERE COALESCE(s.profile_public, true) = true
+      AND p.user_id <> $1`;
   if (categories.length) {
     const i = pushArray(params, categories);
     sql += ` AND p.job_category = ANY(${anyOf(i)})`;
@@ -988,6 +1009,11 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
         COALESCE(s.career_status_visibility, 'everyone') = 'everyone'
         OR (COALESCE(s.career_status_visibility, 'everyone') = 'followers'
             AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id))
+      )
+      AND NOT (
+        COALESCE(s.hide_from_current_company, false)
+        AND $2 <> '' AND $3 = false
+        AND split_part(lower(COALESCE(u.email, '')), '@', 2) = $2
       )`;
   }
   if (explore === "recommended") {
@@ -1023,7 +1049,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
   sql += ` ORDER BY ${rank}p.updated_at DESC, p.user_id DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({
-    item: profileDto(row, ctx.user.id),
+    item: profileDto(row, ctx.user.id, viewer),
     createdAt: row.updated_at,
     id: String(row.user_id),
   }));
@@ -1047,11 +1073,12 @@ async function loadProfile(ctx: Ctx, userId: string): Promise<Record<string, unk
 
 async function getProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "userId");
+  const viewer = await viewerCompanyOf(ctx);
   const row = await loadProfile(ctx, id);
   if (!row) throw notFound();
   const self = id === ctx.user.id;
   if (!self && !asBool(row.profile_public)) throw notFound();
-  const dto = profileDto(row, ctx.user.id);
+  const dto = profileDto(row, ctx.user.id, viewer);
   return data(200, { ...dto, following: asBool(row.following), offered: asBool(row.offered) }, ctx.rid);
 }
 
@@ -1063,9 +1090,10 @@ async function ensureProfile(ctx: Ctx): Promise<void> {
 
 async function getMyProfile(ctx: Ctx): Promise<Response> {
   await ensureProfile(ctx);
+  const viewer = await viewerCompanyOf(ctx);
   const row = await loadProfile(ctx, ctx.user.id);
   if (!row) throw notFound();
-  const dto = profileDto(row, ctx.user.id);
+  const dto = profileDto(row, ctx.user.id, viewer);
   return data(200, { ...dto, following: false, offered: false }, ctx.rid);
 }
 
@@ -1137,9 +1165,10 @@ async function patchMyProfile(ctx: Ctx): Promise<Response> {
   await query(ctx.deps.query,
     `UPDATE profiles SET headline = $2, job_category = $3, tenure_years = $4, career_status = $5, open_to_offers = $6, intro = $7, careers = $8::jsonb, skills = $9::jsonb, avatar_key = $10, resume_source_id = $11, search_text = $12, search_choseong = $13, search_jamo = $14, updated_at = $15 WHERE user_id = $1`,
     [ctx.user.id, headline, jobCategory, tenure, careerStatus, openToOffers, intro, JSON.stringify(careers), JSON.stringify(skills), avatarKey, resumeSourceId, fields.text, fields.choseong, fields.jamo, now]);
+  const viewer = await viewerCompanyOf(ctx);
   const row = await loadProfile(ctx, ctx.user.id);
   if (!row) throw notFound();
-  return data(200, { ...profileDto(row, ctx.user.id), following: false, offered: false }, ctx.rid);
+  return data(200, { ...profileDto(row, ctx.user.id, viewer), following: false, offered: false }, ctx.rid);
 }
 
 function person(row: Record<string, unknown>, idKey: string, nameKey: string): { id: string; displayName: string } {
@@ -1606,6 +1635,7 @@ async function listBookmarks(ctx: Ctx): Promise<Response> {
 }
 
 async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
+  const viewer = await viewerCompanyOf(ctx);
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
   const join = incoming ? "f.follower_id" : "f.followee_id";
@@ -1618,7 +1648,7 @@ async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
   params.push(page.limit + 1);
   sql += ` ORDER BY f.created_at DESC, p.user_id DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: profileDto(row, ctx.user.id), createdAt: row.relation_created_at, id: String(row.user_id) }));
+  const mapped = rows.rows.map((row) => ({ item: profileDto(row, ctx.user.id, viewer), createdAt: row.relation_created_at, id: String(row.user_id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 }

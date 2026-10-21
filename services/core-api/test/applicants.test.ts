@@ -738,6 +738,151 @@ test("guest list requires open status and does not return a draft", async () => 
   assert.match(listSql.sql, /closed_at IS NULL/);
 });
 
+test("company applicant detail and stage update omit private notes", async () => {
+  resetLimits();
+  const noted = { ...applicationRow("APPLIED"), notes: "salary floor" };
+  const detail = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      const member = await memberPosting(sql);
+      if (member) return member;
+      if (sql.includes("application_snapshots")) return empty;
+      if (sql.includes("applications")) return { rows: [noted], rowCount: 1 };
+      return empty;
+    })),
+  );
+  assert.equal(detail.status, 200);
+  const detailBody = await detail.json() as { data: { application: Record<string, unknown> } };
+  assert.equal(Object.hasOwn(detailBody.data.application, "notes"), false);
+  assert.equal(detailBody.data.application.stage, "APPLIED");
+
+  resetLimits();
+  const moved = await handle(
+    patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "SCREENING" }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      const member = await memberPosting(sql);
+      if (member) return member;
+      if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [{ ...noted, stage: "SCREENING", revision: 2 }], rowCount: 1 };
+      if (sql.includes("applications")) return { rows: [noted], rowCount: 1 };
+      if (sql.includes("user_settings")) return empty;
+      return empty;
+    })),
+  );
+  assert.equal(moved.status, 200);
+  const movedBody = await moved.json() as { data: Record<string, unknown> };
+  assert.equal(Object.hasOwn(movedBody.data, "notes"), false);
+  assert.equal(movedBody.data.stage, "SCREENING");
+});
+
+const hubProfile = {
+  user_id: OTHER,
+  display_name: "Bea",
+  avatar_key: null,
+  headline: "Backend",
+  job_category: "dev",
+  tenure_years: 4,
+  career_status: "seeking",
+  open_to_offers: true,
+  intro: "hi",
+  careers: [{ company: "Acme", role: "Eng" }],
+  skills: ["ts"],
+  resume_source_id: null,
+  updated_at: NOW,
+  career_status_visibility: "everyone",
+  profile_public: true,
+  following: false,
+  follower_count: 1,
+  hide_from_current_company: true,
+  email_domain: "acme.com",
+  offered: false,
+};
+
+const profileQuery = (viewerEmail: string): Deps["query"] => async (sql) => {
+  if (sql.includes("SELECT email FROM users")) return { rows: [{ email: viewerEmail }], rowCount: 1 };
+  if (sql.includes("FROM profiles")) return { rows: [hubProfile], rowCount: 1 };
+  return empty;
+};
+
+test("same-company viewers still see the profile but not career status", async () => {
+  resetLimits();
+  const listSeen: Call[] = [];
+  const list = await handle(
+    new Request("https://core.example/api/v1/profiles", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(listSeen, false, profileQuery("ada@acme.com"))),
+  );
+  assert.equal(list.status, 200);
+  const listBody = await list.json() as { data: { headline: string; careerStatus: string | null; careers: unknown[] }[] };
+  assert.equal(listBody.data.length, 1);
+  assert.equal(listBody.data[0].headline, "Backend");
+  assert.equal(listBody.data[0].careers.length, 1);
+  assert.equal(listBody.data[0].careerStatus, null);
+  const listSql = listSeen.find((call) => call.sql.includes("FROM profiles"));
+  assert.ok(listSql);
+  assert.doesNotMatch(listSql.sql, /NOT \(\s*COALESCE\(s\.hide_from_current_company/);
+
+  resetLimits();
+  const statusSeen: Call[] = [];
+  const filtered = await handle(
+    new Request("https://core.example/api/v1/profiles?status=seeking", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(statusSeen, false, profileQuery("ada@acme.com"))),
+  );
+  assert.equal(filtered.status, 200);
+  const statusSql = statusSeen.find((call) => call.sql.includes("FROM profiles") && call.sql.includes("career_status"));
+  assert.ok(statusSql);
+  assert.match(statusSql.sql, /NOT \(\s*COALESCE\(s\.hide_from_current_company/);
+
+  resetLimits();
+  const search = await handle(
+    new Request("https://core.example/api/v1/search?type=people&q=bea", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, profileQuery("ada@acme.com"))),
+  );
+  assert.equal(search.status, 200);
+  const searchBody = await search.json() as { data: { careerStatus: string | null; headline: string }[] };
+  assert.equal(searchBody.data[0].headline, "Backend");
+  assert.equal(searchBody.data[0].careerStatus, null);
+
+  resetLimits();
+  const detail = await handle(
+    new Request(`https://core.example/api/v1/profiles/${OTHER}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, profileQuery("ada@acme.com"))),
+  );
+  assert.equal(detail.status, 200);
+  const detailBody = await detail.json() as { data: { careerStatus: string | null; headline: string; skills: string[] } };
+  assert.equal(detailBody.data.headline, "Backend");
+  assert.deepEqual(detailBody.data.skills, ["ts"]);
+  assert.equal(detailBody.data.careerStatus, null);
+
+  resetLimits();
+  const otherCompany = await handle(
+    new Request(`https://core.example/api/v1/profiles/${OTHER}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, profileQuery("ada@beta.com"))),
+  );
+  assert.equal(otherCompany.status, 200);
+  const otherBody = await otherCompany.json() as { data: { careerStatus: string | null } };
+  assert.equal(otherBody.data.careerStatus, "seeking");
+
+  resetLimits();
+  const gmail = await handle(
+    new Request(`https://core.example/api/v1/profiles/${OTHER}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, async (sql) => {
+      if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };
+      if (sql.includes("FROM profiles")) return { rows: [{ ...hubProfile, email_domain: "gmail.com" }], rowCount: 1 };
+      return empty;
+    })),
+  );
+  assert.equal(gmail.status, 200);
+  const gmailBody = await gmail.json() as { data: { careerStatus: string | null } };
+  assert.equal(gmailBody.data.careerStatus, "seeking");
+});
+
 test("company list status=DRAFT filters drafts and includes applicantCount", async () => {
   resetLimits();
   const seen: Call[] = [];
