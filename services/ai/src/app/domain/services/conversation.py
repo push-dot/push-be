@@ -17,7 +17,10 @@ from app.domain.validators import code_point_len
 from app.graphs.chat import build_chat_graph, byok_key_var as _BYOK_KEY
 from app.graphs.chat import event_sink
 from app.graphs.freeze import freeze_state, thaw_state
-from app.jobs import external_jobs, schedule_chat_job, sse_max_polls
+from app.jobs import (
+    external_jobs, get_job_scheduler, schedule_chat_job, set_job_scheduler,
+    sse_max_polls,
+)
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
@@ -56,6 +59,33 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
+
+IDLE_MIN_S = 1.0
+IDLE_MAX_S = 60.0
+# shortcut: 60s claim keeps Neon compute warm (suspend needs 5 min quiet), raise IDLE_MAX_S past 300 when a lost wake may wait that long
+STALE_SWEEP_S = 15 * 60
+
+
+def next_idle_delay(current: float, *, reset: bool) -> float:
+    if reset:
+        return IDLE_MIN_S
+    doubled = current * 2
+    if doubled > IDLE_MAX_S:
+        return IDLE_MAX_S
+    return doubled
+
+
+def _loop_time() -> float:
+    return asyncio.get_running_loop().time()
+
+
+async def _wait(event: asyncio.Event, delay: float) -> bool:
+    try:
+        await asyncio.wait_for(event.wait(), delay)
+    except TimeoutError:
+        return False
+    event.clear()
+    return True
 
 
 async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
@@ -143,6 +173,9 @@ class ConversationService:
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
+        self._wake = asyncio.Event()
+        self._scheduler_installed = False
+        self._prev_scheduler = None
         self._checkpointer = checkpointer
         self._compiled = None
 
@@ -161,39 +194,76 @@ class ConversationService:
         from app.graphs.chat import bind_chat_nodes
         bind_chat_nodes(self)
 
+    def wake(self) -> None:
+        event = getattr(self, "_wake", None)
+        if event is not None:
+            event.set()
+
+    async def _idle_pause(self, delay: float) -> float:
+        woke = await _wait(self._wake, delay)
+        return next_idle_delay(delay, reset=woke)
+
     async def start_worker(self) -> None:
         # A restarted process has no live Workflow. Age 0 recovers immediately.
         # The cron path keeps the long threshold so it cannot steal a run
         # that is still inside its step timeout.
-        recovered = await self.jobs.reset_stale(0)
-        if recovered:
-            logging.getLogger(__name__).info(
-                "requeued %d stale chat jobs", recovered)
-        self._worker_task = asyncio.create_task(self._worker_loop())
+        if getattr(self, "_wake", None) is None:
+            self._wake = asyncio.Event()
+        self._prev_scheduler = get_job_scheduler()
+
+        async def _schedule(job_id, byok="", claim="") -> None:
+            self.wake()
+
+        set_job_scheduler(_schedule)
+        self._scheduler_installed = True
+        try:
+            recovered = await self.jobs.reset_stale(0)
+            if recovered:
+                logging.getLogger(__name__).info(
+                    "requeued %d stale chat jobs", recovered)
+            self._worker_task = asyncio.create_task(self._worker_loop())
+        except Exception:
+            set_job_scheduler(self._prev_scheduler)
+            self._scheduler_installed = False
+            raise
 
     async def stop_worker(self) -> None:
-        if self._worker_task:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-            self._worker_task = None
-        if self._inflight:
-            await asyncio.gather(*self._inflight, return_exceptions=True)
+        try:
+            if self._worker_task:
+                self._worker_task.cancel()
+                try:
+                    await self._worker_task
+                except asyncio.CancelledError:
+                    pass
+                self._worker_task = None
+            if self._inflight:
+                await asyncio.gather(*self._inflight, return_exceptions=True)
+        finally:
+            if getattr(self, "_scheduler_installed", False):
+                set_job_scheduler(getattr(self, "_prev_scheduler", None))
+                self._scheduler_installed = False
 
     async def _worker_loop(self) -> None:
         log = logging.getLogger(__name__)
+        delay = IDLE_MIN_S
+        last_stale = _loop_time()
         while True:
+            if _loop_time() - last_stale >= STALE_SWEEP_S:
+                try:
+                    await self.jobs.reset_stale()
+                except Exception:
+                    log.exception("chat job stale sweep failed")
+                last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()
             except Exception:
                 log.exception("chat job claim failed")
-                await asyncio.sleep(1)
+                delay = await self._idle_pause(delay)
                 continue
             if job is None:
-                await asyncio.sleep(0.3)
+                delay = await self._idle_pause(delay)
                 continue
+            delay = IDLE_MIN_S
             t = asyncio.create_task(self._run_job(job))
             self._inflight.add(t)
             t.add_done_callback(self._inflight.discard)

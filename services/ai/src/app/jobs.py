@@ -38,6 +38,10 @@ def set_job_scheduler(fn: Scheduler) -> None:
     _scheduler = fn
 
 
+def get_job_scheduler() -> Optional[Scheduler]:
+    return _scheduler
+
+
 async def schedule_chat_job(job_id, byok: str = "") -> None:
     if _scheduler is None:
         return
