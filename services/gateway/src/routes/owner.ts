@@ -75,7 +75,7 @@ function isCore(method: string, path: string): boolean {
 
 function isRecruiting(path: string): boolean {
   if (path === "/api/v1/postings" || path.startsWith("/api/v1/postings/")) return true;
-  if (path === "/api/v1/search") return true;
+  if (path === "/api/v1/search" || path === "/api/v1/search/counts" || path === "/api/v1/search/trending") return true;
   if (path === "/api/v1/profiles" || path.startsWith("/api/v1/profiles/")) return true;
   if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
   if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;

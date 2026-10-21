@@ -40,6 +40,8 @@ const isGuestRead = (method: string, path: string): boolean => {
     || path === "/api/v1/postings/locations"
     || path === "/api/v1/postings/facets"
     || path === "/api/v1/search"
+    || path === "/api/v1/search/counts"
+    || path === "/api/v1/search/trending"
     || POSTING_UUID.test(path)
     || APPLICANT_COUNTS.test(path);
 };

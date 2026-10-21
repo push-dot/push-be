@@ -193,7 +193,7 @@ function appendPostingFilters(
   params: unknown[],
   url: URL,
   withLocation: boolean,
-  skip: { category?: boolean; career?: boolean } = {},
+  skip: { category?: boolean; career?: boolean; skills?: boolean } = {},
 ): string {
   const q = url.searchParams.get("q") || "";
   if (q) {
@@ -221,7 +221,7 @@ function appendPostingFilters(
     sql += ` AND p.job_category = ANY(${anyOf(i)})`;
   }
   const skills = plainList(url, "skills", 40, "skills");
-  if (skills.length) {
+  if (skills.length && !skip.skills) {
     const i = pushArray(params, skills);
     sql += ` AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.skills) sk WHERE sk = ANY(${anyOf(i)}))`;
   }
@@ -428,11 +428,25 @@ const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
     .map((item) => ({ id: String(item.id ?? ""), count: Number(item.count ?? 0) }));
 };
 
+const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: string; count: number }[]> => {
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = `SELECT sk AS id, count(*)::int AS count FROM job_postings p, jsonb_array_elements_text(COALESCE(p.skills, '[]'::jsonb)) sk WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
+    if (filtered) sql = appendPostingFilters(sql, params, ctx.url, true, { skills: true });
+    sql += " GROUP BY sk ORDER BY count DESC, sk ASC";
+    return query(ctx.deps.query, sql, params);
+  });
+  return rows.rows
+    .filter((row) => Number(row.count ?? 0) > 0)
+    .map((row) => ({ id: String(row.id ?? ""), count: Number(row.count ?? 0) }));
+};
+
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
   const career = await careerFacet(ctx);
   const category = await categoryFacet(ctx);
   const location = await locationFacet(ctx);
-  return data(200, { career, category, location }, ctx.rid);
+  const skills = await skillRows(ctx, true);
+  return data(200, { career, category, location, skills }, ctx.rid);
 };
 
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -1022,6 +1036,44 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
   return data(200, companyApplicationDto(updated), ctx.rid);
 };
 
+const usesParam = (sql: string, index: number): boolean => new RegExp(`\\$${index}(?!\\d)`).test(sql);
+
+const countWhere = async (ctx: Ctx, sql: string, marker: string, params: unknown[]): Promise<number> => {
+  const at = sql.lastIndexOf(marker);
+  if (at < 0) return 0;
+  let countSql = "SELECT count(*)::int AS total" + sql.slice(at);
+  for (let index = 1; index <= params.length; index += 1) {
+    if (!usesParam(countSql, index)) countSql += ` AND $${index} IS NOT DISTINCT FROM $${index}`;
+  }
+  const read = async (statement: string): Promise<number> => {
+    const row = await one(ctx.deps.query, statement, params);
+    return Number(row?.total ?? 0);
+  };
+  try {
+    return await read(countSql);
+  } catch (err) {
+    if (!(isMissingRelation(err) || isUndefinedColumn(err)) || !countSql.includes("company_members")) throw err;
+    const fallback = countSql
+      .replaceAll(" LEFT JOIN company_members cm ON cm.user_id = u.id", "")
+      .replaceAll(" LEFT JOIN company_members sm ON sm.user_id = o.sender_id", "")
+      .replaceAll(" LEFT JOIN companies co ON co.id = cm.company_id", "")
+      .replaceAll(" LEFT JOIN companies sc ON sc.id = sm.company_id", "");
+    return read(fallback);
+  }
+};
+
+const recordSearch = async (ctx: Ctx, term: string): Promise<void> => {
+  const trimmed = term.trim();
+  if (!trimmed) return;
+  try {
+    await query(ctx.deps.query,
+      "INSERT INTO search_queries (id, term, created_at) VALUES ($1,$2,$3)",
+      [crypto.randomUUID(), trimmed.slice(0, 200), ctx.now.toISOString()]);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+  }
+};
+
 async function search(ctx: Ctx): Promise<Response> {
   const q = ctx.url.searchParams.get("q") || "";
   if (!q.trim()) throw fieldError("q", "required");
@@ -1030,10 +1082,51 @@ async function search(ctx: Ctx): Promise<Response> {
   if (ctx.user.id === GUEST_ID && (type === "people" || type === "posts")) {
     throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
   }
+  await recordSearch(ctx, q);
   if (type === "people") return searchPeople(ctx, q);
   if (type === "posts") return searchPosts(ctx, q);
   return searchPostings(ctx, q);
 }
+
+const searchCounts = async (ctx: Ctx): Promise<Response> => {
+  const q = ctx.url.searchParams.get("q") || "";
+  if (!q.trim()) throw fieldError("q", "required");
+  if (codePoints(q) > 200) throw fieldError("q", "must be at most 200 characters");
+  await recordSearch(ctx, q);
+  const forms = queryForms(q);
+  const postings = await withPublicStatus(async (withStatus) => {
+    const row = await one(ctx.deps.query,
+      `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
+      [ctx.user.id, forms.raw]);
+    return Number(row?.total ?? 0);
+  });
+  const peopleRow = await one(ctx.deps.query,
+    `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
+    [forms.raw]);
+  const postsRow = await one(ctx.deps.query,
+    "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
+    [forms.raw]);
+  return data(200, {
+    postings,
+    people: Number(peopleRow?.total ?? 0),
+    posts: Number(postsRow?.total ?? 0),
+  }, ctx.rid);
+};
+
+const searchTrending = async (ctx: Ctx): Promise<Response> => {
+  let terms: { term: string; count: number }[] = [];
+  try {
+    const since = new Date(ctx.now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await query(ctx.deps.query,
+      "SELECT term, count(*)::int AS count FROM search_queries WHERE created_at >= $1::timestamptz GROUP BY term ORDER BY count DESC, term ASC LIMIT 8",
+      [since]);
+    terms = rows.rows.map((row) => ({ term: String(row.term ?? ""), count: Number(row.count ?? 0) }));
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+  }
+  const skills = await skillRows(ctx, false);
+  return data(200, { terms, skills }, ctx.rid);
+};
 
 function relevance(title: string, extra: string, raw = "$2", cho = "$3", hangul = "$5"): string {
   return `CASE
@@ -1056,6 +1149,7 @@ async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
         OR ($4 <> '' AND p.search_jamo LIKE $4 || '%')
         OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' OR p.company ILIKE '%' || $5 || '%' OR p.search_jamo LIKE $6 || '%'))
       )`;
+    const total = await countWhere(ctx, sql, " FROM job_postings p", params.slice());
     if (page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -1063,11 +1157,11 @@ async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
     params.push(page.limit + 1);
     sql += ` ORDER BY ${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
     const rows = await query(ctx.deps.query, sql, params);
-    return { rows, page };
+    return { rows, page, total };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
 }
 
 const PROFILE_COLS = `p.user_id, u.display_name, p.avatar_key, p.headline, p.job_category, p.tenure_years, p.career_status,
@@ -1134,10 +1228,14 @@ const sameCompanyHidden = (row: Record<string, unknown>, viewerId: string, viewe
 async function listProfiles(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
   const categories = enumList(ctx.url, "category", JOB_CATEGORIES, "category");
-  const tenureRaw = ctx.url.searchParams.get("tenure");
-  if (tenureRaw && !TENURE.has(tenureRaw)) throw unprocessable("tenure", "unsupported tenure");
-  const status = ctx.url.searchParams.get("status");
-  if (status && !CAREER_STATUS.has(status)) throw unprocessable("status", "unsupported status");
+  const tenures = splitList(ctx.url, "tenure");
+  for (const token of tenures) {
+    if (!TENURE.has(token)) throw unprocessable("tenure", "unsupported tenure");
+  }
+  const statuses = splitList(ctx.url, "status");
+  for (const token of statuses) {
+    if (!CAREER_STATUS.has(token)) throw unprocessable("status", "unsupported status");
+  }
   const explore = ctx.url.searchParams.get("explore");
   if (explore && explore !== "recommended" && explore !== "offers") throw unprocessable("explore", "unsupported explore");
   const viewer = await viewerCompanyOf(ctx);
@@ -1153,14 +1251,18 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     const i = pushArray(params, categories);
     sql += ` AND p.job_category = ANY(${anyOf(i)})`;
   }
-  if (tenureRaw) {
-    const range = TENURE.get(tenureRaw)!;
-    params.push(range[0], range[1]);
-    sql += ` AND p.tenure_years BETWEEN $${params.length - 1} AND $${params.length}`;
+  if (tenures.length) {
+    const parts: string[] = [];
+    for (const token of tenures) {
+      const range = TENURE.get(token)!;
+      params.push(range[0], range[1]);
+      parts.push(`p.tenure_years BETWEEN $${params.length - 1} AND $${params.length}`);
+    }
+    sql += ` AND (${parts.join(" OR ")})`;
   }
-  if (status) {
-    params.push(status);
-    sql += ` AND p.career_status = $${params.length}
+  if (statuses.length) {
+    const statusParam = pushArray(params, statuses);
+    sql += ` AND p.career_status = ANY(${anyOf(statusParam)})
       AND (
         COALESCE(s.career_status_visibility, 'everyone') = 'everyone'
         OR (COALESCE(s.career_status_visibility, 'everyone') = 'followers'
@@ -1197,6 +1299,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     )`;
     rank = relevance("u.display_name", "p.headline", "$" + raw, "$" + cho, "$" + hangul) + ", ";
   }
+  const total = await countWhere(ctx, sql, " FROM profiles p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.updated_at, p.user_id) < ($${params.length - 1}, $${params.length})`;
@@ -1210,7 +1313,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     id: String(row.user_id),
   }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 async function searchPeople(ctx: Ctx, q: string): Promise<Response> {
@@ -1405,6 +1508,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
   let sql = "SELECT " + OFFER_SQL + (box === "received" ? " WHERE o.profile_user_id = $1" : " WHERE o.sender_id = $1");
+  const total = await countWhere(ctx, sql, " FROM offers o", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (o.created_at, o.id) < ($${params.length - 1}, $${params.length})`;
@@ -1414,7 +1518,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({ item: offerDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 async function offerFor(ctx: Ctx, idRaw: string): Promise<Record<string, unknown>> {
@@ -1797,6 +1901,7 @@ async function listBookmarks(ctx: Ctx): Promise<Response> {
       EXISTS (SELECT 1 FROM jobs j JOIN applications a ON a.job_id = j.id AND a.user_id = $1 WHERE j.source_posting_id = p.id) AS applied
       FROM bookmarks bk JOIN job_postings p ON p.id = bk.posting_id
       WHERE bk.user_id = $1 AND ${openClause(withStatus)}`;
+    const total = await countWhere(ctx, sql, " FROM bookmarks bk", params.slice());
     if (page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (bk.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -1804,11 +1909,11 @@ async function listBookmarks(ctx: Ctx): Promise<Response> {
     params.push(page.limit + 1);
     sql += ` ORDER BY bk.created_at DESC, p.id DESC LIMIT $${params.length}`;
     const rows = await query(ctx.deps.query, sql, params);
-    return { rows, page };
+    return { rows, page, total };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.bookmark_created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
 }
 
 async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
@@ -1818,6 +1923,7 @@ async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
   const join = incoming ? "f.follower_id" : "f.followee_id";
   const mine = incoming ? "f.followee_id" : "f.follower_id";
   let sql = profileSelect(", f.created_at AS relation_created_at") + ` JOIN follows f ON ${join} = p.user_id WHERE ${mine} = $1 AND COALESCE(s.profile_public, true) = true`;
+  const total = await countWhere(ctx, sql, " FROM profiles p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (f.created_at, p.user_id) < ($${params.length - 1}, $${params.length})`;
@@ -1827,7 +1933,7 @@ async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({ item: profileDto(row, ctx.user.id, viewer), createdAt: row.relation_created_at, id: String(row.user_id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 function postDto(row: Record<string, unknown>): Record<string, unknown> {
@@ -1878,6 +1984,10 @@ const onePost = async (ctx: Ctx, sql: string, params: unknown[]) => {
 
 async function listPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
+  const sort = ctx.url.searchParams.get("sort") || "latest";
+  if (sort !== "latest" && sort !== "popular") throw unprocessable("sort", "unsupported sort");
+  const period = ctx.url.searchParams.get("period") || "";
+  if (period !== "" && period !== "week") throw unprocessable("period", "unsupported period");
   const category = ctx.url.searchParams.get("category");
   if (category && !POST_CATEGORIES.has(category)) throw unprocessable("category", "unsupported category");
   const params: unknown[] = [];
@@ -1888,12 +1998,18 @@ async function listPosts(ctx: Ctx): Promise<Response> {
   }
   const q = ctx.url.searchParams.get("q") || "";
   sql = appendTextSearch(sql, params, q, ["p.title", "p.body"]);
-  if (page.cursor) {
+  if (period === "week") {
+    params.push(new Date(ctx.now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    sql += ` AND p.created_at >= $${params.length}::timestamptz`;
+  }
+  // shortcut: popular ignores the cursor; (created_at, id) is not its rank
+  if (sort === "latest" && page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+  const order = sort === "popular" ? "p.view_count DESC, p.created_at DESC, p.id DESC" : "p.created_at DESC, p.id DESC";
+  sql += ` ORDER BY ${order} LIMIT $${params.length}`;
   const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
@@ -1910,6 +2026,7 @@ async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
       OR ($3 <> '' AND p.search_jamo LIKE $3 || '%')
       OR ($4 <> '' AND (p.title ILIKE '%' || $4 || '%' OR p.body ILIKE '%' || $4 || '%' OR p.search_jamo LIKE $5 || '%'))
     )`;
+  const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -1919,7 +2036,7 @@ async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
   const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 async function createPost(ctx: Ctx): Promise<Response> {
@@ -2037,6 +2154,7 @@ async function listMyPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
   let sql = "SELECT " + POST_SQL + " WHERE p.user_id = $1";
+  const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -2046,7 +2164,7 @@ async function listMyPosts(ctx: Ctx): Promise<Response> {
   const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 async function listCommentedPosts(ctx: Ctx): Promise<Response> {
@@ -2054,6 +2172,7 @@ async function listCommentedPosts(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [ctx.user.id];
   let sql = `SELECT ${POST_SQL}
     WHERE p.id IN (SELECT post_id FROM post_comments WHERE user_id = $1)`;
+  const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -2063,7 +2182,7 @@ async function listCommentedPosts(ctx: Ctx): Promise<Response> {
   const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
 export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Response | null> {
@@ -2093,6 +2212,8 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (posting && method === "GET") return getPosting(ctx, posting[1]);
   if (posting && method === "PATCH") return patchPosting(ctx, posting[1]);
 
+  if (method === "GET" && path === "/api/v1/search/counts") return searchCounts(ctx);
+  if (method === "GET" && path === "/api/v1/search/trending") return searchTrending(ctx);
   if (method === "GET" && path === "/api/v1/search") return search(ctx);
 
   if (method === "GET" && path === "/api/v1/profiles") return listProfiles(ctx);

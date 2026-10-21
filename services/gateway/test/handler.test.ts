@@ -1194,6 +1194,8 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/ai-done"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/run"), "core");
   assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
   assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
 });
 
