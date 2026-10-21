@@ -18,6 +18,19 @@ def _msg(row) -> Message:
     return Message(**m)
 
 
+def _artifact_item(attachment):
+    if not isinstance(attachment, dict):
+        return None
+    document_id = attachment.get("documentId") or attachment.get("document_id")
+    if attachment.get("type") != "DOCUMENT_VERSION" and not document_id:
+        return None
+    return {
+        "type": attachment.get("type"),
+        "id": attachment.get("id"),
+        "title": attachment.get("title") or "",
+    }
+
+
 class ConversationStore(Store):
     async def create(self, c: Conversation) -> None:
         await self.q().execute(
@@ -115,3 +128,42 @@ class ConversationStore(Store):
             "WHERE user_id = $1 AND conversation_id <> $2 "
             "AND a->>'type' = 'EVIDENCE' AND a->>'id' = $3",
             user_id, conversation_id, str(evidence_id))
+
+    async def put_share(self, conversation_id: UUID, token_hash: str) -> None:
+        await self.q().execute(
+            "INSERT INTO conversation_shares (conversation_id, token_hash) "
+            "VALUES ($1, $2) "
+            "ON CONFLICT (conversation_id) DO UPDATE SET "
+            "token_hash = EXCLUDED.token_hash",
+            conversation_id, token_hash)
+
+    async def share_by_hash(self, token_hash: str):
+        return await self.q().fetchrow(
+            "SELECT s.conversation_id, c.title FROM conversation_shares s "
+            "JOIN conversations c ON c.id = s.conversation_id "
+            "WHERE s.token_hash = $1",
+            token_hash)
+
+    async def list_share_messages(self, conversation_id: UUID):
+        return await self.q().fetch(
+            "SELECT role, text, created_at, id FROM messages "
+            "WHERE conversation_id = $1 "
+            "ORDER BY created_at ASC, id ASC",
+            conversation_id)
+
+    async def list_artifacts(self, conversation_id: UUID) -> list[dict]:
+        rows = await self.q().fetch(
+            "SELECT id, attachments FROM messages "
+            "WHERE conversation_id = $1 "
+            "ORDER BY created_at ASC, id ASC",
+            conversation_id)
+        items = []
+        for row in rows:
+            raw = row.get("attachments") or []
+            if not isinstance(raw, list):
+                continue
+            for attachment in raw:
+                item = _artifact_item(attachment)
+                if item is not None:
+                    items.append(item)
+        return items
