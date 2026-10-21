@@ -43,7 +43,7 @@ def validate_document_input(title: str, kind: str, template: str) -> None:
     if not ent.valid_document_kind(kind):
         raise validation_field("kind", "must be RESUME, PORTFOLIO or COVER_LETTER")
     if not ent.valid_document_template(template):
-        raise validation_field("template", "must be CLASSIC, MODERN or COMPACT")
+        raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
 
 
 def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
@@ -107,6 +107,7 @@ class DocumentService:
             except Exception:
                 raise internal()
         validate_document_input(title, kind, template)
+        template = ent.stored_document_template(template)
         now = _now()
         d = ent.Document(
             id=uuid4(), user_id=user_id, revision=1, application_id=application_id,
@@ -145,10 +146,10 @@ class DocumentService:
                 d.title = title
             if template is not None:
                 if not ent.valid_document_template(template):
-                    raise validation_field(
-                        "template", "must be CLASSIC, MODERN or COMPACT")
-                if template != d.template:
-                    d.template = template
+                    raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
+                stored = ent.stored_document_template(template)
+                if stored != d.template:
+                    d.template = stored
                     d.finalized_version_id = None
                     if d.status == ent.DOC_FINALIZED:
                         d.status = ent.DOC_DRAFT

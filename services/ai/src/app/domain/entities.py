@@ -338,7 +338,9 @@ class Submission(Model):
 
 
 DOC_KINDS = {"RESUME", "PORTFOLIO", "COVER_LETTER"}
-DOC_TEMPLATES = {"CLASSIC", "MODERN", "COMPACT"}
+DOC_TEMPLATE_ALIASES = {"CLASSIC": "SIMPLE", "COMPACT": "ATS"}
+DOC_TEMPLATES = {"SIMPLE", "MODERN", "CREATIVE", "ATS"} | set(DOC_TEMPLATE_ALIASES)
+DOC_TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT"
 DOC_DRAFT = "DRAFT"
 DOC_FINALIZED = "FINALIZED"
 DOC_ARCHIVED = "ARCHIVED"
@@ -354,6 +356,10 @@ def valid_document_kind(k: str) -> bool:
 
 def valid_document_template(t: str) -> bool:
     return t in DOC_TEMPLATES
+
+
+def stored_document_template(t: str) -> str:
+    return DOC_TEMPLATE_ALIASES.get(t, t)
 
 
 def valid_revision_action(a: str) -> bool:
