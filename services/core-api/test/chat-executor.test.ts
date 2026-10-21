@@ -84,7 +84,7 @@ test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fail
   resetLimits();
   let calls = 0;
   const sqls: string[] = [];
-  let woke: { url: string; secret: string; internal: string; body: string } | null = null;
+  const woke = { url: "", secret: "", internal: "", body: "" };
   const query = paidQuery();
   const wrapped: Deps["query"] = async (sql, params) => {
     sqls.push(sql);
@@ -105,21 +105,19 @@ test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fail
     now: () => NOW,
     fetch: async (input, init) => {
       const headers = new Headers(init?.headers);
-      woke = {
-        url: String(input),
-        secret: headers.get("x-push-ai-secret") || "",
-        internal: headers.get("x-push-internal") || "",
-        body: String(init?.body || ""),
-      };
+      woke.url = String(input);
+      woke.secret = headers.get("x-push-ai-secret") || "";
+      woke.internal = headers.get("x-push-internal") || "";
+      woke.body = String(init?.body || "");
       return new Response("no", { status: 500 });
     },
   });
   assert.equal(res.status, 202);
   assert.equal(calls, 0);
-  assert.equal(woke?.url, "https://ai.example.test/internal/chat/schedule");
-  assert.equal(woke?.secret, "s3cret");
-  assert.equal(woke?.internal, "1");
-  assert.match(woke?.body || "", /jobId/);
+  assert.equal(woke.url, "https://ai.example.test/internal/chat/schedule");
+  assert.equal(woke.secret, "s3cret");
+  assert.equal(woke.internal, "1");
+  assert.match(woke.body, /jobId/);
   assert.equal(sqls.some((sql) => sql.includes("chat_jobs")), true);
   const op = await res.json() as { data: { status: string; result: { value: { jobId: string } }; id: string } };
   assert.equal(op.data.status, "QUEUED");

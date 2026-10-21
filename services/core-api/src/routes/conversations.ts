@@ -206,6 +206,27 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
   }
 }
 
+async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): Promise<void> {
+  const fetchImpl = ctx.deps.fetch ?? fetch;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-push-internal": "1",
+    "x-request-id": ctx.rid,
+  };
+  const secret = (ctx.env.AI_SHARED_SECRET || "").trim();
+  if (secret) headers["x-push-ai-secret"] = secret;
+  try {
+    const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jobId, byok }),
+    });
+    if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
+  } catch {
+    console.error("vps chat wake failed");
+  }
+}
+
 export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const conversationId = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
@@ -252,7 +273,8 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
   // AI_ORIGIN is set. Clearing it schedules through the service binding again.
-  if (!(ctx.env.AI_ORIGIN || "").trim()) {
+  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (!origin) {
     if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
     const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
       method: "POST",
@@ -264,6 +286,8 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
       body: JSON.stringify({ jobId, byok }),
     }));
     if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
+  } else {
+    await wakeVps(ctx, origin, jobId, byok);
   }
   const now = ts(ctx.now);
   return data(202, {
