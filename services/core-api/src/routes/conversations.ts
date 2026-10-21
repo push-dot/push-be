@@ -7,7 +7,7 @@ import type { Ctx } from "../types.ts";
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
-const CREDITS: Record<string, number> = { PRO: 30_000_000, ULTRA: 100_000_000 };
+const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -185,13 +185,12 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
       const spent = await one(ctx.deps.query,
         "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND (status = 'SETTLED' OR (status = 'RESERVED' AND created_at > now() - interval '10 minutes'))",
         [ctx.user.id, start]);
-      const plan = String(user.plan);
-      if (Number(spent?.spent || 0) >= (CREDITS[plan] || 0)) {
+      const raw = user.plan == null ? "" : String(user.plan).trim();
+      const plan = raw === "" ? "FREE" : raw;
+      if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
         throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
       }
-      if (String(ai.model).startsWith("opencode-go/")) {
-        if (!flag(ctx.env.MANAGED_GO)) throw new HttpError(503, "NOT_CONFIGURED", "OpenCode Go is not configured");
-      } else if (!flag(ctx.env.MANAGED_AI)) {
+      if (!flag(ctx.env.MANAGED_AI)) {
         throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
       }
       return;
