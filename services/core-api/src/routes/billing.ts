@@ -87,11 +87,12 @@ export async function checkout(ctx: Ctx): Promise<Response> {
 }
 
 /** Cancels every live subscription now (no refund). Called before an account is marked for deletion. */
-export async function cancelSubscriptions(ctx: Ctx): Promise<void> {
-  if (!configured(ctx) || !ctx.user.stripeCustomerId) return;
+export async function cancelSubscriptions(ctx: Ctx, customerId?: string): Promise<void> {
+  const customer = customerId ?? ctx.user.stripeCustomerId;
+  if (!configured(ctx) || !customer) return;
   try {
     // Without a status filter Stripe lists every subscription that is not already canceled.
-    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(ctx.user.stripeCustomerId));
+    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
     const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
     for (const sub of subs) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
   } catch {

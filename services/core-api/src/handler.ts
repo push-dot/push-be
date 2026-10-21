@@ -8,6 +8,7 @@ import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calen
 import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
+import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchRecruiting } from "./routes/recruiting.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
@@ -138,6 +139,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
 
   const recruited = await dispatchRecruiting(ctx, path);
   if (recruited) return recruited;
+  const companies = await dispatchCompanies(ctx, path);
+  if (companies) return companies;
 
   if (method === "GET" && path === "/api/v1/calendar/events") return listEvents(ctx);
   if (method === "POST" && path === "/api/v1/calendar/events") return createEvent(ctx);

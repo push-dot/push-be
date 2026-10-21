@@ -299,8 +299,10 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
   });
 }
 
-const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => {
+export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => {
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1 AND deletion_requested_at IS NOT NULL", [userId])
+    .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
+  await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = NULL WHERE id IN (SELECT company_id FROM company_members WHERE user_id = $1)", [userId])
     .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
 };
 
@@ -414,13 +416,25 @@ export async function logout(ctx: Ctx): Promise<Response> {
 
 /** Marks the account for deletion; logging in within 30 days restores it, then the cron purges it. */
 export async function deleteAccount(ctx: Ctx): Promise<Response> {
+  const membership = await one(ctx.deps.query,
+    "SELECT m.role, m.company_id, c.stripe_customer_id, (SELECT count(*) FROM company_members o WHERE o.company_id = m.company_id AND o.user_id <> m.user_id) AS others FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
+    [ctx.user.id]);
+  const soleAdmin = membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) === 0;
+  if (membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) > 0) {
+    throw new HttpError(409, "ADMIN_TRANSFER_REQUIRED", "transfer admin before deleting the account");
+  }
   // Mark first so a missing migration fails before Stripe is touched; undo the mark if Stripe fails.
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = $2 WHERE id = $1", [ctx.user.id, ctx.now.toISOString()]);
   try {
     await cancelSubscriptions(ctx);
+    const companyCustomer = soleAdmin && membership?.stripe_customer_id != null ? String(membership.stripe_customer_id) : "";
+    if (companyCustomer && companyCustomer !== (ctx.user.stripeCustomerId ?? "")) await cancelSubscriptions(ctx, companyCustomer);
   } catch (err) {
     await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1", [ctx.user.id]);
     throw err;
+  }
+  if (soleAdmin) {
+    await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = $2 WHERE id = $1", [String(membership?.company_id), ctx.now.toISOString()]);
   }
   await revokeAll(ctx, ctx.user.id);
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });

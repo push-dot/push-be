@@ -1142,3 +1142,21 @@ test("email auth posts are owned by core", () => {
     assert.equal(ownerOf("POST", path), "core");
   }
 });
+
+test("company routes are owned by core", () => {
+  for (const path of [
+    "/api/v1/companies",
+    "/api/v1/companies/verify",
+    "/api/v1/companies/me",
+    "/api/v1/companies/me/members",
+    "/api/v1/companies/me/invites",
+    "/api/v1/companies/invites/tok/accept",
+    "/api/v1/companies/me/members/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  ]) {
+    assert.equal(ownerOf("GET", path), "core");
+    assert.equal(ownerOf("POST", path), "core");
+    assert.equal(ownerOf("PATCH", path), "core");
+    assert.equal(ownerOf("DELETE", path), "core");
+  }
+  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
+});

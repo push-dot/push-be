@@ -186,6 +186,7 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `MAIL_FROM` | 이메일 발신 주소. 비우면 로컬 로거는 `noreply@push.local` |
 | `APP_WEB_ORIGIN` | 인증·재설정 링크 origin. 비우면 `http://localhost:5174` |
 | `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
+| `NTS_SERVICE_KEY` | 국세청 사업자 진위확인 serviceKey. 비우면 사업자 확인은 503 |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 결제 |
 | `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | Pro/Ultra 가격 ID |
 | `DEV_AUTH_TOKEN`, `DEV_USER_ID` | 개발 인증. 프로덕션에서는 비운다 |

@@ -58,6 +58,7 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/jobs\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
   if (path === "/api/v1/calendar/events") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/calendar\/events\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (path === "/api/v1/companies" || path.startsWith("/api/v1/companies/")) return true;
   if (isRecruiting(path)) return true;
   return false;
 }

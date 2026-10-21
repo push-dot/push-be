@@ -3,7 +3,7 @@ import { HttpError, asBool, data, fieldError, noContent, randomToken, sha256Hex 
 import { createMailer, type Mailer } from "../mail/mailer.ts";
 import { hashPassword, verifyPassword } from "../mail/password.ts";
 import type { Ctx } from "../types.ts";
-import { emailTaken, issue, revokeAll } from "./auth.ts";
+import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const PASSWORD_MIN = 8;
@@ -168,6 +168,7 @@ const login = async (ctx: Ctx): Promise<Response> => {
   if (!stored || !(await verifyPassword(password, stored))) {
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   }
+  await clearDeletion(ctx, String(user.id));
   return data(200, await issue(ctx, String(user.id)), ctx.rid);
 };
 

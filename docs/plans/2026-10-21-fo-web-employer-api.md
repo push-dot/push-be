@@ -56,6 +56,9 @@
 23. **Mail links** use `APP_WEB_ORIGIN` (default `http://localhost:5174`): `/auth/verify?token=`, `/auth/reset?token=`, `/invites/{token}`. Tokens are stored as SHA-256. Invite TTL is 7 days. Verify and reset TTL is 1 hour.
 24. **Members list** is `{ data: CompanyMember[] }`, not a page. api-spec's bare array loses to the frontend client and to section 2.3.
 25. **NTS.** `POST https://api.odcloud.kr/api/nts-businessman/v1/validate?serviceKey=` and `.../status?serviceKey=` with JSON bodies. `valid !== "01"` is `MISMATCH`. `b_stt_cd === "02"` is `SUSPENDED`. `b_stt_cd === "03"` is `CLOSED`. Anything else unsuccessful is `MISMATCH`. 422 `BUSINESS_NOT_VERIFIED` message includes `개업 직후라면 1–2일 뒤 다시 시도해 주세요`. Duplicate `b_no` is 409 `COMPANY_EXISTS`.
+26. **NTS call shape.** `serviceKey` is `encodeURIComponent`'d. Validate runs first; `valid !== "01"` or a 2xx JSON body with no `data[0]` is `MISMATCH` and status is not called. Non-2xx and non-JSON are 502 `PROVIDER_ERROR`.
+27. **Non-admin deletion.** `DELETE /me` for a member who is not an admin follows the personal path: no company Stripe cancel and no `companies.deletion_requested_at`. A sole admin skips the extra Stripe call when the company customer is null or equal to the user's customer.
+28. **Invite mail.** Stored email is lowercased. Trailing slashes on `APP_WEB_ORIGIN` are stripped, then the link is `/invites/{token}`. Missing `deps.mailer` uses `createMailer(env)`. An already accepted invite is 409 even if it is also expired.
 
 ## File map
 
@@ -361,15 +364,15 @@ Routes:
 - Gateway `isCore` is true for `/api/v1/companies` and `/api/v1/companies/*`.
 - `DELETE /me` follows Decision 17. Cancel company Stripe with the same `cancelSubscriptions` path, using the company `stripe_customer_id` when the user is the sole member.
 
-- [ ] **Step 1: Failing tests** with a fake `fetch` that returns `valid: "01"` and `b_stt_cd: "01"`, then mismatch, suspended, closed, and duplicate `b_no`. Invite over the BASIC limit is 403. Transfer and sole-admin delete are covered.
+- [x] **Step 1: Failing tests** with a fake `fetch` that returns `valid: "01"` and `b_stt_cd: "01"`, then mismatch, suspended, closed, and duplicate `b_no`. Invite over the BASIC limit is 403. Transfer and sole-admin delete are covered.
 
-- [ ] **Step 2: Run** the test. Expected: FAIL 404.
+- [x] **Step 2: Run** the test. Expected: FAIL 404.
 
-- [ ] **Step 3: Implement.** Read `NTS_SERVICE_KEY` from env. Missing key is 503 `NOT_CONFIGURED`.
+- [x] **Step 3: Implement.** Read `NTS_SERVICE_KEY` from env. Missing key is 503 `NOT_CONFIGURED`.
 
-- [ ] **Step 4: Run** core tests and `tsc --noEmit`. Gateway `tsc` if `owner.ts` changed.
+- [x] **Step 4: Run** core tests and `tsc --noEmit`. Gateway `tsc` if `owner.ts` changed.
 
-- [ ] **Step 5: Commit** `feat(companies): verify businesses and manage seats`
+- [x] **Step 5: Commit** `feat(companies): verify businesses and manage seats`
 
 ---
 
