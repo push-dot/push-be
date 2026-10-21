@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,7 +13,7 @@ from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.domain.services.conversation import ConversationService
 from app.graphs.chat import bind_chat_nodes, event_sink
-from app.graphs.chat_surface import surface_events
+from app.graphs.chat_surface import insert_chat_approval, surface_events
 from tests.stubs import FakeDB, StubConversationStore
 from tests.test_conversation import _svc
 
@@ -213,6 +213,127 @@ async def test_prepare_emits_tool_todo_and_choice_and_a_plain_turn_emits_nothing
     assert plain == []
 
 
+def _approval_id(job_id) -> str:
+    return str(uuid5(NAMESPACE_URL, "push:chat-approval:" + str(job_id)))
+
+
+def test_approval_id_uses_the_job_id():
+    job_id = uuid4()
+    state = _rich()
+    state["job_id"] = job_id
+    approval = next(
+        event for event in surface_events(state) if event["type"] == "approval")
+    assert approval["id"] == _approval_id(job_id)
+    again = next(
+        event for event in surface_events(state) if event["type"] == "approval")
+    assert again["id"] == approval["id"]
+
+
+class _Duplicate:
+    def __init__(self):
+        self.calls = []
+        self.seen = set()
+
+    def q(self):
+        return self
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        if "ON CONFLICT (id) DO NOTHING" not in sql and args[0] in self.seen:
+            raise RuntimeError("duplicate key")
+        self.seen.add(args[0])
+
+
+async def test_insert_chat_approval_same_job_does_not_raise():
+    job_id = uuid4()
+    event = {
+        "id": _approval_id(job_id),
+        "kind": "DOCUMENT_EDIT",
+        "title": "이 수정을 적용할까요?",
+        "options": OPTIONS,
+    }
+    db = _Duplicate()
+    await insert_chat_approval(db, USER_ID, CONV_ID, event, DOC)
+    await insert_chat_approval(db, USER_ID, CONV_ID, event, DOC)
+    assert len(db.calls) == 2
+    assert "ON CONFLICT (id) DO NOTHING" in db.calls[0][0]
+    assert db.calls[0][1][0] == UUID(event["id"])
+    assert db.calls[1][1][0] == UUID(event["id"])
+
+
+class _Order:
+    def __init__(self):
+        self.calls = []
+
+    def q(self):
+        return self
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        sink = event_sink.get()
+        if sink is not None:
+            sink.append({"type": "db"})
+
+    async def run(self, fn):
+        return await fn()
+
+
+async def test_persist_inserts_before_the_approval_event():
+    user_id = uuid4()
+    job_id = uuid4()
+    conv = _conv(user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    db = _Order()
+    svc.db = db
+    nodes = bind_chat_nodes(svc)
+    token = event_sink.set([])
+    try:
+        await nodes["persist"]({
+            "user_id": user_id,
+            "job_id": job_id,
+            "text": "edit",
+            "attachments": [],
+            "conversation": conv,
+            "diff": {
+                "documentId": DOC,
+                "revisionId": REV,
+                "hunks": [{"line": 2, "sign": "-", "text": "old"}],
+            },
+            "fit": {
+                "score": 7.4,
+                "parts": {"techStack": 80, "experienceLink": 55, "keyword": 40},
+                "topGap": "no tests",
+            },
+        })
+        sink = list(event_sink.get())
+    finally:
+        event_sink.reset(token)
+    types = [event["type"] for event in sink]
+    assert types.index("db") < types.index("approval")
+    assert types.index("diff") < types.index("db")
+    assert types.index("fit") < types.index("db")
+    approval = next(event for event in sink if event["type"] == "approval")
+    assert approval["id"] == _approval_id(job_id)
+    assert UUID(approval["id"]) in db.calls[0][1]
+
+
+async def test_publish_skips_approval_when_nothing_is_inserted():
+    from app.graphs.chat_surface import publish_persisted_surface
+
+    emitted = []
+    db = _Rec()
+    blocked = await publish_persisted_surface(
+        {"diff": {
+            "documentId": DOC,
+            "revisionId": REV,
+            "hunks": [{"line": 1, "sign": "+", "text": "new"}],
+        }},
+        db, emitted.append, None)
+    assert blocked is True
+    assert db.calls == []
+    assert [event["type"] for event in emitted] == ["diff"]
+
+
 async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absent():
     user_id = uuid4()
     conv = _conv(user_id)
@@ -249,7 +370,7 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
         sink = list(event_sink.get())
     finally:
         event_sink.reset(token)
-    assert [event["type"] for event in sink] == ["diff", "approval", "fit"]
+    assert [event["type"] for event in sink] == ["diff", "fit", "approval"]
     assert applied == []
     assert len(db.calls) == 1
     sql, args = db.calls[0]
@@ -257,7 +378,8 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
     assert "PENDING" in sql
     assert conv.id in args
     assert _options_from(args) == OPTIONS
-    assert sink[1]["id"] in args or UUID(sink[1]["id"]) in args
+    approval = next(event for event in sink if event["type"] == "approval")
+    assert approval["id"] in args or UUID(approval["id"]) in args
 
 
 async def test_persist_applies_the_diff_when_confirm_is_false():

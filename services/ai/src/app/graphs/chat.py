@@ -591,26 +591,9 @@ def bind_chat_nodes(svc):
                 reset_employer_plan(token)
 
     async def _emit_persisted(state: dict) -> bool:
-        from app.graphs.chat_surface import insert_chat_approval, surface_events
-        events = [
-            event for event in surface_events(state)
-            if event["type"] in ("diff", "approval", "fit")]
-        for event in events:
-            _emit(event)
-        approval = next((event for event in events if event["type"] == "approval"), None)
-        if approval is not None:
-            conv = state.get("conversation")
-            user_id = state.get("user_id")
-            if conv is not None and user_id is not None:
-                diff = state.get("diff") or {}
-                await insert_chat_approval(
-                    svc.db, user_id, conv.id, approval, diff.get("documentId"))
-            return True
-        diff_event = next((event for event in events if event["type"] == "diff"), None)
+        from app.graphs.chat_surface import publish_persisted_surface
         apply = getattr(getattr(svc, "documents", None), "apply_hunks", None)
-        if diff_event is not None and apply is not None:
-            await apply(diff_event)
-        return False
+        return await publish_persisted_surface(state, svc.db, _emit, apply)
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]

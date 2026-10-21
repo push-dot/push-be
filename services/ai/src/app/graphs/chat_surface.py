@@ -29,7 +29,7 @@ def surface_events(state: dict | None) -> list[dict]:
     if diff:
         events.append(diff)
         if state.get("confirm_before_edit", True) is not False:
-            events.append(_approval_event(diff))
+            events.append(_approval_event(diff, state))
     fit = _fit_event(state)
     if fit:
         events.append(fit)
@@ -131,11 +131,15 @@ def _choice_event(state: dict) -> dict | None:
     return {"type": "choice", "id": raw["id"], "options": options}
 
 
-def _approval_event(diff: dict) -> dict:
-    approval_id = str(uuid5(
-        NAMESPACE_URL,
-        "push:chat-approval:" + str(diff["documentId"]) + ":" + str(diff["revisionId"]),
-    ))
+def _approval_event(diff: dict, state: dict) -> dict:
+    job_id = state.get("job_id")
+    if job_id:
+        name = "push:chat-approval:" + str(job_id)
+    else:
+        name = (
+            "push:chat-approval:"
+            + str(diff["documentId"]) + ":" + str(diff["revisionId"]))
+    approval_id = str(uuid5(NAMESPACE_URL, name))
     return {
         "type": "approval",
         "id": approval_id,
@@ -177,6 +181,30 @@ async def resolve_chat_approval(db, user_id, conversation_id, approval_id, optio
     return {"id": str(approval_id), "status": "APPROVED", "optionId": option_id}
 
 
+async def publish_persisted_surface(state, db, emit, apply) -> bool:
+    events = [
+        event for event in surface_events(state)
+        if event["type"] in ("diff", "approval", "fit")]
+    approval = next((event for event in events if event["type"] == "approval"), None)
+    for event in events:
+        if event["type"] != "approval":
+            emit(event)
+    if approval is None:
+        diff_event = next((event for event in events if event["type"] == "diff"), None)
+        if diff_event is not None and apply is not None:
+            await apply(diff_event)
+        return False
+    conv = state.get("conversation")
+    user_id = state.get("user_id")
+    if conv is None or user_id is None:
+        return True
+    diff = state.get("diff") or {}
+    await insert_chat_approval(
+        db, user_id, conv.id, approval, diff.get("documentId"))
+    emit(approval)
+    return True
+
+
 async def insert_chat_approval(db, user_id, conversation_id, event: dict, document_id) -> None:
     options = json.dumps(event["options"], ensure_ascii=False)
     try:
@@ -186,7 +214,8 @@ async def insert_chat_approval(db, user_id, conversation_id, event: dict, docume
     await db.q().execute(
         "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, "
         "conversation_id, title, options) "
-        "VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7,$8::jsonb)",
+        "VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7,$8::jsonb) "
+        "ON CONFLICT (id) DO NOTHING",
         UUID(str(event["id"])),
         user_id,
         event["kind"],
