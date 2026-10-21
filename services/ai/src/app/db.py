@@ -4,6 +4,7 @@ import contextvars
 import json
 import logging
 import os
+import socket
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -22,10 +23,67 @@ class ConflictError(Exception):
         self.current = current
 
 
+POOL_MIN_SIZE = 0
+POOL_MAX_SIZE = 10
+POOL_IDLE_S = 30.0
+APP_NAME = "push-ai"
+CHECKPOINTER_IDLE_S = 60.0
+CHECKPOINTER_MAX_SIZE = 4
+
+
 async def _init_conn(conn) -> None:
     for t in ("json", "jsonb"):
         await conn.set_type_codec(
             t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+    transport = getattr(conn, "_transport", None)
+    get_extra = getattr(transport, "get_extra_info", None)
+    sock = get_extra("socket") if get_extra is not None else None
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 0)
+    except OSError:
+        return
+
+
+def checkpointer_pool_config() -> dict:
+    return {
+        "min_size": 0,
+        "max_size": CHECKPOINTER_MAX_SIZE,
+        "max_idle": CHECKPOINTER_IDLE_S,
+        "kwargs": {
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "keepalives": 0,
+            "application_name": APP_NAME,
+        },
+    }
+
+
+async def open_chat_checkpointer(database_url: str):
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    cfg = checkpointer_pool_config()
+    kwargs = dict(cfg["kwargs"])
+    kwargs["row_factory"] = dict_row
+    pool = AsyncConnectionPool(
+        database_url,
+        min_size=cfg["min_size"],
+        max_size=cfg["max_size"],
+        max_idle=cfg["max_idle"],
+        open=False,
+        kwargs=kwargs,
+    )
+    await pool.open()
+    try:
+        saver = AsyncPostgresSaver(conn=pool)
+        await saver.setup()
+    except Exception:
+        await pool.close()
+        raise
+    return saver, pool
 
 
 class DB:
@@ -150,4 +208,11 @@ async def create_pool(database_url: str):
         return PgPool(database_url, transport=pg_transport())
     import asyncpg
     url = database_url.replace("?sslmode=disable", "").replace("&sslmode=disable", "")
-    return await asyncpg.create_pool(url, init=_init_conn)
+    return await asyncpg.create_pool(
+        url,
+        init=_init_conn,
+        min_size=POOL_MIN_SIZE,
+        max_size=POOL_MAX_SIZE,
+        max_inactive_connection_lifetime=POOL_IDLE_S,
+        server_settings={"application_name": APP_NAME},
+    )
