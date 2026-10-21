@@ -31,6 +31,7 @@ const EMAIL_PUBLIC = new Set([
 const PENDING_MS = 5 * 60 * 1000;
 const GUEST_ID = "00000000-0000-0000-0000-000000000000";
 const POSTING_UUID = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const APPLICANT_COUNTS = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/applicant-counts$/i;
 
 const isGuestRead = (method: string, path: string): boolean => {
   if (method !== "GET") return false;
@@ -38,7 +39,8 @@ const isGuestRead = (method: string, path: string): boolean => {
     || path === "/api/v1/postings/locations"
     || path === "/api/v1/postings/facets"
     || path === "/api/v1/search"
-    || POSTING_UUID.test(path);
+    || POSTING_UUID.test(path)
+    || APPLICANT_COUNTS.test(path);
 };
 
 const guestUser = (): UserRow => ({ ...anonymous(), id: GUEST_ID });

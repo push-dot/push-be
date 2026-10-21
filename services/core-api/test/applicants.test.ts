@@ -1026,3 +1026,210 @@ test("guest list returns 200 when the status column is missing", async () => {
   assert.equal(seen.some((call) => call.sql.includes("job_postings") && call.sql.includes("status")), true);
   assert.equal(seen.some((call) => call.sql.includes("job_postings") && call.sql.includes("ORDER BY") && !call.sql.includes("status")), true);
 });
+
+test("patch cannot publish a closed posting", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(patch(`/api/v1/postings/${POSTING}`, {
+    status: "OPEN",
+    expectedRevision: 1,
+  }), env(), deps(authed(seen, true, async (sql) => {
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("job_postings")) {
+      return {
+        rows: [{
+          id: POSTING,
+          revision: 1,
+          status: "CLOSED",
+          company: "Acme",
+          title: "Backend",
+          job_category: "dev",
+          career_min: 1,
+          career_max: 3,
+          location: "서울 강남구",
+          employment_type: "full_time",
+          description: "Build APIs",
+          closed_at: NOW,
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  })));
+  assert.equal(res.status, 400);
+  assert.equal(await codeOf(res), "VALIDATION_ERROR");
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings")), false);
+});
+
+test("member create patch and close include applicantCount", async () => {
+  resetLimits();
+  const created = await handle(
+    post("/api/v1/postings", postingBody, "66666666-6666-4666-8666-666666666671"),
+    env(),
+    deps(authed([], true, companyQuery)),
+  );
+  assert.equal(created.status, 201);
+  const createdBody = await created.json() as { data: { applicantCount: number; status: string } };
+  assert.equal(createdBody.data.status, "OPEN");
+  assert.equal(createdBody.data.applicantCount, 0);
+
+  resetLimits();
+  const patchSeen: Call[] = [];
+  const patched = await handle(patch(`/api/v1/postings/${POSTING}`, {
+    title: "Backend",
+    expectedRevision: 1,
+  }), env(), deps(authed(patchSeen, true, async (sql) => {
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("UPDATE") && sql.includes("job_postings")) {
+      return {
+        rows: [{
+          id: POSTING,
+          revision: 2,
+          status: "OPEN",
+          applicant_count: 6,
+          company: "Acme",
+          title: "Backend",
+          closed_at: null,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("job_postings")) {
+      return {
+        rows: [{
+          id: POSTING,
+          revision: 1,
+          status: "OPEN",
+          company: "Acme",
+          title: "Backend",
+          job_category: "dev",
+          career_min: 1,
+          career_max: 3,
+          location: "서울 강남구",
+          employment_type: "full_time",
+          description: "Build APIs",
+          closed_at: null,
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  })));
+  assert.equal(patched.status, 200);
+  const patchedBody = await patched.json() as { data: { applicantCount: number } };
+  assert.equal(patchedBody.data.applicantCount, 6);
+  const update = patchSeen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
+  assert.ok(update);
+  assert.match(update.sql, /AS applicant_count/);
+
+  resetLimits();
+  const closeSeen: Call[] = [];
+  const closed = await handle(
+    post(`/api/v1/postings/${POSTING}/close`, { expectedRevision: 1 }, "33333333-3333-4333-8333-33333333333a"),
+    env(),
+    deps(authed(closeSeen, true, async (sql) => {
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+      if (sql.includes("UPDATE") && sql.includes("job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            revision: 2,
+            status: "CLOSED",
+            applicant_count: 6,
+            company: "Acme",
+            title: "Backend",
+            closed_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("job_postings")) {
+        return { rows: [{ id: POSTING, revision: 1, closed_at: null, company_id: COMPANY }], rowCount: 1 };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(closed.status, 200);
+  const closedBody = await closed.json() as { data: { applicantCount: number; status: string } };
+  assert.equal(closedBody.data.applicantCount, 6);
+  assert.equal(closedBody.data.status, "CLOSED");
+  const closeSql = closeSeen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
+  assert.ok(closeSql);
+  assert.match(closeSql.sql, /AS applicant_count/);
+});
+
+test("company list and closed detail derive status when the column is missing", async () => {
+  resetLimits();
+  const listed = await handle(
+    new Request("https://core.example/api/v1/companies/me/postings", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
+      if (sql.includes("AS total")) return { rows: [{ total: 1 }], rowCount: 1 };
+      if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Backend",
+            closed_at: NOW,
+            created_at: NOW,
+            revision: 1,
+            applicant_count: 3,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(listed.status, 200);
+  const listedBody = await listed.json() as { data: { status: string; applicantCount: number }[] };
+  assert.equal(listedBody.data[0].status, "CLOSED");
+  assert.equal(listedBody.data[0].applicantCount, 3);
+
+  resetLimits();
+  const detail = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
+      if (sql.includes("closed_at IS NULL")) return empty;
+      if (sql.includes("FROM job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Backend",
+            description: "Hidden",
+            closed_at: NOW,
+            applicant_count: 1,
+            revision: 1,
+            created_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(detail.status, 200);
+  const detailBody = await detail.json() as { data: { status: string; applicantCount: number } };
+  assert.equal(detailBody.data.status, "CLOSED");
+  assert.equal(detailBody.data.applicantCount, 1);
+});
+
+test("guest applicant counts are 404", async () => {
+  resetLimits();
+  const res = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicant-counts`),
+    env(),
+    deps(async (sql) => {
+      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      return empty;
+    }),
+  );
+  assert.equal(res.status, 404);
+});
