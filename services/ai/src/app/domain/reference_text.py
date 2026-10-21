@@ -65,6 +65,62 @@ def score_band(score: int) -> int:
     return score // 10 * 10
 
 
+def link_count(text: str) -> int:
+    return len(_LINK.findall(text or ""))
+
+
+def _tenure_span(window: str) -> int | None:
+    if window == "same":
+        return 0
+    if window == "plus1":
+        return 1
+    if window == "plus2":
+        return 2
+    return None
+
+
+def _in_tenure(value, anchor, window: str) -> bool:
+    if window == "all":
+        return True
+    span = _tenure_span(window)
+    if span is None or value is None or anchor is None:
+        return False
+    return abs(int(value) - int(anchor)) <= span
+
+
+def _in_score(band, score, window: str) -> bool:
+    if window == "all":
+        return True
+    if score is None or band is None:
+        return False
+    anchor = score_band(int(score))
+    band = int(band)
+    if window == "same":
+        return band == anchor
+    if window == "up1":
+        return band == anchor or band == anchor + 10
+    if window == "top":
+        return anchor <= band <= 100
+    return False
+
+
+def prompt_samples(samples, category, tenure, score, tenure_window, score_window):
+    if category is None or tenure is None:
+        return []
+    if score is None and score_window != "all":
+        return []
+    kept = []
+    for sample in samples:
+        if sample.get("job_category") != category:
+            continue
+        if not _in_tenure(sample.get("tenure_years"), tenure, tenure_window):
+            continue
+        if not _in_score(sample.get("score_band"), score, score_window):
+            continue
+        kept.append(sample)
+    return eligible(kept)
+
+
 def _bucket(sample: dict):
     category = sample.get("job_category")
     tenure = sample.get("tenure_years")

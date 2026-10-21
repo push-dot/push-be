@@ -233,6 +233,7 @@ class GapAnalysis(Model):
     fit_score: Optional[int] = None
     method: str
     stale: bool = False
+    part_scores: dict = Field(default_factory=dict)
     created_at: datetime
 
 

@@ -293,6 +293,54 @@ def bind_chat_nodes(svc):
             credential_mode="MANAGED", effort="LOW")
         return apply_employer_turn(base, plan, intent, cfg), plan
 
+    async def _reference_lines(state, conv, resume_flow, employer, company_plan):
+        from app.config import load_config
+        from app.domain.plan_levers import levers_for
+        from app.domain.reference_text import prompt_lines, prompt_samples
+        from app.infrastructure.store_jobs import ReferenceSampleStore
+        intent = state.get("intent")
+        store = ReferenceSampleStore(svc.db)
+        if employer:
+            if intent not in {"review", "interview"}:
+                return []
+            app_id = state.get("application_id") or state.get("applicationId")
+            if not app_id:
+                return []
+            owner = await store.application_owner(app_id)
+            if owner is None:
+                return []
+            row = await store.context(owner)
+            if row is None:
+                return []
+            ctx = dict(row)
+            score = await store.latest_fit(app_id)
+            audience = "EMPLOYER"
+            plan = company_plan
+        else:
+            if not resume_flow:
+                return []
+            row = await store.context(state["user_id"])
+            if row is None:
+                return []
+            ctx = dict(row)
+            app_id = getattr(conv, "application_id", None)
+            score = await store.latest_fit(app_id) if app_id else None
+            audience = "PERSONAL"
+            plan = ctx.get("plan")
+        category = ctx.get("job_category")
+        tenure = ctx.get("tenure_years")
+        if category is None or tenure is None:
+            return []
+        gate = getattr(svc, "ai", None)
+        cfg = (gate._levers_config()
+               if gate is not None and hasattr(gate, "_levers_config")
+               else load_config())
+        levers = levers_for(audience, plan, cfg)
+        samples = await store.list_for_prompt(category)
+        picked = prompt_samples(
+            samples, category, tenure, score, levers.tenure, levers.score_band)
+        return prompt_lines(picked)
+
     async def _prepare_reply(state: ChatState) -> dict:
         from app.ingest.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
@@ -455,6 +503,13 @@ def bind_chat_nodes(svc):
         if employer_opts is not None and state.get("intent") == "posting":
             from app.domain.employer_chat import posting_system_prompt
             system = (system + "\n" + posting_system_prompt()).strip()
+        try:
+            lines = await _reference_lines(
+                state, conv, resume_flow, employer_opts is not None, company_plan)
+        except Exception:
+            lines = []
+        if lines:
+            system = (system + "\n" + "\n".join(lines)).strip()
         prepared = {"prepared": True, "prompt_user": user_msg,
                     "prompt_system": system, "resume_flow": resume_flow,
                     "phase": phase, "conversation": conv}

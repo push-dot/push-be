@@ -10,7 +10,7 @@ from app.domain import entities as ent
 from app.domain.errors import (
     internal, map_revision_err, not_found, revision_conflict, validation_field,
 )
-from app.domain.reference_text import features_of, score_band, templates_of
+from app.domain.reference_text import features_of, link_count, score_band, templates_of
 from app.domain.services.ai import AIGate
 from app.domain.services.approval import ApprovalService
 from app.domain.validators import validate_https_url
@@ -55,6 +55,70 @@ def document_fit_score(requirements: list[str],
     return matched * 100 // len(requirements)
 
 
+def _tech_hit(keyword: str, evidence: ent.CareerEvidence) -> bool:
+    needle = (keyword or "").casefold()
+    if needle == "":
+        return False
+    for skill in evidence.skills:
+        if skill and skill.casefold() == needle:
+            return True
+    return needle in (evidence.source_text or "").casefold()
+
+
+def _word_hit(word: str, evidence: ent.CareerEvidence) -> bool:
+    needle = word.casefold()
+    if needle == "":
+        return False
+    for skill in evidence.skills:
+        if skill and needle in skill.casefold():
+            return True
+    return needle in (evidence.source_text or "").casefold()
+
+
+def part_scores(requirements, keywords, evidence_list) -> dict:
+    tech = 0
+    if keywords:
+        hits = sum(
+            1 for keyword in keywords
+            if any(_tech_hit(keyword, evidence) for evidence in evidence_list))
+        tech = hits * 100 // len(keywords)
+    matched_ids = set()
+    matched_count = 0
+    for requirement in requirements:
+        ids = match_evidence(requirement, evidence_list)
+        if not ids:
+            continue
+        matched_count += 1
+        matched_ids.update(ids)
+    if matched_count == 0:
+        experience = 0
+    else:
+        links = sum(
+            link_count(evidence.source_text) for evidence in evidence_list
+            if str(evidence.id) in matched_ids)
+        experience = min(100, links * 100 // matched_count)
+    words = []
+    seen = set()
+    for requirement in requirements:
+        for word in significant_words(requirement.lower()):
+            if word in seen:
+                continue
+            seen.add(word)
+            words.append(word)
+    if not words:
+        keyword_score = 0
+    else:
+        hits = sum(
+            1 for word in words
+            if any(_word_hit(word, evidence) for evidence in evidence_list))
+        keyword_score = hits * 100 // len(words)
+    return {
+        "techStack": tech,
+        "experienceLink": experience,
+        "keyword": keyword_score,
+    }
+
+
 def run_gap_analysis(j: ent.JobPosting, app_id: UUID,
                      pool: list[ent.CareerEvidence], method: str) -> ent.GapAnalysis:
     matched, missing = [], []
@@ -70,7 +134,8 @@ def run_gap_analysis(j: ent.JobPosting, app_id: UUID,
         id=uuid4(), user_id=j.user_id, application_id=app_id, job_id=j.id,
         job_revision=j.revision, evidence_ids=[e.id for e in pool],
         matched=matched, missing=missing, preferred_missing=preferred_missing,
-        risks=j.risks or [], fit_score=fit, method=method, created_at=_now())
+        risks=j.risks or [], fit_score=fit, method=method, created_at=_now(),
+        part_scores=part_scores(j.requirements, j.keywords, pool))
 
 
 def validate_job_input(company: str, title: str, kind: str,
@@ -270,7 +335,8 @@ class JobService:
                 continue
             await self.samples.insert(
                 uuid4(), user_id, category, tenure, fit, score_band(fit), plan,
-                features_of(evidence.source_text), templates_of(evidence.source_text))
+                features_of(evidence.source_text), templates_of(evidence.source_text),
+                part_scores(job.requirements, job.keywords, [evidence]))
 
     async def list_analyses(self, user_id: UUID, job_id: UUID, page):
         await self.get(user_id, job_id)
