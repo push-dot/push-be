@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.errors import domain_error_handler
-from app.api.routers.conversations import router
+from app.api.routers.conversations import _sse_frames, router
 from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.domain.services.conversation import ConversationService
@@ -311,9 +311,10 @@ class _AsUser:
 
 
 class _Rows:
-    def __init__(self, row):
+    def __init__(self, row, tag="UPDATE 1"):
         self.row = row
         self.calls = []
+        self.tag = tag
 
     def q(self):
         return self
@@ -328,7 +329,7 @@ class _Rows:
 
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
-        return "UPDATE 1"
+        return self.tag
 
 
 def _client(db: _Rows) -> TestClient:
@@ -387,3 +388,45 @@ def test_resolve_second_decide_is_conflict():
         json={"optionId": "apply"})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "CONFLICT"
+
+
+def test_resolve_update_match_zero_is_conflict():
+    db = _Rows(_pending(), tag="UPDATE 0")
+    res = _client(db).post(
+        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
+        json={"optionId": "apply"})
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+
+
+def _data_frames(frames: list[str]) -> list[dict]:
+    found = []
+    for frame in frames:
+        for line in frame.splitlines():
+            if line.startswith("data: "):
+                found.append(json.loads(line[len("data: "):]))
+    return found
+
+
+class _Open:
+    async def is_disconnected(self):
+        return False
+
+
+async def test_sse_frames_forwards_tool_and_future():
+    async def gen():
+        yield ("tool", {"name": "read", "state": "run", "summary": "file"}, 3)
+        yield ("future", {"note": "later"}, 4)
+        yield ("cancelled", {}, 5)
+        yield ("done", {"status": "SUCCEEDED"}, 6)
+        yield ("error", {"code": "INTERNAL", "message": "no"}, 7)
+
+    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
+    assert frames[0] == {
+        "type": "tool", "name": "read", "state": "run", "summary": "file", "seq": 3}
+    assert frames[1] == {"type": "future", "note": "later", "seq": 4}
+    assert frames[2] == {"type": "cancelled", "seq": 5}
+    assert frames[3] == {
+        "type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 6}
+    assert frames[4] == {
+        "type": "error", "error": {"code": "INTERNAL", "message": "no"}, "seq": 7}

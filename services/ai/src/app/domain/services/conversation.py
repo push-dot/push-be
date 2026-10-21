@@ -57,6 +57,15 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
+_LIVE_EVENT_TYPES = frozenset({
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled"})
+
+
+def _live_event(chunk: dict):
+    kind = chunk.get("type")
+    if kind not in _LIVE_EVENT_TYPES:
+        return None
+    return kind, {key: value for key, value in chunk.items() if key != "type"}
 
 
 async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
@@ -96,6 +105,11 @@ async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
         if "status" in item:
             await flush()
             await emit_many(job_id, [("status", {"text": item["status"]})])
+            continue
+        live = _live_event(item)
+        if live is not None:
+            await flush()
+            await emit_many(job_id, [live])
             continue
         if "token" not in item:
             continue
@@ -229,12 +243,10 @@ class ConversationService:
                         elif "status" in chunk:
                             await self.jobs.emit(
                                 job_id, "status", {"text": chunk["status"]})
-                        elif chunk.get("type") in {
-                                "tool", "todo", "diff", "approval", "choice",
-                                "fit", "cancelled"}:
-                            await self.jobs.emit(
-                                job_id, chunk["type"],
-                                {k: v for k, v in chunk.items() if k != "type"})
+                        else:
+                            live = _live_event(chunk)
+                            if live is not None:
+                                await self.jobs.emit(job_id, live[0], live[1])
                     elif mode == "values" and chunk.get("operation"):
                         from app.jsonutil import to_jsonable
                         await self.jobs.emit(
@@ -442,6 +454,10 @@ class ConversationService:
                     yield ("token", chunk["token"], None)
                 elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
                     yield ("status", chunk["status"], None)
+                elif mode == "custom" and isinstance(chunk, dict):
+                    live = _live_event(chunk)
+                    if live is not None:
+                        yield (live[0], live[1], None)
                 elif mode == "values" and chunk.get("operation") is not None:
                     yield ("done", chunk["operation"], None)
         finally:
@@ -521,6 +537,10 @@ class ConversationService:
                 elif t == "error":
                     yield ("error", p.get("error") or {}, r["id"])
                     return
+                elif t in _LIVE_EVENT_TYPES:
+                    yield (t, p if isinstance(p, dict) else {}, r["id"])
+                    if t == "cancelled":
+                        return
             if rows:
                 idle = 0
             else:

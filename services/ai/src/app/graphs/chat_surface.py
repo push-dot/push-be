@@ -167,11 +167,13 @@ async def resolve_chat_approval(db, user_id, conversation_id, approval_id, optio
         raise validation_field("optionId", "unknown option")
     if row["status"] != "PENDING":
         raise DomainError(409, "CONFLICT", "approval already decided")
-    await db.q().execute(
+    tag = await db.q().execute(
         "UPDATE approvals SET status = 'APPROVED', option_id = $1, "
         "decided_at = now(), updated_at = now(), revision = revision + 1 "
         "WHERE id = $2 AND conversation_id = $3 AND user_id = $4 AND status = 'PENDING'",
         option_id, approval_id, conversation_id, user_id)
+    if not isinstance(tag, str) or tag.split()[-1] == "0":
+        raise DomainError(409, "CONFLICT", "approval already decided")
     return {"id": str(approval_id), "status": "APPROVED", "optionId": option_id}
 
 

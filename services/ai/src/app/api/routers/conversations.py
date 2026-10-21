@@ -49,8 +49,16 @@ async def _sse_frames(gen, request: Request):
                 body = {"type": "status", "text": payload}
             elif kind == "error":
                 body = {"type": "error", "error": payload}
-            else:
+            elif kind == "done":
                 body = {"type": "done", "operation": to_jsonable(payload)}
+            elif kind == "cancelled":
+                body = {"type": "cancelled"}
+            elif isinstance(payload, dict):
+                body = {"type": kind}
+                body.update({
+                    key: value for key, value in payload.items() if key != "type"})
+            else:
+                body = {"type": kind}
             if seq is not None:
                 body["seq"] = seq
             prefix = f"id: {seq}\n" if seq is not None else ""
