@@ -34,12 +34,12 @@ const putConsents = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   if (typeof body.referenceData !== "boolean") throw fieldError("referenceData", "must be a boolean");
   const now = ctx.now.toISOString();
-  if (!body.referenceData) {
-    await query(ctx.deps.query, "DELETE FROM reference_samples WHERE source_user_id = $1", [ctx.user.id]);
-  }
   await query(ctx.deps.query,
     "INSERT INTO user_consents (user_id, reference_data, updated_at) VALUES ($1,$2,$3) ON CONFLICT (user_id) DO UPDATE SET reference_data = EXCLUDED.reference_data, updated_at = EXCLUDED.updated_at",
     [ctx.user.id, body.referenceData, now]);
+  if (!body.referenceData) {
+    await query(ctx.deps.query, "DELETE FROM reference_samples WHERE source_user_id = $1", [ctx.user.id]);
+  }
   return data(200, view(body.referenceData, ts(now)), ctx.rid);
 };
 

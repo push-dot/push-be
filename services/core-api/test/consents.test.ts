@@ -110,7 +110,7 @@ test("turning reference data off deletes samples and stores false", async () => 
   assert.deepEqual(upsert?.params, [USER, false, NOW]);
   const deleteAt = seen.findIndex((call) => call.sql.includes("reference_samples"));
   const upsertAt = seen.findIndex((call) => call.sql.includes("INSERT INTO user_consents"));
-  assert.equal(deleteAt < upsertAt, true);
+  assert.equal(upsertAt < deleteAt, true);
 });
 
 test("a non-boolean referenceData is a validation error", async () => {
