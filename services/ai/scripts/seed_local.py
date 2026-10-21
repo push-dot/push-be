@@ -51,7 +51,17 @@ async def main() -> None:
             "ON CONFLICT (user_id) DO NOTHING",
             SEEKER_ID)
         await pool.execute(
-            "INSERT INTO job_postings (id, company_user_id, company, title, job_category, career_min, career_max, "
+            "INSERT INTO companies (id, name) "
+            "VALUES ($1, 'Push Demo') "
+            "ON CONFLICT (id) DO NOTHING",
+            EMPLOYER_ID)
+        await pool.execute(
+            "INSERT INTO company_members (company_id, user_id, role) "
+            "VALUES ($1, $1, 'ADMIN') "
+            "ON CONFLICT (company_id, user_id) DO NOTHING",
+            EMPLOYER_ID)
+        await pool.execute(
+            "INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, "
             "location, employment_type, description, skills, search_text, search_choseong, search_jamo) "
             "VALUES ($1, $2, 'Push Demo', '백엔드 엔지니어', 'dev', 1, 3, '서울 강남구', 'full_time', "
             "'로컬에서 목록을 확인하는 데모 공고', '[\"Kotlin\"]'::jsonb, '백엔드 엔지니어 Push Demo', '', '') "
