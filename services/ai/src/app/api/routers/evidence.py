@@ -17,6 +17,7 @@ from app.domain.errors import (
     internal, invalid_transition, not_found, payload_too_large, validation_field,
 )
 from app.domain.pagination import Cursor, Page
+from app.domain.profile_draft import parse_profile_draft
 from app.domain.source_list import merge_library
 from app.api import schemas as s
 from app.api.deps import (deps,
@@ -197,6 +198,19 @@ async def get_source_content(id: str, request: Request):
         body = await d.sources.content(current_user(request).id, src.id)
         return Response(content=body, media_type=src.mime_type)
     return FileResponse(src.path)
+
+
+@router.get("/sources/{id}/profile-draft")
+async def get_source_profile_draft(id: str, request: Request):
+    d = deps(request)
+    user_id = current_user(request).id
+    sid = param_id(id, "id")
+    try:
+        await d.sources.get(user_id, sid)
+    except NotFoundError:
+        raise not_found()
+    text = await d.evidence._source_text(user_id, sid)
+    return data(200, parse_profile_draft(text))
 
 
 @router.delete("/sources/{id}", status_code=204)
