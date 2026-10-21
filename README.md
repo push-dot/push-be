@@ -199,7 +199,8 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `STRIPE_PRICE_TOPUP` | 크레딧 충전 가격 ID |
 | `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP` | 앱 상품 ID |
 | `IAP_TOPUP_CREDITS` | 인앱 충전 크레딧. 비우면 300 |
-| `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE` | 영수증 검증. 웹훅은 이 값을 SPKI 공개키(ES256·RS256)로 서명 검증한다. 가져올 수 없으면 503. 비우면 503 |
+| `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE` | 영수증 검증. Google 웹훅 본문은 `GOOGLE_PLAY_KEY`를 SPKI 공개키(ES256·RS256)로 서명 검증한다. 가져올 수 없으면 503. 비우면 503 |
+| `APPLE_ROOT_PEM`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_KEY` | App Store 웹훅은 인증서 체인이 이 루트까지 이어져야 한다. Google Play 웹훅은 Bearer OIDC의 aud와 고정 공개키가 맞아야 한다. 비우거나 읽을 수 없으면 503 |
 | `DEV_AUTH_TOKEN`, `DEV_USER_ID` | 개발 인증. 프로덕션에서는 비운다 |
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | Browser Rendering. 없으면 정적 추출만 |
 | `EXPERIMENTS` | JSON. 5 KB를 넘으면 시크릿으로 둔다. 예시 값은 `.env.example`에 있다 |

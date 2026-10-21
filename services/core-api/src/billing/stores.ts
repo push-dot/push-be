@@ -1,3 +1,5 @@
+import { X509Certificate } from "node:crypto";
+
 import { HttpError } from "../http.ts";
 import type { CoreEnv } from "../types.ts";
 
@@ -5,7 +7,7 @@ export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
   verifyGoogle(purchaseToken: string, productId: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null }>;
-  decodeGoogleNotification(body: unknown): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
+  decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
 }
 
 const notConfigured = (message: string): HttpError => new HttpError(503, "NOT_CONFIGURED", message);
@@ -40,14 +42,14 @@ const spkiBytes = (key: string): Uint8Array => {
   return bytesOf(trimmed);
 };
 
-const importVerifyKey = async (material: string, alg: string): Promise<CryptoKey> => {
+const importVerifyKey = async (material: string, alg: string, onFail: () => HttpError): Promise<CryptoKey> => {
   const algorithm = alg === "ES256"
     ? { name: "ECDSA", namedCurve: "P-256" }
     : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
   try {
     return await crypto.subtle.importKey("spki", exactBytes(spkiBytes(material)), algorithm, false, ["verify"]);
   } catch {
-    throw notConfigured("store verify key is not configured");
+    throw onFail();
   }
 };
 
@@ -57,7 +59,11 @@ const jwsParts = (token: string): [string, string, string] | null => {
   return [parts[0]!, parts[1]!, parts[2]!];
 };
 
-const verifyJws = async (token: string, material: string): Promise<Record<string, unknown>> => {
+const verifyJws = async (
+  token: string,
+  material: string,
+  onKeyFail: () => HttpError = () => notConfigured("store verify key is not configured"),
+): Promise<Record<string, unknown>> => {
   const parts = jwsParts(token.trim());
   if (!parts) throw invalidSignature();
   let header: Record<string, unknown>;
@@ -68,7 +74,7 @@ const verifyJws = async (token: string, material: string): Promise<Record<string
   }
   const alg = typeof header.alg === "string" ? header.alg : "";
   if (alg !== "ES256" && alg !== "RS256") throw invalidSignature();
-  const key = await importVerifyKey(material, alg);
+  const key = await importVerifyKey(material, alg, onKeyFail);
   const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
   let ok = false;
   try {
@@ -87,6 +93,77 @@ const verifyJws = async (token: string, material: string): Promise<Record<string
   } catch {
     throw invalidSignature();
   }
+};
+
+const x5cList = (token: string): string[] => {
+  const parts = jwsParts(token.trim());
+  if (!parts) throw invalidSignature();
+  let header: Record<string, unknown>;
+  try {
+    header = jsonOf(bytesOf(parts[0]));
+  } catch {
+    throw invalidSignature();
+  }
+  const x5c = header.x5c;
+  if (!Array.isArray(x5c) || x5c.length === 0 || x5c.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw invalidSignature();
+  }
+  return x5c;
+};
+
+const certsOf = (x5c: string[]): X509Certificate[] => x5c.map((item) => {
+  try {
+    return new X509Certificate(bytesOf(item));
+  } catch {
+    throw invalidSignature();
+  }
+});
+
+const spkiMaterial = (cert: X509Certificate): string => {
+  const exported = cert.publicKey.export({ format: "pem", type: "spki" });
+  return typeof exported === "string" ? exported : new TextDecoder().decode(exported);
+};
+
+const rootCert = (pem: string | undefined): X509Certificate => {
+  try {
+    if (!pem?.trim()) throw new Error("missing");
+    return new X509Certificate(pem);
+  } catch {
+    throw notConfigured("app store root is not configured");
+  }
+};
+
+const signedBy = (cert: X509Certificate, issuer: X509Certificate): boolean => {
+  try {
+    return cert.verify(issuer.publicKey);
+  } catch {
+    return false;
+  }
+};
+
+const appleVerified = async (token: string, rootPem: string | undefined): Promise<{ payload: Record<string, unknown>; leaf: string }> => {
+  const certs = certsOf(x5cList(token));
+  const leaf = spkiMaterial(certs[0]!);
+  const payload = await verifyJws(token, leaf, invalidSignature);
+  const root = rootCert(rootPem);
+  for (let i = 0; i < certs.length - 1; i++) {
+    if (!signedBy(certs[i]!, certs[i + 1]!)) throw invalidSignature();
+  }
+  if (!signedBy(certs[certs.length - 1]!, root)) throw invalidSignature();
+  return { payload, leaf };
+};
+
+const bearerToken = (authorization: string | null): string => {
+  const match = /^Bearer\s+(\S+)/i.exec((authorization ?? "").trim());
+  if (!match?.[1]) throw invalidSignature();
+  return match[1];
+};
+
+const verifyGoogleOidc = async (env: CoreEnv, authorization: string | null): Promise<void> => {
+  const token = bearerToken(authorization);
+  if (!env.GOOGLE_OIDC_AUDIENCE || !env.GOOGLE_OIDC_KEY) throw notConfigured("google oidc is not configured");
+  const claims = await verifyJws(token, env.GOOGLE_OIDC_KEY);
+  if (claims.iss !== "https://accounts.google.com" || claims.aud !== env.GOOGLE_OIDC_AUDIENCE) throw invalidSignature();
 };
 
 const appleToken = (body: string): string => {
@@ -185,12 +262,12 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): Stor
     };
   },
   decodeAppleNotification: async (body) => {
-    if (!env.APPLE_IAP_KEY) throw notConfigured("app store is not configured");
-    const payload = await verifyJws(appleToken(body), env.APPLE_IAP_KEY);
+    const verified = await appleVerified(appleToken(body), env.APPLE_ROOT_PEM);
+    const payload = verified.payload;
     const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
       ? payload.data as Record<string, unknown> : {};
     const signed = typeof data.signedTransactionInfo === "string"
-      ? await verifyJws(data.signedTransactionInfo, env.APPLE_IAP_KEY)
+      ? await verifyJws(data.signedTransactionInfo, verified.leaf, invalidSignature)
       : payload;
     return {
       notificationType: String(payload.notificationType ?? ""),
@@ -199,7 +276,8 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): Stor
       expiresAt: expiresOf(signed.expiresDate ?? signed.expiresAt),
     };
   },
-  decodeGoogleNotification: async (body) => {
+  decodeGoogleNotification: async (body, authorization) => {
+    await verifyGoogleOidc(env, authorization);
     if (!env.GOOGLE_PLAY_KEY) throw notConfigured("google play is not configured");
     const decoded = await verifyJws(googleToken(body), env.GOOGLE_PLAY_KEY);
     const sub = decoded.subscriptionNotification && typeof decoded.subscriptionNotification === "object"

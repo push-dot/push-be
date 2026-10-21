@@ -589,28 +589,124 @@ test("iap verify without a store port or key is not configured and does not fetc
   assert.equal(fetched, 0);
 });
 
-const b64url = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes))
+const bytesText = (bytes: Uint8Array): string => {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  return bin;
+};
+
+const b64url = (bytes: Uint8Array): string => btoa(bytesText(bytes))
   .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
+const b64std = (bytes: Uint8Array): string => btoa(bytesText(bytes));
 
 const text64 = (value: string): string => b64url(new TextEncoder().encode(value));
 
-const jws = async (payload: unknown, privateKey: CryptoKey): Promise<string> => {
-  const header = text64(JSON.stringify({ alg: "ES256" }));
+const jws = async (payload: unknown, privateKey: CryptoKey, header: Record<string, unknown> = {}): Promise<string> => {
+  const head = text64(JSON.stringify({ alg: "ES256", ...header }));
   const body = text64(JSON.stringify(payload));
-  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode(`${header}.${body}`)));
-  return `${header}.${body}.${b64url(sig)}`;
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode(`${head}.${body}`)));
+  return `${head}.${body}.${b64url(sig)}`;
+};
+
+const flipSig = (token: string): string => {
+  const parts = token.split(".");
+  const packed = parts[2]!.replaceAll("-", "+").replaceAll("_", "/");
+  const sig = Uint8Array.from(atob(packed + "=".repeat((4 - (packed.length % 4)) % 4)), (char) => char.charCodeAt(0));
+  sig[0] ^= 255;
+  return `${parts[0]}.${parts[1]}.${b64url(sig)}`;
 };
 
 const p256 = async () => {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const spki = new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey));
-  const pem = `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...spki))}\n-----END PUBLIC KEY-----`;
+  const pem = `-----BEGIN PUBLIC KEY-----\n${b64std(spki)}\n-----END PUBLIC KEY-----`;
   const token = await jws({ notificationType: "DID_RENEW", originalTransactionId: "tx-1", productId: "ios.pro" }, pair.privateKey);
-  const parts = token.split(".");
-  const packed = parts[2]!.replaceAll("-", "+").replaceAll("_", "/");
-  const sig = Uint8Array.from(atob(packed + "=".repeat((4 - (packed.length % 4)) % 4)), (char) => char.charCodeAt(0));
-  sig[0] ^= 255;
-  return { pem, token, bad: `${parts[0]}.${parts[1]}.${b64url(sig)}`, privateKey: pair.privateKey };
+  return { pem, token, bad: flipSig(token), privateKey: pair.privateKey };
+};
+
+const concat = (...parts: Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
+
+const derLen = (length: number): Uint8Array => {
+  if (length < 128) return Uint8Array.from([length]);
+  if (length < 256) return Uint8Array.from([0x81, length]);
+  return Uint8Array.from([0x82, length >> 8, length & 0xff]);
+};
+
+const tag = (id: number, body: Uint8Array): Uint8Array => concat(Uint8Array.from([id]), derLen(body.length), body);
+
+const encodeOid = (value: string): Uint8Array => {
+  const parts = value.split(".").map(Number);
+  const bytes = [parts[0]! * 40 + parts[1]!];
+  for (const part of parts.slice(2)) {
+    const stack = [part & 0x7f];
+    let n = part >> 7;
+    while (n > 0) {
+      stack.unshift((n & 0x7f) | 0x80);
+      n >>= 7;
+    }
+    bytes.push(...stack);
+  }
+  return Uint8Array.from(bytes);
+};
+
+const oid = (value: string): Uint8Array => tag(0x06, encodeOid(value));
+const derInt = (bytes: Uint8Array): Uint8Array => {
+  let i = 0;
+  while (i < bytes.length - 1 && bytes[i] === 0 && (bytes[i + 1]! & 0x80) === 0) i += 1;
+  const trimmed = bytes.subarray(i);
+  const body = trimmed[0]! & 0x80 ? concat(Uint8Array.from([0x00]), trimmed) : trimmed;
+  return tag(0x02, body);
+};
+
+const certDer = async (
+  subjectKey: CryptoKey,
+  issuerKey: CryptoKey,
+  subject: string,
+  issuer: string,
+  serial: number,
+): Promise<Uint8Array> => {
+  const alg = tag(0x30, oid("1.2.840.10045.4.3.2"));
+  const dn = (cn: string): Uint8Array => tag(0x30, tag(0x31, tag(0x30, concat(oid("2.5.4.3"), tag(0x0c, new TextEncoder().encode(cn))))));
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", subjectKey));
+  const tbs = tag(0x30, concat(
+    tag(0xa0, tag(0x02, Uint8Array.from([2]))),
+    derInt(Uint8Array.from([serial])),
+    alg,
+    dn(issuer),
+    tag(0x30, concat(tag(0x17, new TextEncoder().encode("260101000000Z")), tag(0x17, new TextEncoder().encode("361231235959Z")))),
+    dn(subject),
+    spki,
+  ));
+  const signed = new ArrayBuffer(tbs.byteLength);
+  new Uint8Array(signed).set(tbs);
+  const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, issuerKey, signed));
+  const signature = tag(0x30, concat(derInt(raw.subarray(0, 32)), derInt(raw.subarray(32))));
+  return tag(0x30, concat(tbs, alg, tag(0x03, concat(Uint8Array.from([0x00]), signature))));
+};
+
+const appleChain = async () => {
+  const root = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const mid = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const leaf = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const rootDer = await certDer(root.publicKey, root.privateKey, "root", "root", 1);
+  const midDer = await certDer(mid.publicKey, root.privateKey, "mid", "root", 2);
+  const leafDer = await certDer(leaf.publicKey, mid.privateKey, "leaf", "mid", 3);
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", leaf.publicKey));
+  return {
+    rootPem: `-----BEGIN CERTIFICATE-----\n${b64std(rootDer)}\n-----END CERTIFICATE-----`,
+    leafPem: `-----BEGIN PUBLIC KEY-----\n${b64std(spki)}\n-----END PUBLIC KEY-----`,
+    x5c: [b64std(leafDer), b64std(midDer)],
+    privateKey: leaf.privateKey,
+  };
 };
 
 test("a top-up charges one price unit per displayed credit", async () => {
@@ -629,52 +725,143 @@ test("a top-up charges one price unit per displayed credit", async () => {
   assert.equal(form.get("metadata[amountMicroCredits]"), "18000");
 });
 
+const storeHook = (path: string, body: string, authorization?: string): Request => new Request("https://core.example" + path, {
+  method: "POST",
+  headers: authorization ? { authorization } : {},
+  body,
+});
+
+const rejectQuery = (): Deps["query"] => async (sql) => {
+  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("INSERT INTO billing_ledger")) throw new Error("ledger");
+  return empty;
+};
+
 test("an unverified store webhook is rejected", async () => {
   resetLimits();
   const key = await p256();
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO billing_ledger")) throw new Error("ledger");
-    return empty;
-  };
+  const chain = await appleChain();
+  const other = await appleChain();
+  const play = await p256();
+  const oidc = await p256();
+  const query = rejectQuery();
+  const audience = "push-google-webhook";
+  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1792886400000 }, chain.privateKey);
+  const appleBody = await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
+  const playNote = await jws({
+    subscriptionNotification: { notificationType: 4, purchaseToken: "tok-1", subscriptionId: "ios.pro" },
+  }, play.privateKey);
+  const playBody = JSON.stringify({ signedPayload: playNote });
+  const oidcJwt = await jws({ iss: "https://accounts.google.com", aud: audience }, oidc.privateKey);
+  const googleEnv = { GOOGLE_PLAY_KEY: play.pem, GOOGLE_OIDC_KEY: oidc.pem, GOOGLE_OIDC_AUDIENCE: audience };
   const forged = await handle(
-    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.bad }),
+    storeHook("/api/v1/billing/webhook/app-store", key.bad),
     envOf({ APPLE_IAP_KEY: key.pem }),
     { query, now: () => NOW },
   );
   assert.equal(forged.status, 400);
   assert.equal((await codeOf(forged)).message, "invalid webhook signature");
   const unsigned = await handle(
-    new Request("https://core.example/api/v1/billing/webhook/google-play", {
-      method: "POST",
-      body: JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } }),
-    }),
+    storeHook("/api/v1/billing/webhook/google-play", JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } })),
     envOf({ GOOGLE_PLAY_KEY: key.pem }),
     { query, now: () => NOW },
   );
   assert.equal(unsigned.status, 400);
   assert.equal((await codeOf(unsigned)).message, "invalid webhook signature");
   const nested = await handle(
-    new Request("https://core.example/api/v1/billing/webhook/app-store", {
-      method: "POST",
-      body: await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: key.bad } }, key.privateKey),
-    }),
-    envOf({ APPLE_IAP_KEY: key.pem }),
+    storeHook("/api/v1/billing/webhook/app-store", await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: flipSig(inner) } }, chain.privateKey, { x5c: chain.x5c })),
+    envOf({ APPLE_IAP_KEY: chain.leafPem, APPLE_ROOT_PEM: chain.rootPem }),
     { query, now: () => NOW },
   );
   assert.equal(nested.status, 400);
   assert.equal((await codeOf(nested)).message, "invalid webhook signature");
-  const accepted = await handle(
-    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.token }),
-    envOf({ APPLE_IAP_KEY: key.pem }),
+  const bare = await handle(
+    storeHook("/api/v1/billing/webhook/app-store", key.token),
+    envOf({ APPLE_IAP_KEY: key.pem, APPLE_ROOT_PEM: chain.rootPem }),
     { query, now: () => NOW },
   );
-  assert.equal(accepted.status, 200);
-  const rawKey = await handle(
-    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.token }),
-    envOf({ APPLE_IAP_KEY: "sk_live_not_a_public_key" }),
+  assert.equal(bare.status, 400);
+  assert.equal((await codeOf(bare)).message, "invalid webhook signature");
+  const rooted = await handle(
+    storeHook("/api/v1/billing/webhook/app-store", appleBody),
+    envOf({ APPLE_ROOT_PEM: chain.rootPem }),
     { query, now: () => NOW },
   );
-  assert.equal(rawKey.status, 503);
-  assert.equal((await codeOf(rawKey)).code, "NOT_CONFIGURED");
+  assert.equal(rooted.status, 200);
+  const wrongRoot = await handle(
+    storeHook("/api/v1/billing/webhook/app-store", appleBody),
+    envOf({ APPLE_IAP_KEY: chain.leafPem, APPLE_ROOT_PEM: other.rootPem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(wrongRoot.status, 400);
+  assert.equal((await codeOf(wrongRoot)).message, "invalid webhook signature");
+  const rawRoot = await handle(
+    storeHook("/api/v1/billing/webhook/app-store", appleBody),
+    envOf({ APPLE_IAP_KEY: chain.leafPem, APPLE_ROOT_PEM: "not-a-cert" }),
+    { query, now: () => NOW },
+  );
+  assert.equal(rawRoot.status, 503);
+  assert.equal((await codeOf(rawRoot)).code, "NOT_CONFIGURED");
+  const missingRoot = await handle(
+    storeHook("/api/v1/billing/webhook/app-store", appleBody),
+    envOf({ APPLE_IAP_KEY: chain.leafPem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(missingRoot.status, 503);
+  assert.equal((await codeOf(missingRoot)).code, "NOT_CONFIGURED");
+  const googleOk = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + oidcJwt),
+    envOf(googleEnv),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleOk.status, 200);
+  const googleUnsigned = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } }), "Bearer " + oidcJwt),
+    envOf(googleEnv),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleUnsigned.status, 400);
+  assert.equal((await codeOf(googleUnsigned)).message, "invalid webhook signature");
+  const googleBare = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody),
+    envOf(googleEnv),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleBare.status, 400);
+  assert.equal((await codeOf(googleBare)).message, "invalid webhook signature");
+  const googleAud = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + oidcJwt),
+    envOf({ ...googleEnv, GOOGLE_OIDC_AUDIENCE: "other-audience" }),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleAud.status, 400);
+  assert.equal((await codeOf(googleAud)).message, "invalid webhook signature");
+  const googleIss = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + await jws({ iss: "https://evil.example", aud: audience }, oidc.privateKey)),
+    envOf(googleEnv),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleIss.status, 400);
+  assert.equal((await codeOf(googleIss)).message, "invalid webhook signature");
+  const googleBadSig = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + flipSig(oidcJwt)),
+    envOf(googleEnv),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleBadSig.status, 400);
+  assert.equal((await codeOf(googleBadSig)).message, "invalid webhook signature");
+  const googleNoAud = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + oidcJwt),
+    envOf({ GOOGLE_PLAY_KEY: play.pem, GOOGLE_OIDC_KEY: oidc.pem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleNoAud.status, 503);
+  assert.equal((await codeOf(googleNoAud)).code, "NOT_CONFIGURED");
+  const googleRawKey = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", playBody, "Bearer " + oidcJwt),
+    envOf({ GOOGLE_PLAY_KEY: play.pem, GOOGLE_OIDC_KEY: "not-a-key", GOOGLE_OIDC_AUDIENCE: audience }),
+    { query, now: () => NOW },
+  );
+  assert.equal(googleRawKey.status, 503);
+  assert.equal((await codeOf(googleRawKey)).code, "NOT_CONFIGURED");
 });

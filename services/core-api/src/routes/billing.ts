@@ -567,7 +567,7 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   } catch {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  const note = await storePort(ctx).decodeGoogleNotification(body);
+  const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
   await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, note.expiresAt);
   return data(200, { received: true }, ctx.rid);
 };

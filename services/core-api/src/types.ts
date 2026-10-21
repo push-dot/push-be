@@ -42,8 +42,11 @@ export interface CoreEnv {
   IAP_PRODUCT_TOPUP?: string;
   IAP_TOPUP_CREDITS?: string;
   APPLE_IAP_KEY?: string;
+  APPLE_ROOT_PEM?: string;
   GOOGLE_PLAY_KEY?: string;
   GOOGLE_PLAY_PACKAGE?: string;
+  GOOGLE_OIDC_AUDIENCE?: string;
+  GOOGLE_OIDC_KEY?: string;
   EMAIL?: {
     send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
   };
