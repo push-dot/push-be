@@ -14,6 +14,7 @@ CREATE TABLE application_files (
 CREATE INDEX idx_application_files ON application_files (application_id, created_at, id);
 
 ALTER TABLE job_postings ADD COLUMN view_count int NOT NULL DEFAULT 0;
+ALTER TABLE job_postings ADD COLUMN created_by uuid REFERENCES users(id) ON DELETE SET NULL;
 CREATE TABLE posting_views (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   posting_id uuid NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,

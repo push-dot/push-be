@@ -26,6 +26,7 @@ const REQUIRED = [
   "user_settings_effort_chk",
   "confirm_before_edit",
   "company_seen_at",
+  "created_by",
   "profiles",
   "contact",
   "notification_dedupes",

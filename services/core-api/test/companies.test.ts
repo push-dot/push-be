@@ -437,8 +437,8 @@ test("GET /companies/me/members returns data for any member", async () => {
     if (sql.includes("u.email")) {
       return {
         rows: [
-          { user_id: USER, email: "ada@push.app", role: "ADMIN", created_at: NOW.toISOString() },
-          { user_id: OTHER, email: "m@push.app", role: "MEMBER", created_at: "2026-10-20T00:00:00.000Z" },
+          { user_id: USER, email: "ada@push.app", display_name: "Ada", role: "ADMIN", created_at: NOW.toISOString() },
+          { user_id: OTHER, email: "m@push.app", display_name: "Min", role: "MEMBER", created_at: "2026-10-20T00:00:00.000Z" },
         ],
         rowCount: 2,
       };
@@ -451,10 +451,10 @@ test("GET /companies/me/members returns data for any member", async () => {
   const body = await res.json() as { data: { userId: string; email: string; role: string; joinedAt: string }[] };
   assert.deepEqual(Object.keys(body), ["data"]);
   assert.deepEqual(body.data, [
-    { userId: USER, email: "ada@push.app", role: "ADMIN", joinedAt: "2026-10-21T00:00:00Z" },
-    { userId: OTHER, email: "m@push.app", role: "MEMBER", joinedAt: "2026-10-20T00:00:00Z" },
+    { userId: USER, email: "ada@push.app", displayName: "Ada", role: "ADMIN", joinedAt: "2026-10-21T00:00:00Z" },
+    { userId: OTHER, email: "m@push.app", displayName: "Min", role: "MEMBER", joinedAt: "2026-10-20T00:00:00Z" },
   ]);
-  assert.deepEqual(Object.keys(body.data[0]), ["userId", "email", "role", "joinedAt"]);
+  assert.deepEqual(Object.keys(body.data[0]), ["userId", "email", "displayName", "role", "joinedAt"]);
 });
 
 test("BASIC and null plans cannot invite", async () => {

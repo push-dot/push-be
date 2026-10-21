@@ -529,17 +529,27 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   const fields = searchFields(`${title} ${company}`);
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
-    [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
-      JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
-      fields.text, fields.choseong, fields.jamo, now, postingStatus]);
+  const base = [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
+    JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
+    fields.text, fields.choseong, fields.jamo, now, postingStatus];
+  try {
+    await query(ctx.deps.query,
+      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22,$23)`,
+      [...base, ctx.user.id]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query,
+      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
+      base);
+  }
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,
     created_at: now, bookmarked: false, applied: false, description, requirements, work_conditions: workConditions,
     preferred, revision: 1, closed_at: null, status: postingStatus, applicant_count: 0,
+    new_applicant_count: 0, created_by_name: ctx.user.displayName,
   }, true, true), ctx.rid);
 }
 
@@ -804,7 +814,9 @@ const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
     const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const total = Number(count?.total ?? 0);
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
-    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${postingFlags("$1")}` + where;
+    const unseen = "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = p.id AND (to_jsonb(a) ->> 'company_seen_at') IS NULL) AS new_applicant_count";
+    const creator = "(SELECT u.display_name FROM users u WHERE u.id = NULLIF(to_jsonb(p) ->> 'created_by', '')::uuid) AS created_by_name";
+    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${unseen}, ${creator}, ${postingFlags("$1")}` + where;
     if (page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -968,6 +980,13 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   const applicationId = requireUuid(applicationRaw, "applicationId");
   await requirePostingMember(ctx, postingId);
   const application = await loadApplicant(ctx, postingId, applicationId);
+  try {
+    await query(ctx.deps.query,
+      "UPDATE applications SET company_seen_at = $2 WHERE id = $1 AND (to_jsonb(applications) ->> 'company_seen_at') IS NULL",
+      [applicationId, ctx.now.toISOString()]);
+  } catch (err) {
+    if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
+  }
   const documents = await snapshotDocuments(ctx, applicationId);
   const person = await one(ctx.deps.query,
     `SELECT u.display_name, u.email, p.headline, p.careers, p.skills

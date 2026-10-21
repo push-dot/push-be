@@ -266,11 +266,12 @@ const myCompany = async (ctx: Ctx): Promise<Response> => data(200, companyJson(a
 const listMembers = async (ctx: Ctx): Promise<Response> => {
   const mine = await loadMine(ctx);
   const rows = await query(ctx.deps.query,
-    "SELECT m.user_id, u.email, m.role, m.created_at FROM company_members m JOIN users u ON u.id = m.user_id WHERE m.company_id = $1 ORDER BY m.created_at ASC, m.user_id ASC",
+    "SELECT m.user_id, u.email, u.display_name, m.role, m.created_at FROM company_members m JOIN users u ON u.id = m.user_id WHERE m.company_id = $1 ORDER BY m.created_at ASC, m.user_id ASC",
     [String(mine.id)]);
   return data(200, rows.rows.map((row) => ({
     userId: String(row.user_id),
     email: row.email == null ? "" : String(row.email),
+    displayName: row.display_name == null ? "" : String(row.display_name),
     role: String(row.role),
     joinedAt: ts(row.created_at),
   })), ctx.rid);
