@@ -190,6 +190,8 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
 | `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
 | `RESEND_API_KEY` | 키가 있으면 운영 메일은 Resend로 보낸다. 키가 없고 EMAIL 바인딩이 있으면 그 바인딩으로 보낸다. 둘 다 없으면 로컬 로거를 쓴다 |
+| `EXPO_ACCESS_TOKEN` | 있으면 알림을 Expo Push로 `user_devices`에 보낸다. 없으면 푸시는 보내지 않는다 |
+| `INTERNAL_JOB_TOKEN` | `POST /api/v1/internal/notifications/run`과 `ai-done`의 Bearer. 없으면 그 경로는 503 |
 | `APP_WEB_ORIGIN` | 인증·재설정 링크 origin. 비우면 `http://localhost:5174` |
 | `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
 | `NTS_SERVICE_KEY` | 국세청 사업자 진위확인 serviceKey. 비우면 사업자 확인은 503 |
@@ -309,7 +311,7 @@ Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 �
 
 속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 할당량이 없으면 사용자 조회와 1건부터 커지는 선점을 SQL 한 문으로 보낸다. 선점 상한은 8이고, 읽기 상한 근처에서는 `(상한 - hits) / 16`보다 크게 받지 않는다. 읽기 상한은 공유 한도의 90%다. 쓰지 않은 수는 응답 뒤 `waitUntil` 한 번으로 모아 돌려준다. 남은 수가 1이고 카운터가 읽기 상한에서 멀면 그 조회는 생략한다. 그 문은 `hits`를 한도 위로 올리지 않는다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙일 수 있다. 할당량이 남아 있으면 목록과 메시지는 데이터만 Neon에서 읽고, `/auth/me`와 캐시에 있는 카탈로그는 Neon을 건너뛴다. 모델과 채용 사이트의 Cache API가 맞고 인증 캐시와 할당량도 있으면 Neon은 0번이다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `db/migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
 
-게이트웨이 Worker `services/gateway/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
+게이트웨이 Worker `services/gateway/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다. 코어 Worker는 `15 * * * *`에 북마크 공고 마감 3일 전 알림과 `remind_at`이 지난 일정 알림을 만든다. `INTERNAL_JOB_TOKEN`이 없으면 그 호출은 503이다.
 
 ### 6. GitHub Actions
 

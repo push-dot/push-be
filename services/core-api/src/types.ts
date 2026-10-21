@@ -34,6 +34,8 @@ export interface CoreEnv {
   STRIPE_PORTAL_RETURN_URL?: string;
   MAIL_FROM?: string;
   RESEND_API_KEY?: string;
+  EXPO_ACCESS_TOKEN?: string;
+  INTERNAL_JOB_TOKEN?: string;
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
   NTS_SERVICE_KEY?: string;

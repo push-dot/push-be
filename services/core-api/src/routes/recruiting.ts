@@ -4,6 +4,7 @@ import {
   HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid,
 } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
+import { deliverPush } from "../push/notifier.ts";
 import type { Ctx } from "../types.ts";
 
 const JOB_CATEGORIES = new Set(["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]);
@@ -1292,7 +1293,12 @@ function person(row: Record<string, unknown>, idKey: string, nameKey: string): {
 function offerDto(row: Record<string, unknown>): Record<string, unknown> {
   return {
     id: String(row.id),
-    sender: person(row, "sender_id", "sender_name"),
+    sender: {
+      ...person(row, "sender_id", "sender_name"),
+      companyName: row.sender_company == null || row.sender_company === "" ? null : String(row.sender_company),
+      headline: row.sender_headline == null ? "" : String(row.sender_headline),
+      avatarUrl: imageUrl(row.sender_avatar),
+    },
     recipient: person(row, "profile_user_id", "recipient_name"),
     message: String(row.message ?? ""),
     posting: row.posting_id == null ? null : {
@@ -1309,10 +1315,13 @@ function offerDto(row: Record<string, unknown>): Record<string, unknown> {
 
 const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
   o.message, o.posting_id, jp.title AS posting_title, jp.company AS posting_company, jp.image_key AS posting_image,
-  o.status, o.read_at, o.created_at
+  o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company
   FROM offers o
   JOIN users su ON su.id = o.sender_id
   JOIN users ru ON ru.id = o.profile_user_id
+  LEFT JOIN profiles sp ON sp.user_id = o.sender_id
+  LEFT JOIN company_members sm ON sm.user_id = o.sender_id
+  LEFT JOIN companies sc ON sc.id = sm.company_id
   LEFT JOIN job_postings jp ON jp.id = o.posting_id`;
 
 async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -1404,6 +1413,9 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
       [crypto.randomUUID(), row.id, ctx.user.id, reply, now]);
   }
   row.status = status;
+  if (status === "ACCEPTED") {
+    await notify(ctx, String(row.sender_id), "OFFER", "제안을 수락했어요", "", { kind: "offer", id: String(row.id) });
+  }
   return data(200, offerDto(row), ctx.rid);
 }
 
@@ -1445,6 +1457,8 @@ async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   await query(ctx.deps.query,
     "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
     [id, offer.id, ctx.user.id, text, now]);
+  const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
+  await notify(ctx, other, "OFFER", "새 메시지", text, { kind: "offer", id: String(offer.id) });
   return data(201, {
     id, offerId: String(offer.id), sender: { id: ctx.user.id, displayName: ctx.user.displayName }, body: text, createdAt: ts(now),
   }, ctx.rid);
@@ -1561,6 +1575,7 @@ async function notify(ctx: Ctx, userId: string, type: string, title: string, bod
   await query(ctx.deps.query,
     "INSERT INTO notifications (id, user_id, type, title, body, target, read_at, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NULL,$7)",
     [crypto.randomUUID(), userId, type, title, body, JSON.stringify(target), ctx.now.toISOString()]);
+  await deliverPush(ctx, userId, title, body, target);
 }
 
 function notificationDto(row: Record<string, unknown>): Record<string, unknown> {
@@ -1574,6 +1589,13 @@ function notificationDto(row: Record<string, unknown>): Record<string, unknown> 
     createdAt: ts(row.created_at),
   };
 }
+
+const unreadNotifications = async (ctx: Ctx): Promise<Response> => {
+  const row = await one(ctx.deps.query,
+    "SELECT count(*)::int AS count FROM notifications WHERE user_id = $1 AND read_at IS NULL",
+    [ctx.user.id]);
+  return data(200, { count: Number(row?.count ?? 0) }, ctx.rid);
+};
 
 async function listNotifications(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
@@ -1907,7 +1929,7 @@ async function listComments(ctx: Ctx, idRaw: string): Promise<Response> {
   if (!post) throw notFound();
   const page = pageOf(ctx.url);
   const params: unknown[] = [id];
-  let sql = `SELECT c.id, c.user_id, u.display_name, c.body, c.created_at
+  let sql = `SELECT c.id, c.user_id, u.display_name, c.body, c.created_at, to_jsonb(c) ->> 'parent_id' AS parent_id
     FROM post_comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = $1`;
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -1921,6 +1943,7 @@ async function listComments(ctx: Ctx, idRaw: string): Promise<Response> {
       id: String(row.id),
       author: { id: String(row.user_id), displayName: String(row.display_name ?? "") },
       body: String(row.body ?? ""),
+      parentId: row.parent_id == null || row.parent_id === "" ? null : String(row.parent_id),
       createdAt: ts(row.created_at),
     },
     createdAt: row.created_at,
@@ -1936,16 +1959,35 @@ async function createComment(ctx: Ctx, idRaw: string): Promise<Response> {
   if (!post) throw notFound();
   const body = await readObject(ctx.request);
   const text = textOf(body.body, "body", 1, 1000);
+  let parentId: string | null = null;
+  let parentAuthor = "";
+  if (body.parentId != null && body.parentId !== "") {
+    parentId = requireUuid(String(body.parentId), "parentId");
+    const parent = await one(ctx.deps.query,
+      "SELECT id, user_id FROM post_comments WHERE id = $1 AND post_id = $2",
+      [parentId, id]);
+    if (!parent) throw notFound();
+    parentAuthor = String(parent.user_id);
+  }
   const commentId = crypto.randomUUID();
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    "INSERT INTO post_comments (id, post_id, user_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
-    [commentId, id, ctx.user.id, text, now]);
+  try {
+    await query(ctx.deps.query,
+      "INSERT INTO post_comments (id, post_id, user_id, body, created_at, parent_id) VALUES ($1,$2,$3,$4,$5,$6)",
+      [commentId, id, ctx.user.id, text, now, parentId]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query,
+      "INSERT INTO post_comments (id, post_id, user_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
+      [commentId, id, ctx.user.id, text, now]);
+  }
   await notify(ctx, String(post.user_id), "COMMENT", "새 댓글", text, { kind: "post", id });
+  if (parentAuthor) await notify(ctx, parentAuthor, "COMMENT", "답글을 남겼어요", text, { kind: "post", id });
   return data(201, {
     id: commentId,
     author: { id: ctx.user.id, displayName: ctx.user.displayName },
     body: text,
+    parentId,
     createdAt: ts(now),
   }, ctx.rid);
 }
@@ -2042,6 +2084,7 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (path === "/api/v1/me/devices" && method === "POST") return registerDevice(ctx);
   const device = path.match(/^\/api\/v1\/me\/devices\/([^/]+)$/);
   if (device && method === "DELETE") return deleteDevice(ctx, device[1]);
+  if (path === "/api/v1/me/notifications/unread" && method === "GET") return unreadNotifications(ctx);
   if (path === "/api/v1/me/notifications" && method === "GET") return listNotifications(ctx);
   if (path === "/api/v1/me/notifications/read" && method === "POST") return readNotifications(ctx);
   if (path === "/api/v1/me/settings" && method === "GET") return getSettings(ctx);

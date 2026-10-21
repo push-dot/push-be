@@ -10,6 +10,7 @@ import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.t
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
+import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
 import { dispatchRecruiting } from "./routes/recruiting.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
@@ -57,6 +58,11 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
   const now = (deps.now ?? (() => new Date()))();
   try {
     const authz = request.headers.get("authorization") || "";
+    if (request.method === "POST" && path.startsWith("/api/v1/internal/notifications/")) {
+      const ctx = base(request, env, deps, rid, url, now, anonymous());
+      const job = await dispatchNotificationJobs(ctx, path);
+      if (job) return job;
+    }
     if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
