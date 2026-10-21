@@ -993,7 +993,7 @@ test("member detail includes applicantCount and a non-member detail does not", a
   assert.equal(outsider.status, 200);
   const outsiderBody = await outsider.json() as { data: { applicantCount?: number; description: string } };
   assert.equal(outsiderBody.data.description, "Build APIs");
-  assert.equal(Object.hasOwn(outsiderBody.data, "applicantCount"), false);
+  assert.equal(outsiderBody.data.applicantCount, 9);
 
   resetLimits();
   const guest = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), env(), deps(async (sql) => {

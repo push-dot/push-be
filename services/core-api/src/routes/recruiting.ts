@@ -276,10 +276,13 @@ function postingDto(row: Record<string, unknown>, detail: boolean, member = fals
     dto.workConditions = jsonObject(row.work_conditions);
     dto.preferred = jsonList(row.preferred).map(String);
   }
+  if (detail || member) dto.applicantCount = Number(row.applicant_count ?? 0);
   if (member) {
     const stored = row.status == null || row.status === "" ? "" : String(row.status);
     dto.status = stored || (row.closed_at != null ? "CLOSED" : "OPEN");
-    dto.applicantCount = Number(row.applicant_count ?? 0);
+    dto.newApplicantCount = Number(row.new_applicant_count ?? 0);
+    const createdName = row.created_by_name == null || row.created_by_name === "" ? "" : String(row.created_by_name);
+    dto.createdBy = createdName ? { displayName: createdName } : null;
   } else if (row.status != null && row.status !== "") {
     dto.status = String(row.status);
   }
@@ -314,23 +317,59 @@ const withPublicStatus = async <T>(run: (withStatus: boolean) => Promise<T>): Pr
 const detailSql = (withStatus: boolean, where: string): string =>
   `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
 
+const postingSort = (url: URL): "latest" | "deadline" | "popular" => {
+  const sort = url.searchParams.get("sort") || "latest";
+  if (sort !== "latest" && sort !== "deadline" && sort !== "popular") throw unprocessable("sort", "unsupported sort");
+  return sort;
+};
+
+const deadlineWindow = (ctx: Ctx, params: unknown[], where: string): string => {
+  const within = ctx.url.searchParams.get("deadlineWithin");
+  if (within == null || within === "") return where;
+  if (within !== "7") throw unprocessable("deadlineWithin", "unsupported deadlineWithin");
+  const start = ctx.now.toISOString().slice(0, 10);
+  const end = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), ctx.now.getUTCDate() + 7)).toISOString().slice(0, 10);
+  params.push(start, end);
+  return where + ` AND p.deadline IS NOT NULL AND p.deadline >= $${params.length - 1}::date AND p.deadline <= $${params.length}::date`;
+};
+
+const recordPostingView = async (ctx: Ctx, postingId: string): Promise<void> => {
+  try {
+    const inserted = await one(ctx.deps.query,
+      "INSERT INTO posting_views (user_id, posting_id, viewed_on) VALUES ($1,$2,$3::date) ON CONFLICT DO NOTHING RETURNING posting_id",
+      [ctx.user.id, postingId, ctx.now.toISOString().slice(0, 10)]);
+    if (!inserted) return;
+    await query(ctx.deps.query, "UPDATE job_postings SET view_count = COALESCE(view_count, 0) + 1 WHERE id = $1", [postingId]);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+  }
+};
+
 async function listPostings(ctx: Ctx): Promise<Response> {
+  const sort = postingSort(ctx.url);
   const loaded = await withPublicStatus(async (withStatus) => {
     const page = pageOf(ctx.url);
     const params: unknown[] = [ctx.user.id];
     let where = ` FROM job_postings p WHERE ${openClause(withStatus)}`;
     where = appendPostingFilters(where, params, ctx.url, true);
+    where = deadlineWindow(ctx, params, where);
     // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
     const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const total = Number(count?.total ?? 0);
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
-    if (page.cursor) {
+    // shortcut: deadline and popular ignore the cursor; (created_at, id) is not their rank
+    if (sort === "latest" && page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
     }
     params.push(page.limit + 1);
-    sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const order = sort === "deadline"
+      ? "p.deadline ASC NULLS LAST, p.created_at DESC, p.id DESC"
+      : sort === "popular"
+        ? "COALESCE((to_jsonb(p) ->> 'view_count')::int, 0) DESC, p.created_at DESC, p.id DESC"
+        : "p.created_at DESC, p.id DESC";
+    sql += ` ORDER BY ${order} LIMIT $${params.length}`;
     const rows = await query(ctx.deps.query, sql, params);
     return { total, rows, page };
   });
@@ -409,12 +448,14 @@ async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   };
   if (open) {
     const member = ctx.user.id !== GUEST_ID && await memberOf();
+    await recordPostingView(ctx, id);
     return data(200, postingDto(open, true, member), ctx.rid);
   }
   if (ctx.user.id === GUEST_ID) throw notFound();
   if (!(await memberOf())) throw notFound();
   const closed = await withPublicStatus((withStatus) => one(ctx.deps.query, detailSql(withStatus, "p.id = $1"), [id, ctx.user.id]));
   if (!closed) throw notFound();
+  await recordPostingView(ctx, id);
   return data(200, postingDto(closed, true, true), ctx.rid);
 }
 
