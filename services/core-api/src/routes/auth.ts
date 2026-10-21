@@ -1,4 +1,4 @@
-import { isUndefinedColumn, isUnique, query, one } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, isUnique, query, one } from "../db.ts";
 import { HttpError, asBool, data, randomToken, requireUuid, sha256Hex } from "../http.ts";
 import { verifyPkce } from "../crypto.ts";
 import { ts } from "../page.ts";
@@ -10,8 +10,19 @@ const REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const STATE_MS = 10 * 60 * 1000;
 const EXCHANGE_MS = 60 * 1000;
 const LOCAL_CALLBACK = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d{1,5})\/auth\/callback$/;
+const USER_BY_ID_BASE = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer FROM users WHERE id = $1";
 const USER_BY_ID = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, (SELECT company_id FROM company_members WHERE company_members.user_id = users.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = users.id) AS company_role FROM users WHERE id = $1";
+const USER_BY_TOKEN_BASE = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 const USER_BY_TOKEN = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, (SELECT company_id FROM company_members WHERE company_members.user_id = u.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = u.id) AS company_role, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
+
+const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: unknown[]): Promise<Record<string, unknown> | null> => {
+  try {
+    return await one(ctx.deps.query, sql, params);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+    return one(ctx.deps.query, fallback, params);
+  }
+};
 
 const employerFlag = (value: unknown): boolean =>
   value === true || value === "t" || value === "true" || value === 1;
@@ -117,12 +128,12 @@ export async function resolveUser(ctx: Omit<Ctx, "user">, token: string): Promis
   const env = ctx.env;
   if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
     const id = env.DEV_USER_ID || "";
-    const row = await one(ctx.deps.query, USER_BY_ID, [id]);
+    const row = await userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [id]);
     if (!row) throw new HttpError(401, "UNAUTHENTICATED", "dev user not seeded");
     return userFrom(row);
   }
   const hash = await sha256Hex(token);
-  const row = await one(ctx.deps.query, USER_BY_TOKEN, [hash]);
+  const row = await userBy(ctx, USER_BY_TOKEN, USER_BY_TOKEN_BASE, [hash]);
   if (!row) throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");
   if (ctx.now.getTime() > Date.parse(String(row.token_expires_at))) {
     throw new HttpError(401, "TOKEN_EXPIRED", "access token expired");
@@ -159,7 +170,7 @@ export async function issue(ctx: Ctx, userId: string): Promise<Record<string, un
   await query(ctx.deps.query,
     "WITH rt AS (INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at) VALUES ($1,$2,$3,$4,NULL,$5) RETURNING id) INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, created_at) SELECT $6,$2,$7,rt.id,$8,$5 FROM rt",
     [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp]);
-  const row = await one(ctx.deps.query, USER_BY_ID, [userId]);
+  const row = await userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [userId]);
   if (!row) throw new HttpError(500, "INTERNAL", "internal error");
   return sessionBody(access, refresh, userFrom(row));
 }
@@ -303,7 +314,7 @@ export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => 
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1 AND deletion_requested_at IS NOT NULL", [userId])
     .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
   await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = NULL WHERE id IN (SELECT company_id FROM company_members WHERE user_id = $1)", [userId])
-    .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
+    .catch((err: unknown) => { if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err; });
 };
 
 const accountLabel = (row: Record<string, unknown>): "PERSONAL" | "EMPLOYER" =>
@@ -415,10 +426,19 @@ export async function logout(ctx: Ctx): Promise<Response> {
 }
 
 /** Marks the account for deletion; logging in within 30 days restores it, then the cron purges it. */
+const companyMembership = async (ctx: Ctx): Promise<Record<string, unknown> | null> => {
+  try {
+    return await one(ctx.deps.query,
+      "SELECT m.role, m.company_id, c.stripe_customer_id, (SELECT count(*) FROM company_members o WHERE o.company_id = m.company_id AND o.user_id <> m.user_id) AS others FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
+      [ctx.user.id]);
+  } catch (err) {
+    if (isUndefinedColumn(err) || isMissingRelation(err)) return null;
+    throw err;
+  }
+};
+
 export async function deleteAccount(ctx: Ctx): Promise<Response> {
-  const membership = await one(ctx.deps.query,
-    "SELECT m.role, m.company_id, c.stripe_customer_id, (SELECT count(*) FROM company_members o WHERE o.company_id = m.company_id AND o.user_id <> m.user_id) AS others FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
-    [ctx.user.id]);
+  const membership = await companyMembership(ctx);
   const soleAdmin = membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) === 0;
   if (membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) > 0) {
     throw new HttpError(409, "ADMIN_TRANSFER_REQUIRED", "transfer admin before deleting the account");

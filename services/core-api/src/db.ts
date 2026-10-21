@@ -19,6 +19,11 @@ export function isUndefinedColumn(err: unknown): boolean {
   return e?.code === "42703" || /42703|column .* does not exist/i.test(`${e?.message || ""} ${String(err)}`);
 }
 
+export const isMissingRelation = (err: unknown): boolean => {
+  const e = err as { code?: string; message?: string };
+  return e?.code === "42P01" || /42P01|relation .* does not exist/i.test(`${e?.message || ""} ${String(err)}`);
+};
+
 export async function query(q: Query, text: string, params: unknown[] = []): Promise<QueryResult> {
   const result = await q(text, params);
   return {

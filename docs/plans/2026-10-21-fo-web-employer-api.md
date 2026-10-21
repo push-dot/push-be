@@ -59,6 +59,7 @@
 26. **NTS call shape.** `serviceKey` is `encodeURIComponent`'d. Validate runs first; `valid !== "01"` or a 2xx JSON body with no `data[0]` is `MISMATCH` and status is not called. Non-2xx and non-JSON are 502 `PROVIDER_ERROR`.
 27. **Non-admin deletion.** `DELETE /me` for a member who is not an admin follows the personal path: no company Stripe cancel and no `companies.deletion_requested_at`. A sole admin skips the extra Stripe call when the company customer is null or equal to the user's customer.
 28. **Invite mail.** Stored email is lowercased. Trailing slashes on `APP_WEB_ORIGIN` are stripped, then the link is `/invites/{token}`. Missing `deps.mailer` uses `createMailer(env)`. An already accepted invite is 409 even if it is also expired.
+29. **Company tables missing.** User lookup retries without `company_members` when that relation or column is absent, and `companyId` / `companyRole` stay null. `DELETE /me` and login then follow the personal path. Company routes still need migration 0019.
 
 ## File map
 
