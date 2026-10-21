@@ -10,12 +10,13 @@ from app.domain import entities as ent
 from app.domain.errors import (
     internal, map_revision_err, not_found, revision_conflict, validation_field,
 )
+from app.domain.reference_text import features_of, score_band, templates_of
 from app.domain.services.ai import AIGate
 from app.domain.services.approval import ApprovalService
 from app.domain.validators import validate_https_url
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_evidence import EvidenceStore
-from app.infrastructure.store_jobs import GapAnalysisStore, JobStore
+from app.infrastructure.store_jobs import GapAnalysisStore, JobStore, ReferenceSampleStore
 from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
 
@@ -25,6 +26,7 @@ def _now() -> datetime:
 
 
 _WORD_RE = re.compile(r"[a-z0-9+#가-힣]+")
+_SAMPLE_PLANS = frozenset({"FREE", "PRO", "ULTRA"})
 
 
 def significant_words(s: str) -> list[str]:
@@ -43,6 +45,14 @@ def match_evidence(requirement: str, pool: list[ent.CareerEvidence]) -> list[str
         if hit:
             ids.append(str(e.id))
     return ids
+
+
+def document_fit_score(requirements: list[str],
+                       evidence: ent.CareerEvidence) -> int | None:
+    if not requirements:
+        return None
+    matched = sum(1 for req in requirements if match_evidence(req, [evidence]))
+    return matched * 100 // len(requirements)
 
 
 def run_gap_analysis(j: ent.JobPosting, app_id: UUID,
@@ -88,6 +98,7 @@ class JobService:
         self.db = db
         self.jobs = JobStore(db)
         self.analyses = GapAnalysisStore(db)
+        self.samples = ReferenceSampleStore(db)
         self.applications = ApplicationStore(db)
         self.evidence = EvidenceStore(db)
         self.approvals = approvals
@@ -201,6 +212,7 @@ class JobService:
             analysis = run_gap_analysis(j, app.id, pool, method)
             await self.analyses.mark_stale_for_job(user_id, job_id, UUID(int=0))
             await self.analyses.create(analysis)
+            await self._save_reference_samples(user_id, j, pool)
             now = _now()
             op = ent.Operation(
                 id=uuid4(), user_id=user_id, type=ent.OP_JOB_ANALYSIS,
@@ -212,6 +224,53 @@ class JobService:
 
         await self.db.run(work)
         return op
+
+    async def _save_reference_samples(self, user_id: UUID, job: ent.JobPosting,
+                                      pool: list[ent.CareerEvidence]) -> None:
+        q = self.db.q()
+        try:
+            await q.execute("SAVEPOINT reference_samples")
+        except Exception:
+            return
+        try:
+            await self._write_reference_samples(user_id, job, pool)
+        except Exception:
+            try:
+                await q.execute("ROLLBACK TO SAVEPOINT reference_samples")
+            except Exception:
+                return
+            return
+        try:
+            await q.execute("RELEASE SAVEPOINT reference_samples")
+        except Exception:
+            return
+
+    async def _write_reference_samples(self, user_id: UUID, job: ent.JobPosting,
+                                       pool: list[ent.CareerEvidence]) -> None:
+        row = await self.samples.context(user_id)
+        if row is None:
+            return
+        ctx = dict(row)
+        if not ctx.get("reference_data"):
+            return
+        category = ctx.get("job_category")
+        tenure = ctx.get("tenure_years")
+        if category is None or tenure is None:
+            return
+        plan = ctx.get("plan")
+        if plan is None or str(plan).strip() == "":
+            plan = "FREE"
+        else:
+            plan = str(plan).strip()
+        if plan not in _SAMPLE_PLANS:
+            return
+        for evidence in pool:
+            fit = document_fit_score(job.requirements, evidence)
+            if fit is None:
+                continue
+            await self.samples.insert(
+                uuid4(), user_id, category, tenure, fit, score_band(fit), plan,
+                features_of(evidence.source_text), templates_of(evidence.source_text))
 
     async def list_analyses(self, user_id: UUID, job_id: UUID, page):
         await self.get(user_id, job_id)

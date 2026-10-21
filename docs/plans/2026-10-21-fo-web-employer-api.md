@@ -74,6 +74,8 @@
 41. **Null plan levers.** `levers_for("PERSONAL", None or "")` is FREE, including `monthly_micro` `1_800_000`. `levers_for("EMPLOYER", None or "")` uses BASIC model, effort, reference, tenure, and score band, and `monthly_micro` 0. A set employer plan uses that plan's monthly amount. Do not change the core billing grants. Project caps in this task read `users.plan` only. Core `POST /conversations/{id}/messages` uses the same personal allowances, so FREE and a null plan get `1_800_000`. It does not reject an `opencode-go/` model before the AI service replaces the managed model. PRO stays `30_000_000` and ULTRA stays `100_000_000`.
 42. **PDF attachment cap.** api-spec 4.8, feature-spec 17.5, and PRD 7.15 set no byte cap for `POST /conversations/{id}/attachments`. Reject a file over 10 MiB (`10 * 1024 * 1024`) with 413 `PAYLOAD_TOO_LARGE`. A file of exactly 10 MiB is allowed. The mime type stays `application/pdf`.
 43. **Shared employer chats.** A conversation with `company_id` set can be read, posted, patched, and archived by any member of that company. Personal rows stay on `user_id` with `company_id IS NULL`. Company message and active-job reads use `conversation_id` only. The new message still stores the caller's `user_id`. Interview intent returns HTTP 403 `PLAN_REQUIRED` with `details.requiredPlan` `PRO` before a `chat_jobs` insert when the company plan is not PRO or ULTRA, including null and BASIC. Membership authorizes that check. A missing `postingId` or `applicationId` on employer create is 404. An existing posting from another company is allowed. When the client omits `ai` on a company conversation, reply preparation still applies employer levers, turns on web search for posting intent, and appends the posting-draft fence.
+44. **Templates stay out of prompts.** `eligible` groups by `job_category` + `tenure_years` + `score_band`. Thirty samples qualify. Twenty-nine do not. `prompt_lines` states that score band and the feature counts only. It never includes a raw line or `sentence_templates`, so employer AI cannot quote another user's sentence.
+45. **Reference sample save.** The hook runs after the `gap_analyses` insert, inside the same `db.run`. It reads `user_consents.reference_data`, `profiles.job_category`, `profiles.tenure_years`, and `users.plan`. Missing consent, false, null category, or null tenure inserts nothing. Null or blank plan stores `FREE`. A plan outside `FREE|PRO|ULTRA` skips. No posting requirements skips the document, because `fit_score` is NOT NULL. `fit_score` is the requirements that document alone matches, times 100, integer-divided by the requirement count. A missing `user_consents` or `reference_samples` relation, or a failed sample write, rolls back to a savepoint and does not fail the gap analysis. Do not store the model name or raw `source_text`. Do not seed samples and do not re-consent existing users.
 
 ## File map
 
@@ -572,11 +574,11 @@ def prompt_lines(samples: list[dict]) -> list[str]: ...
 - `prompt_lines` states the band and the feature counts. It does not include a template sentence from a group under 30, and it never includes a raw line.
 - The save hook no-ops when `user_consents.reference_data` is not true. It inserts one `reference_samples` row per evaluated document. Tests of the pure functions do not need a database. One store test can assert the insert SQL omits the raw body.
 
-- [ ] **Step 1: Failing tests** with a résumé sentence that contains a company name, a number, and an email. Assert the template has no digit and no `@`, and a bucket of 29 samples produces an empty prompt list.
+- [x] **Step 1: Failing tests** with a résumé sentence that contains a company name, a number, and an email. Assert the template has no digit and no `@`, and a bucket of 29 samples produces an empty prompt list.
 
-- [ ] **Step 2–4: TDD, then** `pytest tests/test_reference_text.py` and the suite section that covers gap analysis if the hook touches it.
+- [x] **Step 2–4: TDD, then** `pytest tests/test_reference_text.py` and the suite section that covers gap analysis if the hook touches it.
 
-- [ ] **Step 5: Commit** `feat(ai): store generalized reference samples`
+- [x] **Step 5: Commit** `feat(ai): store generalized reference samples`
 
 ---
 
