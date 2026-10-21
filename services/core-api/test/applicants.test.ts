@@ -534,3 +534,138 @@ test("a post author includes employer and company name", async () => {
   assert.ok(select);
   assert.match(select.sql, /companies/);
 });
+
+test("a company member can read a closed posting and another user cannot", async () => {
+  resetLimits();
+  const memberSeen: Call[] = [];
+  const member = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(memberSeen, true, async (sql) => {
+      if (sql.includes("FROM job_postings") && sql.includes("company_members")) {
+        return { rows: [{ id: POSTING }], rowCount: 1 };
+      }
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return empty;
+      if (sql.includes("FROM job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Backend",
+            description: "Build APIs",
+            revision: 2,
+            preferred: [],
+            closed_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(member.status, 200);
+  const body = await member.json() as { data: { description: string; closedAt: string | null } };
+  assert.equal(body.data.description, "Build APIs");
+  assert.equal(body.data.closedAt, "2026-10-21T00:00:00Z");
+
+  resetLimits();
+  const otherSeen: Call[] = [];
+  const other = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(otherSeen, false, async (sql) => {
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return empty;
+      if (sql.includes("company_members")) return empty;
+      if (sql.includes("FROM job_postings")) {
+        return { rows: [{ id: POSTING, description: "Build APIs", closed_at: NOW }], rowCount: 1 };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(other.status, 404);
+  assert.equal(otherSeen.some((call) => call.sql.includes("FROM job_postings") && !call.sql.includes("closed_at IS NULL") && !call.sql.includes("company_members")), false);
+});
+
+test("repeating REJECTED returns the row without a notification", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "REJECTED" }), env(), deps(authed(seen, true, async (sql) => {
+    const member = await memberPosting(sql);
+    if (member) return member;
+    if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [{ ...applicationRow("REJECTED"), revision: 2 }], rowCount: 1 };
+    if (sql.includes("applications")) return { rows: [applicationRow("REJECTED")], rowCount: 1 };
+    return empty;
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { stage: string; revision: number } };
+  assert.equal(body.data.stage, "REJECTED");
+  assert.equal(body.data.revision, 1);
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("applications")), false);
+  assert.equal(seen.some((call) => call.sql.includes("INSERT INTO notifications")), false);
+});
+
+const missingRelation = (code: string, message: string): Error => {
+  const err = new Error(message) as Error & { code: string };
+  err.code = code;
+  return err;
+};
+
+test("a post still loads before company tables exist", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(
+    new Request("https://core.example/api/v1/posts/" + POSTING, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(seen, false, async (sql) => {
+      if (sql.includes("company_members") || sql.includes("companies")) {
+        throw missingRelation("42P01", "relation \"company_members\" does not exist");
+      }
+      if (sql.includes("UPDATE posts")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("FROM posts")) {
+        return {
+          rows: [{
+            id: POSTING,
+            user_id: USER,
+            display_name: "Ada",
+            is_employer: false,
+            company_name: null,
+            category: "work",
+            title: "Hi",
+            body: "There",
+            image_keys: [],
+            view_count: 1,
+            comment_count: 0,
+            created_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { author: { employer: boolean; companyName: string | null } } };
+  assert.equal(body.data.author.employer, false);
+  assert.equal(body.data.author.companyName, null);
+  assert.equal(seen.some((call) => call.sql.includes("FROM posts") && !call.sql.includes("company_members")), true);
+});
+
+test("settings still load before notify_application_stage exists", async () => {
+  resetLimits();
+  const res = await handle(
+    new Request("https://core.example/api/v1/me/settings", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, async (sql) => {
+      if (sql.includes("notify_application_stage")) {
+        throw missingRelation("42703", "column \"notify_application_stage\" does not exist");
+      }
+      if (sql.includes("INSERT INTO user_settings")) return empty;
+      if (sql.includes("user_settings")) return { rows: [settingsRow(true, null)], rowCount: 1 };
+      return empty;
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { notifyApplicationStage: boolean; chatRetentionDays: number | null } };
+  assert.equal(body.data.notifyApplicationStage, true);
+  assert.equal(body.data.chatRetentionDays, null);
+});

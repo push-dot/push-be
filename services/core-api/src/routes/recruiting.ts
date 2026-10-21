@@ -1,4 +1,4 @@
-import { isUnique, one, query } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, isUnique, one, query } from "../db.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
   HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid,
@@ -308,11 +308,17 @@ async function listPostingLocations(ctx: Ctx): Promise<Response> {
 
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query,
-    `SELECT ${POSTING_COLS}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")} FROM job_postings p WHERE p.id = $1 AND p.closed_at IS NULL`,
+  const cols = `SELECT ${POSTING_COLS}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")} FROM job_postings p`;
+  const open = await one(ctx.deps.query, `${cols} WHERE p.id = $1 AND p.closed_at IS NULL`, [id, ctx.user.id]);
+  if (open) return data(200, postingDto(open, true), ctx.rid);
+  if (ctx.user.id === GUEST_ID) throw notFound();
+  const member = await one(ctx.deps.query,
+    "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1",
     [id, ctx.user.id]);
-  if (!row) throw notFound();
-  return data(200, postingDto(row, true), ctx.rid);
+  if (!member) throw notFound();
+  const closed = await one(ctx.deps.query, `${cols} WHERE p.id = $1`, [id, ctx.user.id]);
+  if (!closed) throw notFound();
+  return data(200, postingDto(closed, true), ctx.rid);
 }
 
 const verifiedCompany = async (ctx: Ctx): Promise<{ id: string; name: string }> => {
@@ -691,10 +697,10 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
   }
   await requirePostingMember(ctx, postingId);
   const current = await loadApplicant(ctx, postingId, applicationId);
+  if (String(current.stage) === body.stage) return data(200, applicationDto(current), ctx.rid);
   if (TERMINAL_STAGES.has(String(current.stage))) {
     throw new HttpError(409, "INVALID_TRANSITION", "terminal stage");
   }
-  if (String(current.stage) === body.stage) return data(200, applicationDto(current), ctx.rid);
   const now = ctx.now.toISOString();
   const updated = await one(ctx.deps.query,
     `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
@@ -1308,16 +1314,31 @@ function settingsDto(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-async function loadSettings(ctx: Ctx): Promise<Record<string, unknown>> {
-  await query(ctx.deps.query, "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [ctx.user.id]);
-  const row = await one(ctx.deps.query,
-    `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, s.notify_application_stage, u.locale, s.profile_public,
+const SETTINGS_SELECT = `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, s.notify_application_stage, u.locale, s.profile_public,
             s.career_status_visibility, s.hide_from_current_company, s.contact_visibility, s.default_tone,
             s.chat_retention_days, s.allow_ai_read_my_files
-     FROM user_settings s JOIN users u ON u.id = s.user_id WHERE s.user_id = $1`,
-    [ctx.user.id]);
-  if (!row) throw notFound();
-  return row;
+     FROM user_settings s JOIN users u ON u.id = s.user_id WHERE s.user_id = $1`;
+
+const SETTINGS_UPDATE = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
+      profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
+      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14 WHERE user_id = $1`;
+
+const SETTINGS_UPDATE_LEGACY = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
+      profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
+      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, updated_at = $13 WHERE user_id = $1`;
+
+async function loadSettings(ctx: Ctx): Promise<Record<string, unknown>> {
+  await query(ctx.deps.query, "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [ctx.user.id]);
+  try {
+    const row = await one(ctx.deps.query, SETTINGS_SELECT, [ctx.user.id]);
+    if (!row) throw notFound();
+    return row;
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    const row = await one(ctx.deps.query, SETTINGS_SELECT.replace("s.notify_application_stage, ", ""), [ctx.user.id]);
+    if (!row) throw notFound();
+    return row;
+  }
 }
 
 async function getSettings(ctx: Ctx): Promise<Response> {
@@ -1360,13 +1381,15 @@ async function patchSettings(ctx: Ctx): Promise<Response> {
   if ("chatRetentionDays" in body) {
     next.chat_retention_days = body.chatRetentionDays == null ? null : intOf(body.chatRetentionDays, "chatRetentionDays", 1, 3650);
   }
-  await query(ctx.deps.query,
-    `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
-      profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14 WHERE user_id = $1`,
-    [ctx.user.id, next.notify_deadline, next.notify_offer, next.notify_comment, next.notify_ai_done, next.profile_public,
-      next.career_status_visibility, next.hide_from_current_company, next.contact_visibility, next.default_tone,
-      next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString()]);
+  const params = [ctx.user.id, next.notify_deadline, next.notify_offer, next.notify_comment, next.notify_ai_done, next.profile_public,
+    next.career_status_visibility, next.hide_from_current_company, next.contact_visibility, next.default_tone,
+    next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString()];
+  try {
+    await query(ctx.deps.query, SETTINGS_UPDATE, params);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query, SETTINGS_UPDATE_LEGACY, params.filter((_, index) => index !== 12));
+  }
   return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
 }
 
@@ -1451,6 +1474,27 @@ const POST_SQL = `p.id, p.user_id, u.display_name, u.is_employer, co.name AS com
   LEFT JOIN company_members cm ON cm.user_id = u.id
   LEFT JOIN companies co ON co.id = cm.company_id`;
 
+const withoutCompanyJoin = (sql: string): string => sql
+  .replaceAll("co.name AS company_name", "NULL::text AS company_name")
+  .replaceAll(" LEFT JOIN company_members cm ON cm.user_id = u.id", "")
+  .replaceAll(" LEFT JOIN companies co ON co.id = cm.company_id", "");
+
+const queryPosts = async (ctx: Ctx, sql: string, params: unknown[]) => {
+  try {
+    return await query(ctx.deps.query, sql, params);
+  } catch (err) {
+    if (!sql.includes("company_members") || !(isMissingRelation(err) || isUndefinedColumn(err))) throw err;
+    const fallback = withoutCompanyJoin(sql);
+    if (fallback === sql || fallback.includes("company_members") || fallback.includes("companies")) throw err;
+    return query(ctx.deps.query, fallback, params);
+  }
+};
+
+const onePost = async (ctx: Ctx, sql: string, params: unknown[]) => {
+  const result = await queryPosts(ctx, sql, params);
+  return result.rows[0] ?? null;
+};
+
 async function listPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
   const category = ctx.url.searchParams.get("category");
@@ -1469,7 +1513,7 @@ async function listPosts(ctx: Ctx): Promise<Response> {
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
@@ -1491,7 +1535,7 @@ async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY ${relevance("p.title", "p.body", "$1", "$2", "$4")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
@@ -1515,7 +1559,7 @@ async function createPost(ctx: Ctx): Promise<Response> {
     `INSERT INTO posts (id, user_id, category, title, body, image_keys, view_count, search_text, search_choseong, search_jamo, created_at)
      VALUES ($1,$2,$3,$4,$5,$6::jsonb,0,$7,$8,$9,$10)`,
     [id, ctx.user.id, body.category, title, text, JSON.stringify(keys), fields.text, fields.choseong, fields.jamo, now]);
-  const author = await one(ctx.deps.query,
+  const author = await onePost(ctx,
     `SELECT u.is_employer, co.name AS company_name FROM users u
      LEFT JOIN company_members cm ON cm.user_id = u.id
      LEFT JOIN companies co ON co.id = cm.company_id WHERE u.id = $1`,
@@ -1534,7 +1578,7 @@ async function getPost(ctx: Ctx, idRaw: string): Promise<Response> {
     `UPDATE posts SET view_count = view_count + 1 WHERE id = $1 RETURNING id`,
     [id]);
   if (!row) throw notFound();
-  const full = await one(ctx.deps.query, "SELECT " + POST_SQL + " WHERE p.id = $1", [id]);
+  const full = await onePost(ctx, "SELECT " + POST_SQL + " WHERE p.id = $1", [id]);
   if (!full) throw notFound();
   return data(200, postDto(full), ctx.rid);
 }
@@ -1598,7 +1642,7 @@ async function listMyPosts(ctx: Ctx): Promise<Response> {
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
@@ -1615,7 +1659,7 @@ async function listCommentedPosts(ctx: Ctx): Promise<Response> {
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
