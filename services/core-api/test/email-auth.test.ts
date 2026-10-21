@@ -460,6 +460,8 @@ test("password reset confirm changes the password and revokes refresh tokens", a
   resetLimits();
   await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   const previous = db.users[0].password_hash;
+  const userId = db.users[0].id;
+  const before = db.sqls.length;
   resetLimits();
   const res = await handle(
     post("/api/v1/auth/email/password-reset/confirm", { token: tokenFrom(sent[1]), password: "newpass123" }),
@@ -468,7 +470,11 @@ test("password reset confirm changes the password and revokes refresh tokens", a
   );
   assert.equal(res.status, 204);
   assert.notEqual(db.users[0].password_hash, previous);
-  assert.ok(db.sqls.some((call) => call.sql.includes("refresh_tokens") && call.sql.includes("revoked_at")));
+  const revoke = db.sqls.slice(before).find((call) => call.sql.startsWith("UPDATE refresh_tokens") && call.sql.includes("revoked_at"));
+  assert.ok(revoke);
+  assert.equal(revoke.params[0], userId);
+  assert.ok(db.refresh.some((row) => row.user_id === userId));
+  assert.ok(db.refresh.filter((row) => row.user_id === userId).every((row) => row.revoked_at != null));
   resetLimits();
   const oldLogin = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(oldLogin.status, 401);
