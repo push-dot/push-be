@@ -66,6 +66,8 @@ export interface UserRow {
   id: string;
   displayName: string;
   locale: string;
+  email: string;
+  provider: string;
   plan: string;
   subscriptionStatus: string;
   stripeCustomerId: string | null;

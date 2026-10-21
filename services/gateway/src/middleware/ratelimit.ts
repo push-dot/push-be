@@ -87,7 +87,7 @@ export function tsText(expr: string): string {
 export const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, "
   + tsText("u.created_at") + " AS created_at, "
   + tsText("t.expires_at") + " AS expires_at, "
-  + "u.is_employer, m.company_id, m.role AS company_role "
+  + "u.is_employer, u.email, u.provider, u.plan, m.company_id, m.role AS company_role "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id "
   + "LEFT JOIN company_members m ON m.user_id = u.id WHERE t.token_hash = $1";
 
@@ -109,7 +109,7 @@ const AUTH_RATE_PREFIX = "WITH auth AS ("
   + "SELECT u.id, u.display_name, u.locale, "
   + tsText("u.created_at") + " AS created_at, "
   + tsText("t.expires_at") + " AS expires_at, t.expires_at AS token_expires, "
-  + "u.is_employer, m.company_id, m.role AS company_role "
+  + "u.is_employer, u.email, u.provider, u.plan, m.company_id, m.role AS company_role "
   + "FROM access_tokens t JOIN users u ON u.id = t.user_id "
   + "LEFT JOIN company_members m ON m.user_id = u.id WHERE t.token_hash = $1"
   + "), live AS ("
@@ -128,7 +128,7 @@ const AUTH_RATE_PREFIX = "WITH auth AS ("
   + ") ";
 
 const AUTH_COLUMNS = "auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
-  + "auth.is_employer, auth.company_id, auth.company_role, "
+  + "auth.is_employer, auth.email, auth.provider, auth.plan, auth.company_id, auth.company_role, "
   + "(SELECT hits FROM bumped) AS hits, "
   + "(SELECT granted FROM bumped) AS granted";
 

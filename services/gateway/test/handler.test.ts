@@ -108,7 +108,7 @@ test("auth/me preserves unauthenticated, expired, and success bodies", async () 
   }), env(), deps(okQuery));
   assert.equal(ok.status, 200);
   assert.equal(await ok.text(),
-    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null}}');
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null, "email": "", "provider": "", "plan": "FREE"}}');
 });
 
 test("auth/me still works when company_members is missing", async () => {
@@ -1153,7 +1153,7 @@ test("auth/me returns employer membership from the joined row", async () => {
   assert.match(sql, /company_members/);
   assert.match(sql, /is_employer/);
   assert.equal(await res.text(),
-    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN"}}');
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN", "email": "", "provider": "", "plan": "FREE"}}');
 });
 
 test("email auth posts are owned by core", () => {

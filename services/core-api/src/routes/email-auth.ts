@@ -79,7 +79,7 @@ const sendLink = async (ctx: Ctx, to: string, kind: "verify" | "reset", token: s
 const issueEmailToken = async (ctx: Ctx, kind: "VERIFY" | "RESET", userId: string | null, signupId: string | null): Promise<string> => {
   const token = randomToken();
   const hash = await sha256Hex(token);
-  const expires = new Date(ctx.now.getTime() + HOUR_MS).toISOString();
+  const expires = new Date(ctx.now.getTime() + (kind === "VERIFY" ? 24 * HOUR_MS : HOUR_MS)).toISOString();
   await query(ctx.deps.query,
     "INSERT INTO email_tokens (id, user_id, signup_id, kind, token_hash, expires_at, used_at) VALUES ($1,$2,$3,$4,$5,$6,NULL)",
     [crypto.randomUUID(), userId, signupId, kind, hash, expires]);

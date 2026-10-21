@@ -91,6 +91,9 @@ export interface CachedUser {
   accountType: "PERSONAL" | "EMPLOYER";
   companyId: string | null;
   companyRole: string | null;
+  email: string;
+  provider: string;
+  plan: string;
   expiresAtMs: number;
 }
 

@@ -289,6 +289,7 @@ test("signup accepts a personal account and rejects a short password", async () 
   assert.equal(tokenInsert.params[1], null);
   assert.equal(tokenInsert.params[2], db.signups[0].id);
   assert.equal(tokenInsert.params[3], "VERIFY");
+  assert.equal(tokenInsert.params[5], "2026-10-22T00:00:00.000Z");
 
   resetLimits();
   const bad = await handle(
@@ -448,6 +449,7 @@ test("password reset does not reveal unknown emails", async () => {
   assert.ok(reset);
   assert.equal(reset.params[1], db.users[0].id);
   assert.equal(reset.params[2], null);
+  assert.equal(reset.params[5], "2026-10-21T01:00:00.000Z");
 });
 
 test("password reset confirm changes the password and revokes refresh tokens", async () => {
@@ -727,6 +729,10 @@ test("auth me for an email user includes the company fields", async () => {
   const body = await me.json() as { data: { accountType: string; companyId: string | null; companyRole: string | null } };
   assert.equal(body.data.accountType, "PERSONAL");
   assert.equal(body.data.companyId, null);
+  const meBody = body as { data: { email?: string; provider?: string; plan?: string } };
+  assert.equal(meBody.data.email, EMAIL);
+  assert.equal(meBody.data.provider, "email");
+  assert.equal(meBody.data.plan, "FREE");
   assert.equal(body.data.companyRole, null);
   assert.ok(db.sqls.some((call) => call.sql.includes("FROM access_tokens") && call.sql.includes("company_members")));
 });

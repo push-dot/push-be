@@ -25,6 +25,7 @@ const LINK_KINDS = new Set(["job", "github", "portfolio", "blog", "other"]);
 const TONES = new Set(["as_is", "professional", "confident", "concise", "technical", "friendly"]);
 const VISIBILITY = new Set(["everyone", "followers", "private"]);
 const CONTACT = new Set(["accepted", "followers", "everyone", "private"]);
+const EFFORT = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const FREE_MAIL = new Set([
   "gmail.com", "googlemail.com", "naver.com", "daum.net", "hanmail.net", "kakao.com",
   "outlook.com", "hotmail.com", "icloud.com", "yahoo.com",
@@ -953,9 +954,9 @@ const documentPages = (value: unknown): { title: string; pages: number | null }[
   });
 };
 
-const fileBytes = (value: unknown): Uint8Array | null => {
+const fileBytes = (value: unknown): Uint8Array<ArrayBuffer> | null => {
   if (value == null) return null;
-  if (value instanceof Uint8Array) return value;
+  if (value instanceof Uint8Array) return new Uint8Array(value);
   if (typeof value !== "string") return null;
   const hex = value.startsWith("\\x") ? value.slice(2) : "";
   if (!hex || hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) return null;
@@ -1205,8 +1206,19 @@ function profileDto(row: Record<string, unknown>, viewerId: string, viewer: View
     skills: jsonList(row.skills).map(String),
     followerCount: Number(row.follower_count ?? 0),
     resumeSourceId: row.resume_source_id == null ? null : String(row.resume_source_id),
+    contact: visibleContact(row, self, following),
     updatedAt: ts(row.updated_at),
   };
+}
+
+function visibleContact(row: Record<string, unknown>, self: boolean, following: boolean): string | null {
+  const value = row.contact == null ? "" : String(row.contact);
+  const visibility = String(row.contact_visibility ?? "accepted");
+  const shown = self
+    || visibility === "everyone"
+    || (visibility === "followers" && following)
+    || (visibility === "accepted" && asBool(row.offer_accepted));
+  return shown ? value : null;
 }
 
 // Hides accounts in the deletion grace period. Read through to_jsonb so it also runs before migration 0018.
@@ -1220,7 +1232,10 @@ function profileSelect(extra: string): string {
     COALESCE(s.hide_from_current_company, false) AS hide_from_current_company,
     split_part(lower(COALESCE(u.email, '')), '@', 2) AS email_domain,
     EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id) AS following,
-    (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count
+    (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count,
+    COALESCE(s.contact_visibility, 'accepted') AS contact_visibility,
+    to_jsonb(p) ->> 'contact' AS contact,
+    EXISTS (SELECT 1 FROM offers o WHERE o.status = 'ACCEPTED' AND ((o.sender_id = $1 AND o.profile_user_id = p.user_id) OR (o.profile_user_id = $1 AND o.sender_id = p.user_id))) AS offer_accepted
     ${extra}
     FROM profiles p
     JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
@@ -1443,6 +1458,14 @@ async function patchMyProfile(ctx: Ctx): Promise<Response> {
   await query(ctx.deps.query,
     `UPDATE profiles SET headline = $2, job_category = $3, tenure_years = $4, career_status = $5, open_to_offers = $6, intro = $7, careers = $8::jsonb, skills = $9::jsonb, avatar_key = $10, resume_source_id = $11, search_text = $12, search_choseong = $13, search_jamo = $14, updated_at = $15 WHERE user_id = $1`,
     [ctx.user.id, headline, jobCategory, tenure, careerStatus, openToOffers, intro, JSON.stringify(careers), JSON.stringify(skills), avatarKey, resumeSourceId, fields.text, fields.choseong, fields.jamo, now]);
+  if ("contact" in body) {
+    const contact = textOf(body.contact ?? "", "contact", 0, 200);
+    try {
+      await query(ctx.deps.query, "UPDATE profiles SET contact = $2 WHERE user_id = $1", [ctx.user.id, contact]);
+    } catch (err) {
+      if (!isUndefinedColumn(err)) throw err;
+    }
+  }
   const viewer = await viewerCompanyOf(ctx);
   const row = await loadProfile(ctx, ctx.user.id);
   if (!row) throw notFound();
@@ -1809,17 +1832,25 @@ function settingsDto(row: Record<string, unknown>): Record<string, unknown> {
     defaultTone: String(row.default_tone ?? "as_is"),
     chatRetentionDays: row.chat_retention_days == null ? null : Number(row.chat_retention_days),
     allowAiReadMyFiles: asBool(row.allow_ai_read_my_files),
+    defaultEffort: row.default_effort == null || row.default_effort === "" ? "MEDIUM" : String(row.default_effort),
+    confirmBeforeEdit: row.confirm_before_edit == null ? true : asBool(row.confirm_before_edit),
   };
 }
 
 const SETTINGS_SELECT = `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, s.notify_application_stage, u.locale, s.profile_public,
             s.career_status_visibility, s.hide_from_current_company, s.contact_visibility, s.default_tone,
-            s.chat_retention_days, s.allow_ai_read_my_files
+            s.chat_retention_days, s.allow_ai_read_my_files,
+            to_jsonb(s) ->> 'default_effort' AS default_effort, to_jsonb(s) ->> 'confirm_before_edit' AS confirm_before_edit
      FROM user_settings s JOIN users u ON u.id = s.user_id WHERE s.user_id = $1`;
 
 const SETTINGS_UPDATE = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
       default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14 WHERE user_id = $1`;
+
+const SETTINGS_UPDATE_EFFORT = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
+      profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
+      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14,
+      default_effort = $15, confirm_before_edit = $16 WHERE user_id = $1`;
 
 const SETTINGS_UPDATE_LEGACY = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
@@ -1879,14 +1910,29 @@ async function patchSettings(ctx: Ctx): Promise<Response> {
   if ("chatRetentionDays" in body) {
     next.chat_retention_days = body.chatRetentionDays == null ? null : intOf(body.chatRetentionDays, "chatRetentionDays", 1, 3650);
   }
+  if ("defaultEffort" in body) {
+    if (typeof body.defaultEffort !== "string" || !EFFORT.has(body.defaultEffort)) {
+      throw unprocessable("defaultEffort", "unsupported defaultEffort");
+    }
+    next.default_effort = body.defaultEffort;
+  }
+  if ("confirmBeforeEdit" in body) next.confirm_before_edit = boolOf(body.confirmBeforeEdit, "confirmBeforeEdit");
+  const effort = next.default_effort == null || next.default_effort === "" ? "MEDIUM" : String(next.default_effort);
+  const confirmEdit = next.confirm_before_edit == null ? true : asBool(next.confirm_before_edit);
   const params = [ctx.user.id, next.notify_deadline, next.notify_offer, next.notify_comment, next.notify_ai_done, next.profile_public,
     next.career_status_visibility, next.hide_from_current_company, next.contact_visibility, next.default_tone,
-    next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString()];
+    next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString(), effort, confirmEdit];
   try {
-    await query(ctx.deps.query, SETTINGS_UPDATE, params);
+    await query(ctx.deps.query, SETTINGS_UPDATE_EFFORT, params);
   } catch (err) {
     if (!isUndefinedColumn(err)) throw err;
-    await query(ctx.deps.query, SETTINGS_UPDATE_LEGACY, params.filter((_, index) => index !== 12));
+    const legacy = params.slice(0, 14);
+    try {
+      await query(ctx.deps.query, SETTINGS_UPDATE, legacy);
+    } catch (err2) {
+      if (!isUndefinedColumn(err2)) throw err2;
+      await query(ctx.deps.query, SETTINGS_UPDATE_LEGACY, legacy.filter((_, index) => index !== 12));
+    }
   }
   return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
 }

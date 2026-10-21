@@ -11,6 +11,7 @@ export async function authMe(request: Request, env: FrontEnv, deps: Deps, rid: s
       id: user.id, displayName: user.displayName,
       locale: user.locale, createdAt: user.createdAt,
       accountType: user.accountType, companyId: user.companyId, companyRole: user.companyRole,
+      email: user.email, provider: user.provider, plan: user.plan,
     },
   });
   return conditional(text, request, rid, USER_CACHE_CONTROL);

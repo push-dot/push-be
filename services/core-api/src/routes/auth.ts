@@ -10,10 +10,10 @@ const REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const STATE_MS = 10 * 60 * 1000;
 const EXCHANGE_MS = 60 * 1000;
 const LOCAL_CALLBACK = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d{1,5})\/auth\/callback$/;
-const USER_BY_ID_BASE = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer FROM users WHERE id = $1";
-const USER_BY_ID = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, (SELECT company_id FROM company_members WHERE company_members.user_id = users.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = users.id) AS company_role FROM users WHERE id = $1";
-const USER_BY_TOKEN_BASE = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
-const USER_BY_TOKEN = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, (SELECT company_id FROM company_members WHERE company_members.user_id = u.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = u.id) AS company_role, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
+const USER_BY_ID_BASE = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, email, provider FROM users WHERE id = $1";
+const USER_BY_ID = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, email, provider, (SELECT company_id FROM company_members WHERE company_members.user_id = users.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = users.id) AS company_role FROM users WHERE id = $1";
+const USER_BY_TOKEN_BASE = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, u.email, u.provider, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
+const USER_BY_TOKEN = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, u.email, u.provider, (SELECT company_id FROM company_members WHERE company_members.user_id = u.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = u.id) AS company_role, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 
 const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: unknown[]): Promise<Record<string, unknown> | null> => {
   try {
@@ -113,6 +113,8 @@ function userFrom(row: Record<string, unknown>): UserRow {
     id: String(row.id),
     displayName: String(row.display_name ?? ""),
     locale: String(row.locale ?? "ko"),
+    email: row.email == null ? "" : String(row.email),
+    provider: row.provider == null ? "" : String(row.provider),
     plan: String(row.plan ?? "FREE"),
     subscriptionStatus: String(row.subscription_status ?? "NONE"),
     stripeCustomerId: row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
@@ -469,6 +471,9 @@ export async function me(ctx: Ctx): Promise<Response> {
     accountType: ctx.user.accountType,
     companyId: ctx.user.companyId,
     companyRole: ctx.user.companyRole,
+    email: ctx.user.email,
+    provider: ctx.user.provider,
+    plan: ctx.user.plan,
   }, ctx.rid);
 }
 

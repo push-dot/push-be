@@ -91,7 +91,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
 
 function anonymous(): UserRow {
   return {
-    id: "", displayName: "", locale: "ko", plan: "FREE", subscriptionStatus: "NONE",
+    id: "", displayName: "", locale: "ko", email: "", provider: "", plan: "FREE", subscriptionStatus: "NONE",
     stripeCustomerId: null, periodEndsAt: null, createdAt: "",
     accountType: "PERSONAL", companyId: null, companyRole: null,
   };
