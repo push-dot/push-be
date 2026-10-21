@@ -262,6 +262,32 @@ test("a duplicate business number is 409 COMPANY_EXISTS", async () => {
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
+test("verify fills an unverified admin shell instead of creating another company", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const { hits, fetchImpl } = ntsFetch("01", "01");
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.includes("FROM company_members")) {
+      return { rows: [{ company_id: USER, role: "ADMIN", verified_at: null }], rowCount: 1 };
+    }
+    if (sql.startsWith("UPDATE companies")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  });
+  const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-11111111111b"), env(), deps(query, fetchImpl));
+  assert.equal(res.status, 201);
+  const body = await res.json() as { data: Company };
+  assert.equal(body.data.id, USER);
+  assert.equal(body.data.bNo, BNO);
+  assert.equal(body.data.role, "ADMIN");
+  assert.equal(hits.length, 2);
+  const update = seen.find((call) => call.sql.startsWith("UPDATE companies"));
+  assert.ok(update);
+  assert.equal(update.params[0], USER);
+  assert.equal(update.params.includes(BNO), true);
+  assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO companies")), false);
+  assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
+});
+
 test("a caller who already belongs to a company gets 409 before NTS", async () => {
   resetLimits();
   const seen: Call[] = [];
@@ -271,7 +297,9 @@ test("a caller who already belongs to a company gets 409 before NTS", async () =
     return Response.json({});
   }) as typeof fetch;
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("FROM company_members")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+    if (sql.includes("FROM company_members")) {
+      return { rows: [{ company_id: COMPANY, role: "ADMIN", verified_at: NOW.toISOString() }], rowCount: 1 };
+    }
     return empty;
   });
   const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111114"), env(), deps(query, fetchImpl));
@@ -451,7 +479,26 @@ test("PRO invite stores a hash and mails the raw token", async () => {
   assert.equal(insert.params.includes(token), false);
   assert.equal(insert.params.includes("m@push.app"), true);
   assert.equal(insert.params.includes(WEEK), true);
+  assert.match(insert.sql, /role = 'MEMBER'/);
+  assert.match(insert.sql, /company_invites/);
   assert.equal(sent[0].html.includes(sent[0].text), true);
+});
+
+test("an invite insert that loses the seat check is SEAT_LIMIT", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const sent: Mail[] = [];
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 0 };
+    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    return empty;
+  });
+  const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111c"), env(), deps(query, undefined, mailer));
+  assert.equal(res.status, 403);
+  assert.equal((await res.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal(sent.length, 0);
 });
 
 test("PRO at one member plus one open invite is SEAT_LIMIT", async () => {
@@ -569,6 +616,28 @@ test("accepting an unknown or expired token is 404", async () => {
   assert.equal((await expired.json() as Err).error.code, "NOT_FOUND");
   assert.equal(staleSeen.some((call) => call.sql.includes("FROM company_invites")), true);
   assert.equal(staleSeen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
+});
+
+test("accept is 409 when the company is pending deletion", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = gate(seen, employer(), async (sql) => {
+    if (sql.includes("FROM company_invites")) {
+      return {
+        rows: [{
+          id: "inv", company_id: COMPANY, email: "ada@push.app",
+          expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null,
+          deletion_requested_at: NOW.toISOString(),
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  });
+  const res = await handle(post("/api/v1/companies/invites/dying-token/accept", {}, "33333333-3333-4333-8333-33333333333a"), env(), deps(query));
+  assert.equal(res.status, 409);
+  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("accept is 409 when the caller is already in a company", async () => {
@@ -836,5 +905,5 @@ test("email login clears the company deletion mark", async () => {
     { query, now: () => NOW },
   );
   assert.equal(res.status, 200);
-  assert.ok(sqls.some((sql) => sql.includes("UPDATE companies SET deletion_requested_at = NULL")));
+  assert.ok(sqls.some((sql) => sql.includes("UPDATE companies SET deletion_requested_at = NULL") && sql.includes("role = 'ADMIN'")));
 });

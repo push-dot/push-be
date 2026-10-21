@@ -127,8 +127,11 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   const bNm = fieldText(body, "bNm");
   if (!/^\d{10}$/.test(bNo)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "bNo" });
   if (!/^\d{8}$/.test(startDt)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "startDt" });
-  const existing = await one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1", [ctx.user.id]);
-  if (existing) throw new HttpError(409, "CONFLICT", "already in a company");
+  const existing = await one(ctx.deps.query,
+    "SELECT m.company_id, m.role, c.verified_at FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
+    [ctx.user.id]);
+  const shell = existing != null && existing.verified_at == null && String(existing.role) === "ADMIN";
+  if (existing && !shell) throw new HttpError(409, "CONFLICT", "already in a company");
   const key = ctx.env.NTS_SERVICE_KEY;
   if (!key) throw new HttpError(503, "NOT_CONFIGURED", "nts is not configured");
   const validated = rowOf(await postNts(
@@ -146,8 +149,30 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   if (code === "02") throw businessError("SUSPENDED");
   if (code === "03") throw businessError("CLOSED");
   if (code !== "01") throw businessError("MISMATCH");
-  const companyId = crypto.randomUUID();
   const now = ctx.now.toISOString();
+  if (shell && existing) {
+    const companyId = String(existing.company_id);
+    try {
+      const updated = await query(ctx.deps.query,
+        "UPDATE companies SET b_no = $2, name = $3, verified_at = $4 WHERE id = $1 AND verified_at IS NULL",
+        [companyId, bNo, bNm, now]);
+      if ((updated.rowCount ?? 0) === 0) throw new HttpError(409, "CONFLICT", "already in a company");
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      if (isUnique(err)) throw new HttpError(409, "COMPANY_EXISTS", "company already exists");
+      throw err;
+    }
+    return data(201, {
+      id: companyId,
+      bNo,
+      name: bNm,
+      plan: null,
+      verifiedAt: ts(ctx.now),
+      role: "ADMIN",
+      seats: { used: 0, limit: 0 },
+    }, ctx.rid);
+  }
+  const companyId = crypto.randomUUID();
   try {
     await query(ctx.deps.query,
       "INSERT INTO companies (id, b_no, name, verified_at, plan, created_at) VALUES ($1,$2,$3,$4,NULL,$5)",
@@ -204,9 +229,15 @@ const invite = async (ctx: Ctx): Promise<Response> => {
   const raw = randomToken();
   const inviteId = crypto.randomUUID();
   const expires = new Date(ctx.now.getTime() + INVITE_MS).toISOString();
-  await query(ctx.deps.query,
-    "INSERT INTO company_invites (id, company_id, email, token_hash, expires_at, accepted_at) VALUES ($1,$2,$3,$4,$5,NULL)",
-    [inviteId, String(mine.id), email, await sha256Hex(raw), expires]);
+  const inserted = await query(ctx.deps.query,
+    `INSERT INTO company_invites (id, company_id, email, token_hash, expires_at, accepted_at)
+     SELECT $1, $2, $3, $4, $5, NULL
+     WHERE (
+       (SELECT count(*) FROM company_members WHERE company_id = $2 AND role = 'MEMBER')
+       + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)
+     ) < $7`,
+    [inviteId, String(mine.id), email, await sha256Hex(raw), expires, ctx.now.toISOString(), seatLimit(plan)]);
+  if ((inserted.rowCount ?? 0) === 0) throw new HttpError(403, "SEAT_LIMIT", "seat limit reached");
   const url = `${originOf(ctx)}/invites/${raw}`;
   try {
     await mailerOf(ctx).send({
@@ -225,10 +256,11 @@ const invite = async (ctx: Ctx): Promise<Response> => {
 const acceptInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   requireEmployer(ctx);
   const inviteRow = await one(ctx.deps.query,
-    "SELECT id, company_id, email, expires_at, accepted_at FROM company_invites WHERE token_hash = $1",
+    "SELECT i.id, i.company_id, i.email, i.expires_at, i.accepted_at, c.deletion_requested_at FROM company_invites i JOIN companies c ON c.id = i.company_id WHERE i.token_hash = $1",
     [await sha256Hex(token)]);
   if (!inviteRow) throw notFound();
   if (inviteRow.accepted_at != null) throw new HttpError(409, "CONFLICT", "invite already accepted");
+  if (inviteRow.deletion_requested_at != null) throw new HttpError(409, "CONFLICT", "company is pending deletion");
   const expires = Date.parse(String(inviteRow.expires_at));
   if (Number.isNaN(expires) || ctx.now.getTime() > expires) throw notFound();
   const user = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]);

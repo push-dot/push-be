@@ -5,7 +5,7 @@ import {
   pageLimit, parseUuid, USER_CACHE_CONTROL,
 } from "../http.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LIST_SQL, MESSAGES_SQL, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import { LIST_SQL, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -77,7 +77,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     }
   }
   try {
-    const rows = await deps.query(LIST_SQL, [
+    const rows = await queryToleratingCompany(deps.query, LIST_SQL, [
       ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
       appId, cursor.at, cursor.id, page.limit + 1,
     ]);
@@ -162,7 +162,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     }
   }
   try {
-    const rows = await deps.query(MESSAGES_SQL, [
+    const rows = await queryToleratingCompany(deps.query, MESSAGES_SQL, [
       ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
       id, cursor.at, cursor.id, page.limit + 1,
     ]);
@@ -261,7 +261,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
       }
       jobId = found;
     } else {
-      const rows = await deps.query(STREAM_SQL, [
+      const rows = await queryToleratingCompany(deps.query, STREAM_SQL, [
         ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release), id,
       ]);
       const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));

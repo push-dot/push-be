@@ -59,7 +59,8 @@
 26. **NTS call shape.** `serviceKey` is `encodeURIComponent`'d. Validate runs first; `valid !== "01"` or a 2xx JSON body with no `data[0]` is `MISMATCH` and status is not called. Non-2xx and non-JSON are 502 `PROVIDER_ERROR`.
 27. **Non-admin deletion.** `DELETE /me` for a member who is not an admin follows the personal path: no company Stripe cancel and no `companies.deletion_requested_at`. A sole admin skips the extra Stripe call when the company customer is null or equal to the user's customer.
 28. **Invite mail.** Stored email is lowercased. Trailing slashes on `APP_WEB_ORIGIN` are stripped, then the link is `/invites/{token}`. Missing `deps.mailer` uses `createMailer(env)`. An already accepted invite is 409 even if it is also expired.
-29. **Company tables missing.** User lookup retries without `company_members` when that relation or column is absent, and `companyId` / `companyRole` stay null. `DELETE /me` and login then follow the personal path. Company routes still need migration 0019.
+29. **Company tables missing.** Core and gateway user lookup retry without `company_members` when that relation or column is absent, and `companyId` / `companyRole` stay null. `DELETE /me` and login then follow the personal path. Company routes still need migration 0019.
+30. **Unverified shell.** `POST /companies/verify` updates the caller's existing company when they are `ADMIN` and `verified_at` is null (the migration backfill). Any other membership is 409 `CONFLICT` before NTS. A seat insert is one statement that rechecks the count, so a lost race is 403 `SEAT_LIMIT` and sends no mail. An invite to a company with `deletion_requested_at` set is 409. Login clears that mark only when the caller is `ADMIN`.
 
 ## File map
 

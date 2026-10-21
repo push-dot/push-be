@@ -111,6 +111,31 @@ test("auth/me preserves unauthenticated, expired, and success bodies", async () 
     '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null}}');
 });
 
+test("auth/me still works when company_members is missing", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const query: Query = async (sql) => {
+    seen.push(sql);
+    if (sql.includes("company_members")) {
+      throw Object.assign(new Error('relation "company_members" does not exist'), { code: "42P01" });
+    }
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05.000001Z",
+        expires_at: "2099-01-01T00:00:00Z",
+      }];
+    }
+    return [];
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.equal(seen.some((sql) => sql.includes("company_members")), true);
+  assert.equal(seen.some((sql) => sql.includes("access_tokens") && !sql.includes("company_members")), true);
+});
+
 test("conversation list pages with a Python-compatible cursor", async () => {
   resetLimits();
   const rows = [0, 1].map((i) => ({

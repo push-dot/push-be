@@ -6,6 +6,26 @@
 import { createIsolateCache } from "./cache.ts";
 import type { Deps } from "../types.ts";
 
+const missingCompanyTable = (err: unknown): boolean => {
+  const e = err as { code?: string; message?: string };
+  const text = `${e?.code || ""} ${e?.message || ""} ${String(err)}`;
+  return e?.code === "42P01" || e?.code === "42703" || /42P01|42703|relation .* does not exist|column .* does not exist/i.test(text);
+};
+
+export const queryToleratingCompany = async (run: Deps["query"], sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
+  try {
+    return await run(sql, params);
+  } catch (err) {
+    if (!sql.includes("company_members") || !missingCompanyTable(err)) throw err;
+    const fallback = sql
+      .replaceAll("m.company_id, m.role AS company_role", "NULL::uuid AS company_id, NULL::text AS company_role")
+      .replaceAll(" LEFT JOIN company_members m ON m.user_id = u.id", "")
+      .replaceAll("LEFT JOIN company_members m ON m.user_id = u.id", "");
+    if (fallback === sql || fallback.includes("company_members")) throw err;
+    return run(fallback, params);
+  }
+};
+
 const hits = new Map<string, number[]>();
 // Buckets this isolate has seen filled. Further requests are rejected
 // here and do not write Neon.

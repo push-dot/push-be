@@ -313,7 +313,7 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
 export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => {
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1 AND deletion_requested_at IS NOT NULL", [userId])
     .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
-  await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = NULL WHERE id IN (SELECT company_id FROM company_members WHERE user_id = $1)", [userId])
+  await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = NULL WHERE id IN (SELECT company_id FROM company_members WHERE user_id = $1 AND role = 'ADMIN')", [userId])
     .catch((err: unknown) => { if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err; });
 };
 

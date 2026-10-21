@@ -10,7 +10,7 @@ import type { User } from "../types.ts";
 import { codedError, errorResponse, sha256Hex } from "../http.ts";
 import {
   acceptGrant, allow, allowShared, AUTH_RATE_SQL, AUTH_SQL, isolate, leases,
-  nextBatch, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
+  nextBatch, queryToleratingCompany, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
 } from "./ratelimit.ts";
 
 function authTtlMs(env: FrontEnv): number {
@@ -145,7 +145,7 @@ export async function tokenContext(request: Request, env: FrontEnv, deps: Deps, 
 export async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: string): Promise<User | Response> {
   let rows: Record<string, unknown>[];
   try {
-    rows = await deps.query(AUTH_SQL, [ctx.hash]);
+    rows = await queryToleratingCompany(deps.query, AUTH_SQL, [ctx.hash]);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
@@ -193,11 +193,11 @@ export async function requireUser(request: Request, env: FrontEnv, deps: Deps, r
   let rows: Record<string, unknown>[];
   let shared = true;
   try {
-    rows = await deps.query(AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
+    rows = await queryToleratingCompany(deps.query, AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
   } catch {
     shared = false;
     try {
-      rows = await deps.query(AUTH_SQL, [ctx.hash]);
+      rows = await queryToleratingCompany(deps.query, AUTH_SQL, [ctx.hash]);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -205,7 +205,8 @@ export async function requireUser(request: Request, env: FrontEnv, deps: Deps, r
   return interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, shared, rid, deps, rememberBag(ctx, env));
 }
 async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
-  const rows = await deps.query(
+  const rows = await queryToleratingCompany(
+    deps.query,
     "SELECT u.id, u.display_name, u.locale, " + tsText("u.created_at") + " AS created_at, u.is_employer, m.company_id, m.role AS company_role FROM users u LEFT JOIN company_members m ON m.user_id = u.id WHERE u.id = $1::uuid",
     [env.DEV_USER_ID || ""],
   );
