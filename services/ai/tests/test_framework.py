@@ -429,6 +429,8 @@ def test_rag_store_replace_and_missing_sql():
             ("profiles", RESUME_SQL), ("jobs", JOB_SQL),
             ("job_postings", POSTING_SQL), ("user_links", LINK_SQL)):
         assert name in sql
+    assert "company_id" in POSTING_SQL
+    assert "company_user_id" not in POSTING_SQL
 
     class Boom:
         async def fetch(self, sql, *args):

@@ -27,7 +27,10 @@ const NOTIFY_COLUMN: Record<string, string> = {
   OFFER: "notify_offer",
   COMMENT: "notify_comment",
   AI_DONE: "notify_ai_done",
+  APPLICATION_STAGE: "notify_application_stage",
 };
+const EMPLOYER_STAGES = new Set(["SCREENING", "INTERVIEW", "OFFER", "REJECTED"]);
+const TERMINAL_STAGES = new Set(["ACCEPTED", "REJECTED", "WITHDRAWN"]);
 
 function unprocessable(field: string, message: string): HttpError {
   return new HttpError(422, "VALIDATION_ERROR", message, { field });
@@ -254,16 +257,19 @@ function postingDto(row: Record<string, unknown>, detail: boolean): Record<strin
     applied: asBool(row.applied),
     sourceUrl: row.source_url == null ? null : String(row.source_url),
     createdAt: ts(row.created_at),
+    revision: Number(row.revision ?? 1),
+    closedAt: ts(row.closed_at),
   };
   if (detail) {
     dto.description = String(row.description ?? "");
     dto.requirements = jsonList(row.requirements).map(String);
     dto.workConditions = jsonObject(row.work_conditions);
+    dto.preferred = jsonList(row.preferred).map(String);
   }
   return dto;
 }
 
-const POSTING_COLS = "p.id, p.company, p.title, p.job_category, p.image_key, p.skills, p.career_min, p.career_max, p.location, p.employment_type, p.deadline, p.source_url, p.created_at";
+const POSTING_COLS = "p.id, p.company, p.title, p.job_category, p.image_key, p.skills, p.career_min, p.career_max, p.location, p.employment_type, p.deadline, p.source_url, p.created_at, p.revision, p.preferred, p.closed_at";
 
 function postingFlags(userParam: string): string {
   return `EXISTS (SELECT 1 FROM bookmarks b WHERE b.user_id = ${userParam} AND b.posting_id = p.id) AS bookmarked,
@@ -303,17 +309,24 @@ async function listPostingLocations(ctx: Ctx): Promise<Response> {
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query,
-    `SELECT ${POSTING_COLS}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")} FROM job_postings p WHERE p.id = $1`,
+    `SELECT ${POSTING_COLS}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")} FROM job_postings p WHERE p.id = $1 AND p.closed_at IS NULL`,
     [id, ctx.user.id]);
   if (!row) throw notFound();
   return data(200, postingDto(row, true), ctx.rid);
 }
 
-async function employerOf(ctx: Ctx): Promise<{ employer: boolean; company: string }> {
-  const row = await one(ctx.deps.query, "SELECT is_employer, display_name FROM users WHERE id = $1", [ctx.user.id]);
-  if (!row) throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");
-  return { employer: asBool(row.is_employer), company: String(row.display_name ?? "") };
-}
+const verifiedCompany = async (ctx: Ctx): Promise<{ id: string; name: string }> => {
+  const row = await one(ctx.deps.query,
+    "SELECT c.id, c.name FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1 AND c.verified_at IS NOT NULL",
+    [ctx.user.id]);
+  if (!row) throw new HttpError(403, "FORBIDDEN", "verified company required");
+  return { id: String(row.id), name: String(row.name ?? "") };
+};
+
+const snapshotText = (value: unknown): string => {
+  if (value != null && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "");
+};
 
 async function createPosting(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
@@ -332,6 +345,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   const description = textOf(body.description, "description", 1, 50000);
   const skills = stringList(body.skills, "skills", 30, 40);
   const requirements = stringList(body.requirements, "requirements", 50, 500);
+  const preferred = stringList(body.preferred, "preferred", 50, 500);
   let workConditions: Record<string, unknown> = {};
   if (body.workConditions != null) {
     if (typeof body.workConditions !== "object" || Array.isArray(body.workConditions)) {
@@ -346,23 +360,23 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     if (!httpsUrl(sourceUrl)) throw fieldError("sourceUrl", "must be an http(s) URL without credentials");
   }
   const deadline = dateOf(body.deadline, "deadline");
-  const account = await employerOf(ctx);
-  if (!account.employer) throw new HttpError(403, "FORBIDDEN", "employer account required");
-  const company = body.company == null ? account.company : textOf(body.company, "company", 1, 200);
+  const account = await verifiedCompany(ctx);
+  const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
   if (!company) throw fieldError("company", "company must be 1-200 characters");
   const fields = searchFields(`${title} ${company}`);
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
-    `INSERT INTO job_postings (id, company_user_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, image_key, source_url, deadline, closed_at, search_text, search_choseong, search_jamo, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,NULL,$17,$18,$19,$20)`,
-    [id, ctx.user.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
-      JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), imageKey, sourceUrl, deadline,
+    `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21)`,
+    [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
+      JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
       fields.text, fields.choseong, fields.jamo, now]);
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,
     created_at: now, bookmarked: false, applied: false, description, requirements, work_conditions: workConditions,
+    preferred, revision: 1, closed_at: null,
   }, true), ctx.rid);
 }
 
@@ -403,21 +417,28 @@ function applicationDto(row: Record<string, unknown>): Record<string, unknown> {
     imported: asBool(row.imported),
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
+    fitScore: row.fit_score == null || row.fit_score === "" ? null : Number(row.fit_score),
   };
 }
 
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
+  if (ctx.user.accountType === "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "employer account required");
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "id"]);
   const documentIds = body.documentIds == null ? [] : body.documentIds;
   if (!Array.isArray(documentIds)) throw fieldError("documentIds", "must be an array");
-  const owned: string[] = [];
+  const owned: { id: string; title: string; content: unknown }[] = [];
   for (const raw of documentIds) {
     const docId = requireUuid(String(raw), "documentIds");
-    const doc = await one(ctx.deps.query, "SELECT id FROM documents WHERE id = $1 AND user_id = $2", [docId, ctx.user.id]);
+    const doc = await one(ctx.deps.query,
+      `SELECT d.id, d.title, v.content FROM documents d
+       JOIN document_versions v ON v.document_id = d.id
+       WHERE d.id = $1 AND d.user_id = $2
+       ORDER BY v.number DESC, v.created_at DESC, v.id DESC LIMIT 1`,
+      [docId, ctx.user.id]);
     if (!doc) throw notFound();
-    owned.push(docId);
+    owned.push({ id: docId, title: String(doc.title ?? ""), content: doc.content });
   }
   const existing = await one(ctx.deps.query,
     `SELECT a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at
@@ -445,12 +466,245 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     [applicationId, ctx.user.id, jobId, posting.company, posting.title, now]);
   await query(ctx.deps.query,
     "INSERT INTO application_events (id, user_id, application_id, type, payload, created_at) VALUES ($1,$2,$3,'APPLIED',$4::jsonb,$5)",
-    [crypto.randomUUID(), ctx.user.id, applicationId, JSON.stringify({ postingId: id, documentIds: owned }), now]);
+    [crypto.randomUUID(), ctx.user.id, applicationId, JSON.stringify({ postingId: id, documentIds: owned.map((doc) => doc.id) }), now]);
+  for (const doc of owned) {
+    await query(ctx.deps.query,
+      "INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+      [crypto.randomUUID(), applicationId, doc.id, doc.title, snapshotText(doc.content), now]);
+  }
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
     stage: "APPLIED", notes: "", applied_at: now, next_action_at: null, imported: false, created_at: now, updated_at: now,
   }), ctx.rid);
 }
+
+const expectedRevisionOf = (body: Record<string, unknown>): number => {
+  if (typeof body.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision)) {
+    throw fieldError("expectedRevision", "invalid expectedRevision");
+  }
+  return body.expectedRevision;
+};
+
+const revisionConflict = (currentRevision: number): HttpError =>
+  new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision });
+
+const POSTING_RETURNING = `id, company, title, job_category, image_key, skills, career_min, career_max, location, employment_type, deadline, source_url, created_at, revision, preferred, closed_at, description, requirements, work_conditions`;
+
+const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const body = await readObject(ctx.request);
+  rejectFields(body, ["userId", "createdAt", "updatedAt", "revision", "id", "companyUserId", "closedAt"]);
+  const expected = expectedRevisionOf(body);
+  const company = await verifiedCompany(ctx);
+  const current = await one(ctx.deps.query,
+    `SELECT ${POSTING_RETURNING} FROM job_postings WHERE id = $1 AND company_id = $2`,
+    [id, company.id]);
+  if (!current) throw notFound();
+  if (Number(current.revision) !== expected) throw revisionConflict(Number(current.revision));
+  const next = { ...current };
+  if ("title" in body) next.title = textOf(body.title, "title", 1, 300);
+  if ("company" in body) next.company = textOf(body.company, "company", 1, 200);
+  if ("jobCategory" in body) {
+    if (typeof body.jobCategory !== "string" || !JOB_CATEGORIES.has(body.jobCategory)) {
+      throw unprocessable("jobCategory", "unsupported jobCategory");
+    }
+    next.job_category = body.jobCategory;
+  }
+  if ("careerMin" in body) next.career_min = intOf(body.careerMin, "careerMin", 0, 80);
+  if ("careerMax" in body) next.career_max = body.careerMax == null ? null : intOf(body.careerMax, "careerMax", 0, 80);
+  const careerMin = Number(next.career_min ?? 0);
+  const careerMax = next.career_max == null ? null : Number(next.career_max);
+  if (careerMax != null && careerMax < careerMin) throw fieldError("careerMax", "must be greater than or equal to careerMin");
+  if ("location" in body) next.location = textOf(body.location, "location", 1, 80);
+  if ("employmentType" in body) {
+    if (typeof body.employmentType !== "string" || !EMPLOYMENT.has(body.employmentType)) {
+      throw unprocessable("employmentType", "unsupported employmentType");
+    }
+    next.employment_type = body.employmentType;
+  }
+  if ("description" in body) next.description = textOf(body.description, "description", 1, 50000);
+  if ("skills" in body) next.skills = stringList(body.skills, "skills", 30, 40);
+  if ("requirements" in body) next.requirements = stringList(body.requirements, "requirements", 50, 500);
+  if ("preferred" in body) next.preferred = stringList(body.preferred, "preferred", 50, 500);
+  if ("workConditions" in body) {
+    if (body.workConditions != null && (typeof body.workConditions !== "object" || Array.isArray(body.workConditions))) {
+      throw fieldError("workConditions", "must be an object");
+    }
+    next.work_conditions = body.workConditions ?? {};
+  }
+  if ("imageKey" in body) next.image_key = imageKeyOf(body.imageKey, "imageKey");
+  if ("sourceUrl" in body) {
+    if (body.sourceUrl == null) next.source_url = null;
+    else {
+      const sourceUrl = textOf(body.sourceUrl, "sourceUrl", 1, 2000);
+      if (!httpsUrl(sourceUrl)) throw fieldError("sourceUrl", "must be an http(s) URL without credentials");
+      next.source_url = sourceUrl;
+    }
+  }
+  if ("deadline" in body) next.deadline = dateOf(body.deadline, "deadline");
+  const fields = searchFields(`${String(next.title ?? "")} ${String(next.company ?? "")}`);
+  const updated = await one(ctx.deps.query,
+    `UPDATE job_postings SET company = $3, title = $4, job_category = $5, career_min = $6, career_max = $7, location = $8, employment_type = $9, description = $10, requirements = $11::jsonb, work_conditions = $12::jsonb, skills = $13::jsonb, preferred = $14::jsonb, image_key = $15, source_url = $16, deadline = $17, search_text = $18, search_choseong = $19, search_jamo = $20, revision = revision + 1
+     WHERE id = $1 AND company_id = $2 AND revision = $21
+     RETURNING ${POSTING_RETURNING}`,
+    [id, company.id, next.company, next.title, next.job_category, careerMin, careerMax, next.location, next.employment_type, next.description,
+      JSON.stringify(jsonList(next.requirements)), JSON.stringify(jsonObject(next.work_conditions)), JSON.stringify(jsonList(next.skills)), JSON.stringify(jsonList(next.preferred)),
+      next.image_key ?? null, next.source_url ?? null, next.deadline ?? null, fields.text, fields.choseong, fields.jamo, expected]);
+  if (!updated) {
+    const again = await one(ctx.deps.query, "SELECT revision FROM job_postings WHERE id = $1 AND company_id = $2", [id, company.id]);
+    if (!again) throw notFound();
+    throw revisionConflict(Number(again.revision));
+  }
+  return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true), ctx.rid);
+};
+
+const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const body = await readObject(ctx.request);
+  const expected = expectedRevisionOf(body);
+  const company = await verifiedCompany(ctx);
+  const current = await one(ctx.deps.query,
+    "SELECT id, revision, closed_at FROM job_postings WHERE id = $1 AND company_id = $2",
+    [id, company.id]);
+  if (!current) throw notFound();
+  if (current.closed_at != null || Number(current.revision) !== expected) {
+    throw revisionConflict(Number(current.revision));
+  }
+  const updated = await one(ctx.deps.query,
+    `UPDATE job_postings SET closed_at = $3, revision = revision + 1
+     WHERE id = $1 AND company_id = $2 AND revision = $4 AND closed_at IS NULL
+     RETURNING ${POSTING_RETURNING}`,
+    [id, company.id, ctx.now.toISOString(), expected]);
+  if (!updated) {
+    const again = await one(ctx.deps.query, "SELECT revision FROM job_postings WHERE id = $1 AND company_id = $2", [id, company.id]);
+    if (!again) throw notFound();
+    throw revisionConflict(Number(again.revision));
+  }
+  return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true), ctx.rid);
+};
+
+const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
+  const member = await one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1 LIMIT 1", [ctx.user.id]);
+  if (!member) throw notFound();
+  const page = pageOf(ctx.url);
+  const params: unknown[] = [ctx.user.id, String(member.company_id)];
+  const where = " FROM job_postings p WHERE p.company_id = $2";
+  const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
+  const total = Number(count?.total ?? 0);
+  let sql = `SELECT ${POSTING_COLS}, ${postingFlags("$1")}` + where;
+  if (page.cursor) {
+    params.push(page.cursor.createdAt, page.cursor.id);
+    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+  }
+  params.push(page.limit + 1);
+  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+  const rows = await query(ctx.deps.query, sql, params);
+  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
+  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+};
+
+const requirePostingMember = async (ctx: Ctx, postingId: string): Promise<void> => {
+  const row = await one(ctx.deps.query,
+    "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1",
+    [postingId, ctx.user.id]);
+  if (!row) throw notFound();
+};
+
+const APPLICANT_SQL = `SELECT a.id, a.user_id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at,
+  (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = a.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score
+  FROM applications a JOIN jobs j ON j.id = a.job_id
+  WHERE a.id = $1 AND j.source_posting_id = $2`;
+
+const loadApplicant = async (ctx: Ctx, postingId: string, applicationId: string): Promise<Record<string, unknown>> => {
+  const row = await one(ctx.deps.query, APPLICANT_SQL, [applicationId, postingId]);
+  if (!row) throw notFound();
+  return row;
+};
+
+const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const postingId = requireUuid(idRaw, "id");
+  await requirePostingMember(ctx, postingId);
+  const stage = ctx.url.searchParams.get("stage");
+  const page = pageOf(ctx.url);
+  const params: unknown[] = [postingId];
+  let sql = `SELECT a.id, a.stage, a.applied_at, u.display_name, pr.headline
+    FROM applications a
+    JOIN jobs j ON j.id = a.job_id
+    JOIN users u ON u.id = a.user_id
+    LEFT JOIN profiles pr ON pr.user_id = a.user_id
+    WHERE j.source_posting_id = $1`;
+  if (stage) {
+    params.push(stage);
+    sql += ` AND a.stage = $${params.length}`;
+  }
+  if (page.cursor) {
+    params.push(page.cursor.createdAt, page.cursor.id);
+    sql += ` AND (a.applied_at, a.id) < ($${params.length - 1}, $${params.length})`;
+  }
+  params.push(page.limit + 1);
+  sql += ` ORDER BY a.applied_at DESC, a.id DESC LIMIT $${params.length}`;
+  const rows = await query(ctx.deps.query, sql, params);
+  const mapped = rows.rows.map((row) => ({
+    item: {
+      applicationId: String(row.id),
+      applicant: {
+        displayName: String(row.display_name ?? ""),
+        headline: row.headline == null ? null : String(row.headline),
+      },
+      stage: String(row.stage ?? ""),
+      appliedAt: ts(row.applied_at) ?? "",
+    },
+    createdAt: row.applied_at,
+    id: String(row.id),
+  }));
+  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+};
+
+const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string }[]> => {
+  const rows = await query(ctx.deps.query,
+    "SELECT id, title, content FROM application_snapshots WHERE application_id = $1 ORDER BY created_at, id",
+    [applicationId]);
+  return rows.rows.map((row) => ({
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    content: snapshotText(row.content),
+  }));
+};
+
+const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
+  const postingId = requireUuid(postingRaw, "id");
+  const applicationId = requireUuid(applicationRaw, "applicationId");
+  await requirePostingMember(ctx, postingId);
+  const application = await loadApplicant(ctx, postingId, applicationId);
+  const documents = await snapshotDocuments(ctx, applicationId);
+  return data(200, { application: applicationDto(application), documents }, ctx.rid);
+};
+
+const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
+  const postingId = requireUuid(postingRaw, "id");
+  const applicationId = requireUuid(applicationRaw, "applicationId");
+  const body = await readObject(ctx.request);
+  if (typeof body.stage !== "string" || !EMPLOYER_STAGES.has(body.stage)) {
+    throw unprocessable("stage", "unsupported stage");
+  }
+  await requirePostingMember(ctx, postingId);
+  const current = await loadApplicant(ctx, postingId, applicationId);
+  if (TERMINAL_STAGES.has(String(current.stage))) {
+    throw new HttpError(409, "INVALID_TRANSITION", "terminal stage");
+  }
+  if (String(current.stage) === body.stage) return data(200, applicationDto(current), ctx.rid);
+  const now = ctx.now.toISOString();
+  const updated = await one(ctx.deps.query,
+    `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
+     WHERE id = $1 AND user_id = $2
+     RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
+    [applicationId, String(current.user_id), body.stage, now]);
+  if (!updated) throw notFound();
+  await notify(ctx, String(current.user_id), "APPLICATION_STAGE", "지원 상태가 바뀌었어요", "", { kind: "activity", id: applicationId });
+  return data(200, applicationDto(updated), ctx.rid);
+};
 
 async function search(ctx: Ctx): Promise<Response> {
   const q = ctx.url.searchParams.get("q") || "";
@@ -1036,27 +1290,20 @@ async function readNotifications(ctx: Ctx): Promise<Response> {
   return noContent(ctx.rid);
 }
 
-function retentionCap(plan: string): number | null {
-  if (plan === "ULTRA") return null;
-  if (plan === "PRO") return 30;
-  return 7;
-}
-
-function settingsDto(row: Record<string, unknown>, plan: string): Record<string, unknown> {
-  const cap = retentionCap(plan);
-  const stored = row.chat_retention_days == null ? null : Number(row.chat_retention_days);
+function settingsDto(row: Record<string, unknown>): Record<string, unknown> {
   return {
     notifyDeadline: asBool(row.notify_deadline),
     notifyOffer: asBool(row.notify_offer),
     notifyComment: asBool(row.notify_comment),
     notifyAiDone: asBool(row.notify_ai_done),
+    notifyApplicationStage: row.notify_application_stage == null ? true : asBool(row.notify_application_stage),
     locale: String(row.locale ?? "ko"),
     profilePublic: asBool(row.profile_public),
     careerStatusVisibility: String(row.career_status_visibility ?? "everyone"),
     hideFromCurrentCompany: asBool(row.hide_from_current_company),
     contactVisibility: String(row.contact_visibility ?? "accepted"),
     defaultTone: String(row.default_tone ?? "as_is"),
-    chatRetentionDays: stored == null ? cap : stored,
+    chatRetentionDays: row.chat_retention_days == null ? null : Number(row.chat_retention_days),
     allowAiReadMyFiles: asBool(row.allow_ai_read_my_files),
   };
 }
@@ -1064,7 +1311,7 @@ function settingsDto(row: Record<string, unknown>, plan: string): Record<string,
 async function loadSettings(ctx: Ctx): Promise<Record<string, unknown>> {
   await query(ctx.deps.query, "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [ctx.user.id]);
   const row = await one(ctx.deps.query,
-    `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, u.locale, s.profile_public,
+    `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, s.notify_application_stage, u.locale, s.profile_public,
             s.career_status_visibility, s.hide_from_current_company, s.contact_visibility, s.default_tone,
             s.chat_retention_days, s.allow_ai_read_my_files
      FROM user_settings s JOIN users u ON u.id = s.user_id WHERE s.user_id = $1`,
@@ -1074,7 +1321,7 @@ async function loadSettings(ctx: Ctx): Promise<Record<string, unknown>> {
 }
 
 async function getSettings(ctx: Ctx): Promise<Response> {
-  return data(200, settingsDto(await loadSettings(ctx), ctx.user.plan), ctx.rid);
+  return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
 }
 
 async function patchSettings(ctx: Ctx): Promise<Response> {
@@ -1085,6 +1332,7 @@ async function patchSettings(ctx: Ctx): Promise<Response> {
   if ("notifyOffer" in body) next.notify_offer = boolOf(body.notifyOffer, "notifyOffer");
   if ("notifyComment" in body) next.notify_comment = boolOf(body.notifyComment, "notifyComment");
   if ("notifyAiDone" in body) next.notify_ai_done = boolOf(body.notifyAiDone, "notifyAiDone");
+  if ("notifyApplicationStage" in body) next.notify_application_stage = boolOf(body.notifyApplicationStage, "notifyApplicationStage");
   if ("profilePublic" in body) next.profile_public = boolOf(body.profilePublic, "profilePublic");
   if ("hideFromCurrentCompany" in body) next.hide_from_current_company = boolOf(body.hideFromCurrentCompany, "hideFromCurrentCompany");
   if ("allowAiReadMyFiles" in body) next.allow_ai_read_my_files = boolOf(body.allowAiReadMyFiles, "allowAiReadMyFiles");
@@ -1110,24 +1358,16 @@ async function patchSettings(ctx: Ctx): Promise<Response> {
     next.locale = body.locale;
   }
   if ("chatRetentionDays" in body) {
-    const cap = retentionCap(ctx.user.plan);
-    if (body.chatRetentionDays == null) {
-      if (cap != null) throw unprocessable("chatRetentionDays", "unlimited retention requires ULTRA");
-      next.chat_retention_days = null;
-    } else {
-      const days = intOf(body.chatRetentionDays, "chatRetentionDays", 1, 3650);
-      if (cap != null && days > cap) throw unprocessable("chatRetentionDays", "exceeds the plan limit");
-      next.chat_retention_days = days;
-    }
+    next.chat_retention_days = body.chatRetentionDays == null ? null : intOf(body.chatRetentionDays, "chatRetentionDays", 1, 3650);
   }
   await query(ctx.deps.query,
     `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, updated_at = $13 WHERE user_id = $1`,
+      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14 WHERE user_id = $1`,
     [ctx.user.id, next.notify_deadline, next.notify_offer, next.notify_comment, next.notify_ai_done, next.profile_public,
       next.career_status_visibility, next.hide_from_current_company, next.contact_visibility, next.default_tone,
-      next.chat_retention_days, next.allow_ai_read_my_files, ctx.now.toISOString()]);
-  return data(200, settingsDto(await loadSettings(ctx), ctx.user.plan), ctx.rid);
+      next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString()]);
+  return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
 }
 
 async function followUser(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -1189,7 +1429,12 @@ async function listRelation(ctx: Ctx, incoming: boolean): Promise<Response> {
 function postDto(row: Record<string, unknown>): Record<string, unknown> {
   return {
     id: String(row.id),
-    author: { id: String(row.user_id ?? ""), displayName: String(row.display_name ?? "") },
+    author: {
+      id: String(row.user_id ?? ""),
+      displayName: String(row.display_name ?? ""),
+      employer: asBool(row.is_employer),
+      companyName: row.company_name == null || row.company_name === "" ? null : String(row.company_name),
+    },
     category: String(row.category ?? ""),
     title: String(row.title ?? ""),
     body: String(row.body ?? ""),
@@ -1200,9 +1445,11 @@ function postDto(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-const POST_SQL = `p.id, p.user_id, u.display_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
+const POST_SQL = `p.id, p.user_id, u.display_name, u.is_employer, co.name AS company_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
   (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count
-  FROM posts p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}`;
+  FROM posts p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
+  LEFT JOIN company_members cm ON cm.user_id = u.id
+  LEFT JOIN companies co ON co.id = cm.company_id`;
 
 async function listPosts(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
@@ -1268,9 +1515,16 @@ async function createPost(ctx: Ctx): Promise<Response> {
     `INSERT INTO posts (id, user_id, category, title, body, image_keys, view_count, search_text, search_choseong, search_jamo, created_at)
      VALUES ($1,$2,$3,$4,$5,$6::jsonb,0,$7,$8,$9,$10)`,
     [id, ctx.user.id, body.category, title, text, JSON.stringify(keys), fields.text, fields.choseong, fields.jamo, now]);
+  const author = await one(ctx.deps.query,
+    `SELECT u.is_employer, co.name AS company_name FROM users u
+     LEFT JOIN company_members cm ON cm.user_id = u.id
+     LEFT JOIN companies co ON co.id = cm.company_id WHERE u.id = $1`,
+    [ctx.user.id]);
   return data(201, postDto({
     id, user_id: ctx.user.id, display_name: ctx.user.displayName, category: body.category, title, body: text,
     image_keys: keys, view_count: 0, comment_count: 0, created_at: now,
+    is_employer: author ? author.is_employer : ctx.user.accountType === "EMPLOYER",
+    company_name: author?.company_name ?? null,
   }), ctx.rid);
 }
 
@@ -1377,8 +1631,17 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (bookmark && method === "DELETE") return unbookmarkPosting(ctx, bookmark[1]);
   const apply = path.match(/^\/api\/v1\/postings\/([^/]+)\/apply$/);
   if (apply && method === "POST") return applyPosting(ctx, apply[1]);
+  if (method === "GET" && path === "/api/v1/companies/me/postings") return listCompanyPostings(ctx);
+  const close = path.match(/^\/api\/v1\/postings\/([^/]+)\/close$/);
+  if (close && method === "POST") return closePosting(ctx, close[1]);
+  const applicant = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)$/);
+  if (applicant && method === "GET") return getApplicant(ctx, applicant[1], applicant[2]);
+  if (applicant && method === "PATCH") return patchApplicant(ctx, applicant[1], applicant[2]);
+  const applicants = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicants$/);
+  if (applicants && method === "GET") return listApplicants(ctx, applicants[1]);
   const posting = path.match(/^\/api\/v1\/postings\/([^/]+)$/);
   if (posting && method === "GET") return getPosting(ctx, posting[1]);
+  if (posting && method === "PATCH") return patchPosting(ctx, posting[1]);
 
   if (method === "GET" && path === "/api/v1/search") return search(ctx);
 

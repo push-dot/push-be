@@ -280,7 +280,8 @@ def stage_after_applied(s: str) -> bool:
     return s in ("SCREENING", "INTERVIEW", "OFFER")
 
 
-class Application(Model):
+class Application(OmitModel):
+    _omit_none: ClassVar[frozenset] = frozenset({"fit_score"})
     id: UUID
     user_id: UUID = Field(exclude=True)
     revision: int = 1
@@ -292,6 +293,7 @@ class Application(Model):
     applied_at: Optional[datetime] = None
     next_action_at: Optional[datetime] = None
     imported: bool = False
+    fit_score: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

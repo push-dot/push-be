@@ -61,6 +61,7 @@
 28. **Invite mail.** Stored email is lowercased. Trailing slashes on `APP_WEB_ORIGIN` are stripped, then the link is `/invites/{token}`. Missing `deps.mailer` uses `createMailer(env)`. An already accepted invite is 409 even if it is also expired.
 29. **Company tables missing.** Core and gateway user lookup retry without `company_members` when that relation or column is absent, and `companyId` / `companyRole` stay null. `DELETE /me` and login then follow the personal path. Company routes still need migration 0019.
 30. **Unverified shell.** `POST /companies/verify` updates the caller's existing company when they are `ADMIN` and `verified_at` is null (the migration backfill). Any other membership is 409 `CONFLICT` before NTS. A seat insert is one statement that rechecks the count, so a lost race is 403 `SEAT_LIMIT` and sends no mail. An invite to a company with `deletion_requested_at` set is 409. Login clears that mark only when the caller is `ADMIN`.
+31. **Posting conflicts and AI fitScore.** A stale posting patch compares `revision` in the handler and throws 409 before any `UPDATE`. Closing an already closed company posting is 409 `REVISION_CONFLICT` with `details.currentRevision`, even when `expectedRevision` matches. Another company's posting is 404. `GET /companies/me/postings` allows any member, including an unverified company. An applicant stage patch to the same stage returns the row and does not bump revision or insert a notification. AI `Application` omits `fitScore` when there is no score. `ApplicationStore` selects the latest `gap_analyses.fit_score` on read only. `can_patch_stage` stays sequential.
 
 ## File map
 
@@ -395,15 +396,15 @@ Routes:
 - `postDto.author.employer` and `companyName`.
 - `applicationDto.fitScore`.
 
-- [ ] **Step 1: Failing tests** for unverified create 403, verified create, patch conflict 409 `REVISION_CONFLICT` with `details.currentRevision`, close, apply snapshot insert, employer apply 403, stage patch notification SQL, terminal stage 409, settings patch of `notifyApplicationStage`, and a FREE user setting `chatRetentionDays: null` getting 200.
+- [x] **Step 1: Failing tests** for unverified create 403, verified create, patch conflict 409 `REVISION_CONFLICT` with `details.currentRevision`, close, apply snapshot insert, employer apply 403, stage patch notification SQL, terminal stage 409, settings patch of `notifyApplicationStage`, and a FREE user setting `chatRetentionDays: null` getting 200.
 
-- [ ] **Step 2: Run** the test. Expected: FAIL.
+- [x] **Step 2: Run** the test. Expected: FAIL.
 
-- [ ] **Step 3: Implement** inside the existing recruiting module. Update every `company_user_id` reference, including `services/ai/src/app/infrastructure/store_rag.py`.
+- [x] **Step 3: Implement** inside the existing recruiting module. Update every `company_user_id` reference, including `services/ai/src/app/infrastructure/store_rag.py`.
 
-- [ ] **Step 4: Run** core tests and `tsc`. Run `pytest tests/test_application.py tests/test_recruiting_local.py` in `services/ai` if those files import posting columns.
+- [x] **Step 4: Run** core tests and `tsc`. Run `pytest tests/test_application.py tests/test_recruiting_local.py` in `services/ai` if those files import posting columns.
 
-- [ ] **Step 5: Commit** `feat(postings): add company ownership and applicant stages`
+- [x] **Step 5: Commit** `feat(postings): add company ownership and applicant stages`
 
 ---
 

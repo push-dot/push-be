@@ -62,7 +62,7 @@ POSTING_SQL = (
     "SELECT p.id, p.company, p.title, p.description "
     "FROM job_postings p "
     "WHERE p.closed_at IS NULL "
-    "AND (p.company_user_id = $1 OR EXISTS ("
+    "AND (p.company_id = $1 OR EXISTS ("
     "SELECT 1 FROM bookmarks b "
     "WHERE b.posting_id = p.id AND b.user_id = $1)) "
     "AND NOT EXISTS ("
