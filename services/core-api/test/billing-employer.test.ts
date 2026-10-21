@@ -12,7 +12,7 @@ const MONTH = "monthly:2026-10";
 
 type Call = { sql: string; params: unknown[] };
 type LedgerRow = { reference: string; amount: number; userId: string | null; companyId: string | null };
-type Err = { error: { code: string; details: { field?: string } | null } };
+type Err = { error: { code: string; message: string; details: { field?: string } | null } };
 
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 
@@ -491,4 +491,94 @@ test("iap verify without a store port or key is not configured and does not fetc
   assert.equal(res.status, 503);
   assert.equal((await codeOf(res)).code, "NOT_CONFIGURED");
   assert.equal(fetched, 0);
+});
+
+const b64url = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes))
+  .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
+const text64 = (value: string): string => b64url(new TextEncoder().encode(value));
+
+const jws = async (payload: unknown, privateKey: CryptoKey): Promise<string> => {
+  const header = text64(JSON.stringify({ alg: "ES256" }));
+  const body = text64(JSON.stringify(payload));
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode(`${header}.${body}`)));
+  return `${header}.${body}.${b64url(sig)}`;
+};
+
+const p256 = async () => {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey));
+  const pem = `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...spki))}\n-----END PUBLIC KEY-----`;
+  const token = await jws({ notificationType: "DID_RENEW", originalTransactionId: "tx-1", productId: "ios.pro" }, pair.privateKey);
+  const parts = token.split(".");
+  const packed = parts[2]!.replaceAll("-", "+").replaceAll("_", "/");
+  const sig = Uint8Array.from(atob(packed + "=".repeat((4 - (packed.length % 4)) % 4)), (char) => char.charCodeAt(0));
+  sig[0] ^= 255;
+  return { pem, token, bad: `${parts[0]}.${parts[1]}.${b64url(sig)}`, privateKey: pair.privateKey };
+};
+
+test("a top-up charges one price unit per displayed credit", async () => {
+  resetLimits();
+  const calls: { url: string; body: string }[] = [];
+  const seen: Call[] = [];
+  const query = authed(seen, false, null, async () => empty);
+  const res = await handle(
+    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777777"),
+    envOf(),
+    { query, now: () => NOW, fetch: stripeFetch(calls) },
+  );
+  assert.equal(res.status, 200);
+  const form = new URLSearchParams(calls[0]?.body);
+  assert.equal(form.get("line_items[0][quantity]"), "3");
+  assert.equal(form.get("metadata[amountMicroCredits]"), "18000");
+});
+
+test("an unverified store webhook is rejected", async () => {
+  resetLimits();
+  const key = await p256();
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("INSERT INTO billing_ledger")) throw new Error("ledger");
+    return empty;
+  };
+  const forged = await handle(
+    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.bad }),
+    envOf({ APPLE_IAP_KEY: key.pem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(forged.status, 400);
+  assert.equal((await codeOf(forged)).message, "invalid webhook signature");
+  const unsigned = await handle(
+    new Request("https://core.example/api/v1/billing/webhook/google-play", {
+      method: "POST",
+      body: JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } }),
+    }),
+    envOf({ GOOGLE_PLAY_KEY: key.pem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(unsigned.status, 400);
+  assert.equal((await codeOf(unsigned)).message, "invalid webhook signature");
+  const nested = await handle(
+    new Request("https://core.example/api/v1/billing/webhook/app-store", {
+      method: "POST",
+      body: await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: key.bad } }, key.privateKey),
+    }),
+    envOf({ APPLE_IAP_KEY: key.pem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(nested.status, 400);
+  assert.equal((await codeOf(nested)).message, "invalid webhook signature");
+  const accepted = await handle(
+    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.token }),
+    envOf({ APPLE_IAP_KEY: key.pem }),
+    { query, now: () => NOW },
+  );
+  assert.equal(accepted.status, 200);
+  const rawKey = await handle(
+    new Request("https://core.example/api/v1/billing/webhook/app-store", { method: "POST", body: key.token }),
+    envOf({ APPLE_IAP_KEY: "sk_live_not_a_public_key" }),
+    { query, now: () => NOW },
+  );
+  assert.equal(rawKey.status, 503);
+  assert.equal((await codeOf(rawKey)).code, "NOT_CONFIGURED");
 });

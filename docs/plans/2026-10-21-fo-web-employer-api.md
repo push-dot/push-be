@@ -69,6 +69,8 @@
 36. **IAP top-up credits.** The verify body has no amount. Grant `IAP_TOPUP_CREDITS` displayed credits, default 300 (`1_800_000` micro). A top-up does not change `users.plan` and is allowed while Stripe `subscription_status` is `ACTIVE`.
 37. **Monthly grant is separate.** `GET /billing` inserts one `PURCHASE` with `reference_id` `monthly:YYYY-MM`. Checkout keeps a separate `PURCHASE` whose `reference_id` is the Stripe session id. Do not merge them.
 38. **Personal monthly amounts.** Personal PRO stays `30_000_000` and personal ULTRA stays `100_000_000`. Personal FREE monthly is `1_800_000`. Employer BASIC, PRO, and ULTRA are `18_000_000`, `90_000_000`, and `180_000_000`.
+39. **Store webhook signatures and top-up quantity.** App Store and Google Play webhooks grant only after `crypto.subtle.verify` of a JWS. `APPLE_IAP_KEY` and `GOOGLE_PLAY_KEY` are imported as an SPKI public key (ES256 or RS256). A key that cannot be imported is 503 `NOT_CONFIGURED` and nothing is granted. A bad or missing signature is 400 `VALIDATION_ERROR` with message `invalid webhook signature`. Apple `signedTransactionInfo` is verified with the same key. Plain Google Pub/Sub JSON is rejected. Apple x5c and Google OIDC are not checked. This is stricter than api-spec 3.15, which describes Google Play RTDN as a Pub/Sub push: an unsigned push does not change a plan. `POST /billing/topup` sets Stripe `line_items[0][quantity]` to the displayed credit `amount`. `STRIPE_PRICE_TOPUP` is the price of one displayed credit. The webhook still grants `metadata.amountMicroCredits`.
+40. **Docs 8c64ec3.** api-spec 4.1 create already accepts `requirements[]`, `preferred[]`, and `workConditions`, and detail returns them. `PATCH /postings/{id}` and `POST /postings/{id}/close` take `expectedRevision` and return 409 on a mismatch. `GET /companies/me/postings` includes closed rows. `GET /billing` employer `plan` is `BASIC|PRO|ULTRA|null`; personal stays `FREE|PRO|ULTRA|null`. Section 6 optional fields (`fitScore`, `author.employer`, `author.companyName`, `notifyApplicationStage`, `APPLICATION_STAGE` with `target.kind` `activity`) match the handlers already shipped. `GET /companies/me/members` stays `{ data: [...] }` (Decision 24); api-spec 4.6 still shows a bare array. Task 9 must also accept `POST /conversations/{id}/messages` and return a `posting-draft` fenced block.
 
 ## File map
 
@@ -530,6 +532,8 @@ Values match PRD 7.13. `reference` is `basic | extended | full`. `tenure` is `sa
 - Gateway `GET /conversations?audience=EMPLOYER` lists `company_id` matches for the caller's company. Personal list stays user-owned and excludes company rows.
 - `POST /conversations/{id}/attachments` is core (`isCore`). Multipart field `file`. PDF only. Company plan ULTRA. 403 `PLAN_REQUIRED` with `details.requiredPlan = "ULTRA"` otherwise. 201 `{ data: { id, fileName, mimeType } }`.
 - AI message handling: intent `interview` on a BASIC company is 403 `PLAN_REQUIRED` `requiredPlan: "PRO"`. Employer managed options replace model and effort from `levers_for("EMPLOYER", plan)`. Posting intent sets `web_search=True`.
+- `POST /conversations/{id}/messages` is the non-stream fallback from api-spec 4.8 (docs `8c64ec3`). Keep the existing stream path.
+- An employer posting draft is a ```posting-draft fenced block in the assistant message: title, description, requirements, preferred, work conditions.
 - Archiving an employer conversation deletes `conversation_attachments` (FK cascade is enough if archive does not delete the row; add an explicit delete on archive).
 
 - [ ] **Step 1: Failing tests** for personal create still working without `audience`, employer create without verification 403, Ultra PDF stored, BASIC PDF 403, interview intent on BASIC 403.
@@ -586,8 +590,8 @@ Record failures that were already present on `origin/develop` separately from ne
 ## Manual steps (do not perform them)
 
 - Apply `db/migrations/0019_fo_web_employer.sql` by hand on Neon. Deploy does not run it.
-- Create Stripe products with `metadata.audience=EMPLOYER` and `metadata.plan=BASIC|PRO|ULTRA`, plus a one-time top-up price. Put the price ids in the env vars from task 7.
-- App Store Server Notifications V2 and Google Play RTDN point at `POST /api/v1/billing/webhook/app-store` and `POST /api/v1/billing/webhook/google-play`.
+- Create Stripe products with `metadata.audience=EMPLOYER` and `metadata.plan=BASIC|PRO|ULTRA`, plus a one-time top-up price of one displayed credit. Checkout quantity is the requested amount. Put the price ids in the env vars from task 7.
+- App Store Server Notifications V2 and Google Play RTDN point at `POST /api/v1/billing/webhook/app-store` and `POST /api/v1/billing/webhook/google-play`. Only a JWS that `crypto.subtle.verify` accepts with the env SPKI public key is granted (Decision 39). A plain Pub/Sub JSON body is rejected.
 - Set `NTS_SERVICE_KEY`, `MAIL_FROM`, `APP_WEB_ORIGIN`, and the Cloudflare `EMAIL` binding.
 - Confirm OpenRouter provider slugs for DeepSeek US hosting and set `OPENROUTER_DEEPSEEK_PROVIDERS` if the default is wrong.
 
@@ -601,3 +605,4 @@ Record failures that were already present on `origin/develop` separately from ne
 - `Application.fitScore` is optional. `Settings.notifyApplicationStage` is optional in the type and present in the JSON.
 - `Post.author` adds `employer` and `companyName`.
 - Applicant stage PATCH does not take `expectedRevision`, matching the frontend client.
+- Store webhooks grant only after JWS verification. api-spec 3.15 describes Google Play RTDN as a Pub/Sub push; an unsigned push is 400 (Decision 39).

@@ -25,10 +25,108 @@ const jsonOf = (bytes: Uint8Array): Record<string, unknown> => {
   return body as Record<string, unknown>;
 };
 
-const jwsPayload = (token: string): Record<string, unknown> => {
+const invalidSignature = (): HttpError => new HttpError(400, "VALIDATION_ERROR", "invalid webhook signature");
+
+const exactBytes = (bytes: Uint8Array): ArrayBuffer => {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+};
+
+const spkiBytes = (key: string): Uint8Array => {
+  const trimmed = key.includes("BEGIN")
+    ? key.replace(/-----BEGIN [^-]+-----/g, "").replace(/-----END [^-]+-----/g, "").replace(/\s+/g, "")
+    : key.replace(/\s+/g, "");
+  return bytesOf(trimmed);
+};
+
+const importVerifyKey = async (material: string, alg: string): Promise<CryptoKey> => {
+  const algorithm = alg === "ES256"
+    ? { name: "ECDSA", namedCurve: "P-256" }
+    : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+  try {
+    return await crypto.subtle.importKey("spki", exactBytes(spkiBytes(material)), algorithm, false, ["verify"]);
+  } catch {
+    throw notConfigured("store verify key is not configured");
+  }
+};
+
+const jwsParts = (token: string): [string, string, string] | null => {
   const parts = token.split(".");
-  if (parts.length < 2 || !parts[1]) throw new HttpError(400, "VALIDATION_ERROR", "invalid store payload");
-  return jsonOf(bytesOf(parts[1]));
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) return null;
+  return [parts[0]!, parts[1]!, parts[2]!];
+};
+
+const verifyJws = async (token: string, material: string): Promise<Record<string, unknown>> => {
+  const parts = jwsParts(token.trim());
+  if (!parts) throw invalidSignature();
+  let header: Record<string, unknown>;
+  try {
+    header = jsonOf(bytesOf(parts[0]));
+  } catch {
+    throw invalidSignature();
+  }
+  const alg = typeof header.alg === "string" ? header.alg : "";
+  if (alg !== "ES256" && alg !== "RS256") throw invalidSignature();
+  const key = await importVerifyKey(material, alg);
+  const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+  let ok = false;
+  try {
+    ok = await crypto.subtle.verify(
+      alg === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "RSASSA-PKCS1-v1_5" },
+      key,
+      exactBytes(bytesOf(parts[2])),
+      data,
+    );
+  } catch {
+    ok = false;
+  }
+  if (!ok) throw invalidSignature();
+  try {
+    return jsonOf(bytesOf(parts[1]));
+  } catch {
+    throw invalidSignature();
+  }
+};
+
+const appleToken = (body: string): string => {
+  const text = body.trim();
+  if (text.startsWith("{")) {
+    let parsed: { signedPayload?: unknown };
+    try {
+      parsed = JSON.parse(text) as { signedPayload?: unknown };
+    } catch {
+      throw invalidSignature();
+    }
+    if (typeof parsed.signedPayload !== "string" || !jwsParts(parsed.signedPayload.trim())) throw invalidSignature();
+    return parsed.signedPayload.trim();
+  }
+  if (!jwsParts(text)) throw invalidSignature();
+  return text;
+};
+
+const googleToken = (body: unknown): string => {
+  if (typeof body === "string") {
+    const text = body.trim();
+    if (!jwsParts(text)) throw invalidSignature();
+    return text;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw invalidSignature();
+  const root = body as Record<string, unknown>;
+  if (typeof root.signedPayload === "string" && jwsParts(root.signedPayload.trim())) return root.signedPayload.trim();
+  const message = root.message && typeof root.message === "object" && !Array.isArray(root.message)
+    ? root.message as Record<string, unknown> : null;
+  const data = message && typeof message.data === "string" ? message.data.trim() : "";
+  if (data && jwsParts(data)) return data;
+  if (data) {
+    try {
+      const decoded = new TextDecoder().decode(bytesOf(data)).trim();
+      if (jwsParts(decoded)) return decoded;
+    } catch {
+      throw invalidSignature();
+    }
+  }
+  throw invalidSignature();
 };
 
 const expiresOf = (value: unknown): string | null => {
@@ -44,15 +142,6 @@ const readStore = async (res: Response): Promise<Record<string, unknown>> => {
   const body = await res.json() as unknown;
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(502, "PROVIDER_ERROR", "store request failed");
   return body as Record<string, unknown>;
-};
-
-const appleNote = (body: string): Record<string, unknown> => {
-  const text = body.trim();
-  if (text.startsWith("{")) {
-    const parsed = JSON.parse(text) as { signedPayload?: unknown };
-    if (typeof parsed.signedPayload === "string") return jwsPayload(parsed.signedPayload);
-  }
-  return jwsPayload(text);
 };
 
 const googleType = (value: unknown, consumable: boolean): string => {
@@ -97,9 +186,12 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): Stor
   },
   decodeAppleNotification: async (body) => {
     if (!env.APPLE_IAP_KEY) throw notConfigured("app store is not configured");
-    const payload = appleNote(body);
-    const data = payload.data && typeof payload.data === "object" ? payload.data as Record<string, unknown> : {};
-    const signed = typeof data.signedTransactionInfo === "string" ? jwsPayload(data.signedTransactionInfo) : payload;
+    const payload = await verifyJws(appleToken(body), env.APPLE_IAP_KEY);
+    const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+      ? payload.data as Record<string, unknown> : {};
+    const signed = typeof data.signedTransactionInfo === "string"
+      ? await verifyJws(data.signedTransactionInfo, env.APPLE_IAP_KEY)
+      : payload;
     return {
       notificationType: String(payload.notificationType ?? ""),
       originalTransactionId: String(signed.originalTransactionId ?? ""),
@@ -109,10 +201,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): Stor
   },
   decodeGoogleNotification: async (body) => {
     if (!env.GOOGLE_PLAY_KEY) throw notConfigured("google play is not configured");
-    const root = body && typeof body === "object" ? body as Record<string, unknown> : {};
-    const message = root.message && typeof root.message === "object" ? root.message as Record<string, unknown> : {};
-    let decoded = root;
-    if (typeof message.data === "string") decoded = jsonOf(bytesOf(message.data));
+    const decoded = await verifyJws(googleToken(body), env.GOOGLE_PLAY_KEY);
     const sub = decoded.subscriptionNotification && typeof decoded.subscriptionNotification === "object"
       ? decoded.subscriptionNotification as Record<string, unknown> : null;
     const oneTime = decoded.oneTimeProductNotification && typeof decoded.oneTimeProductNotification === "object"

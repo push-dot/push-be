@@ -424,7 +424,7 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
     const form = new URLSearchParams({
       mode: "payment",
       "line_items[0][price]": price,
-      "line_items[0][quantity]": "1",
+      "line_items[0][quantity]": String(amount),
       success_url: ctx.env.STRIPE_SUCCESS_URL || "",
       cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
       client_reference_id: ownerId,
