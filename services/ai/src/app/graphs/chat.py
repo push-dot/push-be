@@ -144,6 +144,7 @@ class ChatState(TypedDict, total=False):
     application_id: Any
     employer_owned: bool
     company_plan: str
+    confirm_before_edit: bool
 
 
 def bind_chat_nodes(svc):
@@ -233,9 +234,17 @@ def bind_chat_nodes(svc):
             context_parts.append(
                 "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
         await _ingest_links(state, conv)
+        from app.domain.chat_settings import (
+            apply_chat_settings, load_chat_settings)
+        row = None
+        try:
+            row = await load_chat_settings(svc.db.q(), user_id)
+        except Exception:
+            row = None
         return {"conversation": conv, "attachments": attachments,
                 "context_text": "\n\n".join(context_parts),
-                "evidence_kinds": kinds}
+                "evidence_kinds": kinds,
+                **apply_chat_settings(state, row)}
 
     async def _ingest_links(state, conv) -> None:
         from app.domain.link_ingest import (

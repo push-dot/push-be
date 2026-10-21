@@ -263,6 +263,13 @@ class ConversationService:
                         terminal = True
                     else:
                         await self.jobs.finish(job_id, "DONE")
+                        try:
+                            from app.domain.chat_settings import insert_ai_done
+                            await insert_ai_done(
+                                self.db.q(), job["user_id"],
+                                job["conversation_id"])
+                        except Exception:
+                            log.exception("AI_DONE insert failed")
                         terminal = True
             except DomainError as e:
                 await self._drop_enqueued_user_message(job_id)
