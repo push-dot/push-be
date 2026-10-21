@@ -1,7 +1,7 @@
 import { DISPLAY_MICRO, grantMicro, iapTopupMicro } from "../billing/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
-import { one, query } from "../db.ts";
+import { isMissingRelation, one, query } from "../db.ts";
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
@@ -29,6 +29,31 @@ function configured(ctx: Ctx): boolean {
 }
 
 const monthKey = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
+
+const utcMonth = (now: Date): { monthStart: string; monthEnd: string } => {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  return { monthStart, monthEnd };
+};
+
+const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): number => {
+  const named = plan?.trim() ?? "";
+  if (audience === "PERSONAL" && named === "") return grantMicro("PERSONAL", "FREE");
+  return grantMicro(audience, named);
+};
+
+const EMPLOYER_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)";
+const PERSONAL_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3";
+
+const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<number> => {
+  try {
+    const row = await one(ctx.deps.query, sql, params);
+    return Number(row?.spent ?? 0);
+  } catch (err) {
+    if (isMissingRelation(err)) return 0;
+    throw err;
+  }
+};
 
 const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
   const plan = value == null ? "" : String(value);
@@ -70,12 +95,16 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     const bal = await one(ctx.deps.query,
       "SELECT balance_after FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1",
       [ctx.user.companyId]);
+    const { monthStart, monthEnd } = utcMonth(ctx.now);
+    const spentMicroCredits = await spentInMonth(ctx, EMPLOYER_SPEND, [monthStart, monthEnd, ctx.user.companyId]);
     return data(200, {
       subscriptionStatus: plan ? "ACTIVE" : "NONE",
       plan,
       periodEndsAt: null,
       balanceMicroCredits: Number(bal?.balance_after || 0),
       reservedMicroCredits: 0,
+      monthlyMicroCredits: monthlyMicro("EMPLOYER", plan),
+      spentMicroCredits,
       audience: "EMPLOYER",
       source: plan ? "STRIPE" : null,
     }, ctx.rid);
@@ -92,12 +121,16 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   const source = platform === "APP_STORE" || platform === "GOOGLE_PLAY"
     ? platform
     : ctx.user.subscriptionStatus === "ACTIVE" ? "STRIPE" : null;
+  const { monthStart, monthEnd } = utcMonth(ctx.now);
+  const spentMicroCredits = await spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]);
   return data(200, {
     subscriptionStatus: ctx.user.subscriptionStatus || "NONE",
     plan,
     periodEndsAt: ts(ctx.user.periodEndsAt),
     balanceMicroCredits: Number(bal?.balance_after || 0),
     reservedMicroCredits: 0,
+    monthlyMicroCredits: monthlyMicro("PERSONAL", plan),
+    spentMicroCredits,
     audience: "PERSONAL",
     source,
   }, ctx.rid);

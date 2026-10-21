@@ -416,6 +416,8 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
       periodEndsAt: null,
       balanceMicroCredits: 18_000_000,
       reservedMicroCredits: 0,
+      monthlyMicroCredits: 18_000_000,
+      spentMicroCredits: 0,
       audience: "EMPLOYER",
       source: "STRIPE",
     },
@@ -472,6 +474,100 @@ test("personal status keeps the pro monthly amount and prefers an active store",
   assert.equal(ledger[0]?.reference, MONTH);
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
+});
+
+test("employer pro status reports the allowance and settled member spend", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = authed(seen, true, "ADMIN", async (sql) => {
+    if (sql.includes("FROM companies")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: 90_000_000 }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 4_200 }], rowCount: 1 };
+    return empty;
+  });
+  const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { monthlyMicroCredits: number; spentMicroCredits: number } };
+  assert.equal(body.data.monthlyMicroCredits, 90_000_000);
+  assert.equal(body.data.spentMicroCredits, 4_200);
+  const spend = seen.find((call) => call.sql.includes("ai_usage"));
+  assert.ok(spend);
+  assert.equal(spend.sql.includes("SETTLED"), true);
+  assert.equal(spend.sql.includes("company_members"), true);
+  assert.equal(spend.sql.includes("FROM companies"), false);
+  assert.equal(spend.sql.includes("balance_after"), false);
+  assert.equal(spend.params.includes(COMPANY), true);
+  assert.equal(spend.params.includes("2026-10-01T00:00:00.000Z"), true);
+  assert.equal(spend.params.includes("2026-11-01T00:00:00.000Z"), true);
+});
+
+test("a null employer plan reports zero monthly credits", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = authed(seen, true, "MEMBER", async (sql) => {
+    if (sql.includes("FROM companies")) return { rows: [{ plan: null }], rowCount: 1 };
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: 0 }], rowCount: 1 };
+    return empty;
+  });
+  const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { monthlyMicroCredits: number; plan: null } };
+  assert.equal(body.data.plan, null);
+  assert.equal(body.data.monthlyMicroCredits, 0);
+});
+
+test("personal pro status reports the allowance and that user's settled spend", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = authed(seen, false, null, async (sql) => {
+    if (sql.includes("iap_subscriptions")) return empty;
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 9_000 }], rowCount: 1 };
+    return empty;
+  }, "PRO", "ACTIVE");
+  const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { monthlyMicroCredits: number; spentMicroCredits: number } };
+  assert.equal(body.data.monthlyMicroCredits, 30_000_000);
+  assert.equal(body.data.spentMicroCredits, 9_000);
+  const spend = seen.find((call) => call.sql.includes("ai_usage"));
+  assert.ok(spend);
+  assert.equal(spend.sql.includes("company_members"), false);
+  assert.equal(spend.sql.includes("user_id"), true);
+  assert.equal(spend.params.includes(USER), true);
+});
+
+test("a blank personal plan uses the free monthly allowance", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query = authed(seen, false, null, async (sql) => {
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: 0 }], rowCount: 1 };
+    return empty;
+  }, "");
+  const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { plan: string | null; monthlyMicroCredits: number; spentMicroCredits: number } };
+  assert.equal(body.data.plan, null);
+  assert.equal(body.data.monthlyMicroCredits, 1_800_000);
+  assert.equal(body.data.spentMicroCredits, 0);
+});
+
+test("a missing ai_usage relation reports zero spend", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const missing = new Error('relation "ai_usage" does not exist');
+  (missing as unknown as { code: string }).code = "42P01";
+  const query = authed(seen, true, "ADMIN", async (sql) => {
+    if (sql.includes("FROM companies")) return { rows: [{ plan: "BASIC" }], rowCount: 1 };
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };
+    if (sql.includes("ai_usage")) throw missing;
+    return empty;
+  });
+  const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { spentMicroCredits: number; monthlyMicroCredits: number } };
+  assert.equal(body.data.monthlyMicroCredits, 18_000_000);
+  assert.equal(body.data.spentMicroCredits, 0);
 });
 
 test("iap verify without a store port or key is not configured and does not fetch", async () => {
