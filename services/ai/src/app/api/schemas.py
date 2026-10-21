@@ -97,6 +97,10 @@ class AnalyzeReq(Req):
     ai: Optional[AiOptionsReq] = None
 
 
+class PostingFitReq(Req):
+    document_id: UUIDT
+
+
 class CreateApplicationReq(Req):
     job_id: UUIDT
     notes: str = ""
