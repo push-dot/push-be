@@ -21,6 +21,7 @@ const FREE_MAIL = new Set([
   "outlook.com", "hotmail.com", "icloud.com", "yahoo.com",
 ]);
 const IMAGE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+const GUEST_ID = "00000000-0000-0000-0000-000000000000";
 const NOTIFY_COLUMN: Record<string, string> = {
   DEADLINE: "notify_deadline",
   OFFER: "notify_offer",
@@ -456,6 +457,9 @@ async function search(ctx: Ctx): Promise<Response> {
   if (!q.trim()) throw fieldError("q", "required");
   const type = ctx.url.searchParams.get("type") || "postings";
   if (type !== "postings" && type !== "people" && type !== "posts") throw unprocessable("type", "unsupported type");
+  if (ctx.user.id === GUEST_ID && (type === "people" || type === "posts")) {
+    throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
+  }
   if (type === "people") return searchPeople(ctx, q);
   if (type === "posts") return searchPosts(ctx, q);
   return searchPostings(ctx, q);

@@ -25,6 +25,18 @@ const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/password-reset/confirm",
 ]);
 const PENDING_MS = 5 * 60 * 1000;
+const GUEST_ID = "00000000-0000-0000-0000-000000000000";
+const POSTING_UUID = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isGuestRead = (method: string, path: string): boolean => {
+  if (method !== "GET") return false;
+  return path === "/api/v1/postings"
+    || path === "/api/v1/postings/locations"
+    || path === "/api/v1/search"
+    || POSTING_UUID.test(path);
+};
+
+const guestUser = (): UserRow => ({ ...anonymous(), id: GUEST_ID });
 
 export type { CoreEnv, Deps };
 
@@ -37,14 +49,15 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
   const path = url.pathname;
   const now = (deps.now ?? (() => new Date()))();
   try {
-    if (isPublic(request.method, path)) {
+    const authz = request.headers.get("authorization") || "";
+    if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
-      const ctx = base(request, env, deps, rid, url, now, anonymous());
+      const user = isGuestRead(request.method, path) ? guestUser() : anonymous();
+      const ctx = base(request, env, deps, rid, url, now, user);
       return await dispatch(ctx, path);
     }
-    const authz = request.headers.get("authorization") || "";
     if (!authz.startsWith("Bearer ")) {
       return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
     }
@@ -73,10 +86,11 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
   return { request, env, deps, rid, url, now, user };
 }
 
-function isPublic(method: string, path: string): boolean {
+function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
-  return method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path);
+  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
+  return authorization === "" && isGuestRead(method, path);
 }
 
 async function dispatch(ctx: Ctx, path: string): Promise<Response> {
