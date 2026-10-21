@@ -9,6 +9,14 @@ import type { Ctx } from "../types.ts";
 const JOB_CATEGORIES = new Set(["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]);
 const EMPLOYMENT = new Set(["full_time", "contract", "intern", "freelance", "dispatch"]);
 const CAREER_YEARS = new Set(["0", "1-3", "4-6", "7-9", "10+"]);
+const POSTING_STATUSES = new Set(["DRAFT", "OPEN", "CLOSED"]);
+const CAREER_BUCKETS: { id: string; alias: string; where: string }[] = [
+  { id: "0", alias: "career_0", where: "p.career_min = 0" },
+  { id: "1-3", alias: "career_1_3", where: "p.career_min <= 3 AND COALESCE(p.career_max, 99) >= 1" },
+  { id: "4-6", alias: "career_4_6", where: "p.career_min <= 6 AND COALESCE(p.career_max, 99) >= 4" },
+  { id: "7-9", alias: "career_7_9", where: "p.career_min <= 9 AND COALESCE(p.career_max, 99) >= 7" },
+  { id: "10+", alias: "career_10", where: "COALESCE(p.career_max, p.career_min) >= 10" },
+];
 const POST_CATEGORIES = new Set(["work", "dev", "daily", "career", "talk", "coffeechat", "marketing"]);
 const TENURE = new Map<string, [number, number]>([["0-2", [0, 2]], ["3-5", [3, 5]], ["6-9", [6, 9]], ["10+", [10, 80]]]);
 const CAREER_STATUS = new Set(["satisfied", "seeking", "feedback"]);
@@ -179,7 +187,13 @@ function appendTextSearch(sql: string, params: unknown[], q: string, columns: st
   return sql;
 }
 
-function appendPostingFilters(sql: string, params: unknown[], url: URL, withLocation: boolean): string {
+function appendPostingFilters(
+  sql: string,
+  params: unknown[],
+  url: URL,
+  withLocation: boolean,
+  skip: { category?: boolean; career?: boolean } = {},
+): string {
   const q = url.searchParams.get("q") || "";
   if (q) {
     if (codePoints(q) > 200) throw fieldError("q", "must be at most 200 characters");
@@ -201,7 +215,7 @@ function appendPostingFilters(sql: string, params: unknown[], url: URL, withLoca
     )`;
   }
   const categories = enumList(url, "category", JOB_CATEGORIES, "category");
-  if (categories.length) {
+  if (categories.length && !skip.category) {
     const i = pushArray(params, categories);
     sql += ` AND p.job_category = ANY(${anyOf(i)})`;
   }
@@ -211,16 +225,11 @@ function appendPostingFilters(sql: string, params: unknown[], url: URL, withLoca
     sql += ` AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.skills) sk WHERE sk = ANY(${anyOf(i)}))`;
   }
   const years = enumList(url, "careerYears", CAREER_YEARS, "careerYears");
-  if (years.length) {
+  if (years.length && !skip.career) {
     const i = pushArray(params, years);
     const arr = anyOf(i);
-    sql += ` AND (
-      ('0' = ANY(${arr}) AND p.career_min = 0)
-      OR ('1-3' = ANY(${arr}) AND p.career_min <= 3 AND COALESCE(p.career_max, 99) >= 1)
-      OR ('4-6' = ANY(${arr}) AND p.career_min <= 6 AND COALESCE(p.career_max, 99) >= 4)
-      OR ('7-9' = ANY(${arr}) AND p.career_min <= 9 AND COALESCE(p.career_max, 99) >= 7)
-      OR ('10+' = ANY(${arr}) AND COALESCE(p.career_max, p.career_min) >= 10)
-    )`;
+    const overlap = CAREER_BUCKETS.map((bucket) => `('${bucket.id}' = ANY(${arr}) AND (${bucket.where}))`).join(" OR ");
+    sql += ` AND (${overlap})`;
   }
   if (withLocation) {
     const locations = plainList(url, "location", 80, "location");
@@ -240,7 +249,7 @@ function appendPostingFilters(sql: string, params: unknown[], url: URL, withLoca
   return sql;
 }
 
-function postingDto(row: Record<string, unknown>, detail: boolean): Record<string, unknown> {
+function postingDto(row: Record<string, unknown>, detail: boolean, member = false): Record<string, unknown> {
   const dto: Record<string, unknown> = {
     id: String(row.id),
     company: String(row.company ?? ""),
@@ -266,6 +275,12 @@ function postingDto(row: Record<string, unknown>, detail: boolean): Record<strin
     dto.workConditions = jsonObject(row.work_conditions);
     dto.preferred = jsonList(row.preferred).map(String);
   }
+  if (member) {
+    dto.status = String(row.status ?? "OPEN");
+    dto.applicantCount = Number(row.applicant_count ?? 0);
+  } else if (row.status != null && row.status !== "") {
+    dto.status = String(row.status);
+  }
   return dto;
 }
 
@@ -276,49 +291,126 @@ function postingFlags(userParam: string): string {
     EXISTS (SELECT 1 FROM jobs j JOIN applications a ON a.job_id = j.id AND a.user_id = ${userParam} WHERE j.source_posting_id = p.id) AS applied`;
 }
 
-async function listPostings(ctx: Ctx): Promise<Response> {
-  const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
-  let where = " FROM job_postings p WHERE p.closed_at IS NULL";
-  where = appendPostingFilters(where, params, ctx.url, true);
-  // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
-  const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
-  const total = Number(count?.total ?? 0);
-  let sql = `SELECT ${POSTING_COLS}, ${postingFlags("$1")}` + where;
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+const applicantCountSql = (): string =>
+  "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = p.id) AS applicant_count";
+
+const openClause = (withStatus: boolean): string =>
+  withStatus ? "p.status = 'OPEN' AND p.closed_at IS NULL" : "p.closed_at IS NULL";
+
+const withPublicStatus = async <T>(run: (withStatus: boolean) => Promise<T>): Promise<T> => {
+  try {
+    return await run(true);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    return run(false);
   }
-  params.push(page.limit + 1);
-  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
-  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+};
+
+const detailSql = (withStatus: boolean, where: string): string =>
+  `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
+
+async function listPostings(ctx: Ctx): Promise<Response> {
+  const loaded = await withPublicStatus(async (withStatus) => {
+    const page = pageOf(ctx.url);
+    const params: unknown[] = [ctx.user.id];
+    let where = ` FROM job_postings p WHERE ${openClause(withStatus)}`;
+    where = appendPostingFilters(where, params, ctx.url, true);
+    // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
+    const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
+    const total = Number(count?.total ?? 0);
+    const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
+    let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
+    if (page.cursor) {
+      params.push(page.cursor.createdAt, page.cursor.id);
+      sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+    }
+    params.push(page.limit + 1);
+    sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const rows = await query(ctx.deps.query, sql, params);
+    return { total, rows, page };
+  });
+  const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
+  const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
 }
 
 async function listPostingLocations(ctx: Ctx): Promise<Response> {
-  const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT p.location, count(*)::int AS count FROM job_postings p WHERE p.closed_at IS NULL AND $1::uuid IS NOT NULL";
-  sql = appendPostingFilters(sql, params, ctx.url, false);
-  sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
-  const rows = await query(ctx.deps.query, sql, params);
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = `SELECT p.location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
+    sql = appendPostingFilters(sql, params, ctx.url, false);
+    sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
+    return query(ctx.deps.query, sql, params);
+  });
   return data(200, rows.rows.map((row) => ({ location: String(row.location ?? ""), count: Number(row.count ?? 0) })), ctx.rid);
 }
 
+const facetWhere = (withStatus: boolean): string =>
+  ` FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
+
+const careerFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
+  const row = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    const selects = CAREER_BUCKETS.map((bucket) => `count(*) FILTER (WHERE ${bucket.where})::int AS ${bucket.alias}`).join(", ");
+    let sql = `SELECT ${selects}` + facetWhere(withStatus);
+    sql = appendPostingFilters(sql, params, ctx.url, true, { career: true });
+    return one(ctx.deps.query, sql, params);
+  });
+  return CAREER_BUCKETS.map((bucket) => ({ id: bucket.id, count: Number(row?.[bucket.alias] ?? 0) }));
+};
+
+const categoryFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = "SELECT p.job_category AS id, count(*)::int AS count" + facetWhere(withStatus);
+    sql = appendPostingFilters(sql, params, ctx.url, true, { category: true });
+    sql += " GROUP BY p.job_category";
+    return query(ctx.deps.query, sql, params);
+  });
+  const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
+  return [...JOB_CATEGORIES].map((id) => ({ id, count: counts.get(id) ?? 0 }));
+};
+
+const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = "SELECT p.location AS id, count(*)::int AS count" + facetWhere(withStatus);
+    sql = appendPostingFilters(sql, params, ctx.url, false);
+    sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
+    return query(ctx.deps.query, sql, params);
+  });
+  return rows.rows
+    .filter((item) => Number(item.count ?? 0) > 0)
+    .map((item) => ({ id: String(item.id ?? ""), count: Number(item.count ?? 0) }));
+};
+
+const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
+  const career = await careerFacet(ctx);
+  const category = await categoryFacet(ctx);
+  const location = await locationFacet(ctx);
+  return data(200, { career, category, location }, ctx.rid);
+};
+
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const cols = `SELECT ${POSTING_COLS}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")} FROM job_postings p`;
-  const open = await one(ctx.deps.query, `${cols} WHERE p.id = $1 AND p.closed_at IS NULL`, [id, ctx.user.id]);
-  if (open) return data(200, postingDto(open, true), ctx.rid);
+  const open = await withPublicStatus((withStatus) => one(ctx.deps.query,
+    detailSql(withStatus, `p.id = $1 AND ${openClause(withStatus)}`),
+    [id, ctx.user.id]));
+  const memberOf = async (): Promise<boolean> => {
+    const member = await one(ctx.deps.query,
+      "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1",
+      [id, ctx.user.id]);
+    return Boolean(member);
+  };
+  if (open) {
+    const member = ctx.user.id !== GUEST_ID && await memberOf();
+    return data(200, postingDto(open, true, member), ctx.rid);
+  }
   if (ctx.user.id === GUEST_ID) throw notFound();
-  const member = await one(ctx.deps.query,
-    "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1",
-    [id, ctx.user.id]);
-  if (!member) throw notFound();
-  const closed = await one(ctx.deps.query, `${cols} WHERE p.id = $1`, [id, ctx.user.id]);
+  if (!(await memberOf())) throw notFound();
+  const closed = await one(ctx.deps.query, detailSql(true, "p.id = $1"), [id, ctx.user.id]);
   if (!closed) throw notFound();
-  return data(200, postingDto(closed, true), ctx.rid);
+  return data(200, postingDto(closed, true, true), ctx.rid);
 }
 
 const verifiedCompany = async (ctx: Ctx): Promise<{ id: string; name: string }> => {
@@ -366,6 +458,11 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     if (!httpsUrl(sourceUrl)) throw fieldError("sourceUrl", "must be an http(s) URL without credentials");
   }
   const deadline = dateOf(body.deadline, "deadline");
+  let postingStatus: "DRAFT" | "OPEN" = "OPEN";
+  if (body.status != null) {
+    if (body.status !== "DRAFT" && body.status !== "OPEN") throw fieldError("status", "invalid status");
+    postingStatus = body.status;
+  }
   const account = await verifiedCompany(ctx);
   const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
   if (!company) throw fieldError("company", "company must be 1-200 characters");
@@ -373,22 +470,24 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
-    `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21)`,
+    `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
     [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
       JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
-      fields.text, fields.choseong, fields.jamo, now]);
+      fields.text, fields.choseong, fields.jamo, now, postingStatus]);
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,
     created_at: now, bookmarked: false, applied: false, description, requirements, work_conditions: workConditions,
-    preferred, revision: 1, closed_at: null,
+    preferred, revision: 1, closed_at: null, status: postingStatus,
   }, true), ctx.rid);
 }
 
 async function requireOpenPosting(ctx: Ctx, idRaw: string): Promise<string> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1 AND closed_at IS NULL", [id]);
+  const row = await withPublicStatus((withStatus) => one(ctx.deps.query,
+    `SELECT p.id FROM job_postings p WHERE p.id = $1 AND ${openClause(withStatus)}`,
+    [id]));
   if (!row) throw notFound();
   return id;
 }
@@ -494,13 +593,16 @@ const expectedRevisionOf = (body: Record<string, unknown>): number => {
 const revisionConflict = (currentRevision: number): HttpError =>
   new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision });
 
-const POSTING_RETURNING = `id, company, title, job_category, image_key, skills, career_min, career_max, location, employment_type, deadline, source_url, created_at, revision, preferred, closed_at, description, requirements, work_conditions`;
+const POSTING_RETURNING = `id, company, title, job_category, image_key, skills, career_min, career_max, location, employment_type, deadline, source_url, created_at, revision, preferred, closed_at, description, requirements, work_conditions, status`;
 
 const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "updatedAt", "revision", "id", "companyUserId", "closedAt"]);
   const expected = expectedRevisionOf(body);
+  if ("status" in body && body.status !== "DRAFT" && body.status !== "OPEN") {
+    throw fieldError("status", "invalid status");
+  }
   const company = await verifiedCompany(ctx);
   const current = await one(ctx.deps.query,
     `SELECT ${POSTING_RETURNING} FROM job_postings WHERE id = $1 AND company_id = $2`,
@@ -548,14 +650,15 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     }
   }
   if ("deadline" in body) next.deadline = dateOf(body.deadline, "deadline");
+  if ("status" in body) next.status = body.status;
   const fields = searchFields(`${String(next.title ?? "")} ${String(next.company ?? "")}`);
   const updated = await one(ctx.deps.query,
-    `UPDATE job_postings SET company = $3, title = $4, job_category = $5, career_min = $6, career_max = $7, location = $8, employment_type = $9, description = $10, requirements = $11::jsonb, work_conditions = $12::jsonb, skills = $13::jsonb, preferred = $14::jsonb, image_key = $15, source_url = $16, deadline = $17, search_text = $18, search_choseong = $19, search_jamo = $20, revision = revision + 1
+    `UPDATE job_postings SET company = $3, title = $4, job_category = $5, career_min = $6, career_max = $7, location = $8, employment_type = $9, description = $10, requirements = $11::jsonb, work_conditions = $12::jsonb, skills = $13::jsonb, preferred = $14::jsonb, image_key = $15, source_url = $16, deadline = $17, search_text = $18, search_choseong = $19, search_jamo = $20, status = $22, revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $21
      RETURNING ${POSTING_RETURNING}`,
     [id, company.id, next.company, next.title, next.job_category, careerMin, careerMax, next.location, next.employment_type, next.description,
       JSON.stringify(jsonList(next.requirements)), JSON.stringify(jsonObject(next.work_conditions)), JSON.stringify(jsonList(next.skills)), JSON.stringify(jsonList(next.preferred)),
-      next.image_key ?? null, next.source_url ?? null, next.deadline ?? null, fields.text, fields.choseong, fields.jamo, expected]);
+      next.image_key ?? null, next.source_url ?? null, next.deadline ?? null, fields.text, fields.choseong, fields.jamo, expected, next.status ?? "OPEN"]);
   if (!updated) {
     const again = await one(ctx.deps.query, "SELECT revision FROM job_postings WHERE id = $1 AND company_id = $2", [id, company.id]);
     if (!again) throw notFound();
@@ -577,7 +680,7 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     throw revisionConflict(Number(current.revision));
   }
   const updated = await one(ctx.deps.query,
-    `UPDATE job_postings SET closed_at = $3, revision = revision + 1
+    `UPDATE job_postings SET closed_at = $3, status = 'CLOSED', revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $4 AND closed_at IS NULL
      RETURNING ${POSTING_RETURNING}`,
     [id, company.id, ctx.now.toISOString(), expected]);
@@ -592,12 +695,18 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
 const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
   const member = await one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1 LIMIT 1", [ctx.user.id]);
   if (!member) throw notFound();
+  const statusFilter = ctx.url.searchParams.get("status");
+  if (statusFilter != null && !POSTING_STATUSES.has(statusFilter)) throw unprocessable("status", "unsupported status");
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id, String(member.company_id)];
-  const where = " FROM job_postings p WHERE p.company_id = $2";
+  let where = " FROM job_postings p WHERE p.company_id = $2";
+  if (statusFilter) {
+    params.push(statusFilter);
+    where += ` AND p.status = $${params.length}`;
+  }
   const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
   const total = Number(count?.total ?? 0);
-  let sql = `SELECT ${POSTING_COLS}, ${postingFlags("$1")}` + where;
+  let sql = `SELECT ${POSTING_COLS}, p.status, ${applicantCountSql()}, ${postingFlags("$1")}` + where;
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -605,7 +714,7 @@ const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
   params.push(page.limit + 1);
   sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
+  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false, true), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 };
@@ -615,6 +724,34 @@ const requirePostingMember = async (ctx: Ctx, postingId: string): Promise<void> 
     "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1",
     [postingId, ctx.user.id]);
   if (!row) throw notFound();
+};
+
+const postingApplicantCounts = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  await requirePostingMember(ctx, id);
+  const row = await one(ctx.deps.query,
+    `SELECT count(*) FILTER (WHERE a.stage = 'APPLIED')::int AS applied,
+            count(*) FILTER (WHERE a.stage = 'SCREENING')::int AS screening,
+            count(*) FILTER (WHERE a.stage = 'INTERVIEW')::int AS interview,
+            count(*) FILTER (WHERE a.stage = 'OFFER')::int AS offer,
+            count(*) FILTER (WHERE a.stage = 'REJECTED')::int AS rejected
+     FROM applications a
+     JOIN jobs j ON j.id = a.job_id
+     WHERE j.source_posting_id = $1`,
+    [id]);
+  const applied = Number(row?.applied ?? 0);
+  const screening = Number(row?.screening ?? 0);
+  const interview = Number(row?.interview ?? 0);
+  const offer = Number(row?.offer ?? 0);
+  const rejected = Number(row?.rejected ?? 0);
+  return data(200, {
+    total: applied + screening + interview + offer + rejected,
+    applied,
+    screening,
+    interview,
+    offer,
+    rejected,
+  }, ctx.rid);
 };
 
 const APPLICANT_SQL = `SELECT a.id, a.user_id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at,
@@ -735,24 +872,28 @@ function relevance(title: string, extra: string, raw = "$2", cho = "$3", hangul 
 }
 
 async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
-  const page = pageOf(ctx.url);
-  const forms = queryForms(q);
-  const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
-  let sql = `SELECT ${POSTING_COLS}, ${postingFlags("$1")} FROM job_postings p WHERE p.closed_at IS NULL AND (
-      p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%'
-      OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%')
-      OR ($4 <> '' AND p.search_jamo LIKE $4 || '%')
-      OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' OR p.company ILIKE '%' || $5 || '%' OR p.search_jamo LIKE $6 || '%'))
-    )`;
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
-  }
-  params.push(page.limit + 1);
-  sql += ` ORDER BY ${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
-  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  const loaded = await withPublicStatus(async (withStatus) => {
+    const page = pageOf(ctx.url);
+    const forms = queryForms(q);
+    const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
+    const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
+    let sql = `SELECT ${cols}, ${postingFlags("$1")} FROM job_postings p WHERE ${openClause(withStatus)} AND (
+        p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%'
+        OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%')
+        OR ($4 <> '' AND p.search_jamo LIKE $4 || '%')
+        OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' OR p.company ILIKE '%' || $5 || '%' OR p.search_jamo LIKE $6 || '%'))
+      )`;
+    if (page.cursor) {
+      params.push(page.cursor.createdAt, page.cursor.id);
+      sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+    }
+    params.push(page.limit + 1);
+    sql += ` ORDER BY ${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const rows = await query(ctx.deps.query, sql, params);
+    return { rows, page };
+  });
+  const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
+  const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 }
 
@@ -1414,20 +1555,25 @@ async function unfollowUser(ctx: Ctx, idRaw: string): Promise<Response> {
 }
 
 async function listBookmarks(ctx: Ctx): Promise<Response> {
-  const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
-  let sql = `SELECT ${POSTING_COLS}, bk.created_at AS bookmark_created_at, true AS bookmarked,
-    EXISTS (SELECT 1 FROM jobs j JOIN applications a ON a.job_id = j.id AND a.user_id = $1 WHERE j.source_posting_id = p.id) AS applied
-    FROM bookmarks bk JOIN job_postings p ON p.id = bk.posting_id WHERE bk.user_id = $1`;
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (bk.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
-  }
-  params.push(page.limit + 1);
-  sql += ` ORDER BY bk.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.bookmark_created_at, id: String(row.id) }));
-  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  const loaded = await withPublicStatus(async (withStatus) => {
+    const page = pageOf(ctx.url);
+    const params: unknown[] = [ctx.user.id];
+    const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
+    let sql = `SELECT ${cols}, bk.created_at AS bookmark_created_at, true AS bookmarked,
+      EXISTS (SELECT 1 FROM jobs j JOIN applications a ON a.job_id = j.id AND a.user_id = $1 WHERE j.source_posting_id = p.id) AS applied
+      FROM bookmarks bk JOIN job_postings p ON p.id = bk.posting_id
+      WHERE bk.user_id = $1 AND ${openClause(withStatus)}`;
+    if (page.cursor) {
+      params.push(page.cursor.createdAt, page.cursor.id);
+      sql += ` AND (bk.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+    }
+    params.push(page.limit + 1);
+    sql += ` ORDER BY bk.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const rows = await query(ctx.deps.query, sql, params);
+    return { rows, page };
+  });
+  const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.bookmark_created_at, id: String(row.id) }));
+  const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 }
 
@@ -1669,6 +1815,7 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   const method = ctx.request.method;
   if (method === "GET" && path === "/api/v1/postings") return listPostings(ctx);
   if (method === "POST" && path === "/api/v1/postings") return createPosting(ctx);
+  if (method === "GET" && path === "/api/v1/postings/facets") return listPostingFacets(ctx);
   if (method === "GET" && path === "/api/v1/postings/locations") return listPostingLocations(ctx);
   const bookmark = path.match(/^\/api\/v1\/postings\/([^/]+)\/bookmark$/);
   if (bookmark && method === "POST") return bookmarkPosting(ctx, bookmark[1]);
@@ -1683,6 +1830,8 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (applicant && method === "PATCH") return patchApplicant(ctx, applicant[1], applicant[2]);
   const applicants = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicants$/);
   if (applicants && method === "GET") return listApplicants(ctx, applicants[1]);
+  const counts = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicant-counts$/);
+  if (counts && method === "GET") return postingApplicantCounts(ctx, counts[1]);
   const posting = path.match(/^\/api\/v1\/postings\/([^/]+)$/);
   if (posting && method === "GET") return getPosting(ctx, posting[1]);
   if (posting && method === "PATCH") return patchPosting(ctx, posting[1]);

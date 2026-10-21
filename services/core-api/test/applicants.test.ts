@@ -121,17 +121,20 @@ test("verified create inserts company_id and defaults the company name", async (
     deps(authed(seen, true, companyQuery)),
   );
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { company: string; revision: number; preferred: string[]; closedAt: string | null } };
+  const body = await res.json() as { data: { company: string; revision: number; preferred: string[]; closedAt: string | null; status: string } };
   assert.equal(body.data.company, "Acme");
   assert.equal(body.data.revision, 1);
   assert.deepEqual(body.data.preferred, []);
   assert.equal(body.data.closedAt, null);
+  assert.equal(body.data.status, "OPEN");
   const insert = seen.find((call) => call.sql.includes("INSERT INTO job_postings"));
   assert.ok(insert);
   assert.match(insert.sql, /company_id/);
+  assert.match(insert.sql, /status/);
   assert.doesNotMatch(insert.sql, /company_user_id/);
   assert.equal(insert.params.includes(COMPANY), true);
   assert.equal(insert.params.includes("Acme"), true);
+  assert.equal(insert.params.includes("OPEN"), true);
 });
 
 test("a stale posting revision is 409 with the current revision", async () => {
@@ -179,6 +182,8 @@ test("close sets closed_at and bumps revision", async () => {
   assert.ok(update);
   assert.match(update.sql, /closed_at/);
   assert.match(update.sql, /revision/);
+  assert.match(update.sql, /status/);
+  assert.match(update.sql, /CLOSED/);
 });
 
 test("closing another company's posting is 404 and an already closed posting is 409", async () => {
@@ -668,4 +673,356 @@ test("settings still load before notify_application_stage exists", async () => {
   const body = await res.json() as { data: { notifyApplicationStage: boolean; chatRetentionDays: number | null } };
   assert.equal(body.data.notifyApplicationStage, true);
   assert.equal(body.data.chatRetentionDays, null);
+});
+
+test("create DRAFT stores status and CLOSED on create is 400", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(
+    post("/api/v1/postings", { ...postingBody, status: "DRAFT" }, "66666666-6666-4666-8666-666666666661"),
+    env(),
+    deps(authed(seen, true, companyQuery)),
+  );
+  assert.equal(res.status, 201);
+  const body = await res.json() as { data: { status: string; closedAt: string | null } };
+  assert.equal(body.data.status, "DRAFT");
+  assert.equal(body.data.closedAt, null);
+  const insert = seen.find((call) => call.sql.includes("INSERT INTO job_postings"));
+  assert.ok(insert);
+  assert.match(insert.sql, /status/);
+  assert.equal(insert.params.includes("DRAFT"), true);
+  assert.match(insert.sql, /NULL/);
+
+  resetLimits();
+  const closedSeen: Call[] = [];
+  const closed = await handle(
+    post("/api/v1/postings", { ...postingBody, status: "CLOSED" }, "66666666-6666-4666-8666-666666666662"),
+    env(),
+    deps(authed(closedSeen, true, companyQuery)),
+  );
+  assert.equal(closed.status, 400);
+  assert.equal(await codeOf(closed), "VALIDATION_ERROR");
+  assert.equal(closedSeen.some((call) => call.sql.includes("INSERT INTO job_postings")), false);
+});
+
+test("guest list requires open status and does not return a draft", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const draft = {
+    id: POSTING,
+    company: "Acme",
+    title: "Secret draft",
+    status: "DRAFT",
+    closed_at: null,
+    created_at: NOW,
+    revision: 1,
+  };
+  const asksOpen = (sql: string) => /p\.status = 'OPEN'|status = 'OPEN'/.test(sql);
+  const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
+      return { rows: asksOpen(sql) ? [] : [draft], rowCount: asksOpen(sql) ? 0 : 1 };
+    }
+    if (sql.includes("job_postings") && sql.includes("count(*)")) {
+      return { rows: [{ total: asksOpen(sql) ? 0 : 1 }], rowCount: 1 };
+    }
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { title?: string }[] };
+  assert.equal(body.data.some((item) => item.title === "Secret draft"), false);
+  const listSql = seen.find((call) => call.sql.includes("FROM job_postings") && call.sql.includes("ORDER BY"));
+  assert.ok(listSql);
+  assert.match(listSql.sql, /status = 'OPEN'/);
+  assert.match(listSql.sql, /closed_at IS NULL/);
+});
+
+test("company list status=DRAFT filters drafts and includes applicantCount", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(
+    new Request("https://core.example/api/v1/companies/me/postings?status=DRAFT", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(seen, true, async (sql) => {
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Secret draft",
+            status: "DRAFT",
+            applicant_count: 4,
+            closed_at: null,
+            created_at: NOW,
+            revision: 1,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
+      return empty;
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { status: string; applicantCount: number }[] };
+  assert.equal(body.data[0].status, "DRAFT");
+  assert.equal(body.data[0].applicantCount, 4);
+  const listSql = seen.find((call) => call.sql.includes("FROM job_postings") && call.sql.includes("ORDER BY"));
+  assert.ok(listSql);
+  assert.match(listSql.sql, /status/);
+  assert.equal(listSql.params.includes("DRAFT"), true);
+
+  resetLimits();
+  const bad = await handle(
+    new Request("https://core.example/api/v1/companies/me/postings?status=NOPE", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      return empty;
+    })),
+  );
+  assert.equal(bad.status, 422);
+  assert.equal(await codeOf(bad), "VALIDATION_ERROR");
+});
+
+test("member detail includes applicantCount and a non-member detail does not", async () => {
+  resetLimits();
+  const member = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) return empty;
+      if (sql.includes("FROM job_postings")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Secret draft",
+            description: "Hidden",
+            status: "DRAFT",
+            applicant_count: 2,
+            revision: 1,
+            closed_at: null,
+            created_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(member.status, 200);
+  const memberBody = await member.json() as { data: { status: string; applicantCount: number; description: string } };
+  assert.equal(memberBody.data.status, "DRAFT");
+  assert.equal(memberBody.data.applicantCount, 2);
+  assert.equal(memberBody.data.description, "Hidden");
+
+  resetLimits();
+  const outsider = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, async (sql) => {
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) return empty;
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {
+        return {
+          rows: [{
+            id: POSTING,
+            company: "Acme",
+            title: "Backend",
+            description: "Build APIs",
+            status: "OPEN",
+            applicant_count: 9,
+            revision: 1,
+            closed_at: null,
+            created_at: NOW,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(outsider.status, 200);
+  const outsiderBody = await outsider.json() as { data: { applicantCount?: number; description: string } };
+  assert.equal(outsiderBody.data.description, "Build APIs");
+  assert.equal(Object.hasOwn(outsiderBody.data, "applicantCount"), false);
+
+  resetLimits();
+  const guest = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), env(), deps(async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) return empty;
+    if (sql.includes("job_postings")) {
+      return { rows: [{ id: POSTING, title: "Secret draft", status: "DRAFT", description: "Hidden", closed_at: null }], rowCount: 1 };
+    }
+    return empty;
+  }));
+  assert.equal(guest.status, 404);
+});
+
+test("patch may set DRAFT and must not set CLOSED", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(patch(`/api/v1/postings/${POSTING}`, {
+    status: "DRAFT",
+    expectedRevision: 1,
+  }), env(), deps(authed(seen, true, async (sql, params = []) => {
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("UPDATE") && sql.includes("job_postings")) {
+      assert.equal(params.includes("DRAFT"), true);
+      return { rows: [{ id: POSTING, revision: 2, status: "DRAFT", company: "Acme", title: "Backend", closed_at: null }], rowCount: 1 };
+    }
+    if (sql.includes("job_postings")) {
+      return {
+        rows: [{
+          id: POSTING,
+          revision: 1,
+          status: "OPEN",
+          company_id: COMPANY,
+          company: "Acme",
+          title: "Backend",
+          job_category: "dev",
+          career_min: 1,
+          career_max: 3,
+          location: "서울 강남구",
+          employment_type: "full_time",
+          description: "Build APIs",
+          closed_at: null,
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { status: string; revision: number } };
+  assert.equal(body.data.status, "DRAFT");
+  assert.equal(body.data.revision, 2);
+  const update = seen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
+  assert.ok(update);
+  assert.match(update.sql, /status/);
+
+  resetLimits();
+  const closedSeen: Call[] = [];
+  const closed = await handle(patch(`/api/v1/postings/${POSTING}`, {
+    status: "CLOSED",
+    expectedRevision: 1,
+  }), env(), deps(authed(closedSeen, true, async () => empty)));
+  assert.equal(closed.status, 400);
+  assert.equal(await codeOf(closed), "VALIDATION_ERROR");
+  assert.equal(closedSeen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings")), false);
+});
+
+test("applicant counts return the five stage keys", async () => {
+  resetLimits();
+  const res = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicant-counts`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("AS applied")) {
+        return { rows: [{ applied: 1, screening: 2, interview: 3, offer: 4, rejected: 5 }], rowCount: 1 };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { total: number; applied: number; screening: number; interview: number; offer: number; rejected: number } };
+  assert.deepEqual(body.data, { total: 15, applied: 1, screening: 2, interview: 3, offer: 4, rejected: 5 });
+
+  resetLimits();
+  const denied = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicant-counts`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed([], false, async () => empty)),
+  );
+  assert.equal(denied.status, 404);
+});
+
+test("facets return every career id and category including zeros", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(new Request(
+    "https://core.example/api/v1/postings/facets?q=kotlin&skills=Kotlin&careerYears=10%2B&category=dev&location="
+      + encodeURIComponent("서울")
+      + "&employmentType=full_time",
+  ), env(), deps(async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("career_0")) return { rows: [{ career_0: 2, career_7_9: 1 }], rowCount: 1 };
+    if (sql.includes("GROUP BY p.job_category")) return { rows: [{ id: "dev", count: 3 }], rowCount: 1 };
+    if (sql.includes("GROUP BY p.location")) return { rows: [{ id: "서울 강남구", count: 1 }], rowCount: 1 };
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  const body = await res.json() as {
+    data: {
+      career: { id: string; count: number }[];
+      category: { id: string; count: number }[];
+      location: { id: string; count: number }[];
+    };
+  };
+  assert.deepEqual(body.data.career, [
+    { id: "0", count: 2 },
+    { id: "1-3", count: 0 },
+    { id: "4-6", count: 0 },
+    { id: "7-9", count: 1 },
+    { id: "10+", count: 0 },
+  ]);
+  assert.deepEqual(body.data.category.map((item) => item.id), ["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]);
+  assert.equal(body.data.category.find((item) => item.id === "dev")?.count, 3);
+  assert.equal(body.data.category.find((item) => item.id === "data")?.count, 0);
+  assert.deepEqual(body.data.location, [{ id: "서울 강남구", count: 1 }]);
+  const careerSql = seen.find((call) => call.sql.includes("career_0"));
+  const categorySql = seen.find((call) => call.sql.includes("GROUP BY p.job_category"));
+  const locationSql = seen.find((call) => call.sql.includes("GROUP BY p.location"));
+  assert.ok(careerSql);
+  assert.ok(categorySql);
+  assert.ok(locationSql);
+  for (const call of [careerSql, categorySql, locationSql]) {
+    assert.match(call.sql, /status = 'OPEN'/);
+    assert.match(call.sql, /closed_at IS NULL/);
+    assert.equal(call.params[0], "00000000-0000-0000-0000-000000000000");
+    assert.equal(call.params.includes("Kotlin"), true);
+    assert.equal(call.params.includes("full_time"), true);
+    assert.equal(call.params.includes("kotlin"), true);
+  }
+  assert.equal(careerSql.params.includes("10+"), false);
+  assert.equal(categorySql.params.includes("dev"), false);
+  assert.equal(locationSql.params.includes("서울"), false);
+  assert.match(careerSql.sql, /job_category = ANY/);
+  assert.match(careerSql.sql, /p\.location = loc/);
+  assert.doesNotMatch(categorySql.sql, /job_category = ANY/);
+  assert.match(categorySql.sql, /'10\+' = ANY/);
+  assert.match(locationSql.sql, /'10\+' = ANY/);
+  assert.match(locationSql.sql, /job_category = ANY/);
+  assert.doesNotMatch(locationSql.sql, /p\.location = loc/);
+  assert.match(locationSql.sql, /ORDER BY count DESC, p\.location ASC/);
+});
+
+test("guest list returns 200 when the status column is missing", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
+    if (sql.includes("job_postings") && sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
+    if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
+      return {
+        rows: [{ id: POSTING, company: "Acme", title: "Backend", created_at: NOW, revision: 1, closed_at: null }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { id: string; status?: string }[] };
+  assert.equal(body.data.length, 1);
+  assert.equal(body.data[0].id, POSTING);
+  assert.equal(Object.hasOwn(body.data[0], "status"), false);
+  assert.equal(seen.some((call) => call.sql.includes("job_postings") && call.sql.includes("status")), true);
+  assert.equal(seen.some((call) => call.sql.includes("job_postings") && call.sql.includes("ORDER BY") && !call.sql.includes("status")), true);
 });

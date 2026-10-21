@@ -36,6 +36,7 @@ const isGuestRead = (method: string, path: string): boolean => {
   if (method !== "GET") return false;
   return path === "/api/v1/postings"
     || path === "/api/v1/postings/locations"
+    || path === "/api/v1/postings/facets"
     || path === "/api/v1/search"
     || POSTING_UUID.test(path);
 };
