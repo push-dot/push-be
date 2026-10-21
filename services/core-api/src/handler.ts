@@ -180,8 +180,17 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   if (!key) {
     return errorResponse(400, "VALIDATION_ERROR", "must be a UUID", ctx.rid, { field: "Idempotency-Key" });
   }
-  const body = new Uint8Array(await ctx.request.clone().arrayBuffer());
-  const requestHash = await sha256Bytes(body);
+  const requestBytes = new Uint8Array(await ctx.request.arrayBuffer());
+  const requestHash = await sha256Bytes(requestBytes);
+  const live: Ctx = {
+    ...ctx,
+    request: new Request(ctx.request.url, {
+      method: ctx.request.method,
+      headers: ctx.request.headers,
+      body: requestBytes.slice(),
+      signal: ctx.request.signal,
+    }),
+  };
   const id = crypto.randomUUID();
   let inserted = false;
   try {
@@ -190,18 +199,22 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
       [id, ctx.user.id, path, key, requestHash, ctx.now.toISOString()]);
     inserted = Boolean(row);
   } catch (err) {
-    if (!isUnique(err)) return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    if (!isUnique(err)) {
+      return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    }
   }
   if (!inserted) {
     const existing = await one(ctx.deps.query,
       "SELECT id, request_hash, response_status, response_body, response_headers, created_at FROM idempotency_keys WHERE user_id = $1 AND method = 'POST' AND path = $2 AND key = $3",
       [ctx.user.id, path, key]);
-    if (!existing) return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    if (!existing) {
+      return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    }
     const pending = existing.response_status == null;
     const stale = pending && ctx.now.getTime() - Date.parse(String(existing.created_at)) > PENDING_MS;
     if (stale) {
       await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [String(existing.id)]);
-      return idempotent(ctx, path);
+      return idempotent(live, path);
     }
     if (String(existing.request_hash) !== requestHash || pending) {
       return errorResponse(409, "IDEMPOTENCY_CONFLICT", "idempotency key conflict", ctx.rid);
@@ -222,7 +235,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   }
   let response: Response;
   try {
-    response = await dispatch(ctx, path);
+    response = await dispatch(live, path);
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [id]);
     if (err instanceof HttpError) return errorOf(err, ctx.rid);

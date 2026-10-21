@@ -247,6 +247,33 @@ test("verified NTS response creates a company the caller admins", async () => {
   assert.equal(member.params.includes("ADMIN"), true);
 });
 
+test("verify body stays readable after the idempotency hash", async () => {
+  resetLimits();
+  const { fetchImpl } = ntsFetch("01", "01");
+  const query = gate([], employer(), async (sql) => {
+    if (sql.startsWith("INSERT INTO companies")) return { rows: [], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_members")) return { rows: [], rowCount: 1 };
+    if (sql.includes("FROM company_members")) return empty;
+    return empty;
+  });
+  const gc = (globalThis as { gc?: () => void }).gc;
+  const wrapped: Deps["query"] = async (sql, params) => {
+    if (gc && sql.includes("idempotency_keys") && sql.includes("INSERT")) {
+      gc();
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return query(sql, params);
+  };
+  const res = await handle(
+    post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111113"),
+    env(),
+    deps(wrapped, fetchImpl),
+  );
+  assert.equal(res.status, 201);
+});
+
 test("NTS mismatch, suspended, closed, and unknown status are 422", async () => {
   const cases = [
     ["02", "01", "MISMATCH"],
