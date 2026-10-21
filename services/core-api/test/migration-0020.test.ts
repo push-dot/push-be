@@ -23,6 +23,7 @@ const REQUIRED = [
   "intro",
   "representative_name",
   "inviter_user_id",
+  "ON DELETE SET NULL",
 ];
 
 test("fo-web employer profile migration defines posting status and company fields", () => {

@@ -13,4 +13,4 @@ ALTER TABLE companies ADD COLUMN website text;
 ALTER TABLE companies ADD COLUMN intro text;
 ALTER TABLE companies ADD COLUMN representative_name text;
 
-ALTER TABLE company_invites ADD COLUMN inviter_user_id uuid REFERENCES users(id);
+ALTER TABLE company_invites ADD COLUMN inviter_user_id uuid REFERENCES users(id) ON DELETE SET NULL;
