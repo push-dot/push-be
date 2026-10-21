@@ -36,8 +36,12 @@ test("guest listing binds the nil user", async () => {
 });
 
 test("guest locations are public", async () => {
-  const { res } = await run("/api/v1/postings/locations");
+  const { res, calls } = await run("/api/v1/postings/locations");
   assert.equal(res.status, 200);
+  const locations = calls.find((call) => call.sql.includes("GROUP BY p.location"));
+  assert.ok(locations);
+  assert.match(locations.sql, /\$1::uuid/);
+  assert.equal(locations.params[0], NIL);
 });
 
 test("guest posting detail is not unauthenticated", async () => {

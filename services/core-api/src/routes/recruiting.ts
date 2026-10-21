@@ -293,7 +293,7 @@ async function listPostings(ctx: Ctx): Promise<Response> {
 
 async function listPostingLocations(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT p.location, count(*)::int AS count FROM job_postings p WHERE p.closed_at IS NULL";
+  let sql = "SELECT p.location, count(*)::int AS count FROM job_postings p WHERE p.closed_at IS NULL AND $1::uuid IS NOT NULL";
   sql = appendPostingFilters(sql, params, ctx.url, false);
   sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
   const rows = await query(ctx.deps.query, sql, params);
