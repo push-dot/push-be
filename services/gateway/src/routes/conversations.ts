@@ -123,23 +123,27 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
   };
 }
 
-async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string): Promise<Response> {
+async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const found = await deps.query(
-    "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
-    [id, userId],
+    "SELECT id, company_id FROM conversations WHERE id = $1::uuid AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid))",
+    [id, userId, companyId],
   );
   if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  const params: unknown[] = [userId, id];
+  const shared = found[0].company_id != null && found[0].company_id !== "";
+  const params: unknown[] = shared ? [id] : [userId, id];
   let cursorSql = "";
   if (cursor.at && cursor.id) {
     params.push(cursor.at, cursor.id);
     cursorSql = ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
   }
   params.push(limit + 1);
+  const where = shared
+    ? "conversation_id = $1::uuid"
+    : "user_id = $1::uuid AND conversation_id = $2::uuid";
   const rows = await deps.query(
     "SELECT id, conversation_id, role, text, attachments, operation_id, "
     + tsText("created_at") + " AS created_at "
-    + "FROM messages WHERE user_id = $1::uuid AND conversation_id = $2::uuid" +
+    + "FROM messages WHERE " + where +
     cursorSql +
     ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
     params,
@@ -161,7 +165,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     if (user instanceof Response) return user;
     try {
       return await freshRead(
-        await listMessagesFor(deps, user.id, id, cursor, page.limit, rid),
+        await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId),
         request, rid);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -171,7 +175,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid);
+      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -193,7 +197,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid);
+      return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -238,16 +242,18 @@ function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Rec
   return { data: items, page: { nextCursor, hasMore: more } };
 }
 
-async function activeJobFor(deps: Deps, userId: string, id: string): Promise<string | null | Response> {
+async function activeJobFor(deps: Deps, userId: string, id: string, companyId: string | null): Promise<string | null | Response> {
   const found = await deps.query(
-    "SELECT id FROM conversations WHERE id = $1::uuid AND user_id = $2::uuid",
-    [id, userId],
+    "SELECT id, company_id FROM conversations WHERE id = $1::uuid AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid))",
+    [id, userId, companyId],
   );
   if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", "");
+  const shared = found[0].company_id != null && found[0].company_id !== "";
   const jobs = await deps.query(
-    "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid " +
-    "AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1",
-    [userId, id],
+    shared
+      ? "SELECT id FROM chat_jobs WHERE conversation_id = $1::uuid AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1"
+      : "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1",
+    shared ? [id] : [userId, id],
   );
   return jobs.length ? String(jobs[0].id) : null;
 }
@@ -262,7 +268,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     if (ctx.user || ctx.revalidate) {
       const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id);
+      const found = await activeJobFor(deps, user.id, id, user.companyId);
       if (found instanceof Response) {
         return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
       }
@@ -270,7 +276,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     } else if (ctx.dev) {
       const user = await requireUser(request, env, deps, rid, limits, now);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id);
+      const found = await activeJobFor(deps, user.id, id, user.companyId);
       if (found instanceof Response) {
         return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
       }
@@ -293,7 +299,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     try {
       const user = await requireUser(request, env, deps, rid, limits, now);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id);
+      const found = await activeJobFor(deps, user.id, id, user.companyId);
       if (found instanceof Response) {
         return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
       }

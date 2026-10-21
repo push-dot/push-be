@@ -288,13 +288,10 @@ def bind_chat_nodes(svc):
                else load_config())
         intent = state.get("intent")
         raw = state.get("ai")
-        if raw is None:
-            if intent == "interview":
-                apply_employer_turn(ent.AiOptions(
-                    provider="OPENAI", model="managed",
-                    credential_mode="MANAGED", effort="LOW"), plan, intent, cfg)
-            return None, plan
-        return apply_employer_turn(ent.AiOptions(**raw), plan, intent, cfg), plan
+        base = ent.AiOptions(**raw) if raw is not None else ent.AiOptions(
+            provider="OPENAI", model="managed",
+            credential_mode="MANAGED", effort="LOW")
+        return apply_employer_turn(base, plan, intent, cfg), plan
 
     async def _prepare_reply(state: ChatState) -> dict:
         from app.ingest.web_page import (
@@ -302,7 +299,7 @@ def bind_chat_nodes(svc):
         conv = state.get("conversation")
         employer_opts, company_plan = await _employer_turn(state, conv)
         ai = state.get("ai")
-        if ai is None:
+        if ai is None and employer_opts is None:
             return {"prepared": True, "prompt_user": "", "prompt_system": "",
                     "resume_flow": False, "phase": 0}
         opts = employer_opts if employer_opts is not None else ent.AiOptions(**ai)

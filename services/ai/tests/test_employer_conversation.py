@@ -6,11 +6,15 @@ from uuid import uuid4
 import pytest
 
 from app.config import load_config
+from app.db import NotFoundError
 from app.domain import entities as ent
 from app.domain.employer_chat import apply_employer_turn, posting_system_prompt
 from app.domain.errors import DomainError
+from app.domain.pagination import PageRequest
 from app.domain.plan_levers import levers_for
 from app.graphs.chat import bind_chat_nodes, event_sink
+from app.infrastructure.store_chat_jobs import ChatJobStore
+from app.infrastructure.store_conversations import ConversationStore
 from tests.stubs import StubConversationStore
 from tests.test_conversation import _svc
 
@@ -87,3 +91,68 @@ async def test_prepare_reply_puts_the_posting_fence_in_the_prompt():
         event_sink.reset(token)
     assert "```posting-draft" in out["prompt_system"]
     assert out["ai"]["webSearch"] is True or out["ai"]["web_search"] is True
+
+
+async def test_prepare_reply_without_ai_still_sets_web_search_and_the_fence():
+    user_id = uuid4()
+    conv = SimpleNamespace(
+        id=uuid4(), user_id=user_id, company_id=uuid4(),
+        application_id=None, archived=False, title="", revision=1,
+    )
+    svc = _svc(StubConversationStore())
+
+    async def company_plan(_company_id):
+        return "BASIC"
+
+    svc.conversations.company_plan = company_plan
+    nodes = bind_chat_nodes(svc)
+    token = event_sink.set([])
+    try:
+        out = await nodes["prepare_reply"]({
+            "user_id": user_id,
+            "text": "백엔드 공고를 써 줘",
+            "conversation": conv,
+            "context": {},
+            "attachments": [],
+            "intent": "posting",
+        })
+    finally:
+        event_sink.reset(token)
+    assert "```posting-draft" in out["prompt_system"]
+    assert out["prompt_user"]
+    assert out["ai"]["webSearch"] is True
+
+
+class _Capture:
+    def __init__(self):
+        self.sql = ""
+
+    async def fetchrow(self, sql, *args):
+        self.sql = sql
+        return None
+
+    async def fetch(self, sql, *args):
+        self.sql = sql
+        return []
+
+
+class _DB:
+    def __init__(self, conn):
+        self.pool = conn
+
+    def q(self):
+        return self.pool
+
+
+async def test_company_member_load_and_enqueue_sql_uses_membership():
+    captured = _Capture()
+    store = ConversationStore(_DB(captured))
+    with pytest.raises(NotFoundError):
+        await store.get(uuid4(), uuid4())
+    assert "company_members" in captured.sql
+    await store.list_messages(uuid4(), uuid4(), PageRequest(limit=12))
+    assert "company_members" in captured.sql
+    jobs = ChatJobStore(_DB(captured))
+    await jobs.enqueue_started(uuid4(), uuid4(), {"text": "이어서"}, "대기 중")
+    assert "company_members" in captured.sql
+    assert "user_id = $1" in captured.sql

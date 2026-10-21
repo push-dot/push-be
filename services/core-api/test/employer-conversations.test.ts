@@ -88,6 +88,9 @@ test("verified employer create stores company_id and posting_id", async () => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("FROM job_postings") || sql.includes("FROM applications")) {
+      return { rows: [{ id: POSTING }], rowCount: 1 };
+    }
     if (sql.includes("company_members")) {
       return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: null, role: "MEMBER" }], rowCount: 1 };
     }
@@ -232,4 +235,236 @@ test("archiving an employer conversation deletes its attachments", async () => {
   }));
   assert.equal(res.status, 200);
   assert.equal(sqls.some((sql) => sql.includes("DELETE FROM conversation_attachments") && sql.includes("conversation_id")), true);
+});
+
+const messageBody = (intent: string) => JSON.stringify({
+  text: "면접 준비",
+  accessMode: "SUGGEST",
+  intent,
+});
+
+test("a company member posts on a conversation they did not create", async () => {
+  resetLimits();
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", messageBody("general"), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-team" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("chat_jobs")) {
+      if (!sql.includes("company_members")) return { rows: [], rowCount: 0 };
+      return { rows: [{ id: "job-team" }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 202);
+});
+
+test("a company member archives a conversation they did not create", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/archive", JSON.stringify({
+    expectedRevision: 1,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee2",
+  }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-team-arc" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("FROM conversations") && !sql.includes("company_members")) return { rows: [], rowCount: 0 };
+    if (sql.startsWith("UPDATE conversations") && !sql.includes("company_members")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM conversations")) {
+      return {
+        rows: [{
+          id: CONV, revision: 1, application_id: null, title: "공고", pinned: false,
+          company_id: COMPANY, created_at: "2026-01-02T03:04:05Z",
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.startsWith("UPDATE conversations")) {
+      return {
+        rows: [{
+          id: CONV, revision: 2, application_id: null, title: "공고", pinned: false,
+          created_at: "2026-01-02T03:04:05Z", updated_at: NOW.toISOString(),
+        }],
+        rowCount: 1,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 200);
+  assert.equal(sqls.some((sql) => sql.includes("DELETE FROM conversation_attachments")), true);
+});
+
+test("a non member cannot post or archive a company conversation", async () => {
+  resetLimits();
+  const query = async (sql: string) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-out" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const posted = await handle(post("/api/v1/conversations/" + CONV + "/messages", messageBody("general"), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee3",
+  }), env(), deps(query));
+  assert.equal(posted.status, 404);
+  assert.equal((await posted.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  const archived = await handle(post("/api/v1/conversations/" + CONV + "/archive", JSON.stringify({
+    expectedRevision: 1,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee4",
+  }), env(), deps(query));
+  assert.equal(archived.status, 404);
+});
+
+const interviewOnPlan = async (plan: string | null, key: string) => {
+  let inserted = false;
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", messageBody("interview"), {
+    "content-type": "application/json",
+    "idempotency-key": key,
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: key }], rowCount: 1 };
+    if (sql.includes("chat_jobs")) {
+      inserted = true;
+      return { rows: [{ id: "job-locked" }], rowCount: 1 };
+    }
+    if (sql.includes("FROM conversations") || sql.includes("JOIN companies")) {
+      return { rows: [{ id: CONV, company_id: COMPANY, plan }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 403);
+  const body = await res.json() as { error: { code: string; details: { requiredPlan: string } } };
+  assert.equal(body.error.code, "PLAN_REQUIRED");
+  assert.equal(body.error.details.requiredPlan, "PRO");
+  assert.equal(inserted, false);
+};
+
+test("interview without ai on a BASIC company plan is 403 before enqueue", async () => {
+  resetLimits();
+  await interviewOnPlan("BASIC", "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee5");
+});
+
+test("interview without ai on a null company plan is 403 before enqueue", async () => {
+  resetLimits();
+  await interviewOnPlan(null, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee6");
+});
+
+test("interview without ai on a PRO company plan is queued", async () => {
+  resetLimits();
+  let inserted = false;
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", messageBody("interview"), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee10",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-pro" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("chat_jobs")) {
+      inserted = true;
+      return { rows: [{ id: "job-pro" }], rowCount: 1 };
+    }
+    if (sql.includes("FROM conversations") || sql.includes("JOIN companies")) {
+      return { rows: [{ id: CONV, company_id: COMPANY, plan: "PRO" }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 202);
+  assert.equal(inserted, true);
+});
+
+test("a missing posting id is 404 and a posting from another company still creates", async () => {
+  resetLimits();
+  let inserted = false;
+  const missing = await handle(post("/api/v1/conversations", JSON.stringify({
+    audience: "EMPLOYER",
+    title: "공고",
+    postingId: POSTING,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee7",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-miss" }], rowCount: 1 };
+    if (sql.includes("company_members")) {
+      return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: "PRO", role: "MEMBER" }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO conversations")) {
+      inserted = true;
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal(inserted, false);
+
+  let postingSql = "";
+  const other = await handle(post("/api/v1/conversations", JSON.stringify({
+    audience: "EMPLOYER",
+    title: "참고 공고",
+    postingId: POSTING,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee8",
+  }), env(), deps(async (sql, next) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-other" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("FROM job_postings")) {
+      postingSql = sql;
+      return { rows: [{ id: POSTING }], rowCount: 1 };
+    }
+    if (sql.includes("company_members")) {
+      return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: "PRO", role: "MEMBER" }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO conversations")) {
+      assert.equal((next ?? []).includes(POSTING), true);
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(other.status, 201);
+  assert.match(postingSql, /FROM job_postings/);
+  assert.doesNotMatch(postingSql, /company_id/);
+});
+
+test("a missing application id on employer create is 404", async () => {
+  resetLimits();
+  let inserted = false;
+  const res = await handle(post("/api/v1/conversations", JSON.stringify({
+    audience: "EMPLOYER",
+    title: "공고",
+    applicationId: POSTING,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee9",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-app" }], rowCount: 1 };
+    if (sql.includes("company_members")) {
+      return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: "PRO", role: "MEMBER" }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO conversations")) {
+      inserted = true;
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 404);
+  assert.equal(inserted, false);
 });

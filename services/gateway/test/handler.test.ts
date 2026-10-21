@@ -1246,3 +1246,62 @@ test("conversation pdf upload is owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
   assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
 });
+
+const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+test("company message reads include a teammate and ignore the author filter", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const message = {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    conversation_id: SHARED_CONV,
+    role: "USER",
+    text: "팀 메시지",
+    attachments: [],
+    operation_id: null,
+    created_at: "2026-10-17T21:57:28Z",
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations/" + SHARED_CONV + "/messages", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("json_agg")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, conversation_id: SHARED_CONV, rows: [message],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const sql = seen.find((item) => item.includes("FROM messages")) ?? "";
+  assert.match(sql, /company_id = \(SELECT company_id FROM auth\)/);
+  assert.match(sql, /found\.company_id IS NOT NULL/);
+  const body = await res.json() as { data: { text: string }[] };
+  assert.equal(body.data[0].text, "팀 메시지");
+});
+
+test("an active company job is visible to a teammate", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations/" + SHARED_CONV + "/messages/stream/active", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, conversation_id: SHARED_CONV, job_id: null,
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 204);
+  const sql = seen.find((item) => item.includes("chat_jobs")) ?? "";
+  assert.match(sql, /company_id = \(SELECT company_id FROM auth\)/);
+  assert.match(sql, /company_id FROM found\) IS NOT NULL/);
+});

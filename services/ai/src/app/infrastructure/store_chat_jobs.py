@@ -68,7 +68,9 @@ class ChatJobStore:
         text = "" if raw_text is None else str(raw_text)
         row = await self.db.q().fetchrow(
             "WITH conv AS ("
-            "SELECT id FROM conversations WHERE id = $2 AND user_id = $1"
+            "SELECT id FROM conversations WHERE id = $2 AND ("
+            "user_id = $1 OR (company_id IS NOT NULL AND company_id = "
+            "(SELECT company_id FROM company_members WHERE user_id = $1)))"
             "), job AS ("
             "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
             "SELECT $3, $1, conv.id, $4 FROM conv RETURNING id"

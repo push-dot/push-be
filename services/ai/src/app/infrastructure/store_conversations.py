@@ -27,7 +27,9 @@ class ConversationStore(Store):
 
     async def get(self, user_id: UUID, id_: UUID) -> Conversation:
         return to_model(Conversation, await self.one(
-            f"SELECT {_CONV_COLS} FROM conversations WHERE id = $1 AND user_id = $2",
+            f"SELECT {_CONV_COLS} FROM conversations WHERE id = $1 AND ("
+            "user_id = $2 OR (company_id IS NOT NULL AND company_id = "
+            "(SELECT company_id FROM company_members WHERE user_id = $2)))",
             id_, user_id))
 
     async def list(self, user_id: UUID, application_id: Optional[UUID], page) -> Page:
@@ -86,8 +88,12 @@ class ConversationStore(Store):
 
     async def list_messages(self, user_id: UUID, conversation_id: UUID, page) -> Page:
         c = Conds()
-        c.add("user_id = {}", user_id)
         c.add("conversation_id = {}", conversation_id)
+        c.add(
+            "(user_id = {} OR EXISTS (SELECT 1 FROM conversations cv "
+            "JOIN company_members m ON m.company_id = cv.company_id "
+            "AND m.user_id = {} WHERE cv.id = {} AND cv.company_id IS NOT NULL))",
+            user_id, user_id, conversation_id)
         c.cursor(page)
         sql, args = c.query(_MSG_COLS, "messages", page.effective_limit())
         rows = await self.q().fetch(sql, *args)

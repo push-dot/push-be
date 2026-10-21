@@ -152,11 +152,12 @@ export const LIST_SQL = AUTH_RATE_PREFIX
 
 export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
-  + "), page AS ("
+  + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
+  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + ")), page AS ("
   + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
   + "FROM messages m JOIN found ON found.id = m.conversation_id "
-  + "WHERE EXISTS (SELECT 1 FROM bumped) AND m.user_id = (SELECT id FROM live) "
+  + "WHERE EXISTS (SELECT 1 FROM bumped) AND (m.user_id = (SELECT id FROM live) OR found.company_id IS NOT NULL) "
   + "AND ($9::timestamptz IS NULL OR (m.created_at, m.id) < ($9::timestamptz, $10::uuid)) "
   + "ORDER BY m.created_at DESC, m.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
@@ -168,11 +169,12 @@ export const MESSAGES_SQL = AUTH_RATE_PREFIX
 
 export const STREAM_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
-  + "), job AS ("
-  + "SELECT id FROM chat_jobs WHERE user_id = (SELECT id FROM live) "
-  + "AND conversation_id = (SELECT id FROM found) "
+  + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
+  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + ")), job AS ("
+  + "SELECT id FROM chat_jobs WHERE conversation_id = (SELECT id FROM found) "
   + "AND status IN ('PENDING', 'RUNNING') AND EXISTS (SELECT 1 FROM bumped) "
+  + "AND (user_id = (SELECT id FROM live) OR (SELECT company_id FROM found) IS NOT NULL) "
   + "ORDER BY created_at DESC LIMIT 1"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
   + "(SELECT id FROM job) AS job_id FROM auth";

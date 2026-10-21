@@ -50,6 +50,12 @@ const optionalUuid = (value: unknown, field: string): string | null => {
   return requireUuid(String(value), field);
 };
 
+const memberOfCaller = (companyExpr: string, userParam: string): string =>
+  `${companyExpr} IS NOT NULL AND ${companyExpr} = (SELECT company_id FROM company_members WHERE user_id = ${userParam})`;
+
+const visibleConversation = (idParam: string, userParam: string): string =>
+  `id = ${idParam} AND (user_id = ${userParam} OR (${memberOfCaller("company_id", userParam)}))`;
+
 const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
   forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
   if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -63,6 +69,14 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
     [ctx.user.id]);
   if (!member || member.verified_at == null) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+  }
+  if (postingId) {
+    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]);
+    if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  }
+  if (applicationId) {
+    const application = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1", [applicationId]);
+    if (!application) throw new HttpError(404, "NOT_FOUND", "resource not found");
   }
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
@@ -109,7 +123,7 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, title, pinned, archived, created_at FROM conversations WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, title, pinned, archived, created_at FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -130,7 +144,7 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = $6, updated_at = $7 WHERE id = $1 AND user_id = $2 AND revision = $8 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = $6, updated_at = $7 WHERE " + visibleConversation("$1", "$2") + " AND revision = $8 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, title, pinned, current.archived === true || current.archived === "t", now, body.expectedRevision],
     id, ctx.user.id);
   return data(200, convDto(updated), ctx.rid);
@@ -144,7 +158,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, title, pinned, created_at, company_id FROM conversations WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, title, pinned, created_at, company_id FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -152,7 +166,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE id = $1 AND user_id = $2 AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
   if (current.company_id != null) {
@@ -283,6 +297,17 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
   const byok = ctx.request.headers.get("x-byok-key") || "";
   await allowChat(ctx, ai, byok);
+  if (intent === "interview") {
+    const owned = await one(ctx.deps.query,
+      "SELECT c.company_id, co.plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+      [conversationId, ctx.user.id]);
+    if (owned && owned.company_id != null) {
+      const tier = owned.plan == null ? "" : String(owned.plan).trim().toUpperCase();
+      if (tier !== "PRO" && tier !== "ULTRA") {
+        throw new HttpError(403, "PLAN_REQUIRED", "interview requires the PRO plan", { requiredPlan: "PRO" });
+      }
+    }
+  }
   const payload: Record<string, unknown> = {
     text: body.text, context, ai, accessMode: access, intent, applicationId: messageApplicationId,
   };
@@ -294,7 +319,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND user_id = $1), job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while

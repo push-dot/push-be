@@ -94,7 +94,9 @@ async def test_enqueue_stores_the_user_message_once():
         await pool.execute(f"CREATE SCHEMA {schema}")
         await pool.execute(f"SET search_path TO {schema}")
         await pool.execute(
-            "CREATE TABLE conversations (id uuid PRIMARY KEY, user_id uuid NOT NULL)")
+            "CREATE TABLE conversations (id uuid PRIMARY KEY, user_id uuid NOT NULL, company_id uuid)")
+        await pool.execute(
+            "CREATE TABLE company_members (company_id uuid NOT NULL, user_id uuid PRIMARY KEY)")
         await pool.execute(
             "CREATE TABLE messages ("
             "id uuid PRIMARY KEY, user_id uuid NOT NULL, conversation_id uuid NOT NULL, "
