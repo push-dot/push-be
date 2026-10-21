@@ -9,7 +9,7 @@ import type { Deps, FrontEnv } from "./types.ts";
 import { errorResponse, preflight, requestIdOf, withCors } from "./http.ts";
 import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
-import { listConversations, listMessages, streamActive } from "./routes/conversations.ts";
+import { listConversations, listMessages, streamActive, streamCancel } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
 import { invalidateAfterWrite, proxy, proxyPython, purgeModelCache } from "./routes/proxy.ts";
@@ -64,6 +64,10 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   const active = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages\/stream\/active$/);
   if (request.method === "GET" && active) {
     return streamActive(request, env, deps, url, active[1], rid, limits, now);
+  }
+  const cancel = path.match(/^\/api\/v1\/conversations\/([^/]+)\/stream\/cancel$/);
+  if (request.method === "POST" && cancel) {
+    return streamCancel(request, env, deps, cancel[1], rid, limits, now);
   }
   if (request.method === "GET" && path === "/api/v1/ai/models") {
     return aiModels(request, env, deps, url, rid, limits, now);

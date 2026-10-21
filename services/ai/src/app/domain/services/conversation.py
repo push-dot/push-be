@@ -237,6 +237,9 @@ class ConversationService:
                             "thread_id": str(job["conversation_id"])}},
                         stream_mode=["custom", "values"]):
                     if mode == "custom" and isinstance(chunk, dict):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         if "token" in chunk:
                             await self.jobs.emit(
                                 job_id, "token", {"text": chunk["token"]})
@@ -248,12 +251,19 @@ class ConversationService:
                             if live is not None:
                                 await self.jobs.emit(job_id, live[0], live[1])
                     elif mode == "values" and chunk.get("operation"):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         from app.jsonutil import to_jsonable
                         await self.jobs.emit(
                             job_id, "done",
                             {"operation": to_jsonable(chunk["operation"])})
-                await self.jobs.finish(job_id, "DONE")
-                terminal = True
+                if not terminal:
+                    if await self.jobs.status(job_id) == "CANCELLED":
+                        terminal = True
+                    else:
+                        await self.jobs.finish(job_id, "DONE")
+                        terminal = True
             except DomainError as e:
                 await self._drop_enqueued_user_message(job_id)
                 await self.jobs.emit(

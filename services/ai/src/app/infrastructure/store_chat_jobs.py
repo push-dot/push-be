@@ -103,8 +103,7 @@ class ChatJobStore:
 
     async def finish(self, job_id: UUID, status: str,
                      error: Optional[str] = None) -> None:
-        # DONE and FAILED stay. A later error from a stale run cannot
-        # reopen a chat that already finished.
+        # DONE, FAILED, and CANCELLED stay. A later finish cannot reopen them.
         token = bound_claim(job_id)
         if token:
             tag = await self.db.q().execute(
@@ -116,16 +115,18 @@ class ChatJobStore:
             return
         await self.db.q().execute(
             "UPDATE chat_jobs SET status=$2, error=$3, updated_at=$4 "
-            "WHERE id=$1 AND status NOT IN ('DONE', 'FAILED')",
+            "WHERE id=$1 AND status NOT IN ('DONE', 'FAILED', 'CANCELLED')",
             job_id, status, error, _now())
 
     async def requeue(self, job_id: UUID, delay_s: float) -> None:
         async def work():
-            await self.db.q().execute(
+            tag = await self.db.q().execute(
                 "UPDATE chat_jobs SET status='PENDING', "
                 "run_at=now() + make_interval(secs => $2), updated_at=$3, "
                 "checkpoint = COALESCE(checkpoint, '{}'::jsonb) - 'claim' "
-                "WHERE id=$1", job_id, delay_s, _now())
+                "WHERE id=$1 AND status <> 'CANCELLED'", job_id, delay_s, _now())
+            if _affected(tag) == 0:
+                return
             await self.db.q().execute(
                 "DELETE FROM chat_events WHERE job_id=$1", job_id)
 

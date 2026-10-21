@@ -223,7 +223,7 @@ class StubChatJobStore:
                  status: str = "RUNNING"):
         self.job_id = uuid4()
         self.events = events or []
-        self.status = status
+        self._status = status
         self.finished = []
         self.requeued = []
 
@@ -243,7 +243,7 @@ class StubChatJobStore:
 
     async def finish(self, job_id: UUID, status: str, error=None):
         self.finished.append((status, error))
-        self.status = status
+        self._status = status
 
     async def requeue(self, job_id: UUID, delay_s: float):
         self.requeued.append(job_id)
@@ -256,7 +256,7 @@ class StubChatJobStore:
         return [e for e in self.events if e["id"] > after_id]
 
     async def status(self, job_id: UUID):
-        return self.status
+        return self._status
 
 
 class StubAiUsageStore:

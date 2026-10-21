@@ -258,6 +258,34 @@ async function activeJobFor(deps: Deps, userId: string, id: string, companyId: s
   return jobs.length ? String(jobs[0].id) : null;
 }
 
+export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> => {
+  const id = parseUuid(rawId);
+  if (!id) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  try {
+    const found = await activeJobFor(deps, user.id, id, user.companyId);
+    if (found instanceof Response) {
+      return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
+    }
+    if (!found) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    const updated = await deps.query(
+      "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
+      + "WHERE id = $1::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id",
+      [found],
+    );
+    if (!updated.length) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    await deps.query(
+      "INSERT INTO chat_events (job_id, type, payload) "
+      + "VALUES ($1::uuid, 'cancelled', '{}'::jsonb)",
+      [found],
+    );
+    return jsonResponse(200, { data: { jobId: found, status: "CANCELLED" } }, rid);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+};
+
 export async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
   if (!id) return fieldError("id", "must be a UUID", rid);
