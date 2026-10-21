@@ -232,9 +232,38 @@ def bind_chat_nodes(svc):
             kinds.append(e.kind)
             context_parts.append(
                 "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
+        await _ingest_links(state, conv)
         return {"conversation": conv, "attachments": attachments,
                 "context_text": "\n\n".join(context_parts),
                 "evidence_kinds": kinds}
+
+    async def _ingest_links(state, conv) -> None:
+        from app.domain.link_ingest import (
+            has_https, ingest_chat_links, older_message_counted)
+        text = state.get("text") or ""
+        context = state.get("context") or {}
+        if not has_https(text) and not context:
+            return
+        try:
+            query = svc.db.q()
+            job_id = state.get("job_id")
+            exclude_id = None
+            if job_id:
+                exclude_id, _, _ = _stable_ids(job_id)
+            counted = await older_message_counted(
+                query, conv.id, exclude_id, text)
+            await ingest_chat_links(
+                query,
+                user_id=state["user_id"],
+                conversation_id=conv.id,
+                text=text,
+                context=context,
+                already_counted=counted,
+                exclude_message_id=exclude_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("link ingest failed")
 
     async def _persist_user_msg(state: ChatState) -> None:
         user_msg_id, _, _ = _stable_ids(state.get("job_id"))
