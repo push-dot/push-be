@@ -140,6 +140,10 @@ class ChatState(TypedDict, total=False):
     prepared: bool
     prompt_user: str
     prompt_system: str
+    intent: Optional[str]
+    application_id: Any
+    employer_owned: bool
+    company_plan: str
 
 
 def bind_chat_nodes(svc):
@@ -267,14 +271,41 @@ def bind_chat_nodes(svc):
                 pass
             raise
 
+    async def _employer_turn(state: ChatState, conv):
+        company_id = getattr(conv, "company_id", None)
+        if not company_id:
+            return None, None
+        plan = None
+        try:
+            plan = await svc.conversations.company_plan(company_id)
+        except NotFoundError:
+            plan = None
+        from app.config import load_config
+        from app.domain.employer_chat import apply_employer_turn
+        gate = getattr(svc, "ai", None)
+        cfg = (gate._levers_config()
+               if gate is not None and hasattr(gate, "_levers_config")
+               else load_config())
+        intent = state.get("intent")
+        raw = state.get("ai")
+        if raw is None:
+            if intent == "interview":
+                apply_employer_turn(ent.AiOptions(
+                    provider="OPENAI", model="managed",
+                    credential_mode="MANAGED", effort="LOW"), plan, intent, cfg)
+            return None, plan
+        return apply_employer_turn(ent.AiOptions(**raw), plan, intent, cfg), plan
+
     async def _prepare_reply(state: ChatState) -> dict:
         from app.ingest.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
+        conv = state.get("conversation")
+        employer_opts, company_plan = await _employer_turn(state, conv)
         ai = state.get("ai")
         if ai is None:
             return {"prepared": True, "prompt_user": "", "prompt_system": "",
                     "resume_flow": False, "phase": 0}
-        opts = ent.AiOptions(**ai)
+        opts = employer_opts if employer_opts is not None else ent.AiOptions(**ai)
         role_models = opts.models or {}
         sections = []
         if state.get("context_text"):
@@ -424,9 +455,17 @@ def bind_chat_nodes(svc):
                     user_msg = "\n\n".join(sections)
         system = (await asyncio.to_thread(_phase_prompt, phase)
                   if resume_flow else "")
-        return {"prepared": True, "prompt_user": user_msg,
-                "prompt_system": system, "resume_flow": resume_flow,
-                "phase": phase, "conversation": conv}
+        if employer_opts is not None and state.get("intent") == "posting":
+            from app.domain.employer_chat import posting_system_prompt
+            system = (system + "\n" + posting_system_prompt()).strip()
+        prepared = {"prepared": True, "prompt_user": user_msg,
+                    "prompt_system": system, "resume_flow": resume_flow,
+                    "phase": phase, "conversation": conv}
+        if employer_opts is not None:
+            prepared["ai"] = employer_opts.model_dump(by_alias=True)
+            prepared["employer_owned"] = True
+            prepared["company_plan"] = company_plan or ""
+        return prepared
 
     async def _complete_prepared(state: ChatState) -> dict:
         ai = state.get("ai")
@@ -435,7 +474,7 @@ def bind_chat_nodes(svc):
             return {"completion": None}
         opts = ent.AiOptions(**ai)
         role_models = opts.models or {}
-        if role_models.get("generate"):
+        if role_models.get("generate") and not state.get("employer_owned"):
             opts.model = role_models["generate"]
         usage = {"input_tokens": 0, "output_tokens": 0}
         user_msg = state.get("prompt_user") or ""
@@ -447,43 +486,50 @@ def bind_chat_nodes(svc):
         emitted = 0
         _emit({"status": "응답 작성 중"})
         import os
-        if os.environ.get("LLM_STREAM", "1") == "0":
-            completion = await svc.ai.complete(
-                state["user_id"], opts, system, user_msg,
-                byok_key=byok_key_var.get(), search_query=state["text"],
-                job_id=state.get("job_id"))
-            text = completion.text or ""
-            step = 48
-            for i in range(0, len(text), step):
-                _emit({"token": text[i:i + step]})
-            return {"completion": completion,
-                    "usage_ids": [completion.usage_id] if completion.usage_id else [],
-                    "resume_flow": resume_flow, "phase": phase}
-        for round_ in range(3):
-            usage.pop("finish", None)
-            async for tok in svc.ai.stream(
-                    state["user_id"], opts, system, user_msg, usage,
-                    byok_key=byok_key_var.get(),
-                    search_query=state["text"],
-                    assistant_prefix="".join(parts) if round_ else "",
-                    job_id=state.get("job_id")):
-                parts.append(tok)
-                if resume_flow:
-                    safe = visible_prefix("".join(parts))
-                    if len(safe) > emitted:
-                        _emit({"token": safe[emitted:]})
-                        emitted = len(safe)
-                else:
-                    _emit({"token": tok})
-            if usage.get("finish") != "length":
-                break
-            _emit({"status": "응답이 길어 이어서 작성 중"})
-        return {"completion": ent.AICompletion(
-            text="".join(parts),
-            input_tokens=usage["input_tokens"],
-            output_tokens=usage["output_tokens"]),
-            "usage_ids": usage.get("usage_ids") or [],
-            "resume_flow": resume_flow, "phase": phase}
+        from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
+        token = (bind_employer_plan(state.get("company_plan") or "")
+                 if state.get("employer_owned") else None)
+        try:
+            if os.environ.get("LLM_STREAM", "1") == "0":
+                completion = await svc.ai.complete(
+                    state["user_id"], opts, system, user_msg,
+                    byok_key=byok_key_var.get(), search_query=state["text"],
+                    job_id=state.get("job_id"))
+                text = completion.text or ""
+                step = 48
+                for i in range(0, len(text), step):
+                    _emit({"token": text[i:i + step]})
+                return {"completion": completion,
+                        "usage_ids": [completion.usage_id] if completion.usage_id else [],
+                        "resume_flow": resume_flow, "phase": phase}
+            for round_ in range(3):
+                usage.pop("finish", None)
+                async for tok in svc.ai.stream(
+                        state["user_id"], opts, system, user_msg, usage,
+                        byok_key=byok_key_var.get(),
+                        search_query=state["text"],
+                        assistant_prefix="".join(parts) if round_ else "",
+                        job_id=state.get("job_id")):
+                    parts.append(tok)
+                    if resume_flow:
+                        safe = visible_prefix("".join(parts))
+                        if len(safe) > emitted:
+                            _emit({"token": safe[emitted:]})
+                            emitted = len(safe)
+                    else:
+                        _emit({"token": tok})
+                if usage.get("finish") != "length":
+                    break
+                _emit({"status": "응답이 길어 이어서 작성 중"})
+            return {"completion": ent.AICompletion(
+                text="".join(parts),
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"]),
+                "usage_ids": usage.get("usage_ids") or [],
+                "resume_flow": resume_flow, "phase": phase}
+        finally:
+            if token is not None:
+                reset_employer_plan(token)
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]

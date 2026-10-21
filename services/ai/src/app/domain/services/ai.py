@@ -11,6 +11,7 @@ from app.domain.errors import (
     DomainError, feature_disabled, integration_required, internal, not_configured,
     not_found, provider_error, validation_field,
 )
+from app.domain.employer_chat import current_employer_plan
 from app.domain.plan_levers import levers_for
 from app.domain.validators import code_point_len
 from app.infrastructure.store_ai import AiKeyStore, AiUsageStore
@@ -161,7 +162,11 @@ class AIGate:
             except NotFoundError:
                 raise not_found()
         if ai.credential_mode == "MANAGED":
-            levers = levers_for("PERSONAL", u.plan, self._levers_config())
+            bound = current_employer_plan()
+            if bound is not None:
+                levers = levers_for("EMPLOYER", bound or None, self._levers_config())
+            else:
+                levers = levers_for("PERSONAL", u.plan, self._levers_config())
             ai.model = levers.model
             ai.effort = levers.effort
         if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:

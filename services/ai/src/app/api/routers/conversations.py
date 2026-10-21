@@ -26,7 +26,8 @@ async def post_message_stream(id: str, request: Request):
                 d.conversations.stream_message(
                     user_id, conversation_id, req.text, context, ai_options(req.ai),
                     req.access_mode,
-                    request.headers.get("x-byok-key", "")),
+                    request.headers.get("x-byok-key", ""),
+                    req.intent, req.application_id),
                 request):
             yield frame
 

@@ -72,6 +72,7 @@
 39. **Store webhook signatures and top-up quantity.** App Store and Google Play webhooks grant only after `crypto.subtle.verify` of a JWS. `APPLE_IAP_KEY` and `GOOGLE_PLAY_KEY` are imported as an SPKI public key (ES256 or RS256). A key that cannot be imported is 503 `NOT_CONFIGURED` and nothing is granted. A bad or missing signature is 400 `VALIDATION_ERROR` with message `invalid webhook signature`. Apple `signedTransactionInfo` is verified with the same key. Plain Google Pub/Sub JSON is rejected. Apple x5c and Google OIDC are not checked. This is stricter than api-spec 3.15, which describes Google Play RTDN as a Pub/Sub push: an unsigned push does not change a plan. `POST /billing/topup` sets Stripe `line_items[0][quantity]` to the displayed credit `amount`. `STRIPE_PRICE_TOPUP` is the price of one displayed credit. The webhook still grants `metadata.amountMicroCredits`.
 40. **Docs 8c64ec3.** api-spec 4.1 create already accepts `requirements[]`, `preferred[]`, and `workConditions`, and detail returns them. `PATCH /postings/{id}` and `POST /postings/{id}/close` take `expectedRevision` and return 409 on a mismatch. `GET /companies/me/postings` includes closed rows. `GET /billing` employer `plan` is `BASIC|PRO|ULTRA|null`; personal stays `FREE|PRO|ULTRA|null`. Section 6 optional fields (`fitScore`, `author.employer`, `author.companyName`, `notifyApplicationStage`, `APPLICATION_STAGE` with `target.kind` `activity`) match the handlers already shipped. `GET /companies/me/members` stays `{ data: [...] }` (Decision 24); api-spec 4.6 still shows a bare array. Task 9 must also accept `POST /conversations/{id}/messages` and return a `posting-draft` fenced block.
 41. **Null plan levers.** `levers_for("PERSONAL", None or "")` is FREE, including `monthly_micro` `1_800_000`. `levers_for("EMPLOYER", None or "")` uses BASIC model, effort, reference, tenure, and score band, and `monthly_micro` 0. A set employer plan uses that plan's monthly amount. Do not change the core billing grants. Project caps in this task read `users.plan` only. Core `POST /conversations/{id}/messages` uses the same personal allowances, so FREE and a null plan get `1_800_000`. It does not reject an `opencode-go/` model before the AI service replaces the managed model. PRO stays `30_000_000` and ULTRA stays `100_000_000`.
+42. **PDF attachment cap.** api-spec 4.8, feature-spec 17.5, and PRD 7.15 set no byte cap for `POST /conversations/{id}/attachments`. Reject a file over 10 MiB (`10 * 1024 * 1024`) with 413 `PAYLOAD_TOO_LARGE`. A file of exactly 10 MiB is allowed. The mime type stays `application/pdf`.
 
 ## File map
 
@@ -537,11 +538,11 @@ Values match PRD 7.13. `reference` is `basic | extended | full`. `tenure` is `sa
 - An employer posting draft is a ```posting-draft fenced block in the assistant message: title, description, requirements, preferred, work conditions.
 - Archiving an employer conversation deletes `conversation_attachments` (FK cascade is enough if archive does not delete the row; add an explicit delete on archive).
 
-- [ ] **Step 1: Failing tests** for personal create still working without `audience`, employer create without verification 403, Ultra PDF stored, BASIC PDF 403, interview intent on BASIC 403.
+- [x] **Step 1: Failing tests** for personal create still working without `audience`, employer create without verification 403, Ultra PDF stored, BASIC PDF 403, interview intent on BASIC 403.
 
-- [ ] **Step 2–4: TDD, then** core, gateway, and the new pytest.
+- [x] **Step 2–4: TDD, then** core, gateway, and the new pytest.
 
-- [ ] **Step 5: Commit** `feat(conversations): add company-owned employer chats`
+- [x] **Step 5: Commit** `feat(conversations): add company-owned employer chats`
 
 ---
 

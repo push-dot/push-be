@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
+from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import (
     DomainError, internal, map_revision_err, not_found, revision_conflict,
     validation_field,
@@ -216,6 +217,7 @@ class ConversationService:
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
                             "job_id": str(job_id),
+                            **turn_from_payload(p),
                         },
                         config={"configurable": {
                             "thread_id": str(job["conversation_id"])}},
@@ -398,7 +400,8 @@ class ConversationService:
 
     def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
                     context: dict, ai: Optional[ent.AiOptions],
-                    access_mode: str) -> dict:
+                    access_mode: str, intent: str | None = None,
+                    application_id=None) -> dict:
         return {
             "user_id": user_id,
             "conversation_id": conversation_id,
@@ -407,24 +410,26 @@ class ConversationService:
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
             "operation": None,
+            **turn_from_payload({"intent": intent, "application_id": application_id}),
         }
 
     async def stream_message(self, user_id: UUID, conversation_id: UUID,
                              text: str, context: dict,
                              ai: Optional[ent.AiOptions], access_mode: str,
-                             byok_key: str = ""):
+                             byok_key: str = "", intent: str | None = None,
+                             application_id=None):
         self._validate_message(text, access_mode)
         if self._worker_task is not None or external_jobs():
             async for ev in self._stream_via_queue(
                     user_id, conversation_id, text, context, ai, access_mode,
-                    byok_key):
+                    byok_key, intent, application_id):
                 yield ev
             return
         token = _BYOK_KEY.set(byok_key)
         try:
             async for mode, chunk in self.graph.astream(
                     self._chat_input(user_id, conversation_id, text, context,
-                                     ai, access_mode),
+                                     ai, access_mode, intent, application_id),
                     config={"configurable": {"thread_id": str(conversation_id)}},
                     stream_mode=["custom", "values"]):
                 if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
@@ -445,13 +450,15 @@ class ConversationService:
         await self.ai.check(user_id, ai, byok_key)
 
     async def _stream_via_queue(self, user_id, conversation_id, text, context,
-                                ai, access_mode, byok_key):
+                                ai, access_mode, byok_key, intent=None,
+                                application_id=None):
         await self._allow_chat(user_id, ai, byok_key)
         payload = {
             "text": text,
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            **turn_from_payload({"intent": intent, "application_id": application_id}),
         }
         payload = self._stash_byok(user_id, payload, byok_key)
         job_id = await self.jobs.enqueue_started(
@@ -686,6 +693,7 @@ class ConversationService:
                     "access_mode": payload.get("access_mode") or "SUGGEST",
                     "operation": None,
                     "job_id": str(jid),
+                    **turn_from_payload(payload),
                 }
             self.ensure_chat_nodes()
             try:

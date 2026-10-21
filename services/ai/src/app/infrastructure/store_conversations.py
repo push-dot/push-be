@@ -8,7 +8,7 @@ from app.jsonutil import dump
 from app.infrastructure.store_common import Conds, Store, list_page, to_model
 
 _CONV_COLS = ("id, user_id, revision, application_id, title, pinned, archived, "
-              "created_at, updated_at")
+              "created_at, updated_at, company_id")
 _MSG_COLS = ("id, user_id, conversation_id, role, text, attachments, operation_id, created_at")
 
 
@@ -21,9 +21,9 @@ def _msg(row) -> Message:
 class ConversationStore(Store):
     async def create(self, c: Conversation) -> None:
         await self.q().execute(
-            f"INSERT INTO conversations ({_CONV_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            f"INSERT INTO conversations ({_CONV_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             c.id, c.user_id, c.revision, c.application_id, c.title, c.pinned, c.archived,
-            c.created_at, c.updated_at)
+            c.created_at, c.updated_at, c.company_id)
 
     async def get(self, user_id: UUID, id_: UUID) -> Conversation:
         return to_model(Conversation, await self.one(
@@ -40,6 +40,13 @@ class ConversationStore(Store):
         sql, args = c.query(_CONV_COLS, "conversations", page.effective_limit())
         rows = await self.q().fetch(sql, *args)
         return list_page(rows, page, Conversation, lambda c: Cursor(c.created_at, c.id))
+
+    async def company_plan(self, company_id: UUID) -> str | None:
+        row = await self.one("SELECT plan FROM companies WHERE id = $1", company_id)
+        plan = row["plan"]
+        if plan is None or str(plan).strip() == "":
+            return None
+        return str(plan)
 
     async def update(self, c: Conversation, expected: int) -> None:
         await self.guard_update(

@@ -8,6 +8,8 @@ const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"
 const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
+const INTENTS = new Set(["posting", "review", "interview", "general"]);
+const PDF_MAX_BYTES = 10 * 1024 * 1024;
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -43,9 +45,42 @@ function convDto(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+const optionalUuid = (value: unknown, field: string): string | null => {
+  if (value == null) return null;
+  return requireUuid(String(value), field);
+};
+
+const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
+  forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
+  if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (codePoints(body.title) > 300) {
+    throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
+  }
+  const postingId = optionalUuid(body.postingId, "postingId");
+  const applicationId = optionalUuid(body.applicationId, "applicationId");
+  const member = await one(ctx.deps.query,
+    "SELECT m.company_id, m.role, c.verified_at, c.plan FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
+    [ctx.user.id]);
+  if (!member || member.verified_at == null) {
+    throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+  }
+  const id = crypto.randomUUID();
+  const now = ctx.now.toISOString();
+  await query(ctx.deps.query,
+    "INSERT INTO conversations (id, user_id, revision, application_id, title, pinned, archived, created_at, updated_at, company_id, posting_id) VALUES ($1,$2,1,$3,$4,false,false,$5,$5,$6,$7)",
+    [id, ctx.user.id, applicationId, body.title, now, String(member.company_id), postingId]);
+  return data(201, convDto({
+    id, revision: 1, application_id: applicationId, title: body.title, pinned: false, created_at: now, updated_at: now,
+  }), ctx.rid);
+};
+
 export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
-  forbidExtra(body, ["applicationId", "title"]);
+  if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
+  forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  if (body.audience != null && body.audience !== "PERSONAL") {
+    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  }
   if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   if (codePoints(body.title) > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
@@ -109,7 +144,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, title, pinned, created_at FROM conversations WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, title, pinned, created_at, company_id FROM conversations WHERE id = $1 AND user_id = $2",
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -120,6 +155,9 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
     "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE id = $1 AND user_id = $2 AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
+  if (current.company_id != null) {
+    await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
+  }
   const refs = await query(ctx.deps.query,
     "SELECT DISTINCT (a->>'id')::uuid AS eid FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id = $2 AND a->>'type' = 'EVIDENCE'",
     [ctx.user.id, id]);
@@ -208,7 +246,7 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
 export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const conversationId = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
-  forbidExtra(body, ["text", "context", "ai", "accessMode"]);
+  forbidExtra(body, ["text", "context", "ai", "accessMode", "intent", "applicationId"]);
   if (typeof body.text !== "string" || codePoints(body.text) < 1 || codePoints(body.text) > 20000) {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
@@ -235,9 +273,19 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     };
   }
   const ai = aiDto(body.ai);
+  let intent: string | null = null;
+  if (body.intent != null) {
+    if (typeof body.intent !== "string" || !INTENTS.has(body.intent)) {
+      throw new HttpError(400, "VALIDATION_ERROR", "unsupported intent", { field: "intent" });
+    }
+    intent = body.intent;
+  }
+  const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
   const byok = ctx.request.headers.get("x-byok-key") || "";
   await allowChat(ctx, ai, byok);
-  const payload: Record<string, unknown> = { text: body.text, context, ai, accessMode: access };
+  const payload: Record<string, unknown> = {
+    text: body.text, context, ai, accessMode: access, intent, applicationId: messageApplicationId,
+  };
   if (byok && ctx.env.BYOK_MASTER_KEY) {
     const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
     const sealed = await encryptAes(key, byok, ctx.user.id, "chat-job");
@@ -278,3 +326,34 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     updatedAt: now,
   }, ctx.rid);
 }
+
+export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query,
+    "SELECT c.id, c.company_id, co.plan, co.verified_at FROM conversations c JOIN company_members m ON m.company_id = c.company_id AND m.user_id = $2 JOIN companies co ON co.id = c.company_id WHERE c.id = $1",
+    [conversationId, ctx.user.id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (row.verified_at == null) {
+    throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+  }
+  if (String(row.plan || "") !== "ULTRA") {
+    throw new HttpError(403, "PLAN_REQUIRED", "pdf attachments require the ULTRA plan", { requiredPlan: "ULTRA" });
+  }
+  const form = await ctx.request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "file is required", { field: "file" });
+  }
+  if (file.type !== "application/pdf") {
+    throw new HttpError(400, "VALIDATION_ERROR", "only pdf files are accepted", { field: "file" });
+  }
+  if (file.size > PDF_MAX_BYTES) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "file must be at most 10 MiB", { field: "file" });
+  }
+  const content = new Uint8Array(await file.arrayBuffer());
+  const id = crypto.randomUUID();
+  await query(ctx.deps.query,
+    "INSERT INTO conversation_attachments (id, conversation_id, company_id, file_name, mime_type, content) VALUES ($1,$2,$3,$4,$5,$6)",
+    [id, conversationId, String(row.company_id), file.name, file.type, content]);
+  return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
+};

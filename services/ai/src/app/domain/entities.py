@@ -672,6 +672,7 @@ class Conversation(Model):
     archived: bool = Field(default=False, exclude=True)
     created_at: datetime
     updated_at: datetime
+    company_id: Optional[UUID] = Field(default=None, exclude=True)
 
 
 class MessageAttachment(OmitModel):

@@ -1193,3 +1193,56 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
   assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
 });
+
+const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+test("personal conversation list sql excludes company rows", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const listSql = seen.find((sql) => sql.includes("FROM conversations")) ?? "";
+  assert.match(listSql, /company_id IS NULL/);
+});
+
+test("employer conversation list sql filters by the caller company", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations?audience=EMPLOYER", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql, params) => {
+    seen.push([sql, params]);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const list = seen.find(([sql]) => sql.includes("FROM conversations") && !sql.includes("access_tokens"));
+  assert.ok(list);
+  assert.match(list[0], /company_id = \$1::uuid/);
+  assert.equal(list[1][0], COMPANY);
+  assert.doesNotMatch(list[0], /user_id = \$1/);
+});
+
+test("conversation pdf upload is owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
+});

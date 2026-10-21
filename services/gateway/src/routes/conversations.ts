@@ -20,9 +20,9 @@ function cursorPair(url: URL, rid: string): { at: string | null; id: string | nu
   }
 }
 
-async function listConversationsFor(deps: Deps, userId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string): Promise<Response> {
+async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL"): Promise<Response> {
   let cursorSql = "";
-  const params: unknown[] = [userId];
+  const params: unknown[] = [ownerId];
   if (appId) {
     params.push(appId);
     cursorSql += ` AND application_id = $${params.length}::uuid`;
@@ -32,10 +32,13 @@ async function listConversationsFor(deps: Deps, userId: string, appId: string | 
     cursorSql += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
   }
   params.push(limit + 1);
+  const ownerSql = audience === "EMPLOYER"
+    ? "company_id = $1::uuid"
+    : "user_id = $1::uuid AND company_id IS NULL";
   const rows = await deps.query(
     "SELECT id, revision, application_id, title, pinned, "
     + tsText("created_at") + " AS created_at, " + tsText("updated_at") + " AS updated_at "
-    + "FROM conversations WHERE user_id = $1::uuid AND archived = false" +
+    + "FROM conversations WHERE " + ownerSql + " AND archived = false" +
     cursorSql +
     ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
     params,
@@ -54,6 +57,18 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   }
   const cursor = cursorPair(url, rid);
   if (cursor instanceof Response) return cursor;
+  if (url.searchParams.get("audience") === "EMPLOYER") {
+    const user = await requireUser(request, env, deps, rid, limits, now);
+    if (user instanceof Response) return user;
+    if (!user.companyId) {
+      return errorResponse(403, "BUSINESS_NOT_VERIFIED", "company is not verified", rid);
+    }
+    try {
+      return await listConversationsFor(deps, user.companyId, appId, cursor, page.limit, rid, "EMPLOYER");
+    } catch {
+      return errorResponse(500, "INTERNAL", "internal error", rid);
+    }
+  }
   const ctx = await tokenContext(request, env, deps, rid, limits, now);
   if (ctx instanceof Response) return ctx;
   if (ctx.user || ctx.revalidate) {

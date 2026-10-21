@@ -404,6 +404,8 @@ class PostMessageReq(Req):
     context: Optional[MessageContextReq] = None
     ai: Optional[AiOptionsReq] = None
     access_mode: str = ""
+    intent: Optional[str] = None
+    application_id: Optional[UUIDT] = None
 
 
 class ExperimentEventReq(Req):

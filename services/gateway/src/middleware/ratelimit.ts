@@ -140,6 +140,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at "
   + "FROM conversations c JOIN live ON live.id = c.user_id "
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
+  + "AND c.company_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
   + "AND ($9::timestamptz IS NULL OR (c.created_at, c.id) < ($9::timestamptz, $10::uuid)) "
   + "ORDER BY c.created_at DESC, c.id DESC LIMIT $11"
