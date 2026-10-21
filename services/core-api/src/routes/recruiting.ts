@@ -543,6 +543,8 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   rejectFields(body, ["userId", "createdAt", "id"]);
   const documentIds = body.documentIds == null ? [] : body.documentIds;
   if (!Array.isArray(documentIds)) throw fieldError("documentIds", "must be an array");
+  const sourceIds = body.sourceIds == null ? [] : body.sourceIds;
+  if (!Array.isArray(sourceIds)) throw fieldError("sourceIds", "must be an array");
   const owned: { id: string; title: string; content: unknown }[] = [];
   for (const raw of documentIds) {
     const docId = requireUuid(String(raw), "documentIds");
@@ -554,6 +556,25 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
       [docId, ctx.user.id]);
     if (!doc) throw notFound();
     owned.push({ id: docId, title: String(doc.title ?? ""), content: doc.content });
+  }
+  const files: { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; storageKey: string; content: unknown }[] = [];
+  for (const raw of sourceIds) {
+    const sourceId = requireUuid(String(raw), "sourceIds");
+    const source = await one(ctx.deps.query,
+      `SELECT id, file_name, mime_type, size, path, content, to_jsonb(sources) ->> 'page_count' AS page_count
+       FROM sources WHERE id = $1 AND user_id = $2`,
+      [sourceId, ctx.user.id]);
+    if (!source) throw notFound();
+    const pages = source.page_count == null || source.page_count === "" ? null : Number(source.page_count);
+    files.push({
+      id: sourceId,
+      fileName: String(source.file_name ?? ""),
+      mimeType: String(source.mime_type ?? "application/octet-stream"),
+      size: Number(source.size ?? 0),
+      pageCount: pages != null && Number.isFinite(pages) ? pages : null,
+      storageKey: String(source.path ?? sourceId),
+      content: source.content ?? null,
+    });
   }
   const existing = await one(ctx.deps.query,
     `SELECT a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at
@@ -586,6 +607,12 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     await query(ctx.deps.query,
       "INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
       [crypto.randomUUID(), applicationId, doc.id, doc.title, snapshotText(doc.content), now]);
+  }
+  for (const file of files) {
+    await query(ctx.deps.query,
+      `INSERT INTO application_files (id, application_id, source_id, document_id, file_name, mime_type, size, page_count, storage_key, content, created_at)
+       VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10)`,
+      [crypto.randomUUID(), applicationId, file.id, file.fileName, file.mimeType, file.size, file.pageCount, file.storageKey, file.content, now]);
   }
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
@@ -788,7 +815,20 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const stage = ctx.url.searchParams.get("stage");
   const page = pageOf(ctx.url);
   const params: unknown[] = [postingId];
-  let sql = `SELECT a.id, a.stage, a.applied_at, u.display_name, pr.headline
+  const documentsSql = (withFiles: boolean): string => {
+    const files = withFiles
+      ? `UNION ALL SELECT f.file_name, f.page_count, f.created_at, f.id FROM application_files f WHERE f.application_id = a.id`
+      : "";
+    return `COALESCE((
+      SELECT json_agg(json_build_object('title', d.title, 'pages', d.pages) ORDER BY d.created_at, d.id)
+      FROM (
+        SELECT s.title, NULL::int AS pages, s.created_at, s.id FROM application_snapshots s WHERE s.application_id = a.id
+        ${files}
+      ) d
+    ), '[]'::json)`;
+  };
+  let sql = `SELECT a.id, a.stage, a.applied_at, u.display_name, pr.headline, pr.job_category, pr.tenure_years, pr.avatar_key,
+    ${documentsSql(true)} AS documents
     FROM applications a
     JOIN jobs j ON j.id = a.job_id
     JOIN users u ON u.id = a.user_id
@@ -804,14 +844,24 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY a.applied_at DESC, a.id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  let rows;
+  try {
+    rows = await query(ctx.deps.query, sql, params);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+    rows = await query(ctx.deps.query, sql.replace(documentsSql(true), documentsSql(false)), params);
+  }
   const mapped = rows.rows.map((row) => ({
     item: {
       applicationId: String(row.id),
       applicant: {
         displayName: String(row.display_name ?? ""),
         headline: row.headline == null ? null : String(row.headline),
+        jobCategory: row.job_category == null ? null : String(row.job_category),
+        tenureYears: row.tenure_years == null || row.tenure_years === "" ? null : Number(row.tenure_years),
+        avatarUrl: imageUrl(row.avatar_key),
       },
+      documents: documentPages(row.documents),
       stage: String(row.stage ?? ""),
       appliedAt: ts(row.applied_at) ?? "",
     },
@@ -820,6 +870,30 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
+};
+
+const documentPages = (value: unknown): { title: string; pages: number | null }[] => {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const pages = row.pages == null || row.pages === "" ? null : Number(row.pages);
+    return { title: String(row.title ?? ""), pages: pages != null && Number.isFinite(pages) ? pages : null };
+  });
+};
+
+const fileBytes = (value: unknown): Uint8Array | null => {
+  if (value == null) return null;
+  if (value instanceof Uint8Array) return value;
+  if (typeof value !== "string") return null;
+  const hex = value.startsWith("\\x") ? value.slice(2) : "";
+  if (!hex || hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
 };
 
 const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string }[]> => {
@@ -839,7 +913,47 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   await requirePostingMember(ctx, postingId);
   const application = await loadApplicant(ctx, postingId, applicationId);
   const documents = await snapshotDocuments(ctx, applicationId);
-  return data(200, { application: companyApplicationDto(application), documents }, ctx.rid);
+  const person = await one(ctx.deps.query,
+    `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
+     FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
+    [String(application.user_id)]);
+  return data(200, {
+    application: companyApplicationDto(application),
+    documents,
+    applicant: {
+      displayName: String(person?.display_name ?? ""),
+      email: person?.email == null ? "" : String(person.email),
+      headline: person?.headline == null ? "" : String(person.headline),
+      careers: jsonList(person?.careers),
+      skills: jsonList(person?.skills).map(String),
+    },
+  }, ctx.rid);
+};
+
+const streamApplicationFile = async (ctx: Ctx, postingRaw: string, applicationRaw: string, fileRaw: string): Promise<Response> => {
+  const postingId = requireUuid(postingRaw, "id");
+  const applicationId = requireUuid(applicationRaw, "applicationId");
+  const fileId = requireUuid(fileRaw, "fileId");
+  await requirePostingMember(ctx, postingId);
+  const row = await one(ctx.deps.query,
+    `SELECT f.file_name, f.mime_type, f.content
+     FROM application_files f
+     JOIN applications a ON a.id = f.application_id
+     JOIN jobs j ON j.id = a.job_id
+     WHERE f.id = $1 AND f.application_id = $2 AND j.source_posting_id = $3`,
+    [fileId, applicationId, postingId]);
+  const bytes = fileBytes(row?.content);
+  if (!row || !bytes) throw notFound();
+  const name = String(row.file_name ?? "file").replace(/["\r\n\\]/g, "");
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "content-type": String(row.mime_type ?? "application/octet-stream"),
+      "content-disposition": `attachment; filename="${name}"`,
+      "content-length": String(bytes.byteLength),
+      "x-request-id": ctx.rid,
+    },
+  });
 };
 
 const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
@@ -1883,6 +1997,8 @@ export async function dispatchRecruiting(ctx: Ctx, path: string): Promise<Respon
   if (method === "GET" && path === "/api/v1/companies/me/postings") return listCompanyPostings(ctx);
   const close = path.match(/^\/api\/v1\/postings\/([^/]+)\/close$/);
   if (close && method === "POST") return closePosting(ctx, close[1]);
+  const file = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)\/files\/([^/]+)$/);
+  if (file && method === "GET") return streamApplicationFile(ctx, file[1], file[2], file[3]);
   const applicant = path.match(/^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)$/);
   if (applicant && method === "GET") return getApplicant(ctx, applicant[1], applicant[2]);
   if (applicant && method === "PATCH") return patchApplicant(ctx, applicant[1], applicant[2]);
