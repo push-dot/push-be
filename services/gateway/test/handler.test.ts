@@ -166,14 +166,14 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.equal(body.data.length, 1);
   assert.equal(body.data[0].title, "채팅");
   assert.equal(body.page.hasMore, true);
-  assert.equal(body.page.nextCursor, encodeCursor("2026-10-17T21:57:28.172000Z", USER));
+  assert.equal(body.page.nextCursor, encodeCursor("2026-10-17T21:57:28Z", USER));
   assert.equal(seen.length, 1);
   const listSql = String(seen[0][0]);
   assert.match(listSql, /access_tokens/);
   assert.match(listSql, /FROM conversations/);
   assert.match(listSql, /archived = false/);
-  assert.match(listSql, /ORDER BY c\.created_at DESC, c\.id DESC/);
-  assert.match(listSql, /ORDER BY page\.created_at DESC, page\.id DESC/);
+  assert.match(listSql, /ORDER BY c\.updated_at DESC, c\.id DESC/);
+  assert.match(listSql, /ORDER BY page\.updated_at DESC, page\.id DESC/);
   assert.match(listSql, /to_char\(page\.created_at AT TIME ZONE 'UTC'/);
 });
 

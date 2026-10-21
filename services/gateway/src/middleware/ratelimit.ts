@@ -137,18 +137,29 @@ export const AUTH_RATE_SQL = AUTH_RATE_PREFIX
 
 export const LIST_SQL = AUTH_RATE_PREFIX
   + ", page AS ("
-  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at "
+  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at, "
+  + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
+  + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
+  + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING') THEN 'NEEDS_APPROVAL' "
+  + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
+  + "ELSE 'DONE' END AS status "
   + "FROM conversations c JOIN live ON live.id = c.user_id "
+  + "LEFT JOIN users cu ON cu.id = c.user_id "
+  + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
   + "AND c.company_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
-  + "AND ($9::timestamptz IS NULL OR (c.created_at, c.id) < ($9::timestamptz, $10::uuid)) "
-  + "ORDER BY c.created_at DESC, c.id DESC LIMIT $11"
+  + "AND ($9::timestamptz IS NULL OR (c.updated_at, c.id) < ($9::timestamptz, $10::uuid)) "
+  + "AND ($12::text IS NULL OR c.title ILIKE $12 ESCAPE '\\' OR COALESCE(last_msg.text, '') ILIKE $12 ESCAPE '\\') "
+  + "ORDER BY c.updated_at DESC, c.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", COALESCE((SELECT json_agg(json_build_object("
   + "'id', page.id, 'revision', page.revision, 'application_id', page.application_id, "
   + "'title', page.title, 'pinned', page.pinned, 'created_at', " + tsText("page.created_at") + ", "
-  + "'updated_at', " + tsText("page.updated_at")
-  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
+  + "'updated_at', " + tsText("page.updated_at") + ", "
+  + "'posting_id', page.posting_id, 'display_name', page.display_name, "
+  + "'last_message_preview', page.last_message_preview, 'status', page.status"
+  + ") ORDER BY page.updated_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
