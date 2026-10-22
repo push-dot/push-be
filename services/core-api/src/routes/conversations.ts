@@ -483,3 +483,20 @@ export const postResumeJob = async (ctx: Ctx, idRaw: string): Promise<Response> 
   const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: body.resume } });
   return data(202, { jobId }, ctx.rid);
 };
+
+const APPROVAL_PATH = /^\/api\/v1\/conversations\/[^/]+\/approvals\/([^/]+)$/;
+
+export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
+  const approval = path.match(APPROVAL_PATH);
+  if (!approval || ctx.request.headers.has("idempotency-key")) return ctx;
+  let optionId = "";
+  try {
+    const body = JSON.parse(await ctx.request.clone().text()) as Record<string, unknown>;
+    optionId = typeof body.optionId === "string" ? body.optionId : "";
+  } catch {
+    return ctx;
+  }
+  const headers = new Headers(ctx.request.headers);
+  headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${optionId}`));
+  return { ...ctx, request: new Request(ctx.request, { headers }) };
+};

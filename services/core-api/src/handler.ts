@@ -6,7 +6,7 @@ import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
@@ -93,7 +93,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
     }
     const ctx = base(request, env, deps, rid, url, now, user);
     if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
-    return await idempotent(ctx, path);
+    return await idempotent(await withApprovalAnswerKey(ctx, path), path);
   } catch (err) {
     if (err instanceof HttpError) return errorOf(err, rid);
     return errorResponse(500, "INTERNAL", "internal error", rid);

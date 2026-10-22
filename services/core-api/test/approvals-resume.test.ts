@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { uuid5Url } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -172,4 +173,29 @@ test("the ai worker queues the next resume phase only through act-as", async () 
   const bearer = await handle(request({ authorization: "Bearer t" }), env(), deps(db.query));
   assert.equal(bearer.status, 404);
   assert.equal(db.state.jobs, 1);
+});
+
+test("an answer without Idempotency-Key uses a key derived from the card and option", async () => {
+  resetLimits();
+  const db = fakeDb(pending());
+  const keys: unknown[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) keys.push(params[3]);
+    return db.query(sql, params);
+  };
+  const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json" },
+    body: JSON.stringify({ optionId: "approve" }),
+  }), env(), deps(query));
+  assert.equal(res.status, 202);
+  assert.deepEqual(keys, [await uuid5Url(`push:approval-answer:${APPROVAL}:approve`)]);
+
+  resetLimits();
+  const other = await handle(new Request("https://core.example/api/v1/conversations", {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json" },
+    body: JSON.stringify({ title: "x" }),
+  }), env(), deps(query));
+  assert.equal(other.status, 400);
 });
