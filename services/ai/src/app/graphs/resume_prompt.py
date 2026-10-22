@@ -115,6 +115,30 @@ _PHASE_GATES = {
 }
 
 
+_HARNESS_PHASE_INDEX = {
+    "mode_select": 0,
+    "intake": 0,
+    "analyze": 1,
+    "strategy": 2,
+    "craft": 3,
+    "review": 4,
+    "publish": 5,
+    "present": 6,
+}
+
+
+@lru_cache(maxsize=8)
+def phase_prompt_for_harness(phase: str) -> str:
+    index = _HARNESS_PHASE_INDEX[phase]
+    parts = []
+    for name in _PHASE_SKILLS[index]:
+        parts.append((_RES / "skills" / (name + ".md")).read_text())
+    parts.append(
+        "[현재 단계] 지금 실행할 단계는 " + _PHASE_LABELS[index] + "이다. "
+        "이 단계의 산출물만 만들고, 다음 단계는 사용자 응답 후에 진행한다.")
+    return "\n\n---\n\n".join(parts)
+
+
 def gate_for_phase(phase: int) -> str:
     return _PHASE_GATES.get(phase, "")
 

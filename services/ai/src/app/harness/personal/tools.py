@@ -198,7 +198,43 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     return {"diff": diff}
 
 
+async def _resume_row(ctx: ToolContext):
+    try:
+        return await ctx.db.q().fetchrow(
+            "SELECT resume_state FROM conversations WHERE id = $1",
+            ctx.conversation_id,
+        )
+    except Exception:
+        return None
+
+
+def _resume_status(row) -> str:
+    if not row:
+        return ""
+    raw = row["resume_state"] if isinstance(row, dict) else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+    if isinstance(raw, dict):
+        return str(raw.get("status") or "")
+    return ""
+
+
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    if _resume_status(await _resume_row(ctx)) == "active":
+        choice = {
+            "type": "choice",
+            "id": str(uuid5(NAMESPACE_URL, "push:start-document:" + ctx.conversation_id)),
+            "gate": "start_document",
+            "options": [
+                {"id": "continue", "label": "이어서 작성하기"},
+                {"id": "cancel", "label": "그만하기"},
+            ],
+        }
+        _emit(choice)
+        return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}
     await ctx.db.q().execute(
         "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",

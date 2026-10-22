@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -29,6 +30,35 @@ def _core() -> CoreClient:
     )
 
 
+def _resume_state(payload: dict, conversation: dict) -> dict:
+    saved = conversation.get("resume_state") or {}
+    if isinstance(saved, str):
+        try:
+            saved = json.loads(saved)
+        except json.JSONDecodeError:
+            saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    mode = resolve_access_mode(payload.get("access_mode"), None)
+    return {
+        "status": saved.get("status") or "active",
+        "phase": saved.get("phase") or "mode_select",
+        "work_mode": saved.get("work_mode"),
+        "scenario": saved.get("scenario"),
+        "inputs": saved.get("inputs") or {},
+        "analysis": saved.get("analysis") or {},
+        "strategy": saved.get("strategy") or {},
+        "drafts": saved.get("drafts") or {},
+        "review": saved.get("review") or {},
+        "artifacts": saved.get("artifacts") or {},
+        "warnings": saved.get("warnings") or [],
+        "access_mode": mode.value,
+        "conversation_id": str(payload.get("conversation_id") or ""),
+        "user_id": str(payload.get("user_id") or ""),
+        "job_id": str(payload.get("job_id") or ""),
+    }
+
+
 def _state(payload: dict, conversation: dict) -> dict:
     text = payload.get("text") or ""
     mode = resolve_access_mode(payload.get("access_mode"), None)
@@ -53,13 +83,17 @@ class HarnessRuntime:
         cached = self._compiled.get(spec.id)
         if cached is not None and cached[0] is spec:
             return cached[1]
-        graph = build_harness_graph(
-            spec,
-            self.svc._checkpointer,
-            model=_MODEL,
-            db=self.svc.db,
-            core=self._core,
-        )
+        if spec.id == "resume":
+            from app.harness.resume.graph import build_resume_graph
+            graph = build_resume_graph(self.svc._checkpointer, db=self.svc.db)
+        else:
+            graph = build_harness_graph(
+                spec,
+                self.svc._checkpointer,
+                model=_MODEL,
+                db=self.svc.db,
+                core=self._core,
+            )
         self._compiled[spec.id] = (spec, graph)
         return graph
 
@@ -93,14 +127,14 @@ class HarnessRuntime:
         spec = select_harness(conversation)
         if spec.id == "employer" and payload.get("intent"):
             await self._guard(conversation, payload.get("intent"))
-        return conversation, self._graph(spec)
+        return conversation, spec, self._graph(spec)
 
     async def astream(self, payload, config=None, stream_mode=None, **kwargs):
-        conversation, graph = await self._open(payload)
+        conversation, spec, graph = await self._open(payload)
         token = bound_services.set(self.svc)
         try:
             async for mode, chunk in graph.astream(
-                _state(payload, conversation),
+                _resume_state(payload, conversation) if spec.id == "resume" else _state(payload, conversation),
                 config,
                 stream_mode=stream_mode or ["custom", "values"],
             ):
@@ -122,9 +156,10 @@ class HarnessRuntime:
         guard_employer_intent(plan, intent)
 
     async def ainvoke(self, payload, config=None, **kwargs):
-        conversation, graph = await self._open(payload)
+        conversation, spec, graph = await self._open(payload)
         token = bound_services.set(self.svc)
         try:
-            return await graph.ainvoke(_state(payload, conversation), config)
+            state = _resume_state(payload, conversation) if spec.id == "resume" else _state(payload, conversation)
+            return await graph.ainvoke(state, config)
         finally:
             bound_services.reset(token)
