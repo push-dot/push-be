@@ -16,8 +16,6 @@ from app.harness.policy import Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
 from app.harness.tools import HarnessSpec, ToolContext
-from app.harness.personal.tools import bound_services
-from app.domain.errors import revision_conflict
 from tests.fakes import ScriptedChat
 from tests.stubs import FakeDB
 
@@ -233,7 +231,7 @@ class _Approvals:
         return "INSERT 1"
 
 
-def _edit_graph(mode: str, db):
+def _edit_graph(mode: str, db, core=None):
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "edit_document")
     model = ScriptedChat([{
         "tool_calls": [{
@@ -253,7 +251,7 @@ def _edit_graph(mode: str, db):
         MemorySaver(),
         model=model,
         db=db,
-        core=CoreClient("http://core.test", "secret"),
+        core=core or CoreClient("http://core.test", "secret"),
     )
 
 
@@ -291,58 +289,55 @@ EDIT_USER = "99999999-9999-4999-8999-999999999999"
 DOC_ID = "12121212-1212-4212-8212-121212121212"
 
 
-class _Docs:
-    def __init__(self, error=None):
-        self.applied = []
+class _CoreEdits:
+    """Stands in for core's POST /documents/{id}/edits."""
+
+    def __init__(self, error: str | None = None):
+        self.requests = []
         self.error = error
 
-    async def apply_hunks(self, user_id, diff):
-        if self.error is not None:
-            raise self.error
-        self.applied.append((str(user_id), diff))
-        return None, SimpleNamespace(id="v2")
+    def handler(self, request):
+        self.requests.append(request)
+        if self.error:
+            return httpx.Response(409, json={"error": {"code": self.error, "message": "resource was modified"}})
+        return httpx.Response(200, json={"data": {"document": {"id": DOC_ID}, "version": {"id": "v2"}}})
+
+    def client(self):
+        return CoreClient("http://core.test", "secret", httpx.MockTransport(self.handler))
 
 
-async def _with_docs(docs, run):
-    token = bound_services.set(SimpleNamespace(document_svc=docs))
-    try:
-        return await run()
-    finally:
-        bound_services.reset(token)
-
-
-async def test_edit_document_auto_applies_the_edit():
-    docs = _Docs()
-    events = await _with_docs(docs, lambda: _events(_edit_graph("AUTO", _Approvals()), "AUTO"))
+async def test_edit_document_auto_applies_the_edit_through_core():
+    core = _CoreEdits()
+    events = await _events(_edit_graph("AUTO", _Approvals(), core.client()), "AUTO")
     diffs = [event for event in events if event.get("type") == "diff"]
     assert diffs[0]["documentId"] == DOC_ID
-    assert docs.applied[0][0] == EDIT_USER
-    assert docs.applied[0][1]["hunks"] == [
+    request = core.requests[0]
+    assert request.method == "POST"
+    assert request.url.path == f"/api/v1/documents/{DOC_ID}/edits"
+    assert request.headers["x-push-act-as"] == EDIT_USER
+    assert request.headers["Idempotency-Key"]
+    assert json.loads(request.content)["hunks"] == [
         {"line": None, "sign": "-", "text": "이전"}, {"line": None, "sign": "+", "text": "이후"}]
     assert not any(event.get("type") == "approval" for event in events)
 
 
 async def test_edit_document_conflict_is_a_tool_error():
-    docs = _Docs(revision_conflict(3))
-    events = await _with_docs(docs, lambda: _events(_edit_graph("BYPASS", _Approvals()), "BYPASS"))
-    tool = next(event for event in events if event.get("type") == "tool")
+    core = _CoreEdits(error="REVISION_CONFLICT")
+    events = await _events(_edit_graph("BYPASS", _Approvals(), core.client()), "BYPASS")
+    tool = next(event for event in events if event.get("type") == "tool" and event.get("result"))
     assert tool["result"] == {"error": "REVISION_CONFLICT"}
     assert not any(event.get("type") == "diff" for event in events)
 
 
 async def test_edit_document_always_ask_applies_after_approve():
-    docs = _Docs()
-    graph = _edit_graph("ALWAYS_ASK", _Approvals())
-
-    async def both():
-        await _events(graph, "ALWAYS_ASK")
-        assert docs.applied == []
-        async for _event in astream_harness(
-                graph, Command(resume={"option_id": "apply"}), {"configurable": {"thread_id": "conv-1"}}):
-            pass
-
-    await _with_docs(docs, both)
-    assert len(docs.applied) == 1
+    core = _CoreEdits()
+    graph = _edit_graph("ALWAYS_ASK", _Approvals(), core.client())
+    await _events(graph, "ALWAYS_ASK")
+    assert core.requests == []
+    async for _event in astream_harness(
+            graph, Command(resume={"option_id": "apply"}), {"configurable": {"thread_id": "conv-1"}}):
+        pass
+    assert len(core.requests) == 1
 
 
 class _ResumeDB:

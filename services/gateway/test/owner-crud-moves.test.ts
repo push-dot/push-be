@@ -72,3 +72,21 @@ test("google integration routes go to core", () => {
   for (const read of ["callback", "messages", "events"]) assert.equal(ownerOf("GET", `/api/v1/integrations/google/${read}`), "core");
   assert.equal(ownerOf("POST", `/api/v1/integrations/google/messages/${ID}/link`), "core");
 });
+
+test("document routes go to core except rendering and the AI revision proposal", () => {
+  assert.equal(ownerOf("GET", "/api/v1/documents"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/documents"), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}`), "core");
+  assert.equal(ownerOf("PATCH", `/api/v1/documents/${ID}`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/versions`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}`), "core");
+  for (const sub of ["review", "finalize", "archive"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions/${ID}/apply`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/exports`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/exports`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/exports/${ID}/result`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}/export`), "python");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions`), "python");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/edits`), "python");
+});

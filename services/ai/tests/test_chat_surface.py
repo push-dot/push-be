@@ -329,7 +329,7 @@ async def test_publish_skips_approval_when_nothing_is_inserted():
     assert [event["type"] for event in emitted] == ["diff"]
 
 
-async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absent():
+async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absent(monkeypatch):
     user_id = uuid4()
     conv = _conv(user_id)
     store = StubConversationStore(conv=conv)
@@ -341,7 +341,8 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
     async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
+    svc.document_svc = SimpleNamespace()
+    monkeypatch.setattr("app.harness.document_edits.apply_edit", lambda core, user, diff: apply_hunks(user, diff))
     nodes = bind_chat_nodes(svc)
     state = {
         "user_id": user_id,
@@ -379,7 +380,7 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
     assert approval["id"] in args or UUID(approval["id"]) in args
 
 
-async def test_persist_applies_the_diff_when_confirm_is_false():
+async def test_persist_applies_the_diff_when_confirm_is_false(monkeypatch):
     user_id = uuid4()
     conv = _conv(user_id)
     svc = _svc(StubConversationStore(conv=conv))
@@ -390,7 +391,8 @@ async def test_persist_applies_the_diff_when_confirm_is_false():
     async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
+    svc.document_svc = SimpleNamespace()
+    monkeypatch.setattr("app.harness.document_edits.apply_edit", lambda core, user, diff: apply_hunks(user, diff))
     nodes = bind_chat_nodes(svc)
     diff = {
         "documentId": DOC,
@@ -459,7 +461,7 @@ async def test_sse_frames_done_awaiting():
     assert frames[-1] == {"type": "done", "operation": None, "awaiting": "choice", "seq": 8}
 
 
-async def test_persist_survives_a_conflicting_auto_edit():
+async def test_persist_survives_a_conflicting_auto_edit(monkeypatch):
     from app.domain.errors import revision_conflict
     user_id = uuid4()
     conv = _conv(user_id)
@@ -469,7 +471,8 @@ async def test_persist_survives_a_conflicting_auto_edit():
     async def apply_hunks(user, diff):
         raise revision_conflict(2)
 
-    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
+    svc.document_svc = SimpleNamespace()
+    monkeypatch.setattr("app.harness.document_edits.apply_edit", lambda core, user, diff: apply_hunks(user, diff))
     nodes = bind_chat_nodes(svc)
     token = event_sink.set([])
     try:

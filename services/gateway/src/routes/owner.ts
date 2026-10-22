@@ -64,6 +64,13 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/ai/usage") return method === "GET";
   if (/^\/api\/v1\/ai\/jobs\/[^/]+$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return method === "POST";
+  if (path === "/api/v1/documents") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
+  if (/^\/api\/v1\/documents\/[^/]+\/(versions|exports)$/.test(path)) return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/exports\/[^/]+\/result$/.test(path)) return method === "POST";
   if (path === "/api/v1/sources") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
   if (/^\/api\/v1\/sources\/[^/]+\/content$/.test(path)) return method === "GET";

@@ -15,6 +15,7 @@ from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.posting_fit import compute_fit
 from app.graphs.chat_surface import insert_chat_approval
+from app.harness.document_edits import apply_edit
 from app.harness.core_client import idempotency_key
 from app.harness.policy import Tier
 from app.harness.tools import ToolContext, ToolSpec
@@ -213,15 +214,12 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
         if answer.get("option_id") != "apply":
             return {"skipped": True}
     diff = _diff(args)
-    document_svc = getattr(_svc(), "document_svc", None)
-    if document_svc is None:
-        return {"error": "UNAVAILABLE"}
     try:
-        _doc, version = await document_svc.apply_hunks(UUID(ctx.user_id), diff)
+        applied = await apply_edit(ctx.core, ctx.user_id, diff)
     except DomainError as err:
         return {"error": err.code}
     _emit(diff)
-    return {"diff": diff, "versionId": str(version.id)}
+    return {"diff": diff, "versionId": str((applied.get("version") or {}).get("id") or "")}
 
 
 async def _resume_row(ctx: ToolContext):

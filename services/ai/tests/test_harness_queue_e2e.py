@@ -103,7 +103,8 @@ async def test_legacy_edit_answer_on_the_redis_worker_applies_without_chat_nodes
 
     monkeypatch.delenv("AI_HARNESS", raising=False)
     docs = _Docs()
-    svc = SimpleNamespace(db=_Rows(), document_svc=docs, _byok_from_payload=lambda _u, _p: "")
+    monkeypatch.setattr("app.harness.jobs.apply_edit", lambda core, user, diff: docs.apply_hunks(user, diff))
+    svc = SimpleNamespace(db=_Rows(), document_svc=SimpleNamespace(), _byok_from_payload=lambda _u, _p: "")
     db = MemoryJobs()
 
     async def cancelled(job_id):

@@ -22,7 +22,8 @@ const read = <T>(file: string): T => JSON.parse(readFileSync(resolve(DIR, file),
 const idempotencyKey = (index: number): string => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 
 const knownIds = (group: string): Set<string> => {
-  const text = readFileSync(resolve(DIR, "seed.sql"), "utf8") + readFileSync(resolve(DIR, `${group}.cases.json`), "utf8");
+  const extra = existsSync(resolve(DIR, `${group}.seed.sql`)) ? readFileSync(resolve(DIR, `${group}.seed.sql`), "utf8") : "";
+  const text = readFileSync(resolve(DIR, "seed.sql"), "utf8") + extra + readFileSync(resolve(DIR, `${group}.cases.json`), "utf8");
   return new Set([...(text.match(UUID) || []), ...(text.match(HEX_KEY) || [])].map((id) => id.toLowerCase())
     .concat(text.match(TOKEN) || []));
 };
@@ -166,6 +167,7 @@ export const parityGroup = async (group: string, base: CoreEnv = { APP_ENV: "pro
     close = pg.close;
     try {
       await pg.query(readFileSync(resolve(DIR, "seed.sql"), "utf8"));
+      if (existsSync(resolve(DIR, `${group}.seed.sql`))) await pg.query(readFileSync(resolve(DIR, `${group}.seed.sql`), "utf8"));
     } catch (err) {
       await close();
       throw err;

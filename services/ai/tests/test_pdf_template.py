@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
 import re
 import struct
 import zlib
@@ -140,8 +139,9 @@ class _Deps:
 
 
 class _Db:
-    def __init__(self, avatar_key=None):
+    def __init__(self, avatar_key=None, images=None):
         self.avatar_key = avatar_key
+        self.images = images or {}
         self.calls = []
 
     def q(self):
@@ -150,6 +150,11 @@ class _Db:
     async def fetchrow(self, sql, *args):
         self.calls.append((sql, args))
         return {"avatar_key": self.avatar_key}
+
+    async def fetchval(self, sql, *args):
+        self.calls.append((sql, args))
+        assert "FROM upload_images" in sql
+        return self.images.get(args[0])
 
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
@@ -296,14 +301,11 @@ def test_export_rejects_an_unknown_template(tmp_path):
     assert _wrote(db, documents) is False
 
 
-def test_export_photo_uses_the_profile_file(tmp_path):
+def test_export_photo_uses_the_uploaded_image_row(tmp_path):
     doc = _document("ATS")
     version = _version(doc)
     key = "ab" * 16 + ".png"
-    os.makedirs(os.path.join(tmp_path, "images"), exist_ok=True)
-    with open(os.path.join(tmp_path, "images", key), "wb") as handle:
-        handle.write(_png())
-    db = _Db(avatar_key=key)
+    db = _Db(avatar_key=key, images={key: _png()})
     client, documents = _client(doc, version, db, str(tmp_path))
     plain = _export(client, doc, version)
     photo = _export(client, doc, version, photo="1")

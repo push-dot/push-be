@@ -11,7 +11,6 @@ FastAPI app, and writes <group>.golden.json next to it. Never point it at a
 database you care about.
 """
 
-from __future__ import annotations
 
 import asyncio
 import base64
@@ -42,11 +41,14 @@ async def rows(url: str, sql: str) -> list[dict]:
         await conn.close()
 
 
-async def seed(url: str, storage: str) -> None:
+async def seed(url: str, storage: str, group: str) -> None:
     import asyncpg
     conn = await asyncpg.connect(url)
     try:
         await conn.execute((PARITY / "seed.sql").read_text())
+        extra = PARITY / f"{group}.seed.sql"
+        if extra.exists():
+            await conn.execute(extra.read_text())
         images = Path(storage) / "images"
         images.mkdir(parents=True, exist_ok=True)
         for row in await conn.fetch("SELECT key, content FROM upload_images"):
@@ -73,6 +75,21 @@ def freeze_datetime() -> None:
     import app.infrastructure.google_client as google_client
     evidence_routes.datetime = Frozen
     google_client.datetime = Frozen
+
+
+def edits_route(app) -> None:
+    """Python has no HTTP route for chat edits; this one calls the same
+    DocumentService.apply_hunks the harness used, so core's route has a reference."""
+    from fastapi import Request
+
+    from app.api.deps import current_user, data, deps, param_id
+
+    @app.post("/api/v1/documents/{id}/edits")
+    async def apply_edits(id: str, request: Request):
+        body = await request.json()
+        doc, version = await deps(request).documents.apply_hunks(
+            current_user(request).id, {**body, "documentId": str(param_id(id, "id"))})
+        return data(200, {"document": doc, "version": version})
 
 
 def mock_http(rules: list[dict]):
@@ -125,7 +142,7 @@ def main() -> None:
     env_file = PARITY / f"{group}.env.json"
     if env_file.exists():
         os.environ.update(json.loads(env_file.read_text()))
-    asyncio.run(seed(url, os.environ["STORAGE_DIR"]))
+    asyncio.run(seed(url, os.environ["STORAGE_DIR"], group))
     time.time_ns = lambda: NOW_NS
 
     from fastapi.testclient import TestClient
@@ -136,7 +153,10 @@ def main() -> None:
     cases = json.loads((PARITY / f"{group}.cases.json").read_text())
     golden = []
     http_file = PARITY / f"{group}.http.json"
-    with TestClient(create_app(), follow_redirects=False) as client:
+    app = create_app()
+    if group == "documents":
+        edits_route(app)
+    with TestClient(app, follow_redirects=False) as client:
         if http_file.exists():
             client.app.state.deps.google.gapi._client = mock_http(json.loads(http_file.read_text()))
         for index, case in enumerate(cases):

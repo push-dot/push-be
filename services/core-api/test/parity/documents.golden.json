@@ -1,0 +1,3096 @@
+[
+ {
+  "name": "list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d2000000-0000-4000-8000-000000000008",
+     "revision": 1,
+     "applicationId": null,
+     "title": "Portfolio",
+     "kind": "PORTFOLIO",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "DRAFT",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-16T00:00:00.500000Z",
+     "updatedAt": "2026-10-16T00:00:00.500000Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 2,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000006",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-15T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000005",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "보관됨",
+     "kind": "PORTFOLIO",
+     "template": "CREATIVE",
+     "language": "",
+     "status": "ARCHIVED",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-14T00:00:00Z",
+     "updatedAt": "2026-10-14T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000004",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "확정본",
+     "kind": "RESUME",
+     "template": "ATS",
+     "language": "en",
+     "status": "FINALIZED",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000005",
+     "finalizedVersionId": "d3000000-0000-4000-8000-000000000005",
+     "createdAt": "2026-10-13T00:00:00Z",
+     "updatedAt": "2026-10-13T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000003",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "근거 미승인",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000004",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-12T00:00:00Z",
+     "updatedAt": "2026-10-12T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "자기소개서",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000003",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-11T00:00:00Z",
+     "updatedAt": "2026-10-11T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000001",
+     "revision": 3,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "이력서 초안",
+     "kind": "RESUME",
+     "template": "MODERN",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000002",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-10T00:00:00Z"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000002",
+     "title": "Other app resume",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "DRAFT",
+     "latestVersionId": "d1000000-0000-4000-8000-000000000003",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "Resume",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "FINALIZED",
+     "latestVersionId": "d1000000-0000-4000-8000-000000000002",
+     "finalizedVersionId": "d1000000-0000-4000-8000-000000000001",
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list by app",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d2000000-0000-4000-8000-000000000005",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "보관됨",
+     "kind": "PORTFOLIO",
+     "template": "CREATIVE",
+     "language": "",
+     "status": "ARCHIVED",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-14T00:00:00Z",
+     "updatedAt": "2026-10-14T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000004",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "확정본",
+     "kind": "RESUME",
+     "template": "ATS",
+     "language": "en",
+     "status": "FINALIZED",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000005",
+     "finalizedVersionId": "d3000000-0000-4000-8000-000000000005",
+     "createdAt": "2026-10-13T00:00:00Z",
+     "updatedAt": "2026-10-13T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000003",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "근거 미승인",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000004",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-12T00:00:00Z",
+     "updatedAt": "2026-10-12T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "자기소개서",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000003",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-11T00:00:00Z",
+     "updatedAt": "2026-10-11T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000001",
+     "revision": 3,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "이력서 초안",
+     "kind": "RESUME",
+     "template": "MODERN",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000002",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-10T00:00:00Z"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "Resume",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "FINALIZED",
+     "latestVersionId": "d1000000-0000-4000-8000-000000000002",
+     "finalizedVersionId": "d1000000-0000-4000-8000-000000000001",
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list kind",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d2000000-0000-4000-8000-000000000008",
+     "revision": 1,
+     "applicationId": null,
+     "title": "Portfolio",
+     "kind": "PORTFOLIO",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "DRAFT",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-16T00:00:00.500000Z",
+     "updatedAt": "2026-10-16T00:00:00.500000Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000005",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "보관됨",
+     "kind": "PORTFOLIO",
+     "template": "CREATIVE",
+     "language": "",
+     "status": "ARCHIVED",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-14T00:00:00Z",
+     "updatedAt": "2026-10-14T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list bad kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported kind",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "list bad app",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "applicationId"
+    }
+   }
+  }
+ },
+ {
+  "name": "list page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d2000000-0000-4000-8000-000000000008",
+     "revision": 1,
+     "applicationId": null,
+     "title": "Portfolio",
+     "kind": "PORTFOLIO",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "DRAFT",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-16T00:00:00.500000Z",
+     "updatedAt": "2026-10-16T00:00:00.500000Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 2,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000006",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-15T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0xNVQwMDowMDowMFp8ZDIwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDA2",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "get",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000001",
+    "revision": 3,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "title": "이력서 초안",
+    "kind": "RESUME",
+    "template": "MODERN",
+    "language": "ko",
+    "status": "DRAFT",
+    "latestVersionId": "d3000000-0000-4000-8000-000000000002",
+    "finalizedVersionId": null,
+    "createdAt": "2026-10-10T00:00:00Z",
+    "updatedAt": "2026-10-10T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "get other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "get bad id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "id"
+    }
+   }
+  }
+ },
+ {
+  "name": "create",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "6001f23a-ee51-448b-bb9f-7eba58ea11f4",
+    "revision": 1,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "title": "새 이력서",
+    "kind": "RESUME",
+    "template": "SIMPLE",
+    "language": "ko",
+    "status": "DRAFT",
+    "latestVersionId": null,
+    "finalizedVersionId": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "create other app",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "create bad kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be RESUME, PORTFOLIO or COVER_LETTER",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "create no template",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT",
+    "requestId": "parity",
+    "details": {
+     "field": "template"
+    }
+   }
+  }
+ },
+ {
+  "name": "create long title",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "title must be 1-300 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "title"
+    }
+   }
+  }
+ },
+ {
+  "name": "create missing language",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateDocumentReq\nlanguage\n  Field required [type=missing, input_value={'applicationId': 'c00000...', 'template': 'SIMPLE'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "versions",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d3000000-0000-4000-8000-000000000002",
+     "documentId": "d2000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "number": 2,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "b1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "heading",
+        "attrs": {
+         "level": 2,
+         "blockId": "b2"
+        },
+        "content": [
+         {
+          "text": "Acme 2021-2024",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "bulletList",
+        "content": [
+         {
+          "type": "listItem",
+          "attrs": {
+           "blockId": "b3"
+          },
+          "content": [
+           {
+            "text": "검색 품질 개선 ",
+            "type": "text",
+            "marks": [
+             {
+              "type": "link",
+              "attrs": {
+               "href": "https://acme.example/blog"
+              }
+             }
+            ]
+           },
+           {
+            "text": "프로젝트",
+            "type": "text"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "b1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      },
+      {
+       "id": "b2",
+       "text": "Acme 2021-2024",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "b3",
+       "text": "검색 품질 개선 프로젝트",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 10,
+         "end": 15
+        }
+       ],
+       "claimStatus": "NEEDS_REVIEW"
+      }
+     ],
+     "changeNote": "second",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 33,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "b2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-10T01:00:00Z"
+    },
+    {
+     "id": "d3000000-0000-4000-8000-000000000001",
+     "documentId": "d2000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "number": 1,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "b1"
+        },
+        "content": [
+         {
+          "text": "초안",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "b1",
+       "text": "초안",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "first",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": null,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": []
+     },
+     "createdAt": "2026-10-10T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "versions page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d3000000-0000-4000-8000-000000000002",
+     "documentId": "d2000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "number": 2,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "b1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "heading",
+        "attrs": {
+         "level": 2,
+         "blockId": "b2"
+        },
+        "content": [
+         {
+          "text": "Acme 2021-2024",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "bulletList",
+        "content": [
+         {
+          "type": "listItem",
+          "attrs": {
+           "blockId": "b3"
+          },
+          "content": [
+           {
+            "text": "검색 품질 개선 ",
+            "type": "text",
+            "marks": [
+             {
+              "type": "link",
+              "attrs": {
+               "href": "https://acme.example/blog"
+              }
+             }
+            ]
+           },
+           {
+            "text": "프로젝트",
+            "type": "text"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "b1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      },
+      {
+       "id": "b2",
+       "text": "Acme 2021-2024",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "b3",
+       "text": "검색 품질 개선 프로젝트",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 10,
+         "end": 15
+        }
+       ],
+       "claimStatus": "NEEDS_REVIEW"
+      }
+     ],
+     "changeNote": "second",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 33,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "b2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-10T01:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0xMFQwMTowMDowMFp8ZDMwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "versions other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "version",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d3000000-0000-4000-8000-000000000002",
+    "documentId": "d2000000-0000-4000-8000-000000000001",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "number": 2,
+    "content": {
+     "type": "doc",
+     "content": [
+      {
+       "type": "paragraph",
+       "attrs": {
+        "blockId": "b1"
+       },
+       "content": [
+        {
+         "text": "결제 서버 지연을 210ms로 줄였습니다.",
+         "type": "text"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "attrs": {
+        "level": 2,
+        "blockId": "b2"
+       },
+       "content": [
+        {
+         "text": "Acme 2021-2024",
+         "type": "text"
+        }
+       ]
+      },
+      {
+       "type": "bulletList",
+       "content": [
+        {
+         "type": "listItem",
+         "attrs": {
+          "blockId": "b3"
+         },
+         "content": [
+          {
+           "text": "검색 품질 개선 ",
+           "type": "text",
+           "marks": [
+            {
+             "type": "link",
+             "attrs": {
+              "href": "https://acme.example/blog"
+             }
+            }
+           ]
+          },
+          {
+           "text": "프로젝트",
+           "type": "text"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "blocks": [
+     {
+      "id": "b1",
+      "text": "결제 서버 지연을 210ms로 줄였습니다.",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 0,
+        "end": 5
+       }
+      ],
+      "claimStatus": "SUPPORTED"
+     },
+     {
+      "id": "b2",
+      "text": "Acme 2021-2024",
+      "evidenceRefs": [],
+      "claimStatus": "UNSUPPORTED"
+     },
+     {
+      "id": "b3",
+      "text": "검색 품질 개선 프로젝트",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 10,
+        "end": 15
+       }
+      ],
+      "claimStatus": "NEEDS_REVIEW"
+     }
+    ],
+    "changeNote": "second",
+    "quality": {
+     "jobFit": null,
+     "evidenceFidelity": 33,
+     "readability": null,
+     "ats": null,
+     "method": "RULE_BASED",
+     "issues": [
+      {
+       "code": "UNSUPPORTED_CLAIM",
+       "severity": "ERROR",
+       "blockId": "b2",
+       "message": "block has no evidence references"
+      }
+     ]
+    },
+    "createdAt": "2026-10-10T01:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "version wrong doc",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "version bad id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "versionId"
+    }
+   }
+  }
+ },
+ {
+  "name": "review",
+  "status": 200,
+  "body": {
+   "data": {
+    "quality": {
+     "jobFit": null,
+     "evidenceFidelity": 66,
+     "readability": null,
+     "ats": null,
+     "method": "RULE_BASED",
+     "issues": [
+      {
+       "code": "UNSUPPORTED_CLAIM",
+       "severity": "ERROR",
+       "blockId": "b2",
+       "message": "block has no evidence references"
+      },
+      {
+       "code": "NEEDS_REVIEW",
+       "severity": "WARN",
+       "blockId": "b3",
+       "message": "evidence span does not literally appear in block text"
+      }
+     ]
+    },
+    "blocks": [
+     {
+      "id": "b1",
+      "text": "결제 서버 지연을 210ms로 줄였습니다.",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 0,
+        "end": 5
+       }
+      ],
+      "claimStatus": "SUPPORTED"
+     },
+     {
+      "id": "b2",
+      "text": "Acme 2021-2024",
+      "evidenceRefs": [],
+      "claimStatus": "UNSUPPORTED"
+     },
+     {
+      "id": "b3",
+      "text": "검색 품질 개선 프로젝트",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 10,
+        "end": 15
+       }
+      ],
+      "claimStatus": "NEEDS_REVIEW"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "review other version",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 2
+    }
+   }
+  }
+ },
+ {
+  "name": "patch archived",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "document is archived",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch bad template",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT",
+    "requestId": "parity",
+    "details": {
+     "field": "template"
+    }
+   }
+  }
+ },
+ {
+  "name": "patch title only",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000004",
+    "revision": 3,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "title": "확정본 v2",
+    "kind": "RESUME",
+    "template": "ATS",
+    "language": "ko",
+    "status": "FINALIZED",
+    "latestVersionId": "d3000000-0000-4000-8000-000000000005",
+    "finalizedVersionId": "d3000000-0000-4000-8000-000000000005",
+    "createdAt": "2026-10-13T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "patch same template",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000004",
+    "revision": 4,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "title": "확정본 v2",
+    "kind": "RESUME",
+    "template": "ATS",
+    "language": "ko",
+    "status": "FINALIZED",
+    "latestVersionId": "d3000000-0000-4000-8000-000000000005",
+    "finalizedVersionId": "d3000000-0000-4000-8000-000000000005",
+    "createdAt": "2026-10-13T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "version create",
+  "status": 201,
+  "body": {
+   "data": {
+    "document": {
+     "id": "d2000000-0000-4000-8000-000000000001",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "이력서 초안",
+     "kind": "RESUME",
+     "template": "MODERN",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "59441042-c11f-439c-b114-8cdaebfdcd7b",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    "version": {
+     "id": "59441042-c11f-439c-b114-8cdaebfdcd7b",
+     "documentId": "d2000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "number": 3,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "n1"
+        },
+        "content": [
+         {
+          "type": "text",
+          "text": "결제 서버 지연을 210ms로 줄였습니다."
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "n2"
+        },
+        "content": [
+         {
+          "type": "text",
+          "text": "새 문단"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "n1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      },
+      {
+       "id": "n2",
+       "text": "새 문단",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "edited",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 50,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "n2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    }
+   }
+  }
+ },
+ {
+  "name": "version stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 4
+    }
+   }
+  }
+ },
+ {
+  "name": "version archived",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "document is archived",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "version bad root",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "root node must be doc",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version bad node",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported node type image",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version bad mark",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported mark type bold",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version link no href",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "link mark requires href",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version link ftp",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "url must be http(s)",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "version no block id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "block node of type paragraph requires attrs.blockId",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version duplicate block id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "duplicate blockId a",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version text mismatch",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "block a text does not match content node text",
+    "requestId": "parity",
+    "details": {
+     "field": "blocks"
+    }
+   }
+  }
+ },
+ {
+  "name": "version missing block",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "content node b has no matching block",
+    "requestId": "parity",
+    "details": {
+     "field": "content"
+    }
+   }
+  }
+ },
+ {
+  "name": "version unknown block",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "block z has no matching content node",
+    "requestId": "parity",
+    "details": {
+     "field": "blocks"
+    }
+   }
+  }
+ },
+ {
+  "name": "version unknown evidence",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "evidence 22222222-2222-4222-8222-222222222222 not found",
+    "requestId": "parity",
+    "details": {
+     "field": "blocks"
+    }
+   }
+  }
+ },
+ {
+  "name": "version archived evidence",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "evidence f0000000-0000-4000-8000-000000000007 is archived",
+    "requestId": "parity",
+    "details": {
+     "field": "blocks"
+    }
+   }
+  }
+ },
+ {
+  "name": "version out of range",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "evidenceRef range out of bounds for f0000000-0000-4000-8000-000000000005",
+    "requestId": "parity",
+    "details": {
+     "field": "blocks"
+    }
+   }
+  }
+ },
+ {
+  "name": "version bad body",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateVersionReq\ncontent\n  Input should be a valid dictionary [type=dict_type, input_value='x', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.10/v/dict_type",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "apply proposal stale doc",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "document changed since the proposal was created",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "apply proposal applied",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "proposal already applied",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "apply proposal missing text",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "selection text no longer present in the version",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "apply proposal wrong revision",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 2
+    }
+   }
+  }
+ },
+ {
+  "name": "apply proposal unknown",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "apply proposal",
+  "status": 200,
+  "body": {
+   "data": {
+    "document": {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 3,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "8b968557-1592-4c6d-bbd7-872292b538b6",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    "version": {
+     "id": "8b968557-1592-4c6d-bbd7-872292b538b6",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 3,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 3년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 3년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied proposal d4000000-0000-4000-8000-000000000001",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    }
+   }
+  }
+ },
+ {
+  "name": "edits stale revision",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 3
+    }
+   }
+  }
+ },
+ {
+  "name": "edits missing text",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 3
+    }
+   }
+  }
+ },
+ {
+  "name": "edits added without context",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "an added line needs a context line before it",
+    "requestId": "parity",
+    "details": {
+     "field": "hunks"
+    }
+   }
+  }
+ },
+ {
+  "name": "edits replace",
+  "status": 200,
+  "body": {
+   "data": {
+    "document": {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 4,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "f82d9c71-0bdc-4655-9758-5bcea022bac9",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    "version": {
+     "id": "f82d9c71-0bdc-4655-9758-5bcea022bac9",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 4,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 4년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 4년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied chat edit",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    }
+   }
+  }
+ },
+ {
+  "name": "edits add line",
+  "status": 200,
+  "body": {
+   "data": {
+    "document": {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 5,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "5be175a4-6451-4d92-9508-29554723f295",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    "version": {
+     "id": "5be175a4-6451-4d92-9508-29554723f295",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 5,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 4년 경력\n백엔드 개발\nAPI 설계",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 4년 경력\n백엔드 개발\nAPI 설계",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied chat edit",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    }
+   }
+  }
+ },
+ {
+  "name": "edits archived",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "document is archived",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "edits other user",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "finalize unsupported",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "UNSUPPORTED_CLAIM",
+    "message": "block b2 is UNSUPPORTED",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "finalize evidence not approved",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "EVIDENCE_USE approval required for evidence f0000000-0000-4000-8000-000000000006",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "finalize pending approval",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval is not approved",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "finalize stale hash",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "approved content has changed",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "finalize",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000002",
+    "revision": 2,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "title": "자기소개서",
+    "kind": "COVER_LETTER",
+    "template": "SIMPLE",
+    "language": "ko",
+    "status": "FINALIZED",
+    "latestVersionId": "d3000000-0000-4000-8000-000000000003",
+    "finalizedVersionId": "d3000000-0000-4000-8000-000000000003",
+    "createdAt": "2026-10-11T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "finalize again",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval is not approved",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "exports list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d5000000-0000-4000-8000-000000000002",
+     "documentId": "d2000000-0000-4000-8000-000000000004",
+     "versionId": "d3000000-0000-4000-8000-000000000005",
+     "format": "DOCX",
+     "template": "ATS",
+     "language": "en",
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "f1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "f1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      }
+     ],
+     "contentHash": "hash-2",
+     "status": "SUCCEEDED",
+     "rendererVersion": "r1",
+     "result": {
+      "sha256": "abc",
+      "byteLength": 10,
+      "validation": {
+       "koreanText": true,
+       "links": true,
+       "atsText": false
+      }
+     },
+     "createdAt": "2026-10-13T02:00:00Z",
+     "updatedAt": "2026-10-13T02:00:00Z"
+    },
+    {
+     "id": "d5000000-0000-4000-8000-000000000001",
+     "documentId": "d2000000-0000-4000-8000-000000000004",
+     "versionId": "d3000000-0000-4000-8000-000000000005",
+     "format": "PDF",
+     "template": "ATS",
+     "language": "en",
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "f1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "f1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      }
+     ],
+     "contentHash": "hash-1",
+     "status": "READY_TO_RENDER",
+     "rendererVersion": "r1",
+     "result": null,
+     "createdAt": "2026-10-13T01:00:00Z",
+     "updatedAt": "2026-10-13T01:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "exports other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "export not finalized",
+  "status": 422,
+  "body": {
+   "error": {
+    "code": "DOCUMENT_NOT_FINALIZED",
+    "message": "only the finalized version can be exported",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "export bad format",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be PDF or DOCX",
+    "requestId": "parity",
+    "details": {
+     "field": "format"
+    }
+   }
+  }
+ },
+ {
+  "name": "export no renderer",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "rendererVersion"
+    }
+   }
+  }
+ },
+ {
+  "name": "export",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "98f188bf-f03f-4ecb-a7a4-e089e4ee9f33",
+    "documentId": "d2000000-0000-4000-8000-000000000002",
+    "versionId": "d3000000-0000-4000-8000-000000000003",
+    "format": "DOCX",
+    "template": "SIMPLE",
+    "language": "ko",
+    "content": {
+     "type": "doc",
+     "content": [
+      {
+       "type": "paragraph",
+       "attrs": {
+        "blockId": "f1"
+       },
+       "content": [
+        {
+         "text": "결제 서버 지연을 210ms로 줄였습니다.",
+         "type": "text"
+        }
+       ]
+      }
+     ]
+    },
+    "blocks": [
+     {
+      "id": "f1",
+      "text": "결제 서버 지연을 210ms로 줄였습니다.",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 0,
+        "end": 5
+       }
+      ],
+      "claimStatus": "SUPPORTED"
+     }
+    ],
+    "contentHash": "509f164ddd02bfbc0dfa74d0f55931a0e33bc130af7894559c57f7509623bb77",
+    "status": "READY_TO_RENDER",
+    "rendererVersion": "r2",
+    "result": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "export result bad status",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be SUCCEEDED or FAILED",
+    "requestId": "parity",
+    "details": {
+     "field": "status"
+    }
+   }
+  }
+ },
+ {
+  "name": "export result no sha",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "sha256 and non-negative byteLength are required",
+    "requestId": "parity",
+    "details": {
+     "field": "sha256"
+    }
+   }
+  }
+ },
+ {
+  "name": "export result done twice",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "export result already recorded",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "export result",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d5000000-0000-4000-8000-000000000001",
+    "documentId": "d2000000-0000-4000-8000-000000000004",
+    "versionId": "d3000000-0000-4000-8000-000000000005",
+    "format": "PDF",
+    "template": "ATS",
+    "language": "en",
+    "content": {
+     "type": "doc",
+     "content": [
+      {
+       "type": "paragraph",
+       "attrs": {
+        "blockId": "f1"
+       },
+       "content": [
+        {
+         "text": "결제 서버 지연을 210ms로 줄였습니다.",
+         "type": "text"
+        }
+       ]
+      }
+     ]
+    },
+    "blocks": [
+     {
+      "id": "f1",
+      "text": "결제 서버 지연을 210ms로 줄였습니다.",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 0,
+        "end": 5
+       }
+      ],
+      "claimStatus": "SUPPORTED"
+     }
+    ],
+    "contentHash": "hash-1",
+    "status": "SUCCEEDED",
+    "rendererVersion": "r1",
+    "result": {
+     "sha256": "f00d",
+     "byteLength": 2048,
+     "pageCount": 2,
+     "validation": {
+      "koreanText": true,
+      "links": false,
+      "atsText": true
+     }
+    },
+    "createdAt": "2026-10-13T01:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "export result failed",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "38c3b0f7-91f8-442c-96d0-33ef2c0098b4",
+    "documentId": "d2000000-0000-4000-8000-000000000002",
+    "versionId": "d3000000-0000-4000-8000-000000000003",
+    "format": "PDF",
+    "template": "SIMPLE",
+    "language": "ko",
+    "content": {
+     "type": "doc",
+     "content": [
+      {
+       "type": "paragraph",
+       "attrs": {
+        "blockId": "f1"
+       },
+       "content": [
+        {
+         "text": "결제 서버 지연을 210ms로 줄였습니다.",
+         "type": "text"
+        }
+       ]
+      }
+     ]
+    },
+    "blocks": [
+     {
+      "id": "f1",
+      "text": "결제 서버 지연을 210ms로 줄였습니다.",
+      "evidenceRefs": [
+       {
+        "evidenceId": "f0000000-0000-4000-8000-000000000005",
+        "start": 0,
+        "end": 5
+       }
+      ],
+      "claimStatus": "SUPPORTED"
+     }
+    ],
+    "contentHash": "509f164ddd02bfbc0dfa74d0f55931a0e33bc130af7894559c57f7509623bb77",
+    "status": "READY_TO_RENDER",
+    "rendererVersion": "r3",
+    "result": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "archive stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 1
+    }
+   }
+  }
+ },
+ {
+  "name": "archive",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000008",
+    "revision": 2,
+    "applicationId": null,
+    "title": "Portfolio",
+    "kind": "PORTFOLIO",
+    "template": "SIMPLE",
+    "language": "",
+    "status": "ARCHIVED",
+    "latestVersionId": null,
+    "finalizedVersionId": null,
+    "createdAt": "2026-10-16T00:00:00.500000Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "archive again",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "d2000000-0000-4000-8000-000000000008",
+    "revision": 2,
+    "applicationId": null,
+    "title": "Portfolio",
+    "kind": "PORTFOLIO",
+    "template": "SIMPLE",
+    "language": "",
+    "status": "ARCHIVED",
+    "latestVersionId": null,
+    "finalizedVersionId": null,
+    "createdAt": "2026-10-16T00:00:00.500000Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "archive again stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 2
+    }
+   }
+  }
+ },
+ {
+  "name": "list after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "6001f23a-ee51-448b-bb9f-7eba58ea11f4",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "새 이력서",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000008",
+     "revision": 2,
+     "applicationId": null,
+     "title": "Portfolio",
+     "kind": "PORTFOLIO",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "ARCHIVED",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-16T00:00:00.500000Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000006",
+     "revision": 5,
+     "applicationId": null,
+     "title": "제안 적용",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "5be175a4-6451-4d92-9508-29554723f295",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-15T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000005",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "보관됨",
+     "kind": "PORTFOLIO",
+     "template": "CREATIVE",
+     "language": "",
+     "status": "ARCHIVED",
+     "latestVersionId": null,
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-14T00:00:00Z",
+     "updatedAt": "2026-10-14T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000004",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "확정본 v2",
+     "kind": "RESUME",
+     "template": "ATS",
+     "language": "ko",
+     "status": "FINALIZED",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000005",
+     "finalizedVersionId": "d3000000-0000-4000-8000-000000000005",
+     "createdAt": "2026-10-13T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000003",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "근거 미승인",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000004",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-12T00:00:00Z",
+     "updatedAt": "2026-10-12T00:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "자기소개서",
+     "kind": "COVER_LETTER",
+     "template": "SIMPLE",
+     "language": "ko",
+     "status": "FINALIZED",
+     "latestVersionId": "d3000000-0000-4000-8000-000000000003",
+     "finalizedVersionId": "d3000000-0000-4000-8000-000000000003",
+     "createdAt": "2026-10-11T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d2000000-0000-4000-8000-000000000001",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "이력서 초안",
+     "kind": "RESUME",
+     "template": "MODERN",
+     "language": "ko",
+     "status": "DRAFT",
+     "latestVersionId": "59441042-c11f-439c-b114-8cdaebfdcd7b",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000002",
+     "title": "Other app resume",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "DRAFT",
+     "latestVersionId": "d1000000-0000-4000-8000-000000000003",
+     "finalizedVersionId": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "title": "Resume",
+     "kind": "RESUME",
+     "template": "SIMPLE",
+     "language": "",
+     "status": "FINALIZED",
+     "latestVersionId": "d1000000-0000-4000-8000-000000000002",
+     "finalizedVersionId": "d1000000-0000-4000-8000-000000000001",
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "versions after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f82d9c71-0bdc-4655-9758-5bcea022bac9",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 4,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 4년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 4년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied chat edit",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "8b968557-1592-4c6d-bbd7-872292b538b6",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 3,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 3년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 3년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied proposal d4000000-0000-4000-8000-000000000001",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "5be175a4-6451-4d92-9508-29554723f295",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 5,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service in two weeks.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 4년 경력\n백엔드 개발\nAPI 설계",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service in two weeks.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 4년 경력\n백엔드 개발\nAPI 설계",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "applied chat edit",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": 0,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": [
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p1",
+        "message": "block has no evidence references"
+       },
+       {
+        "code": "UNSUPPORTED_CLAIM",
+        "severity": "ERROR",
+        "blockId": "p2",
+        "message": "block has no evidence references"
+       }
+      ]
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "d3000000-0000-4000-8000-000000000007",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 2,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service quickly.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 3년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service quickly.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 3년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "old branch",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": null,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": []
+     },
+     "createdAt": "2026-10-15T00:00:01Z"
+    },
+    {
+     "id": "d3000000-0000-4000-8000-000000000006",
+     "documentId": "d2000000-0000-4000-8000-000000000006",
+     "applicationId": null,
+     "number": 1,
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p1"
+        },
+        "content": [
+         {
+          "text": "I built the search service quickly.",
+          "type": "text"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "p2"
+        },
+        "content": [
+         {
+          "text": "Python 3년 경력\n백엔드 개발",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "p1",
+       "text": "I built the search service quickly.",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      },
+      {
+       "id": "p2",
+       "text": "Python 3년 경력\n백엔드 개발",
+       "evidenceRefs": [],
+       "claimStatus": "UNSUPPORTED"
+      }
+     ],
+     "changeNote": "",
+     "quality": {
+      "jobFit": null,
+      "evidenceFidelity": null,
+      "readability": null,
+      "ats": null,
+      "method": "RULE_BASED",
+      "issues": []
+     },
+     "createdAt": "2026-10-15T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "exports after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "98f188bf-f03f-4ecb-a7a4-e089e4ee9f33",
+     "documentId": "d2000000-0000-4000-8000-000000000002",
+     "versionId": "d3000000-0000-4000-8000-000000000003",
+     "format": "DOCX",
+     "template": "SIMPLE",
+     "language": "ko",
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "f1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "f1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      }
+     ],
+     "contentHash": "509f164ddd02bfbc0dfa74d0f55931a0e33bc130af7894559c57f7509623bb77",
+     "status": "READY_TO_RENDER",
+     "rendererVersion": "r2",
+     "result": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "38c3b0f7-91f8-442c-96d0-33ef2c0098b4",
+     "documentId": "d2000000-0000-4000-8000-000000000002",
+     "versionId": "d3000000-0000-4000-8000-000000000003",
+     "format": "PDF",
+     "template": "SIMPLE",
+     "language": "ko",
+     "content": {
+      "type": "doc",
+      "content": [
+       {
+        "type": "paragraph",
+        "attrs": {
+         "blockId": "f1"
+        },
+        "content": [
+         {
+          "text": "결제 서버 지연을 210ms로 줄였습니다.",
+          "type": "text"
+         }
+        ]
+       }
+      ]
+     },
+     "blocks": [
+      {
+       "id": "f1",
+       "text": "결제 서버 지연을 210ms로 줄였습니다.",
+       "evidenceRefs": [
+        {
+         "evidenceId": "f0000000-0000-4000-8000-000000000005",
+         "start": 0,
+         "end": 5
+        }
+       ],
+       "claimStatus": "SUPPORTED"
+      }
+     ],
+     "contentHash": "509f164ddd02bfbc0dfa74d0f55931a0e33bc130af7894559c57f7509623bb77",
+     "status": "READY_TO_RENDER",
+     "rendererVersion": "r3",
+     "result": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "events after",
+  "status": 0,
+  "body": [
+   {
+    "type": "DOCUMENT_FINALIZED",
+    "payload": "{\"versionId\": \"d3000000-0000-4000-8000-000000000003\", \"documentId\": \"d2000000-0000-4000-8000-000000000002\"}",
+    "created_at": "2026-10-22 12:00:00+00"
+   }
+  ]
+ },
+ {
+  "name": "approvals after",
+  "status": 0,
+  "body": [
+   {
+    "id": "e1000000-0000-4000-8000-000000000011",
+    "status": "CONSUMED",
+    "revision": "2",
+    "consumed_at": "2026-10-22 12:00:00+00"
+   },
+   {
+    "id": "e1000000-0000-4000-8000-000000000012",
+    "status": "APPROVED",
+    "revision": "1",
+    "consumed_at": null
+   },
+   {
+    "id": "e1000000-0000-4000-8000-000000000013",
+    "status": "PENDING",
+    "revision": "1",
+    "consumed_at": null
+   }
+  ]
+ },
+ {
+  "name": "proposals after",
+  "status": 0,
+  "body": [
+   {
+    "id": "d4000000-0000-4000-8000-000000000001",
+    "applied_at": "2026-10-22 12:00:00+00"
+   },
+   {
+    "id": "d4000000-0000-4000-8000-000000000002",
+    "applied_at": "2026-10-15 02:00:00+00"
+   },
+   {
+    "id": "d4000000-0000-4000-8000-000000000003",
+    "applied_at": null
+   },
+   {
+    "id": "d4000000-0000-4000-8000-000000000004",
+    "applied_at": null
+   }
+  ]
+ },
+ {
+  "name": "documents after",
+  "status": 0,
+  "body": [
+   {
+    "id": "d0000000-0000-4000-8000-000000000001",
+    "revision": "2",
+    "status": "FINALIZED",
+    "template": "SIMPLE",
+    "title": "Resume",
+    "has_latest": "true",
+    "finalized": "d1000000-0000-4000-8000-000000000001"
+   },
+   {
+    "id": "d0000000-0000-4000-8000-000000000002",
+    "revision": "1",
+    "status": "DRAFT",
+    "template": "SIMPLE",
+    "title": "Other app resume",
+    "has_latest": "true",
+    "finalized": null
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000001",
+    "revision": "4",
+    "status": "DRAFT",
+    "template": "MODERN",
+    "title": "이력서 초안",
+    "has_latest": "true",
+    "finalized": null
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000002",
+    "revision": "2",
+    "status": "FINALIZED",
+    "template": "SIMPLE",
+    "title": "자기소개서",
+    "has_latest": "true",
+    "finalized": "d3000000-0000-4000-8000-000000000003"
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000003",
+    "revision": "1",
+    "status": "DRAFT",
+    "template": "SIMPLE",
+    "title": "근거 미승인",
+    "has_latest": "true",
+    "finalized": null
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000004",
+    "revision": "4",
+    "status": "FINALIZED",
+    "template": "ATS",
+    "title": "확정본 v2",
+    "has_latest": "true",
+    "finalized": "d3000000-0000-4000-8000-000000000005"
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000005",
+    "revision": "4",
+    "status": "ARCHIVED",
+    "template": "CREATIVE",
+    "title": "보관됨",
+    "has_latest": "false",
+    "finalized": null
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000006",
+    "revision": "5",
+    "status": "DRAFT",
+    "template": "SIMPLE",
+    "title": "제안 적용",
+    "has_latest": "true",
+    "finalized": null
+   },
+   {
+    "id": "d2000000-0000-4000-8000-000000000008",
+    "revision": "2",
+    "status": "ARCHIVED",
+    "template": "SIMPLE",
+    "title": "Portfolio",
+    "has_latest": "false",
+    "finalized": null
+   }
+  ]
+ },
+ {
+  "name": "new versions after",
+  "status": 0,
+  "body": [
+   {
+    "document_id": "d2000000-0000-4000-8000-000000000001",
+    "number": "3",
+    "content": "{\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"n1\"}, \"content\": [{\"text\": \"결제 서버 지연을 210ms로 줄였습니다.\", \"type\": \"text\"}]}, {\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"n2\"}, \"content\": [{\"text\": \"새 문단\", \"type\": \"text\"}]}]}",
+    "blocks": "[{\"id\": \"n1\", \"text\": \"결제 서버 지연을 210ms로 줄였습니다.\", \"claimStatus\": \"SUPPORTED\", \"evidenceRefs\": [{\"end\": 5, \"start\": 0, \"evidenceId\": \"f0000000-0000-4000-8000-000000000005\"}]}, {\"id\": \"n2\", \"text\": \"새 문단\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}]",
+    "change_note": "edited",
+    "quality": "{\"ats\": null, \"issues\": [{\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"n2\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}], \"jobFit\": null, \"method\": \"RULE_BASED\", \"readability\": null, \"evidenceFidelity\": 50}"
+   },
+   {
+    "document_id": "d2000000-0000-4000-8000-000000000006",
+    "number": "3",
+    "content": "{\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p1\"}, \"content\": [{\"text\": \"I built the search service in two weeks.\", \"type\": \"text\"}]}, {\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p2\"}, \"content\": [{\"text\": \"Python 3년 경력\\n백엔드 개발\", \"type\": \"text\"}]}]}",
+    "blocks": "[{\"id\": \"p1\", \"text\": \"I built the search service in two weeks.\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}, {\"id\": \"p2\", \"text\": \"Python 3년 경력\\n백엔드 개발\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}]",
+    "change_note": "applied proposal d4000000-0000-4000-8000-000000000001",
+    "quality": "{\"ats\": null, \"issues\": [{\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p1\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}, {\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p2\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}], \"jobFit\": null, \"method\": \"RULE_BASED\", \"readability\": null, \"evidenceFidelity\": 0}"
+   },
+   {
+    "document_id": "d2000000-0000-4000-8000-000000000006",
+    "number": "4",
+    "content": "{\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p1\"}, \"content\": [{\"text\": \"I built the search service in two weeks.\", \"type\": \"text\"}]}, {\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p2\"}, \"content\": [{\"text\": \"Python 4년 경력\\n백엔드 개발\", \"type\": \"text\"}]}]}",
+    "blocks": "[{\"id\": \"p1\", \"text\": \"I built the search service in two weeks.\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}, {\"id\": \"p2\", \"text\": \"Python 4년 경력\\n백엔드 개발\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}]",
+    "change_note": "applied chat edit",
+    "quality": "{\"ats\": null, \"issues\": [{\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p1\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}, {\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p2\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}], \"jobFit\": null, \"method\": \"RULE_BASED\", \"readability\": null, \"evidenceFidelity\": 0}"
+   },
+   {
+    "document_id": "d2000000-0000-4000-8000-000000000006",
+    "number": "5",
+    "content": "{\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p1\"}, \"content\": [{\"text\": \"I built the search service in two weeks.\", \"type\": \"text\"}]}, {\"type\": \"paragraph\", \"attrs\": {\"blockId\": \"p2\"}, \"content\": [{\"text\": \"Python 4년 경력\\n백엔드 개발\\nAPI 설계\", \"type\": \"text\"}]}]}",
+    "blocks": "[{\"id\": \"p1\", \"text\": \"I built the search service in two weeks.\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}, {\"id\": \"p2\", \"text\": \"Python 4년 경력\\n백엔드 개발\\nAPI 설계\", \"claimStatus\": \"UNSUPPORTED\", \"evidenceRefs\": []}]",
+    "change_note": "applied chat edit",
+    "quality": "{\"ats\": null, \"issues\": [{\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p1\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}, {\"code\": \"UNSUPPORTED_CLAIM\", \"blockId\": \"p2\", \"message\": \"block has no evidence references\", \"severity\": \"ERROR\"}], \"jobFit\": null, \"method\": \"RULE_BASED\", \"readability\": null, \"evidenceFidelity\": 0}"
+   }
+  ]
+ }
+]

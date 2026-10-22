@@ -4,6 +4,7 @@ import json
 from uuid import UUID
 
 from app.domain.errors import DomainError
+from app.harness.document_edits import apply_edit, env_core
 
 
 class _ApprovedEdit:
@@ -14,7 +15,7 @@ class _ApprovedEdit:
 
     async def astream(self, *args, **kwargs):
         try:
-            await self.svc.document_svc.apply_hunks(self.user_id, self.diff)
+            await apply_edit(env_core(), self.user_id, self.diff)
         except DomainError as err:
             yield "custom", {"type": "tool", "name": "edit_document", "state": "err",
                              "summary": "서류 수정", "result": {"error": err.code}}

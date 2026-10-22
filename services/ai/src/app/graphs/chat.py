@@ -634,7 +634,8 @@ def bind_chat_nodes(svc):
         apply = None
         if document_svc is not None:
             async def apply(diff):
-                await document_svc.apply_hunks(state["user_id"], diff)
+                from app.harness.document_edits import apply_edit, env_core
+                await apply_edit(env_core(), state["user_id"], diff)
         return await publish_persisted_surface(state, svc.db, _emit, apply)
 
     async def persist(state: ChatState) -> dict:

@@ -44,10 +44,11 @@ class _Docs:
         return None, SimpleNamespace(id="v2")
 
 
-def _service(rows, docs):
+def _service(rows, docs, monkeypatch):
     svc = ConversationService(rows, None, None)
     svc.jobs = StubChatJobStore()
-    svc.document_svc = docs
+    svc.document_svc = SimpleNamespace()
+    monkeypatch.setattr("app.harness.jobs.apply_edit", lambda core, user, diff: docs.apply_hunks(user, diff))
 
     async def boom(*args, **kwargs):
         raise AssertionError("the chat graph must not run for an approved legacy edit")
@@ -62,9 +63,9 @@ def _job():
             "payload": {"text": "", "resume": {"approvalId": APPROVAL, "optionId": "apply"}}}
 
 
-async def test_approved_legacy_edit_is_applied_once_without_a_chat_turn():
+async def test_approved_legacy_edit_is_applied_once_without_a_chat_turn(monkeypatch):
     rows, docs = _Rows(), _Docs()
-    svc = _service(rows, docs)
+    svc = _service(rows, docs, monkeypatch)
     await svc._run_job(_job())
     assert docs.applied == [DIFF]
     assert [event["type"] for event in svc.jobs.events] == ["diff", "done"]
@@ -75,8 +76,8 @@ async def test_approved_legacy_edit_is_applied_once_without_a_chat_turn():
     assert len(docs.applied) == 1
 
 
-async def test_conflicting_legacy_edit_reports_revision_conflict():
-    svc = _service(_Rows(), _Docs(revision_conflict(5)))
+async def test_conflicting_legacy_edit_reports_revision_conflict(monkeypatch):
+    svc = _service(_Rows(), _Docs(revision_conflict(5)), monkeypatch)
     await svc._run_job(_job())
     tool = next(event for event in svc.jobs.events if event["type"] == "tool")
     assert tool["payload"]["result"] == {"error": "REVISION_CONFLICT"}

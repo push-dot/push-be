@@ -17,6 +17,7 @@ import { dispatchExperiments } from "./routes/experiments.ts";
 import { dispatchInterviews } from "./routes/interviews.ts";
 import { dispatchProjects } from "./routes/projects.ts";
 import { dispatchIntegrations, isGoogleCallback } from "./routes/integrations.ts";
+import { dispatchDocuments } from "./routes/documents.ts";
 import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
@@ -220,6 +221,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (projects) return projects;
   const integrations = await dispatchIntegrations(ctx, path);
   if (integrations) return integrations;
+  const documents = await dispatchDocuments(ctx, path);
+  if (documents) return documents;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

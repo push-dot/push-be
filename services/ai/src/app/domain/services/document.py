@@ -63,38 +63,6 @@ def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
     return ent.Quality(evidence_fidelity=fidelity, method=method, issues=issues)
 
 
-def hunk_edits(hunks: list[dict]) -> list[tuple[str, str]]:
-    edits: list[tuple[str, str]] = []
-    anchor: str | None = None
-    removed: list[str] = []
-    added: list[str] = []
-
-    def flush() -> None:
-        if removed:
-            edits.append(("\n".join(removed), "\n".join(added)))
-        elif added:
-            if anchor is None:
-                raise validation_field("hunks", "an added line needs a context line before it")
-            edits.append((anchor, anchor + "\n" + "\n".join(added)))
-        removed.clear()
-        added.clear()
-
-    for hunk in hunks:
-        sign = hunk.get("sign") or ""
-        text = str(hunk.get("text") or "")
-        if sign == "-":
-            if added:
-                flush()
-            removed.append(text)
-        elif sign == "+":
-            added.append(text)
-        else:
-            flush()
-            anchor = text
-    flush()
-    return edits
-
-
 def _replaced(src: ent.DocumentVersion, edits: list[tuple[str, str]]):
     content = copy.deepcopy(src.content)
     blocks = copy.deepcopy(src.blocks)
@@ -443,32 +411,6 @@ class DocumentService:
                                       "applied proposal " + str(p.id))
             await self.documents.mark_proposal_applied(p.id, v.created_at)
             out_doc, out_ver = d, v
-
-        await self.db.run(work)
-        return out_doc, out_ver
-
-    async def apply_hunks(self, user_id: UUID, diff: dict) -> tuple[ent.Document, ent.DocumentVersion]:
-        doc_id = UUID(str(diff.get("documentId")))
-        edits = hunk_edits(diff.get("hunks") or [])
-        out_doc = out_ver = None
-
-        async def work():
-            nonlocal out_doc, out_ver
-            d = await self._get_mutable(user_id, doc_id)
-            expected_version = str(diff.get("revisionId") or "")
-            if d.latest_version_id is None or (
-                    expected_version and expected_version != str(d.latest_version_id)):
-                raise revision_conflict(d.revision)
-            try:
-                src = await self.documents.get_version(user_id, doc_id, d.latest_version_id)
-            except Exception:
-                raise internal()
-            new_content, new_blocks, applied = _replaced(src, edits)
-            if not applied:
-                raise revision_conflict(d.revision)
-            out_ver = await self._save_edit(user_id, d, d.revision, new_content, new_blocks,
-                                            "applied chat edit")
-            out_doc = d
 
         await self.db.run(work)
         return out_doc, out_ver

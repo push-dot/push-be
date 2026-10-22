@@ -99,3 +99,18 @@ Moved to core: `GET/DELETE /integrations/google`, `POST /integrations/google/con
 Parity gaps:
 - Sync writes messages, events, the integration row and the operation one statement at a time; Python used one transaction. A failure in the middle can leave some synced rows behind, with the operation marked FAILED.
 - Schema-level body errors (message text only).
+
+## Task 10a: documents
+
+Moved to core: `GET/POST /documents`, `GET/PATCH /documents/{id}`, `GET/POST /documents/{id}/versions`, `GET /documents/{id}/versions/{versionId}`, `POST /documents/{id}/revisions/{revisionId}/apply`, `POST /documents/{id}/review|finalize|archive`, `GET/POST /documents/{id}/exports`, `POST /documents/{id}/exports/{exportId}/result`. Still in Python: `GET /documents/{id}/versions/{versionId}/export` (renders the PDF/DOCX file) and `POST /documents/{id}/revisions` (AI revision proposal). `POST /documents/{id}/generate` already went to core in Task 7; its dead Python route is gone. 87 parity cases, all equal, with SQL checks of the written versions, document rows, consumed approvals, applied proposals and `DOCUMENT_FINALIZED` events.
+
+- New core route `POST /documents/{id}/edits` (`{revisionId?, hunks}` → `{document, version}`) replaces Python's `DocumentService.apply_hunks`. It is in the act-as allowlist and not routed by the gateway; only the ai-worker calls it. The harness `edit_document` tool, the approved-edit job (`harness/jobs.py`) and the legacy chat graph all call it through `CoreClient` (`app/harness/document_edits.py`), so core is the only writer of user-driven versions. Idempotency key: uuid5 of user and diff, so a retried job applies an edit once. Python keeps writing versions only for AI generation and the resume workflow.
+- Parity for `/edits` uses a recorder-only route that calls Python's `apply_hunks`, so core matches the behavior the harness had.
+- The PDF photo now comes from `upload_images` (`image_bytes`), not VPS disk.
+- `content` keeps the stored JSON key order; blocks and quality are normalized to Python's model field order, as Python's models did.
+- Experiment stats now order their GROUP BY rows; the stats parity cases compare without key order.
+
+Parity gaps:
+- Schema-level body errors (message text only), as in other groups.
+- Python wrote a version and moved the document to it in one transaction; core does it in one statement guarded by the document revision.
+- The finalize approval hash and export `contentHash` use Python's `json.dumps` rules. A float in TipTap content written as `1.0` by Python hashes differently than core's `1`; editor content uses integers.

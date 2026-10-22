@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { actAsAllowed } from "../src/internal-auth.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 
@@ -107,5 +108,14 @@ test("act-as cannot reach routes the ai tools never use", async () => {
       headers: { "x-push-internal-secret": SECRET, "x-push-act-as": USER },
     }), env(), deps(queryFor(null)));
     assert.equal(res.status, 403, `${method} ${path}`);
+  }
+});
+
+test("act-as may apply chat edits to a document but not touch its other writes", () => {
+  const doc = "12121212-1212-4212-8212-121212121212";
+  assert.equal(actAsAllowed("POST", `/api/v1/documents/${doc}/edits`), true);
+  assert.equal(actAsAllowed("GET", `/api/v1/documents/${doc}/edits`), false);
+  for (const sub of ["finalize", "archive", "versions", "exports"]) {
+    assert.equal(actAsAllowed("POST", `/api/v1/documents/${doc}/${sub}`), false, sub);
   }
 });
