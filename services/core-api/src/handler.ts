@@ -9,6 +9,7 @@ import { archiveConversation, createConversation, patchConversation, postAttachm
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
+import { createSource } from "./routes/sources.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
@@ -152,6 +153,7 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
   const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
   if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);
+  if (method === "POST" && path === "/api/v1/sources") return createSource(ctx);
   const generate = path.match(/^\/api\/v1\/documents\/([^/]+)\/generate$/);
   if (method === "POST" && generate) return enqueueDocumentGenerate(ctx, generate[1]);
   const fit = path.match(/^\/api\/v1\/postings\/([^/]+)\/fit$/);

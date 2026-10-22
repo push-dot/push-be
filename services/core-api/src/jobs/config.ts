@@ -15,7 +15,7 @@ const ESTIMATE_MICRO: Record<JobType, bigint> = {
   employer_ai: 120_000n,
   document: 80_000n,
   fit: 20_000n,
-  ingest: 40_000n,
+  ingest: 0n,
   notify: 0n,
 };
 

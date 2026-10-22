@@ -27,3 +27,12 @@ The plan's table name `jobs` is already the saved-job table from `0001_init.sql`
 - The ai-worker no longer checks the employer interview plan; core rejects it before enqueue.
 - Per-user request rate limiting was already in core (`allow(..., "user", ...)` in `handler.ts`), so `ratelimit.ts` is unchanged.
 - Not moved yet: the project blueprint cap (FREE 5 / PRO 20 / ULTRA none) and Python's request limiter. Both guard routes that still run in Python (`POST /projects/blueprints` and the rest of `ai-api`). They move with Task 10d.
+
+## Task 10: Python CRUD to core
+
+Only part of 10c is done in this branch.
+
+- `POST /api/v1/sources` moved to core. Core always stores the bytes in `sources.content` with path `db://sources/<id>` (Python's `BLOB_STORE=db` mode); Workers cannot write VPS disk. Validation and error bodies match Python (`kind`/`file` required, 20 MiB, same MIME list). The 201 body adds `jobId` (the `ingest` job) after the Python fields.
+- `ingest` jobs reserve no credits (`ESTIMATE_MICRO.ingest = 0n`). Embedding runs on the self-hosted TEI service, and a reservation would make uploads fail for users with no balance, which they never did before.
+- Still in Python: `GET /sources`, `GET /sources/{id}`, `GET /sources/{id}/content`, `GET /sources/{id}/profile-draft`, `DELETE /sources/{id}`, `/uploads/images`, and the `career-evidence` routes. Older sources live on VPS disk, which core cannot read, and the profile draft parses files, which core must not do.
+- 10a (documents), 10b (applications), and 10d (integrations, experiments, interviews, projects) were not started. See the final report.
