@@ -58,3 +58,9 @@ Only part of 10c is done in this branch.
 - `eval/rag/run_eval.py` runs both methods in memory over `fixtures/docs.json` (21 made-up documents, 3 tenants) and `fixtures/queries.json` (55 queries). It writes nothing to a database.
 - `grounded_rate` is a retrieval proxy: the share of queries whose top-k text contains one of the expected answer terms. No LLM answer is generated.
 - The real baseline (legacy, 1536-d API embeddings) and the llamaindex run (TEI bge-m3) were not measured in this branch, because both need live embedding calls. Run them on the VPS before switching `RAG_ENGINE`.
+
+## Task 15: LangChain by default
+
+- `AI_FRAMEWORK` is gone. The VPS always uses LangChain (prompt templates, `ChatOpenAI` for OpenAI-compatible providers, `StructuredTool`, `SentenceSplitter`).
+- The non-LangChain path stays only for `CF_WORKER=1`, because the Cloudflare Python Worker (`push-be-python`) runs on Pyodide and cannot load LangChain. The gateway still falls back to that Worker when `AI_ORIGIN` is unset. Delete the path together with `push-be-python`, once `AI_ORIGIN` is fixed and the last Python CRUD routes have moved (Task 10).
+- The `ImportError` fallbacks in `domain/services/ai.py` are kept for the same reason.

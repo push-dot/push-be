@@ -119,6 +119,7 @@ async def test_rag_engine_flag_keeps_legacy_path(monkeypatch):
         return "llama"
 
     monkeypatch.setattr(framework_rag, "_legacy", legacy)
+    monkeypatch.setattr(framework_rag, "_langchain", legacy)
     monkeypatch.setattr(framework_rag, "_llamaindex", llama)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
     monkeypatch.delenv("AI_FRAMEWORK", raising=False)

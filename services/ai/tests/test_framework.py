@@ -24,12 +24,10 @@ def _now():
 
 
 def _legacy_env(monkeypatch):
-    monkeypatch.delenv("AI_FRAMEWORK", raising=False)
-    monkeypatch.delenv("CF_WORKER", raising=False)
+    monkeypatch.setenv("CF_WORKER", "1")
 
 
 def _langchain_env(monkeypatch):
-    monkeypatch.setenv("AI_FRAMEWORK", "langchain")
     monkeypatch.delenv("CF_WORKER", raising=False)
 
 
@@ -93,29 +91,8 @@ class _DB:
         return self.query
 
 
-def test_framework_defaults_to_legacy(monkeypatch):
-    _legacy_env(monkeypatch)
-    from app.framework.flag import framework, use_langchain
-    assert framework() == "legacy"
-    assert use_langchain() is False
-
-
-def test_framework_accepts_langchain_and_rejects_unknown(monkeypatch):
-    from app.framework.flag import framework
-    monkeypatch.setenv("AI_FRAMEWORK", "langchain")
-    monkeypatch.delenv("CF_WORKER", raising=False)
-    assert framework() == "langchain"
-    monkeypatch.setenv("AI_FRAMEWORK", "  LangChain ")
-    assert framework() == "langchain"
-    monkeypatch.setenv("AI_FRAMEWORK", "llama")
-    assert framework() == "legacy"
-    monkeypatch.setenv("AI_FRAMEWORK", "")
-    assert framework() == "legacy"
-
-
 def test_cloudflare_worker_forces_legacy(monkeypatch):
     from app.framework.flag import framework, use_langchain
-    monkeypatch.setenv("AI_FRAMEWORK", "langchain")
     monkeypatch.setenv("CF_WORKER", "1")
     assert framework() == "legacy"
     assert use_langchain() is False
@@ -217,7 +194,7 @@ def test_langchain_prompt_keeps_source_text_in_the_variable(monkeypatch):
 
 
 def test_worker_flag_skips_the_prompt_template(monkeypatch):
-    monkeypatch.setenv("AI_FRAMEWORK", "langchain")
+    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.setenv("CF_WORKER", "1")
     from app.framework.prompts import render_messages
 

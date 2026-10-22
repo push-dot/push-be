@@ -19,7 +19,6 @@ services:
       STORAGE_DIR: /data/sources
       CHAT_EXECUTOR: local
       CHECKPOINTER: postgres
-      AI_FRAMEWORK: ${AI_FRAMEWORK:-legacy}
       DB_DRIVER: asyncpg
       PG_TRANSPORT: tcp
       RUN_MIGRATIONS: "0"
