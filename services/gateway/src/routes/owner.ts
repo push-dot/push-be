@@ -15,7 +15,6 @@ export function ownerOf(method: string, path: string): Owner {
 
 function isAi(method: string, path: string): boolean {
   if (method === "POST" && path === "/api/v1/ai/generate") return true;
-  if (method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/messages\/stream$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/applications\/[^/]+\/resume-run$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/jobs\/[^/]+\/analyze$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
@@ -43,7 +42,7 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/conversations") return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH";
   if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
-  if (/^\/api\/v1\/conversations\/[^/]+\/messages$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/messages(\/stream)?$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/attachments$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/approvals\/[^/]+$/.test(path)) return method === "POST";
   if (path === "/api/v1/billing" || path === "/api/v1/billing/ledger") return method === "GET";

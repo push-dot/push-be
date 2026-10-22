@@ -4,6 +4,7 @@ import {
   asBool, conditional, errorResponse, fieldError, freshRead, jsonResponse, jsonRows,
   pageLimit, parseUuid, USER_CACHE_CONTROL,
 } from "../http.ts";
+import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
 import { LIST_SQL, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
@@ -361,7 +362,25 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
   }
   if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
   const afterRaw = url.searchParams.get("after") || request.headers.get("last-event-id") || "";
-  let after = /^[0-9]+$/.test(afterRaw) ? Number(afterRaw) : 0;
+  return jobEvents(jobId, /^[0-9]+$/.test(afterRaw) ? Number(afterRaw) : 0, env, deps, rid);
+}
+
+export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> => {
+  const queued = await proxy(request, env.CORE, rid);
+  if (queued.status !== 202) return queued;
+  let jobId = "";
+  try {
+    const body = await queued.json() as { data?: { result?: { value?: { jobId?: unknown } } } };
+    jobId = String(body.data?.result?.value?.jobId ?? "");
+  } catch {
+    jobId = "";
+  }
+  if (!parseUuid(jobId)) return errorResponse(500, "INTERNAL", "internal error", rid);
+  return jobEvents(jobId, 0, env, deps, rid);
+};
+
+const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string): Response => {
+  let after = start;
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const encoder = new TextEncoder();
@@ -413,7 +432,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
       "x-request-id": rid,
     },
   });
-}
+};
 
 function sseFrame(row: Record<string, unknown>): string {
   const seq = Number(row.id);
