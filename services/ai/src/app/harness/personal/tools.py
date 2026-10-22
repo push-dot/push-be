@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.config import get_stream_writer
@@ -25,7 +26,7 @@ class EmptyArgs(BaseModel):
 
 
 class PostingId(BaseModel):
-    posting_id: str
+    posting_id: UUID
 
 
 class SearchPostings(BaseModel):
@@ -33,11 +34,11 @@ class SearchPostings(BaseModel):
 
 
 class OfferId(BaseModel):
-    offer_id: str
+    offer_id: UUID
 
 
 class OfferMessage(BaseModel):
-    offer_id: str
+    offer_id: UUID
     text: str = ""
 
 
@@ -47,13 +48,13 @@ class CalendarCreate(BaseModel):
 
 
 class CalendarUpdate(BaseModel):
-    event_id: str
+    event_id: UUID
     title: str = ""
     starts_at: str = ""
 
 
 class EventId(BaseModel):
-    event_id: str
+    event_id: UUID
 
 
 class PostBody(BaseModel):
@@ -61,12 +62,12 @@ class PostBody(BaseModel):
 
 
 class CommentBody(BaseModel):
-    post_id: str
+    post_id: UUID
     body: str = ""
 
 
 class FollowUser(BaseModel):
-    user_id: str
+    user_id: UUID
 
 
 class ProfilePatch(BaseModel):
@@ -111,7 +112,7 @@ def _emit(event: dict) -> None:
 
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
     async def run(ctx: ToolContext, args):
-        body = args.model_dump(exclude_none=True)
+        body = args.model_dump(mode="json", exclude_none=True)
         for key in drop:
             body.pop(key, None)
         return await ctx.core.call(
@@ -289,7 +290,7 @@ def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
 
 PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",
-          lambda args: "/api/v1/postings" + (f"?q={args.q}" if args.q else "")),
+          lambda args: "/api/v1/postings" + ("?" + urlencode({"q": args.q}) if args.q else "")),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
     _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",

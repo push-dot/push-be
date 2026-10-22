@@ -10,7 +10,7 @@ from app.harness.graph import astream_harness, build_harness_graph
 from app.harness.policy import Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
-from app.harness.tools import ToolContext
+from app.harness.tools import HarnessSpec, ToolContext
 from tests.fakes import ScriptedChat
 from tests.stubs import FakeDB
 
@@ -57,26 +57,32 @@ _PYTHON = {
     "start_document",
 }
 
+P = "11111111-1111-4111-8111-111111111111"
+O = "44444444-4444-4444-8444-444444444444"
+E = "55555555-5555-4555-8555-555555555555"
+T = "66666666-6666-4666-8666-666666666666"
+U = "33333333-3333-4333-8333-333333333333"
+
 _CORE = {
     "search_postings": ({}, ("GET", "/api/v1/postings")),
-    "get_posting": ({"posting_id": "p1"}, ("GET", "/api/v1/postings/p1")),
+    "get_posting": ({"posting_id": P}, ("GET", f"/api/v1/postings/{P}")),
     "list_bookmarks": ({}, ("GET", "/api/v1/me/bookmarks")),
-    "bookmark_posting": ({"posting_id": "p1"}, ("POST", "/api/v1/postings/p1/bookmark")),
-    "unbookmark_posting": ({"posting_id": "p1"}, ("DELETE", "/api/v1/postings/p1/bookmark")),
-    "apply_to_posting": ({"posting_id": "p1"}, ("POST", "/api/v1/postings/p1/apply")),
+    "bookmark_posting": ({"posting_id": P}, ("POST", f"/api/v1/postings/{P}/bookmark")),
+    "unbookmark_posting": ({"posting_id": P}, ("DELETE", f"/api/v1/postings/{P}/bookmark")),
+    "apply_to_posting": ({"posting_id": P}, ("POST", f"/api/v1/postings/{P}/apply")),
     "list_offers": ({}, ("GET", "/api/v1/me/offers")),
-    "get_offer": ({"offer_id": "o1"}, ("GET", "/api/v1/me/offers/o1")),
-    "accept_offer": ({"offer_id": "o1"}, ("POST", "/api/v1/me/offers/o1/accept")),
-    "decline_offer": ({"offer_id": "o1"}, ("POST", "/api/v1/me/offers/o1/decline")),
-    "send_offer_message": ({"offer_id": "o1", "text": "hi"}, ("POST", "/api/v1/me/offers/o1/messages")),
+    "get_offer": ({"offer_id": O}, ("GET", f"/api/v1/me/offers/{O}")),
+    "accept_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/accept")),
+    "decline_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/decline")),
+    "send_offer_message": ({"offer_id": O, "text": "hi"}, ("POST", f"/api/v1/me/offers/{O}/messages")),
     "list_calendar_events": ({}, ("GET", "/api/v1/calendar/events")),
     "create_calendar_event": ({"title": "면접"}, ("POST", "/api/v1/calendar/events")),
-    "update_calendar_event": ({"event_id": "e1", "title": "면접"}, ("PATCH", "/api/v1/calendar/events/e1")),
-    "delete_calendar_event": ({"event_id": "e1"}, ("DELETE", "/api/v1/calendar/events/e1")),
+    "update_calendar_event": ({"event_id": E, "title": "면접"}, ("PATCH", f"/api/v1/calendar/events/{E}")),
+    "delete_calendar_event": ({"event_id": E}, ("DELETE", f"/api/v1/calendar/events/{E}")),
     "list_posts": ({}, ("GET", "/api/v1/posts")),
     "create_post": ({"body": "hello"}, ("POST", "/api/v1/posts")),
-    "create_comment": ({"post_id": "post1", "body": "hi"}, ("POST", "/api/v1/posts/post1/comments")),
-    "follow_user": ({"user_id": "u1"}, ("POST", "/api/v1/users/u1/follow")),
+    "create_comment": ({"post_id": T, "body": "hi"}, ("POST", f"/api/v1/posts/{T}/comments")),
+    "follow_user": ({"user_id": U}, ("POST", f"/api/v1/users/{U}/follow")),
     "get_my_profile": ({}, ("GET", "/api/v1/me/profile")),
     "update_my_profile": ({"display_name": "김"}, ("PATCH", "/api/v1/me/profile")),
 }
@@ -113,6 +119,39 @@ async def test_core_tool_paths(name):
     assert (seen[0].method, seen[0].url.path) == expected
     if expected[0] in _WRITES:
         assert seen[0].headers["idempotency-key"]
+
+
+async def test_core_ids_cannot_rewrite_the_path():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": {}})
+
+    tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "bookmark_posting")
+    graph = build_harness_graph(
+        HarnessSpec(id="personal", audience="PERSONAL", prompt="p", tools=[tool]),
+        MemorySaver(),
+        model=ScriptedChat([{"tool_calls": [{
+            "name": "bookmark_posting",
+            "id": "c1",
+            "type": "tool_call",
+            "args": {"posting_id": f"../../me/offers/{O}/accept?x="},
+        }]}, {"content": "done"}]),
+        db=None,
+        core=CoreClient("http://core.test", "secret", httpx.MockTransport(handler)),
+    )
+    async for _event in astream_harness(graph, {
+        "messages": [{"role": "user", "content": "저장"}],
+        "user_id": "user-1",
+        "conversation_id": "conv-1",
+        "job_id": "job-1",
+        "access_mode": "AUTO",
+    }, {"configurable": {"thread_id": "conv-1"}}):
+        pass
+    assert seen == []
+    state = await graph.aget_state({"configurable": {"thread_id": "conv-1"}})
+    assert '"INVALID_ARGS"' in state.values["messages"][-2].content
 
 
 def test_core_paths_cover_non_python_tools():

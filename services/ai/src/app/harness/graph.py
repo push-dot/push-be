@@ -8,6 +8,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from app.domain.access_mode import AccessMode
@@ -86,7 +87,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         if tool is None or used >= _CAP:
             note = "도구 호출 한도" if used >= _CAP else "unknown tool"
             return {"messages": [ToolMessage(content=note, tool_call_id=call_id)]}
-        args = tool.args_model.model_validate(raw_args)
+        try:
+            args = tool.args_model.model_validate(raw_args)
+        except ValidationError:
+            invalid = {"error": "INVALID_ARGS"}
+            return {
+                "messages": [ToolMessage(content=json.dumps(invalid), tool_call_id=call_id)],
+                "tool_calls_used": used + 1,
+            }
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
         if decide(mode, tool.tier).value == "ASK" and tool.approval_kind != "DOCUMENT_EDIT":
             event, created = await create_tool_approval(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlencode
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -18,22 +19,22 @@ class EmptyArgs(BaseModel):
 
 
 class PostingId(BaseModel):
-    posting_id: str
+    posting_id: UUID
 
 
 class ApplicantsArgs(BaseModel):
-    posting_id: str
+    posting_id: UUID
     stage: Stage | None = None
 
 
 class ApplicantArgs(BaseModel):
-    posting_id: str
-    application_id: str
+    posting_id: UUID
+    application_id: UUID
 
 
 class StageArgs(BaseModel):
-    posting_id: str
-    application_id: str
+    posting_id: UUID
+    application_id: UUID
     stage: Stage
 
 
@@ -42,13 +43,13 @@ class ProfileSearch(BaseModel):
 
 
 class ProfileId(BaseModel):
-    profile_id: str
+    profile_id: UUID
 
 
 class OfferArgs(BaseModel):
-    profile_id: str
+    profile_id: UUID
     message: str = ""
-    posting_id: str = ""
+    posting_id: UUID | None = None
 
 
 class DraftArgs(BaseModel):
@@ -59,7 +60,7 @@ class DraftArgs(BaseModel):
 
 
 class PostingPatch(BaseModel):
-    posting_id: str
+    posting_id: UUID
     title: str = ""
     description: str = ""
 
@@ -95,7 +96,7 @@ def _http(name, tier, model, summary, method, path_of, *, write=False, body_of=N
 
 
 def _kept(args, drop: set[str]) -> dict:
-    body = args.model_dump(exclude=drop)
+    body = args.model_dump(mode="json", exclude=drop)
     return {key: value for key, value in body.items() if value not in ("", None, [])}
 
 
@@ -113,13 +114,13 @@ EMPLOYER_TOOLS = [
           lambda args: f"/api/v1/postings/{args.posting_id}"),
     _http("list_applicants", Tier.READ, ApplicantsArgs, "지원자 목록을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}/applicants"
-          + (f"?stage={args.stage}" if args.stage else "")),
+          + ("?" + urlencode({"stage": args.stage}) if args.stage else "")),
     _http("get_applicant", Tier.READ, ApplicantArgs, "지원자 서류를 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}/applicants/{args.application_id}"),
     _http("get_applicant_counts", Tier.READ, PostingId, "단계별 지원자 수를 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}/applicant-counts"),
     _http("search_profiles", Tier.READ, ProfileSearch, "인재를 찾아요", "GET",
-          lambda args: "/api/v1/profiles" + (f"?q={args.q}" if args.q else "")),
+          lambda args: "/api/v1/profiles" + ("?" + urlencode({"q": args.q}) if args.q else "")),
     _http("get_profile", Tier.READ, ProfileId, "인재 프로필을 봐요", "GET",
           lambda args: f"/api/v1/profiles/{args.profile_id}"),
     _http("get_company", Tier.READ, EmptyArgs, "우리 회사 정보를 봐요", "GET",

@@ -38,31 +38,35 @@ _TIERS = {
 
 _PYTHON = {"get_fit_score"}
 
+P = "11111111-1111-4111-8111-111111111111"
+A = "22222222-2222-4222-8222-222222222222"
+U = "33333333-3333-4333-8333-333333333333"
+
 _CORE = {
     "list_company_postings": ({}, ("GET", "/api/v1/companies/me/postings")),
-    "get_posting": ({"posting_id": "p1"}, ("GET", "/api/v1/postings/p1")),
+    "get_posting": ({"posting_id": P}, ("GET", f"/api/v1/postings/{P}")),
     "list_applicants": (
-        {"posting_id": "p1", "stage": "SCREENING"},
-        ("GET", "/api/v1/postings/p1/applicants"),
+        {"posting_id": P, "stage": "SCREENING"},
+        ("GET", f"/api/v1/postings/{P}/applicants"),
     ),
     "get_applicant": (
-        {"posting_id": "p1", "application_id": "a1"},
-        ("GET", "/api/v1/postings/p1/applicants/a1"),
+        {"posting_id": P, "application_id": A},
+        ("GET", f"/api/v1/postings/{P}/applicants/{A}"),
     ),
-    "get_applicant_counts": ({"posting_id": "p1"}, ("GET", "/api/v1/postings/p1/applicant-counts")),
+    "get_applicant_counts": ({"posting_id": P}, ("GET", f"/api/v1/postings/{P}/applicant-counts")),
     "search_profiles": ({"q": "backend"}, ("GET", "/api/v1/profiles")),
-    "get_profile": ({"profile_id": "u1"}, ("GET", "/api/v1/profiles/u1")),
+    "get_profile": ({"profile_id": U}, ("GET", f"/api/v1/profiles/{U}")),
     "get_company": ({}, ("GET", "/api/v1/companies/me")),
     "draft_posting": ({"title": "백엔드"}, ("POST", "/api/v1/postings")),
-    "update_posting_draft": ({"posting_id": "p1", "title": "백엔드"}, ("PATCH", "/api/v1/postings/p1")),
-    "publish_posting": ({"posting_id": "p1"}, ("PATCH", "/api/v1/postings/p1")),
-    "update_published_posting": ({"posting_id": "p1", "title": "시니어"}, ("PATCH", "/api/v1/postings/p1")),
-    "close_posting": ({"posting_id": "p1"}, ("POST", "/api/v1/postings/p1/close")),
+    "update_posting_draft": ({"posting_id": P, "title": "백엔드"}, ("PATCH", f"/api/v1/postings/{P}")),
+    "publish_posting": ({"posting_id": P}, ("PATCH", f"/api/v1/postings/{P}")),
+    "update_published_posting": ({"posting_id": P, "title": "시니어"}, ("PATCH", f"/api/v1/postings/{P}")),
+    "close_posting": ({"posting_id": P}, ("POST", f"/api/v1/postings/{P}/close")),
     "change_applicant_stage": (
-        {"posting_id": "p1", "application_id": "a1", "stage": "INTERVIEW"},
-        ("PATCH", "/api/v1/postings/p1/applicants/a1"),
+        {"posting_id": P, "application_id": A, "stage": "INTERVIEW"},
+        ("PATCH", f"/api/v1/postings/{P}/applicants/{A}"),
     ),
-    "send_offer": ({"profile_id": "u1", "message": "제안"}, ("POST", "/api/v1/profiles/u1/offer")),
+    "send_offer": ({"profile_id": U, "message": "제안"}, ("POST", f"/api/v1/profiles/{U}/offer")),
     "create_company_post": ({"body": "채용 중"}, ("POST", "/api/v1/posts")),
 }
 
