@@ -22,16 +22,16 @@ const deps = (query: Query): Deps => ({ query, cache: memoryCache(() => NOW.getT
 const send = (body: unknown = { text: "안녕", accessMode: "AUTO" }): Request =>
   new Request(`https://push-be.example/api/v1/conversations/${CONV}/messages/stream`, {
     method: "POST",
-    headers: { authorization: "Bearer t", "content-type": "application/json", "x-byok-key": "sk-test" },
+    headers: { authorization: "Bearer t", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 
 test("the gateway queues the message in core and streams that job's events", async () => {
   resetLimits();
-  const forwarded: { path: string; body: string; byok: string | null }[] = [];
+  const forwarded: { path: string; body: string }[] = [];
   const reads: unknown[][] = [];
   const res = await handle(send(), env(async (request) => {
-    forwarded.push({ path: new URL(request.url).pathname, body: await request.text(), byok: request.headers.get("x-byok-key") });
+    forwarded.push({ path: new URL(request.url).pathname, body: await request.text() });
     return new Response(JSON.stringify({ data: { id: JOB, status: "QUEUED", result: { kind: "CHAT_MESSAGE", value: { jobId: JOB } } } }),
       { status: 202, headers: { "content-type": "application/json" } });
   }), deps(async (sql, params = []) => {
@@ -50,7 +50,7 @@ test("the gateway queues the message in core and streams that job's events", asy
   assert.ok(text.startsWith("retry: 400\n\n"));
   assert.match(text, /id: 7\ndata: \{"type": "status", "text": "\\ub300\\uae30 \\uc911", "seq": 7\}/);
   assert.match(text, /"type": "done", "operation": \{"id": "op-1"\}/);
-  assert.deepEqual(forwarded, [{ path: `/api/v1/conversations/${CONV}/messages/stream`, body: JSON.stringify({ text: "안녕", accessMode: "AUTO" }), byok: "sk-test" }]);
+  assert.deepEqual(forwarded, [{ path: `/api/v1/conversations/${CONV}/messages/stream`, body: JSON.stringify({ text: "안녕", accessMode: "AUTO" }) }]);
   assert.deepEqual(reads[0], [JOB, 0]);
 });
 

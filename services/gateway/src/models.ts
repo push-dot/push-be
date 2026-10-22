@@ -1,7 +1,6 @@
 /** Static catalog. Kept in lockstep with `OPENAI_MODELS` in the Python API. */
 
 export const AI_PROVIDERS = ["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"] as const;
-export const CREDENTIAL_MODES = ["MANAGED", "BYOK"] as const;
 export const EFFORTS = ["LOW", "MEDIUM", "HIGH", "MAX"];
 
 export interface ModelRow {
@@ -24,24 +23,15 @@ export function validProvider(value: string): boolean {
   return (AI_PROVIDERS as readonly string[]).includes(value);
 }
 
-export function validCredentialMode(value: string): boolean {
-  return (CREDENTIAL_MODES as readonly string[]).includes(value);
-}
-
 export function listModels(opts: {
   provider: string;
-  credMode: string;
   managedAi: boolean;
   managedGo: boolean;
-  byokOpenai: boolean;
 }): ModelRow[] {
   const models: ModelRow[] = [];
   for (const m of OPENAI_MODELS) {
     if (opts.provider && opts.provider !== m.provider) continue;
-    const managedOk = m.model.startsWith("opencode-go/") ? opts.managedGo : opts.managedAi;
-    let available = managedOk || opts.byokOpenai;
-    if (opts.credMode === "MANAGED") available = managedOk;
-    else if (opts.credMode === "BYOK") available = opts.byokOpenai;
+    const available = m.model.startsWith("opencode-go/") ? opts.managedGo : opts.managedAi;
     models.push({
       provider: m.provider,
       model: m.model,

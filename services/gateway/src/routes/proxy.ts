@@ -1,6 +1,5 @@
 import type { Deps, FrontEnv } from "../types.ts";
 import { errorResponse, sha256Hex } from "../http.ts";
-import { cacheOf, modelCacheUrls } from "../middleware/cache.ts";
 import { clearLease, isolate } from "../middleware/ratelimit.ts";
 
 const stripInternal = (headers: Headers): void => {
@@ -91,16 +90,5 @@ export async function invalidateAfterWrite(request: Request, path: string, deps:
     await clearLease(deps, hash);
   } catch {
     return;
-  }
-}
-export async function purgeModelCache(request: Request, deps: Deps): Promise<void> {
-  try {
-    const token = (request.headers.get("authorization") || "").replace(/^Bearer /, "");
-    if (!token) return;
-    const cache = cacheOf(deps);
-    const hash = await sha256Hex(token);
-    await Promise.all(modelCacheUrls(hash).map((url) => cache.delete(new Request(url))));
-  } catch {
-    // Invalidation is best-effort. The TTL still expires the entry.
   }
 }
