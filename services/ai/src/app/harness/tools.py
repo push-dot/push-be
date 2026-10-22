@@ -21,6 +21,7 @@ class ToolContext:
     tool_call_id: str
     db: Any
     core: CoreClient
+    access_mode: str = "AUTO"
 
 
 @dataclass(frozen=True)
@@ -38,3 +39,4 @@ class ToolSpec:
     args_model: type[BaseModel]
     run: Callable[[ToolContext, BaseModel], Awaitable[dict]]
     summarize: Callable[[BaseModel], str]
+    approval_kind: str = "TOOL_ACTION"

@@ -199,6 +199,14 @@ class ConversationService:
     def graph(self):
         # LangGraph compile is the heavy import. Health and auth requests
         # never touch it; the first local chat message in an isolate does.
+        from app.config import harness_enabled
+        if harness_enabled():
+            from app.harness.runtime import HarnessRuntime
+            runtime = getattr(self, "_harness_runtime", None)
+            if runtime is None:
+                runtime = HarnessRuntime(self)
+                self._harness_runtime = runtime
+            return runtime
         if self._compiled is None:
             self._compiled = build_chat_graph(self, self._checkpointer)
         return self._compiled

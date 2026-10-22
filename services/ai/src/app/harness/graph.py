@@ -88,7 +88,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             return {"messages": [ToolMessage(content=note, tool_call_id=call_id)]}
         args = tool.args_model.model_validate(raw_args)
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
-        if decide(mode, tool.tier).value == "ASK":
+        if decide(mode, tool.tier).value == "ASK" and tool.approval_kind != "DOCUMENT_EDIT":
             event, created = await create_tool_approval(
                 db,
                 user_id=state.get("user_id"),
@@ -118,6 +118,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             tool_call_id=call_id,
             db=db,
             core=core,
+            access_mode=mode.value,
         )
         try:
             result = await tool.run(ctx, args)
