@@ -52,3 +52,9 @@ Only part of 10c is done in this branch.
 - `Retriever(db, embedder, reranker).search(query, tenant, k=5, *, kinds=None)` matches the planned signature as a method. `Hit` also carries `source_type`.
 - The keyword side uses `pg_trgm` `word_similarity` with `pg_trgm.word_similarity_threshold = 0.3` (set per transaction), on the first 200 characters of the query.
 - `RAG_ENGINE=llamaindex` switches chat retrieval (personal and employer, both use `collect_evidence`) to `rag_nodes`. Any other value keeps the old `rag_chunks` path. The chat tenant is the calling user; company-wide nodes are not searched from chat yet.
+
+## Task 14: evaluation
+
+- `eval/rag/run_eval.py` runs both methods in memory over `fixtures/docs.json` (21 made-up documents, 3 tenants) and `fixtures/queries.json` (55 queries). It writes nothing to a database.
+- `grounded_rate` is a retrieval proxy: the share of queries whose top-k text contains one of the expected answer terms. No LLM answer is generated.
+- The real baseline (legacy, 1536-d API embeddings) and the llamaindex run (TEI bge-m3) were not measured in this branch, because both need live embedding calls. Run them on the VPS before switching `RAG_ENGINE`.
