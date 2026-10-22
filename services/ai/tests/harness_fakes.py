@@ -34,7 +34,8 @@ class Rows:
         if "UPDATE conversations SET resume_state" in sql:
             self.conversation = {**self.conversation, "resume_state": args[1]}
         if sql.lstrip().startswith("INSERT INTO approvals"):
-            self.approvals[str(args[0])] = {"id": args[0], "kind": "x"}
+            kind = args[2] if isinstance(args[2], str) else "TOOL_ACTION"
+            self.approvals[str(args[0])] = {"id": args[0], "kind": kind}
         return "UPDATE 1"
 
     async def run(self, work):

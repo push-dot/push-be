@@ -11,3 +11,8 @@ test("posting fit owner is python", () => {
   assert.equal(ownerOf("POST", "/api/v1/postings"), "core");
   assert.equal(ownerOf("POST", `/api/v1/postings/${ID}/close`), "core");
 });
+
+test("conversation approval answers go to core", () => {
+  assert.equal(ownerOf("POST", `/api/v1/conversations/${ID}/approvals/${ID}`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/conversations/${ID}/approvals/${ID}`), "python");
+});

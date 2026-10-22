@@ -277,6 +277,11 @@ class ConversationService:
                     await self.jobs.reset_stale()
                 except Exception:
                     log.exception("chat job stale sweep failed")
+                try:
+                    from app.harness.approval import expire_approvals
+                    await expire_approvals(self.db)
+                except Exception:
+                    log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()
@@ -311,13 +316,14 @@ class ConversationService:
                         {
                             "user_id": job["user_id"],
                             "conversation_id": job["conversation_id"],
-                            "text": p["text"],
+                            "text": p.get("text") or "",
                             "context": p.get("context") or {},
                             "ai": p.get("ai"),
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
                             "job_id": str(job_id),
                             **turn_from_payload(p),
+                            **({"resume": p["resume"]} if p.get("resume") else {}),
                         },
                         config={"configurable": {
                             "thread_id": str(job["conversation_id"])}},

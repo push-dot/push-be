@@ -232,7 +232,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         name = current["phase"]
         output = await _output(turn_model.get() or model, name, current)
         stored = await _store_output(db, current, name, output)
-        if name == "strategy" and output.get("valid") is False:
+        retries = int((current.get("strategy") or {}).get("retries") or 0)
+        if name == "strategy" and output.get("valid") is False and retries < 2:
+            stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
             return {**stored, "phase": "strategy", "status": "active", "retry": True}
         return {**stored, "retry": False}
 

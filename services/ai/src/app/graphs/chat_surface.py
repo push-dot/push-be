@@ -4,8 +4,6 @@ import hashlib
 import json
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from app.domain.errors import DomainError, not_found, validation_field
-
 _TOOL_STATES = {"run", "ok", "err", "wait"}
 _TODO_STATES = {"todo", "now", "done"}
 _SIGNS = {"+", "-", ""}
@@ -152,38 +150,6 @@ def _approval_event(diff: dict, state: dict) -> dict:
         "title": "이 수정을 적용할까요?",
         "options": [dict(option) for option in _APPROVAL_OPTIONS],
     }
-
-
-def _option_ids(options) -> set:
-    if isinstance(options, str):
-        options = json.loads(options)
-    if not isinstance(options, list):
-        return set()
-    return {
-        item.get("id") for item in options
-        if isinstance(item, dict) and item.get("id") is not None
-    }
-
-
-async def resolve_chat_approval(db, user_id, conversation_id, approval_id, option_id: str) -> dict:
-    row = await db.q().fetchrow(
-        "SELECT id, status, options FROM approvals "
-        "WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
-        approval_id, conversation_id, user_id)
-    if row is None:
-        raise not_found()
-    if option_id not in _option_ids(row["options"]):
-        raise validation_field("optionId", "unknown option")
-    if row["status"] != "PENDING":
-        raise DomainError(409, "CONFLICT", "approval already decided")
-    tag = await db.q().execute(
-        "UPDATE approvals SET status = 'APPROVED', option_id = $1, "
-        "decided_at = now(), updated_at = now(), revision = revision + 1 "
-        "WHERE id = $2 AND conversation_id = $3 AND user_id = $4 AND status = 'PENDING'",
-        option_id, approval_id, conversation_id, user_id)
-    if not isinstance(tag, str) or tag.split()[-1] == "0":
-        raise DomainError(409, "CONFLICT", "approval already decided")
-    return {"id": str(approval_id), "status": "APPROVED", "optionId": option_id}
 
 
 async def publish_persisted_surface(state, db, emit, apply) -> bool:

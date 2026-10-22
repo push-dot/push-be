@@ -200,6 +200,8 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
         if row is None:
             await insert_chat_approval(
                 ctx.db, ctx.user_id, ctx.conversation_id, event, args.document_id)
+            await ctx.db.q().execute(
+                "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
             _emit(event)
         answer = interrupt({
             "approval_id": event["id"],
