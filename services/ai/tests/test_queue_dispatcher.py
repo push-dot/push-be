@@ -1,0 +1,171 @@
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+import pytest
+from fakeredis.aioredis import FakeRedis
+from fastapi.testclient import TestClient
+
+from app.queue.backoff import backoff_seconds
+from app.queue.config import HEARTBEAT_LIMIT_S
+from app.queue.dispatcher import Dispatcher, kick_app
+from app.queue.streams import StreamQueue
+
+NOW = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
+CHAT = UUID("11111111-1111-4111-8111-111111111111")
+DOC = UUID("22222222-2222-4222-8222-222222222222")
+SECRET = "dispatch-test-secret"
+
+
+class MemoryDB:
+    def __init__(self, holder, jobs, outbox):
+        self.holder = holder
+        self.jobs = jobs
+        self.outbox = outbox
+        holder["live"] += 1
+
+    async def close(self):
+        self.holder["live"] -= 1
+
+    async def pending_outbox(self):
+        return [row for row in self.outbox if row["dispatched_at"] is None]
+
+    async def mark_dispatched(self, ids, at):
+        for row in self.outbox:
+            if row["id"] in ids:
+                row["dispatched_at"] = at
+
+    async def running_jobs(self):
+        return [job for job in self.jobs if job["status"] == "RUNNING"]
+
+    async def mark_retry(self, ids, now):
+        for job in self.jobs:
+            if job["id"] in set(ids) and job["status"] == "RUNNING":
+                job["status"] = "RETRY"
+                job["run_after"] = now
+
+    async def pending_jobs(self, now):
+        return [
+            job for job in self.jobs
+            if job["status"] in ("QUEUED", "RETRY") and job["run_after"] <= now
+        ]
+
+
+def opener(holder, jobs, outbox):
+    async def open_db():
+        holder["opened"] += 1
+        return MemoryDB(holder, jobs, outbox)
+
+    return open_db
+
+
+def dispatcher(redis, jobs=None, outbox=None, holder=None):
+    state = holder if holder is not None else {"live": 0, "opened": 0}
+    return Dispatcher(StreamQueue(redis), opener(state, jobs or [], outbox or []), SECRET), state
+
+
+def job(id_, type_, queue, status, heartbeat_at=None, run_after=None):
+    return {
+        "id": id_,
+        "type": type_,
+        "queue": queue,
+        "status": status,
+        "heartbeat_at": heartbeat_at,
+        "run_after": NOW if run_after is None else run_after,
+    }
+
+
+async def stream_job_ids(redis, queue):
+    rows = await redis.xrange(queue)
+    return [fields["jobId"] for _, fields in rows]
+
+
+def test_backoff_sequence():
+    assert backoff_seconds(1) == 30
+    assert backoff_seconds(2) == 120
+    assert backoff_seconds(3) == 600
+    assert backoff_seconds(4) == 3600
+    assert backoff_seconds(9) == 3600
+
+
+@pytest.mark.asyncio
+async def test_dispatch_moves_outbox_rows_to_streams():
+    redis = FakeRedis(decode_responses=True)
+    outbox = [{"id": 1, "job_id": CHAT, "queue": "q:chat", "dispatched_at": None}]
+    box, _ = dispatcher(redis, outbox=outbox)
+    await box.run_once(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert outbox[0]["dispatched_at"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_promote_due_moves_delayed_jobs():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    await queue.delay("q:document", DOC, NOW + timedelta(hours=1))
+    moved = await queue.promote_due(NOW)
+    assert moved == 1
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert await stream_job_ids(redis, "q:document") == []
+    assert await redis.zcard("q:delayed") == 1
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_from_jobs_after_redis_flush():
+    redis = FakeRedis(decode_responses=True)
+    jobs = [job(CHAT, "chat", "q:chat", "QUEUED")]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    await redis.delete("q:chat")
+    await box.run_once(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+
+
+@pytest.mark.asyncio
+async def test_stale_running_job_returns_to_retry():
+    redis = FakeRedis(decode_responses=True)
+    jobs = [
+        job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=HEARTBEAT_LIMIT_S["chat"] + 1)),
+        job(DOC, "document", "q:document", "RUNNING", NOW - timedelta(seconds=HEARTBEAT_LIMIT_S["document"] - 1)),
+    ]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    assert jobs[0]["status"] == "RETRY"
+    assert jobs[1]["status"] == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_no_db_connection_held_between_runs():
+    redis = FakeRedis(decode_responses=True)
+    holder = {"live": 0, "opened": 0}
+    box, _ = dispatcher(redis, holder=holder)
+    await box.run_once(NOW)
+    assert holder["live"] == 0
+    await box.run_once(NOW)
+    assert holder["live"] == 0
+    assert holder["opened"] == 2
+
+
+def test_kick_triggers_immediate_dispatch():
+    redis = FakeRedis(decode_responses=True)
+    outbox = [{"id": 7, "job_id": CHAT, "queue": "q:chat", "dispatched_at": None}]
+    box, holder = dispatcher(redis, outbox=outbox)
+    client = TestClient(kick_app(box))
+    res = client.post("/internal/kick", json={"queue": "q:chat"}, headers={"x-push-dispatch-secret": SECRET})
+    assert res.status_code == 200
+    assert outbox[0]["dispatched_at"] is not None
+    assert holder["live"] == 0
+
+
+def test_kick_rejects_without_secret():
+    redis = FakeRedis(decode_responses=True)
+    outbox = [{"id": 7, "job_id": CHAT, "queue": "q:chat", "dispatched_at": None}]
+    box, holder = dispatcher(redis, outbox=outbox)
+    client = TestClient(kick_app(box))
+    missing = client.post("/internal/kick", json={"queue": "q:chat"})
+    wrong = client.post("/internal/kick", json={"queue": "q:chat"}, headers={"x-push-dispatch-secret": "nope"})
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert outbox[0]["dispatched_at"] is None
+    assert holder["opened"] == 0
