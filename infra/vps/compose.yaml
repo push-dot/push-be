@@ -63,9 +63,36 @@ services:
       - traefik.http.routers.push-ai.tls.certresolver=letsencrypt
       - traefik.http.services.push-ai.loadbalancer.server.port=8080
 
+  embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command: ["--model-id", "BAAI/bge-m3", "--max-client-batch-size", "32"]
+    restart: unless-stopped
+    mem_limit: 2.5g
+    volumes:
+      - tei-models:/data
+    networks:
+      - push-internal
+    expose:
+      - "80"
+
+  rerank:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command: ["--model-id", "BAAI/bge-reranker-v2-m3", "--max-client-batch-size", "32"]
+    restart: unless-stopped
+    mem_limit: 1.5g
+    volumes:
+      - tei-models:/data
+    networks:
+      - push-internal
+    expose:
+      - "80"
+
 volumes:
   ai-data:
+  tei-models:
 
 networks:
   dokploy-network:
     external: true
+  push-internal:
+    driver: bridge
