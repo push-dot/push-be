@@ -188,9 +188,6 @@ class HarnessRuntime:
         plan = None
         if spec.id == "employer":
             plan = await self._company_plan(conversation)
-            if payload.get("intent"):
-                from app.harness.employer.guard import guard_employer_intent
-                guard_employer_intent(plan, payload.get("intent"))
         return conversation, spec, self._graph(spec), plan
 
     async def _company_plan(self, conversation: dict):

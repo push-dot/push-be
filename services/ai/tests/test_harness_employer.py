@@ -7,9 +7,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import ValidationError
 
-from app.domain.errors import PLAN_REQUIRED, DomainError
 from app.harness.core_client import CoreClient
-from app.harness.employer.guard import guard_employer_intent
 from app.harness.graph import astream_harness, build_harness_graph
 from app.harness.policy import Tier
 from app.harness.registry import REGISTRY
@@ -167,11 +165,29 @@ def test_core_paths_cover_employer_http_tools():
     assert set(_CORE) == names - _PYTHON
 
 
-def test_basic_interview_requires_pro():
-    with pytest.raises(DomainError) as caught:
-        guard_employer_intent("BASIC", "interview")
-    assert caught.value.status == 403
-    assert caught.value.code == PLAN_REQUIRED
+async def test_basic_interview_plan_gate_is_core_only():
+    from pathlib import Path
+
+    from app.harness.runtime import HarnessRuntime
+    from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, run, service
+
+    core = Path(__file__).resolve().parents[2] / "core-api" / "src"
+    assert 'employer_interview: { plan: "PRO"' in (core / "jobs" / "config.ts").read_text()
+    assert 'assertPlanAllows(owned.plan, "employer_interview")' in (core / "routes" / "conversations.ts").read_text()
+    assert not (Path(__file__).resolve().parents[1] / "src" / "app" / "harness" / "employer" / "guard.py").exists()
+    svc = service(Rows({"company_id": "co-1", "resume_state": None}))
+
+    async def basic(_company_id):
+        return "BASIC"
+
+    svc.conversations.company_plan = basic
+    ScriptedLC.replies = [{"content": "질문이에요"}]
+    items = await run(HarnessRuntime(svc, model_cls=ScriptedLC), {
+        "text": "면접 질문 만들어줘", "user_id": USER, "conversation_id": CONV,
+        "job_id": "99999999-9999-4999-8999-999999999999", "access_mode": "AUTO",
+        "ai": None, "context": {}, "intent": "interview",
+    })
+    assert items[-1][0] == "values"
 
 
 async def test_draft_posting_tool_event_has_draft():
