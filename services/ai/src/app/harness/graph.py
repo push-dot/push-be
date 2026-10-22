@@ -75,7 +75,11 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         messages = list(state.get("messages") or [])
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=spec.prompt), *messages]
-        reply = await model.bind_tools([{"name": tool.name} for tool in spec.tools]).ainvoke(messages)
+        if int(state.get("tool_calls_used") or 0) >= _CAP:
+            reply = await model.ainvoke(messages)
+            reply = AIMessage(content=reply.content)
+        else:
+            reply = await model.bind_tools([{"name": tool.name} for tool in spec.tools]).ainvoke(messages)
         return {"messages": [reply], "awaiting": None}
 
     async def tools(state: HarnessState) -> dict:

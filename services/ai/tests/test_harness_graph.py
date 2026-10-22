@@ -202,3 +202,41 @@ async def test_core_error_becomes_tool_result():
     assert any(event.get("result") == {"error": "FORBIDDEN"} for event in events)
     assert model.seen[-1][-1].content
     assert "FORBIDDEN" in model.seen[-1][-1].content
+
+
+async def test_tool_cap_resets_each_turn_and_answers_without_tools():
+    runs = []
+    calls = [_call("bookmark_posting", f"c{i}", f"p{i}") for i in range(8)]
+    model = ScriptedChat([
+        {"tool_calls": calls},
+        {"content": "first"},
+        {"tool_calls": [_call("bookmark_posting", "d1", "q1")]},
+        {"content": "second"},
+    ])
+    graph, _db = _graph(model, runs)
+    await _events(graph, _input("BYPASS"))
+    assert len(runs) == 8
+    await _events(graph, _state_input())
+    assert runs[-1] == ("bookmark", "q1")
+
+
+async def test_after_cap_the_model_answers_without_tool_calls():
+    runs = []
+    calls = [_call("bookmark_posting", f"c{i}", f"p{i}") for i in range(8)]
+    more = [{"tool_calls": [_call("bookmark_posting", f"x{i}", "p9")]} for i in range(20)]
+    model = ScriptedChat([{"tool_calls": calls}, *more])
+    graph, _db = _graph(model, runs)
+    await _events(graph, _input("BYPASS"))
+    state = await graph.aget_state(_config())
+    assert len(runs) == 8
+    assert len(model.seen) == 2
+    assert not state.values["messages"][-1].tool_calls
+
+
+def _state_input():
+    from app.harness.runtime import _state
+    return _state(
+        {"text": "again", "user_id": "user-1", "conversation_id": "conv-1",
+         "job_id": "job-2", "access_mode": "BYPASS"},
+        {},
+    )

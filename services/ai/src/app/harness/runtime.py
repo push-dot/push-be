@@ -70,6 +70,7 @@ def _state(payload: dict, conversation: dict) -> dict:
         "conversation_id": str(payload.get("conversation_id") or ""),
         "job_id": str(payload.get("job_id") or ""),
         "access_mode": mode.value,
+        "tool_calls_used": 0,
     }
 
 
