@@ -11,6 +11,31 @@ const ACT_AS_USER = `SELECT id, display_name, locale, plan, subscription_status,
 
 export type ActAs = { userId: string; companyId: string | null };
 
+const ACT_AS_ROUTES: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
+  [/^\/api\/v1\/postings$/, new Set(["GET", "POST"])],
+  [/^\/api\/v1\/postings\/[^/]+$/, new Set(["GET", "PATCH"])],
+  [/^\/api\/v1\/postings\/[^/]+\/bookmark$/, new Set(["POST", "DELETE"])],
+  [/^\/api\/v1\/postings\/[^/]+\/(apply|close)$/, new Set(["POST"])],
+  [/^\/api\/v1\/postings\/[^/]+\/(applicants|applicant-counts)$/, new Set(["GET"])],
+  [/^\/api\/v1\/postings\/[^/]+\/applicants\/[^/]+$/, new Set(["GET", "PATCH"])],
+  [/^\/api\/v1\/me\/(bookmarks|offers)$/, new Set(["GET"])],
+  [/^\/api\/v1\/me\/offers\/[^/]+$/, new Set(["GET"])],
+  [/^\/api\/v1\/me\/offers\/[^/]+\/(accept|decline|messages)$/, new Set(["POST"])],
+  [/^\/api\/v1\/me\/profile$/, new Set(["GET", "PATCH"])],
+  [/^\/api\/v1\/calendar\/events$/, new Set(["GET", "POST"])],
+  [/^\/api\/v1\/calendar\/events\/[^/]+$/, new Set(["PATCH", "DELETE"])],
+  [/^\/api\/v1\/posts$/, new Set(["GET", "POST"])],
+  [/^\/api\/v1\/posts\/[^/]+\/comments$/, new Set(["POST"])],
+  [/^\/api\/v1\/users\/[^/]+\/follow$/, new Set(["POST"])],
+  [/^\/api\/v1\/companies\/me(\/postings)?$/, new Set(["GET"])],
+  [/^\/api\/v1\/profiles$/, new Set(["GET"])],
+  [/^\/api\/v1\/profiles\/[^/]+$/, new Set(["GET"])],
+  [/^\/api\/v1\/profiles\/[^/]+\/offer$/, new Set(["POST"])],
+];
+
+export const actAsAllowed = (method: string, path: string): boolean =>
+  ACT_AS_ROUTES.some(([pattern, methods]) => methods.has(method) && pattern.test(path));
+
 const secretMatches = (presented: string, expected: string): boolean => {
   const left = Buffer.from(presented);
   const right = Buffer.from(expected);
@@ -50,6 +75,9 @@ export const actAs = async (request: Request, env: CoreEnv, query: Query): Promi
     throw new HttpError(401, "UNAUTHORIZED", "unauthorized");
   }
   if (!hasAct) return null;
+  if (!actAsAllowed(request.method, new URL(request.url).pathname)) {
+    throw new HttpError(403, "FORBIDDEN", "not available to the ai worker");
+  }
   const userId = parseUuid(request.headers.get("x-push-act-as") || "");
   if (!userId) throw new HttpError(401, "UNAUTHORIZED", "unauthorized");
   const companyRaw = hasCompany ? request.headers.get("x-push-company") || "" : "";

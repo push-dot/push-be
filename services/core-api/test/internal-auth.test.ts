@@ -91,3 +91,21 @@ test("an unknown act-as user is 401 and a secret without act-as still needs a be
   assert.equal(secretOnly.status, 401);
   assert.equal((await secretOnly.json() as { error: { code: string } }).error.code, "UNAUTHENTICATED");
 });
+
+test("act-as cannot reach routes the ai tools never use", async () => {
+  for (const [method, path] of [
+    ["DELETE", "/api/v1/me"],
+    ["POST", "/api/v1/billing/checkout"],
+    ["PUT", "/api/v1/ai/keys/OPENAI"],
+    ["DELETE", `/api/v1/companies/me/members/${OTHER}`],
+    ["PATCH", "/api/v1/companies/me"],
+    ["GET", "/api/v1/me/bookmarks/../../ai/keys"],
+  ] as const) {
+    resetLimits();
+    const res = await handle(new Request(`https://core.example${path}`, {
+      method,
+      headers: { "x-push-internal-secret": SECRET, "x-push-act-as": USER },
+    }), env(), deps(queryFor(null)));
+    assert.equal(res.status, 403, `${method} ${path}`);
+  }
+});
