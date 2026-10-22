@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 from types import SimpleNamespace
@@ -10,17 +11,23 @@ from pydantic import BaseModel
 
 from app.domain.posting_fit import compute_fit
 from app.harness.policy import Tier
+from app.ingest.pdf_text import extract_pdf_bytes
+from app.ingest.web_page import fetch_github_context, github_usernames
 from app.harness.tools import ToolContext, ToolSpec
 
 _FINAL_MD = re.compile(r"05_final_\w+\.md")
 
 
-class EmptyArgs(BaseModel):
-    pass
+GITHUB_TRANSPORT = None
+_TEXT_LIMIT = 20000
+
+
+class AttachmentArgs(BaseModel):
+    attachment_id: UUID
 
 
 class UrlArgs(BaseModel):
-    url: str = ""
+    url: str
 
 
 class GithubArgs(BaseModel):
@@ -44,8 +51,42 @@ class ArtifactArgs(BaseModel):
     content: str = ""
 
 
-async def _empty(_ctx: ToolContext, _args) -> dict:
-    return {}
+async def _parse_attachment(ctx: ToolContext, args: AttachmentArgs) -> dict:
+    evidence = await ctx.db.q().fetchrow(
+        "SELECT title, source_text FROM career_evidence WHERE id = $1 AND user_id = $2",
+        args.attachment_id, UUID(ctx.user_id))
+    if evidence is not None:
+        return {"title": evidence["title"], "text": evidence["source_text"][:_TEXT_LIMIT]}
+    attachment = await ctx.db.q().fetchrow(
+        "SELECT file_name, mime_type, content FROM conversation_attachments "
+        "WHERE id = $1 AND conversation_id = $2",
+        args.attachment_id, UUID(ctx.conversation_id))
+    if attachment is None:
+        return {"error": "NOT_FOUND"}
+    if attachment["mime_type"] != "application/pdf":
+        return {"error": "UNSUPPORTED_TYPE"}
+    text = await asyncio.to_thread(extract_pdf_bytes, bytes(attachment["content"]))
+    return {"title": attachment["file_name"], "text": text[:_TEXT_LIMIT]}
+
+
+async def _fetch_url(ctx: ToolContext, args: UrlArgs) -> dict:
+    text = (ctx.inputs.get("pages") or {}).get(args.url)
+    if text is None:
+        return {"error": "NOT_FETCHED"}
+    return {"url": args.url, "text": text[:_TEXT_LIMIT]}
+
+
+async def _explore_github(ctx: ToolContext, args: GithubArgs) -> dict:
+    rows = await ctx.db.q().fetch(
+        "SELECT url FROM user_links WHERE user_id = $1 AND kind = 'github' AND ai_read",
+        UUID(ctx.user_id))
+    linked = [name for row in rows for name in github_usernames(row["url"])]
+    if not linked:
+        return {"error": "INTEGRATION_REQUIRED"}
+    wanted = args.username.lower()
+    username = wanted if wanted in linked else linked[0]
+    text = await fetch_github_context(username, transport=GITHUB_TRANSPORT)
+    return {"username": username, "text": text} if text else {"error": "GITHUB_UNAVAILABLE"}
 
 
 async def _posting(ctx: ToolContext, args: PostingArgs) -> dict:
@@ -149,9 +190,9 @@ async def _save(ctx: ToolContext, args: ArtifactArgs) -> dict:
 
 
 RESUME_TOOLS = [
-    ToolSpec("parse_attachment", Tier.READ, EmptyArgs, _empty, lambda _args: "첨부 파일을 읽어요"),
-    ToolSpec("fetch_url", Tier.READ, UrlArgs, _empty, lambda _args: "미리 읽은 페이지만 봐요"),
-    ToolSpec("explore_github", Tier.READ, GithubArgs, _empty, lambda _args: "GitHub 저장소를 봐요"),
+    ToolSpec("parse_attachment", Tier.READ, AttachmentArgs, _parse_attachment, lambda _args: "첨부 파일을 읽어요"),
+    ToolSpec("fetch_url", Tier.READ, UrlArgs, _fetch_url, lambda _args: "미리 읽은 페이지만 봐요"),
+    ToolSpec("explore_github", Tier.READ, GithubArgs, _explore_github, lambda _args: "GitHub 저장소를 봐요"),
     ToolSpec("get_posting", Tier.READ, PostingArgs, _posting, lambda _args: "공고를 봐요"),
     ToolSpec("compute_fit", Tier.READ, FitArgs, _fit, lambda _args: "공고와 얼마나 맞는지 봐요"),
     ToolSpec("save_artifact", Tier.SAFE_WRITE, ArtifactArgs, _save, lambda _args: "산출물을 저장해요"),

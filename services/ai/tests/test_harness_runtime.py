@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.harness.runtime import HarnessRuntime
 from tests.harness_fakes import CONV, USER, ScriptedLC, managed_ai, run, service
 
@@ -54,3 +56,26 @@ async def test_resume_flow_saves_state_and_text_answers_the_gate():
     assert any("UPDATE approvals SET status = 'APPROVED'" in sql for sql, _ in rows.executed)
     chat = await runtime._graph(select_harness({})).aget_state({"configurable": {"thread_id": str(CONV)}})
     assert not chat.values
+
+
+async def test_resume_turn_prefetches_pages_and_keeps_attachments(monkeypatch):
+    from app.harness import runtime as runtime_module
+    from tests.harness_fakes import Rows
+
+    async def fake_fetch(url):
+        return "백엔드 공고 본문"
+
+    monkeypatch.setattr(runtime_module, "fetch_page_text", fake_fetch)
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "intake"}})
+    evidence = "13131313-1313-4313-8313-131313131313"
+    await run(HarnessRuntime(service(rows)), _payload(
+        "이 공고 https://jobs.example/1 로 써줘", ai=None, context={"evidenceIds": [evidence]}))
+    saved = json.loads(rows.conversation["resume_state"])
+    assert saved["inputs"]["pages"] == {"https://jobs.example/1": "백엔드 공고 본문"}
+    assert saved["inputs"]["attachments"] == [evidence]
+
+
+async def test_bypass_intake_with_a_page_does_not_stop():
+    from app.harness.resume.graph import _must_stop
+    assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")
+    assert _must_stop({"access_mode": "BYPASS", "inputs": {}}, "intake")

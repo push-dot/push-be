@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import contextvars
 import json
+from dataclasses import replace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from app.framework.models import _content
 from app.graphs.chat_surface import insert_chat_approval
-from app.harness.graph import turn_model
+from app.harness.core_client import CoreError
+from app.harness.graph import _CAP, turn_model
+from app.harness.policy import Tier
 from app.harness.resume.prompts import phase_prompt_for_harness
 from app.harness.resume.state import ResumeState
-from app.harness.resume.tools import save_artifact
+from app.harness.resume.tools import RESUME_TOOLS, save_artifact
 from app.harness.tools import ToolContext
+
+bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
 _ORDER = (
     "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
@@ -104,7 +111,8 @@ def _must_stop(state: dict, phase: str) -> bool:
         return True
     if phase == "mode_select":
         return True
-    if phase == "intake" and not (state.get("inputs") or {}).get("attachments"):
+    inputs = state.get("inputs") or {}
+    if phase == "intake" and not (inputs.get("attachments") or inputs.get("pages")):
         return True
     return False
 
@@ -155,15 +163,19 @@ def _artifact_body(name: str, output: dict) -> str:
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
+def _context(db, state: dict) -> ToolContext:
+    return ToolContext(
+        user_id=str(state.get("user_id") or ""), company_id=None,
+        conversation_id=str(state.get("conversation_id") or ""),
+        job_id=str(state.get("job_id") or ""), tool_call_id="", db=db,
+        core=bound_core.get(), inputs=dict(state.get("inputs") or {}))
+
+
 async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     name = _ARTIFACTS.get(phase)
     if name:
-        ctx = ToolContext(
-            user_id=str(state.get("user_id") or ""), company_id=None,
-            conversation_id=str(state.get("conversation_id") or ""),
-            job_id=str(state.get("job_id") or ""), tool_call_id="", db=db, core=None)
-        artifacts[name] = await save_artifact(ctx, name, _artifact_body(name, output))
+        artifacts[name] = await save_artifact(_context(db, state), name, _artifact_body(name, output))
     bucket = {
         "analyze": "analysis",
         "strategy": "strategy",
@@ -186,11 +198,23 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
     if option_id == "2-B" or str(answer.get("text") or "").startswith("피드백만"):
         update["strategy"] = {**(state.get("strategy") or {}), "branch": "2-B"}
     text = answer.get("text")
-    if text:
-        inputs = dict(state.get("inputs") or {})
-        inputs["gate_text"] = text
+    if text or answer.get("pages") or answer.get("attachments"):
+        inputs = merge_inputs(state.get("inputs") or {}, answer)
+        if text:
+            inputs["gate_text"] = text
         update["inputs"] = inputs
     return update
+
+
+def merge_inputs(inputs: dict, extra: dict) -> dict:
+    merged = dict(inputs)
+    merged["pages"] = {**(inputs.get("pages") or {}), **(extra.get("pages") or {})}
+    attachments = list(inputs.get("attachments") or [])
+    for item in extra.get("attachments") or []:
+        if item not in attachments:
+            attachments.append(item)
+    merged["attachments"] = attachments
+    return merged
 
 
 def _parsed(reply) -> dict:
@@ -206,7 +230,27 @@ def _parsed(reply) -> dict:
     return parsed if isinstance(parsed, dict) else {"text": text}
 
 
-async def _output(model, phase: str, state: dict) -> dict:
+_READ_TOOLS = {tool.name: tool for tool in RESUME_TOOLS if tool.tier is Tier.READ}
+
+
+async def _read_tool(call: dict, ctx: ToolContext) -> dict:
+    tool = _READ_TOOLS.get(call["name"])
+    if tool is None:
+        return {"error": "UNKNOWN_TOOL"}
+    try:
+        args = tool.args_model.model_validate(call.get("args") or {})
+    except ValidationError:
+        return {"error": "INVALID_ARGS"}
+    try:
+        result = await tool.run(replace(ctx, tool_call_id=call["id"]), args)
+    except CoreError as err:
+        result = {"error": err.code}
+    _emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
+           "summary": tool.summarize(args), "tier": tool.tier.value})
+    return result
+
+
+async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     if model is None:
         return {"summary": phase}
     context = {key: state.get(key) for key in (
@@ -215,7 +259,19 @@ async def _output(model, phase: str, state: dict) -> dict:
         SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답한다."),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
     ]
-    return _parsed(await model.ainvoke(messages))
+    used = 0
+    while True:
+        if used >= _CAP or not hasattr(model, "bind_tools"):
+            return _parsed(await model.ainvoke(messages))
+        reply = await model.bind_tools(list(_READ_TOOLS.values())).ainvoke(messages)
+        calls = getattr(reply, "tool_calls", None) or []
+        if not calls:
+            return _parsed(reply)
+        messages.append(reply)
+        for call in calls:
+            result = await _read_tool(call, ctx) if used < _CAP else {"error": "도구 호출 한도"}
+            used += 1
+            messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=call["id"]))
 
 
 def _finish(merged: dict, name: str, option_id: str) -> dict:
@@ -230,7 +286,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     async def work(state: ResumeGraphState) -> dict:
         current = ResumeState.model_validate(state).model_dump()
         name = current["phase"]
-        output = await _output(turn_model.get() or model, name, current)
+        output = await _output(turn_model.get() or model, name, current, _context(db, current))
         stored = await _store_output(db, current, name, output)
         retries = int((current.get("strategy") or {}).get("retries") or 0)
         if name == "strategy" and output.get("valid") is False and retries < 2:

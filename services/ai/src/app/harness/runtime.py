@@ -18,7 +18,9 @@ from app.harness.graph import _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.registry import REGISTRY
+from app.harness.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
+from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
 
@@ -77,6 +79,20 @@ _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
     "drafts", "review", "artifacts", "warnings",
 )
+
+
+async def _turn_inputs(payload: dict) -> dict:
+    pages = {}
+    for url in find_urls(payload.get("text") or "")[:2]:
+        try:
+            body = await fetch_page_text(url)
+        except Exception:
+            logging.getLogger(__name__).warning("page prefetch failed", exc_info=True)
+            continue
+        if body:
+            pages[url] = body
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    return {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
 
 
 def _thread(config, conversation_id, suffix: str) -> dict:
@@ -213,6 +229,7 @@ class HarnessRuntime:
         tokens = [
             (bound_services, bound_services.set(self.svc)),
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
+            (bound_core, bound_core.set(self._core)),
         ]
         if payload.get("resume") and not byok_key_var.get():
             tokens.append((byok_key_var, byok_key_var.set(await self._job_byok(payload))))
@@ -275,11 +292,12 @@ class HarnessRuntime:
             state = Command(resume={"option_id": resume.get("optionId")})
         elif pending is not None and text:
             await self._answer_gate(pending.get("approval_id"))
-            state = Command(resume={"text": text})
+            state = Command(resume={"text": text, **await _turn_inputs(payload)})
         elif pending is not None:
             return
         else:
             state = _resume_state(payload, conversation)
+            state["inputs"] = merge_inputs(state["inputs"], await _turn_inputs(payload))
         async for item in self._stream_graph(graph, state, config, stream_mode):
             yield item
         after = await graph.aget_state(config)
