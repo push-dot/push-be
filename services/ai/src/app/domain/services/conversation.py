@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.access_mode import normalize_access_mode, resolve_access_mode
+from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import (
     DomainError, internal, map_revision_err, not_found, revision_conflict,
@@ -322,7 +323,7 @@ class ConversationService:
                             "conversation_id": job["conversation_id"],
                             "text": p.get("text") or "",
                             "context": p.get("context") or {},
-                            "ai": p.get("ai"),
+                            "ai": with_managed_default(p.get("ai")),
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
                             "job_id": str(job_id),
@@ -767,7 +768,7 @@ class ConversationService:
                     "conversation_id": job["conversation_id"],
                     "text": payload.get("text") or "",
                     "context": payload.get("context") or {},
-                    "ai": payload.get("ai"),
+                    "ai": with_managed_default(payload.get("ai")),
                     "access_mode": payload.get("access_mode") or "SUGGEST",
                     "operation": None,
                     "job_id": str(jid),
