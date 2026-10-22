@@ -291,6 +291,27 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
   }
 }
 
+// The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
+// AI_ORIGIN is set. Clearing it schedules through the service binding again.
+export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Promise<void> => {
+  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (origin) {
+    await wakeVps(ctx, origin, jobId, byok);
+    return;
+  }
+  if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
+  const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-push-internal": "1",
+      "x-request-id": ctx.rid,
+    },
+    body: JSON.stringify({ jobId, byok }),
+  }));
+  if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
+};
+
 const enqueueChatMessage = async (
   ctx: Ctx,
   conversationId: string,
@@ -324,7 +345,7 @@ const enqueueChatMessage = async (
   });
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
@@ -413,24 +434,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
-  // AI_ORIGIN is set. Clearing it schedules through the service binding again.
-  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
-  if (!origin) {
-    if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
-    const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-push-internal": "1",
-        "x-request-id": ctx.rid,
-      },
-      body: JSON.stringify({ jobId, byok }),
-    }));
-    if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
-  } else {
-    await wakeVps(ctx, origin, jobId, byok);
-  }
+  await scheduleChatJob(ctx, jobId, byok);
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
@@ -513,7 +517,9 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
   if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
   try {
-    const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } } });
+    const jobId = await enqueueResumeJob(ctx, {
+      conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } }, idempotencyKey: `approval:${approvalId}`,
+    });
     return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
   } catch (err) {
     await query(ctx.deps.query,
@@ -531,7 +537,10 @@ export const postResumeJob = async (ctx: Ctx, idRaw: string): Promise<Response> 
   if (!body.resume || typeof body.resume !== "object" || Array.isArray(body.resume)) {
     throw new HttpError(400, "VALIDATION_ERROR", "resume is required", { field: "resume" });
   }
-  const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: body.resume } });
+  const key = (ctx.request.headers.get("idempotency-key") || "").trim();
+  const jobId = await enqueueResumeJob(ctx, {
+    conversationId, userId: ctx.user.id, payload: { resume: body.resume }, idempotencyKey: key ? `resume:${key}` : undefined,
+  });
   return data(202, { jobId }, ctx.rid);
 };
 

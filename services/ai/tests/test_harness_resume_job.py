@@ -5,7 +5,6 @@ import json
 import httpx
 from langchain_core.messages import ToolMessage
 
-from app.harness.approval import expire_approvals
 from app.harness.core_client import CoreClient, idempotency_key
 from app.harness.runtime import HarnessRuntime
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
@@ -87,14 +86,6 @@ async def test_resume_gate_answer_queues_the_next_phase_through_core():
     saved = json.loads(rows.conversation["resume_state"])
     assert saved["phase"] == "intake"
     assert saved["work_mode"] == "resume_based"
-
-
-async def test_expiry_sweep_marks_old_cards():
-    rows = Rows()
-    await expire_approvals(rows)
-    sql = rows.executed[-1][0]
-    assert "SET status = 'EXPIRED'" in sql
-    assert "expires_at < now()" in sql
 
 
 def runtime_spec():

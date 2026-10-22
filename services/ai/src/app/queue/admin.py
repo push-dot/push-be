@@ -74,6 +74,11 @@ class AdminJobs:
             "(SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass('rag_nodes')) END")
         return {"dbSizeBytes": int(size or 0), "ragNodes": max(int(nodes or 0), 0)}
 
+    async def expire_approvals(self, now) -> None:
+        await self.conn.execute(
+            "UPDATE approvals SET status = 'EXPIRED', updated_at = $1 "
+            "WHERE status = 'PENDING' AND expires_at < $1", now)
+
     async def purge_finished(self, now) -> int:
         tag = await self.conn.execute(
             "DELETE FROM ai_jobs WHERE status = ANY($1::text[]) AND updated_at < $2",

@@ -57,10 +57,3 @@ async def create_tool_approval(db, *, user_id, conversation_id, job_id, tool, ar
         utcnow() + timedelta(hours=24),
     )
     return event, True
-
-
-# shortcut: runs on the chat worker stale sweep (15 min) until feat/be-queue-rag merges, then move it to the dispatcher sweep
-async def expire_approvals(db) -> None:
-    await db.q().execute(
-        "UPDATE approvals SET status = 'EXPIRED', updated_at = now() "
-        "WHERE status = 'PENDING' AND expires_at < now()")

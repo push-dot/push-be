@@ -18,7 +18,7 @@ const env = (): CoreEnv => ({ APP_ENV: "production", AI_ORIGIN: "https://ai.exam
 
 const fakeDb = (approval: Row | null) => {
   const sqls: string[] = [];
-  const state = { approval: approval ? { ...approval } : null, jobs: 0 };
+  const state = { approval: approval ? { ...approval } : null, jobs: 0, payloads: [] as Record<string, unknown>[] };
   const query: Deps["query"] = async (sql, params = []) => {
     sqls.push(sql);
     const rows = (list: Row[]) => ({ rows: list, rowCount: list.length });
@@ -41,6 +41,14 @@ const fakeDb = (approval: Row | null) => {
     if (sql.startsWith("UPDATE approvals SET status = 'EXPIRED'")) {
       if (state.approval) state.approval.status = "EXPIRED";
       return rows([]);
+    }
+    if (sql.includes("FROM conversations c")) {
+      return rows([{ company_id: null, company_plan: null, user_plan: "PRO", last: { ai: { provider: "OPENAI" }, access_mode: "AUTO" } }]);
+    }
+    if (sql.includes("INSERT INTO chat_jobs") && !sql.includes("WITH conv")) {
+      state.jobs += 1;
+      state.payloads.push(JSON.parse(String(params[3])));
+      return rows([{ job_id: params[0] }]);
     }
     if (sql.includes("INSERT INTO chat_jobs")) {
       state.jobs += 1;
@@ -84,8 +92,9 @@ test("approving a tool card queues one resume job and the second answer is 409",
   assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
   assert.equal(db.state.jobs, 1);
   assert.deepEqual(woke, ["https://ai.example.test/internal/chat/schedule"]);
-  const insert = db.sqls.find((sql) => sql.includes("INSERT INTO chat_jobs")) || "";
-  assert.match(insert, /'ai', payload->'ai'/);
+  assert.deepEqual(db.state.payloads[0], {
+    ai: { provider: "OPENAI" }, access_mode: "AUTO", text: "", resume: { approvalId: APPROVAL, optionId: "approve" },
+  });
 
   resetLimits();
   const again = await handle(resolve("approve", "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps(db.query));
@@ -198,4 +207,64 @@ test("an answer without Idempotency-Key uses a key derived from the card and opt
     body: JSON.stringify({ title: "x" }),
   }), env(), deps(query));
   assert.equal(other.status, 400);
+});
+
+test("with QUEUE_BACKEND=redis a resume job goes through enqueueJob with a credit hold and a dispatcher kick", async () => {
+  resetLimits();
+  const db = fakeDb(pending());
+  const sqls: { sql: string; params: unknown[] }[] = [];
+  const kicked: string[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    sqls.push({ sql, params });
+    if (sql.includes("FROM conversations c")) {
+      return { rows: [{ company_id: null, company_plan: null, user_plan: "PRO", last: { ai: { provider: "OPENAI" }, access_mode: "AUTO", text: "지원해줘" } }], rowCount: 1 };
+    }
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: "100000000" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    return db.query(sql, params);
+  };
+  const res = await handle(resolve("approve"), { ...env(), QUEUE_BACKEND: "redis", DISPATCH_ORIGIN: "https://dispatch.test", DISPATCH_SECRET: "d" }, {
+    query,
+    now: () => NOW,
+    fetch: async (input) => {
+      kicked.push(String(input));
+      return new Response("{}", { status: 200 });
+    },
+  });
+  assert.equal(res.status, 202);
+  const insert = sqls.find((item) => item.sql.includes("INSERT INTO ai_jobs"));
+  assert.ok(insert);
+  assert.match(insert.sql, /INSERT INTO credit_reservations/);
+  assert.equal(insert.params[1], "chat");
+  assert.equal(insert.params[8], `approval:${APPROVAL}`);
+  const payload = JSON.parse(String(insert.params[7]));
+  assert.deepEqual(payload, { ai: { provider: "OPENAI" }, access_mode: "AUTO", text: "", resume: { approvalId: APPROVAL, optionId: "approve" } });
+  assert.ok(!sqls.some((item) => item.sql.includes("INSERT INTO chat_jobs")));
+  assert.ok(sqls.some((item) => item.sql.includes("INSERT INTO chat_events")));
+  assert.deepEqual(kicked, ["https://dispatch.test/internal/kick"]);
+});
+
+test("with QUEUE_BACKEND=redis a new message still rejects waiting tool cards", async () => {
+  resetLimits();
+  const db = fakeDb(null);
+  const query: Deps["query"] = async (sql, params = []) => {
+    if (sql.includes("FROM conversations c LEFT JOIN companies")) {
+      return { rows: [{ id: CONV, company_id: null, company_plan: null, user_plan: "PRO" }], rowCount: 1 };
+    }
+    if (sql.includes("balance_after")) return { rows: [{ balance_after: "100000000" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    if (sql.startsWith("WITH conv")) {
+      db.sqls.push(sql);
+      return { rows: [{ id: CONV }], rowCount: 1 };
+    }
+    return db.query(sql, params);
+  };
+  const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/messages`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": "eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    body: JSON.stringify({ text: "다른 얘기", accessMode: "AUTO" }),
+  }), { ...env(), QUEUE_BACKEND: "redis" }, deps(query));
+  assert.equal(res.status, 202);
+  const message = db.sqls.find((sql) => sql.startsWith("WITH conv")) || "";
+  assert.match(message, /UPDATE approvals SET status = 'REJECTED'/);
 });

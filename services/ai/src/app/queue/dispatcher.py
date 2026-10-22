@@ -82,6 +82,7 @@ class Dispatcher:
             stats = DispatchStats(dispatched, promoted, requeued, rehydrated)
             if maintain:
                 await db.purge_finished(now)
+                await db.expire_approvals(now)
                 self.db_conditions = db_conditions(stats, await db.neon_stats())
             return stats
         finally:

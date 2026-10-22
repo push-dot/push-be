@@ -277,11 +277,6 @@ class ConversationService:
                     await self.jobs.reset_stale()
                 except Exception:
                     log.exception("chat job stale sweep failed")
-                try:
-                    from app.harness.approval import expire_approvals
-                    await expire_approvals(self.db)
-                except Exception:
-                    log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()

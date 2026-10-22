@@ -248,3 +248,41 @@ async def test_retention_deletes_only_finished_rows_older_than_30_days():
     finally:
         await conn.execute("DELETE FROM users WHERE id = $1", user)
         await conn.close()
+
+
+async def test_maintenance_sweep_expires_old_approval_cards():
+    class Conn:
+        def __init__(self):
+            self.sql = []
+
+        async def execute(self, sql, *args):
+            self.sql.append((sql, args))
+            return "UPDATE 1"
+
+    from app.queue.admin import AdminJobs
+    conn = Conn()
+    await AdminJobs(conn).expire_approvals(NOW)
+    sql, args = conn.sql[0]
+    assert "SET status = 'EXPIRED'" in sql and "status = 'PENDING'" in sql and "expires_at < $1" in sql
+    assert args == (NOW,)
+
+    db = FakeAdminDb()
+    expired = []
+
+    async def expire(now):
+        expired.append(now)
+
+    async def purge(now):
+        return 0
+
+    db.expire_approvals = expire
+    db.purge_finished = purge
+
+    async def open_db():
+        return db
+
+    dispatcher = Dispatcher(StreamQueue(FakeRedis(decode_responses=True)), open_db, "kick", now=lambda: NOW)
+    await dispatcher.run_once(NOW)
+    assert expired == []
+    await dispatcher.run_once(NOW, maintain=True)
+    assert expired == [NOW]
