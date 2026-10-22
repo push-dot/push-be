@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
@@ -74,13 +76,13 @@ _CORE = {
     "get_offer": ({"offer_id": O}, ("GET", f"/api/v1/me/offers/{O}")),
     "accept_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/accept")),
     "decline_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/decline")),
-    "send_offer_message": ({"offer_id": O, "text": "hi"}, ("POST", f"/api/v1/me/offers/{O}/messages")),
+    "send_offer_message": ({"offer_id": O, "body": "hi"}, ("POST", f"/api/v1/me/offers/{O}/messages")),
     "list_calendar_events": ({}, ("GET", "/api/v1/calendar/events")),
-    "create_calendar_event": ({"title": "면접"}, ("POST", "/api/v1/calendar/events")),
+    "create_calendar_event": ({"type": "INTERVIEW", "title": "면접", "starts_at": "2026-10-23T01:00:00Z", "ends_at": "2026-10-23T02:00:00Z"}, ("POST", "/api/v1/calendar/events")),
     "update_calendar_event": ({"event_id": E, "title": "면접"}, ("PATCH", f"/api/v1/calendar/events/{E}")),
     "delete_calendar_event": ({"event_id": E}, ("DELETE", f"/api/v1/calendar/events/{E}")),
     "list_posts": ({}, ("GET", "/api/v1/posts")),
-    "create_post": ({"body": "hello"}, ("POST", "/api/v1/posts")),
+    "create_post": ({"category": "dev", "title": "t", "body": "hello"}, ("POST", "/api/v1/posts")),
     "create_comment": ({"post_id": T, "body": "hi"}, ("POST", f"/api/v1/posts/{T}/comments")),
     "follow_user": ({"user_id": U}, ("POST", f"/api/v1/users/{U}/follow")),
     "get_my_profile": ({}, ("GET", "/api/v1/me/profile")),
@@ -119,6 +121,29 @@ async def test_core_tool_paths(name):
     assert (seen[0].method, seen[0].url.path) == expected
     if expected[0] in _WRITES:
         assert seen[0].headers["idempotency-key"]
+    if seen[0].content:
+        assert set(json.loads(seen[0].content)) <= _CORE_FIELDS
+
+
+_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline"}
+
+
+async def test_calendar_and_profile_bodies_use_core_names():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": {}})
+
+    core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+    ctx = ToolContext(user_id="user-1", company_id=None, conversation_id="conv-1",
+                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+    tools = {tool.name: tool for tool in REGISTRY["personal"].tools}
+    await tools["update_calendar_event"].run(ctx, tools["update_calendar_event"].args_model.model_validate(
+        {"event_id": E, "starts_at": "2026-10-23T01:00:00Z"}))
+    await tools["update_my_profile"].run(ctx, tools["update_my_profile"].args_model.model_validate(
+        {"display_name": "김"}))
+    assert seen == [{"startsAt": "2026-10-23T01:00:00Z"}, {"displayName": "김"}]
 
 
 async def test_core_ids_cannot_rewrite_the_path():

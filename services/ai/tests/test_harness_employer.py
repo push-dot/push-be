@@ -69,8 +69,8 @@ _CORE = {
         {"posting_id": P, "application_id": A, "stage": "INTERVIEW"},
         ("PATCH", f"/api/v1/postings/{P}/applicants/{A}"),
     ),
-    "send_offer": ({"profile_id": U, "message": "제안"}, ("POST", f"/api/v1/profiles/{U}/offer")),
-    "create_company_post": ({"body": "채용 중"}, ("POST", "/api/v1/posts")),
+    "send_offer": ({"profile_id": U, "message": "제안", "posting_id": P}, ("POST", f"/api/v1/profiles/{U}/offer")),
+    "create_company_post": ({"category": "work", "title": "채용", "body": "채용 중"}, ("POST", "/api/v1/posts")),
 }
 
 _WRITES = {"POST", "PATCH", "DELETE"}
@@ -134,6 +134,8 @@ async def test_employer_core_tool_paths(name):
         assert result["draft"]["id"] == "p1"
     if name == "list_applicants":
         assert request.url.params["stage"] == "SCREENING"
+    if name == "send_offer":
+        assert json.loads(request.content) == {"message": "제안", "postingId": P}
     if name == "change_applicant_stage":
         assert json.loads(request.content)["stage"] == "INTERVIEW"
     if name == "publish_posting":

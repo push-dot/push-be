@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import contextvars
 import json
+from typing import Literal
 from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.config import get_stream_writer
 from langgraph.types import interrupt
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 from app.domain.pagination import PageRequest
 from app.domain.posting_fit import compute_fit
@@ -39,18 +41,29 @@ class OfferId(BaseModel):
 
 class OfferMessage(BaseModel):
     offer_id: UUID
-    text: str = ""
+    body: str
 
 
-class CalendarCreate(BaseModel):
-    title: str = ""
-    starts_at: str = ""
+class _Camel(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
-class CalendarUpdate(BaseModel):
+CalendarType = Literal["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT"]
+
+
+class CalendarCreate(_Camel):
+    type: CalendarType
+    title: str
+    starts_at: str
+    ends_at: str
+
+
+class CalendarUpdate(_Camel):
     event_id: UUID
-    title: str = ""
-    starts_at: str = ""
+    type: CalendarType | None = None
+    title: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
 
 
 class EventId(BaseModel):
@@ -58,7 +71,9 @@ class EventId(BaseModel):
 
 
 class PostBody(BaseModel):
-    body: str = ""
+    category: Literal["work", "dev", "daily", "career", "talk", "coffeechat", "marketing"]
+    title: str
+    body: str
 
 
 class CommentBody(BaseModel):
@@ -70,8 +85,9 @@ class FollowUser(BaseModel):
     user_id: UUID
 
 
-class ProfilePatch(BaseModel):
-    display_name: str = ""
+class ProfilePatch(_Camel):
+    display_name: str | None = None
+    headline: str | None = None
 
 
 class DocumentId(BaseModel):
@@ -112,9 +128,7 @@ def _emit(event: dict) -> None:
 
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
     async def run(ctx: ToolContext, args):
-        body = args.model_dump(mode="json", exclude_none=True)
-        for key in drop:
-            body.pop(key, None)
+        body = args.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(drop))
         return await ctx.core.call(
             method,
             path_of(args),
@@ -290,7 +304,8 @@ def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
 
 PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",
-          lambda args: "/api/v1/postings" + ("?" + urlencode({"q": args.q}) if args.q else "")),
+          lambda args: "/api/v1/postings" + ("?" + urlencode({"q": args.q}) if args.q else ""),
+          drop=("q",)),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
     _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",

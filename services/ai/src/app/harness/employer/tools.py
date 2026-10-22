@@ -48,8 +48,10 @@ class ProfileId(BaseModel):
 
 
 class OfferArgs(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     profile_id: UUID
-    message: str = ""
+    message: str
     posting_id: UUID | None = None
 
 
@@ -75,7 +77,9 @@ class PostingPatch(BaseModel):
 
 
 class PostBody(BaseModel):
-    body: str = ""
+    category: Literal["work", "dev", "daily", "career", "talk", "coffeechat", "marketing"]
+    title: str
+    body: str
 
 
 class FitArgs(BaseModel):
