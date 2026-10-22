@@ -88,9 +88,15 @@ class HarnessRuntime:
             found["resume_state"] = row["resume_state"]
         return found
 
-    async def astream(self, payload, config=None, stream_mode=None, **kwargs):
+    async def _open(self, payload):
         conversation = await self._conversation(payload)
-        graph = self._graph(select_harness(conversation))
+        spec = select_harness(conversation)
+        if spec.id == "employer" and payload.get("intent"):
+            await self._guard(conversation, payload.get("intent"))
+        return conversation, self._graph(spec)
+
+    async def astream(self, payload, config=None, stream_mode=None, **kwargs):
+        conversation, graph = await self._open(payload)
         token = bound_services.set(self.svc)
         try:
             async for mode, chunk in graph.astream(
@@ -104,9 +110,19 @@ class HarnessRuntime:
         finally:
             bound_services.reset(token)
 
+    async def _guard(self, conversation: dict, intent: str) -> None:
+        from app.harness.employer.guard import guard_employer_intent
+        plan = None
+        company_id = conversation.get("company_id")
+        if company_id is not None:
+            try:
+                plan = await self.svc.conversations.company_plan(company_id)
+            except Exception:
+                plan = None
+        guard_employer_intent(plan, intent)
+
     async def ainvoke(self, payload, config=None, **kwargs):
-        conversation = await self._conversation(payload)
-        graph = self._graph(select_harness(conversation))
+        conversation, graph = await self._open(payload)
         token = bound_services.set(self.svc)
         try:
             return await graph.ainvoke(_state(payload, conversation), config)
