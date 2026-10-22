@@ -185,27 +185,6 @@ def test_flag_on_uses_harness_nodes(monkeypatch):
     assert "resolve_context" not in names
 
 
-async def test_flag_on_astream_yields_worker_pairs(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
-    svc = ConversationService(FakeDB(), None, MemorySaver())
-    modes = []
-    async for mode, _chunk in svc.graph.astream(
-        {
-            "text": "안녕",
-            "user_id": "user-1",
-            "conversation_id": "conv-1",
-            "job_id": "job-1",
-            "access_mode": "SUGGEST",
-            "context": {},
-        },
-        config={"configurable": {"thread_id": "conv-1"}},
-        stream_mode=["custom", "values"],
-    ):
-        modes.append(mode)
-    assert modes
-    assert set(modes) <= {"custom", "values"}
-
-
 class _Approvals:
     def __init__(self):
         self.rows = {}

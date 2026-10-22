@@ -2,25 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
+from app.framework.models import _content
 from app.harness.core_client import CoreClient
-from app.harness.graph import build_harness_graph
+from app.harness.graph import build_harness_graph, turn_model
+from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.router import select_harness
-
-# shortcut: empty reply until a chat key is set, then use chat_model
-class _SilentModel:
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-    async def ainvoke(self, messages, **kwargs):
-        return AIMessage(content="")
-
-
-_MODEL = _SilentModel()
+from app.jsonutil import to_jsonable
 
 
 def _core() -> CoreClient:
@@ -74,11 +68,19 @@ def _state(payload: dict, conversation: dict) -> dict:
     }
 
 
+def _final_text(values: dict) -> str:
+    for message in reversed(values.get("messages") or []):
+        if isinstance(message, AIMessage):
+            return _content(message)
+    return ""
+
+
 class HarnessRuntime:
-    def __init__(self, svc):
+    def __init__(self, svc, model_cls=None):
         self.svc = svc
         self._core = _core()
         self._compiled: dict = {}
+        self._model_cls = model_cls
 
     def _graph(self, spec):
         cached = self._compiled.get(spec.id)
@@ -91,7 +93,7 @@ class HarnessRuntime:
             graph = build_harness_graph(
                 spec,
                 self.svc._checkpointer,
-                model=_MODEL,
+                model=None,
                 db=self.svc.db,
                 core=self._core,
             )
@@ -126,41 +128,137 @@ class HarnessRuntime:
     async def _open(self, payload):
         conversation = await self._conversation(payload)
         spec = select_harness(conversation)
-        if spec.id == "employer" and payload.get("intent"):
-            await self._guard(conversation, payload.get("intent"))
-        return conversation, spec, self._graph(spec)
+        plan = None
+        if spec.id == "employer":
+            plan = await self._company_plan(conversation)
+            if payload.get("intent"):
+                from app.harness.employer.guard import guard_employer_intent
+                guard_employer_intent(plan, payload.get("intent"))
+        return conversation, spec, self._graph(spec), plan
+
+    async def _company_plan(self, conversation: dict):
+        company_id = conversation.get("company_id")
+        if company_id is None:
+            return None
+        try:
+            return await self.svc.conversations.company_plan(company_id)
+        except Exception:
+            return None
+
+    def _ai(self, payload: dict, spec, plan) -> ent.AiOptions | None:
+        raw = payload.get("ai")
+        if spec.id != "employer":
+            return ent.AiOptions(**raw) if raw else None
+        from app.config import load_config
+        from app.domain.employer_chat import apply_employer_turn
+        gate = getattr(self.svc, "ai", None)
+        cfg = gate._levers_config() if gate is not None and hasattr(gate, "_levers_config") else load_config()
+        base = ent.AiOptions(**raw) if raw else ent.AiOptions(
+            provider="OPENAI", model="managed", credential_mode="MANAGED", effort="LOW")
+        return apply_employer_turn(base, plan, payload.get("intent"), cfg)
+
+    def _model(self, payload: dict, ai, turn: dict):
+        gate = getattr(self.svc, "ai", None)
+        if ai is None or gate is None:
+            return StubModel(payload.get("text") or "")
+        return GateModel(gate, payload.get("user_id"), ai, payload.get("job_id"), turn,
+                         cls=self._model_cls)
 
     async def astream(self, payload, config=None, stream_mode=None, **kwargs):
-        conversation, spec, graph = await self._open(payload)
-        token = bound_services.set(self.svc)
-        try:
-            async for mode, chunk in graph.astream(
-                _resume_state(payload, conversation) if spec.id == "resume" else _state(payload, conversation),
-                config,
-                stream_mode=stream_mode or ["custom", "values"],
-            ):
-                yield mode, chunk
-                if mode == "values" and isinstance(chunk, dict) and chunk.get("__interrupt__"):
-                    yield "custom", {"type": "done", "awaiting": "approval"}
-        finally:
-            bound_services.reset(token)
-
-    async def _guard(self, conversation: dict, intent: str) -> None:
-        from app.harness.employer.guard import guard_employer_intent
-        plan = None
-        company_id = conversation.get("company_id")
-        if company_id is not None:
+        conversation, spec, graph, plan = await self._open(payload)
+        if spec.id == "resume":
+            token = bound_services.set(self.svc)
             try:
-                plan = await self.svc.conversations.company_plan(company_id)
-            except Exception:
-                plan = None
-        guard_employer_intent(plan, intent)
+                async for item in self._stream_graph(
+                        graph, _resume_state(payload, conversation), config, stream_mode):
+                    yield item
+            finally:
+                bound_services.reset(token)
+            return
+        from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
+        ai = self._ai(payload, spec, plan)
+        turn: dict = {}
+        tokens = [
+            (bound_services, bound_services.set(self.svc)),
+            (turn_model, turn_model.set(self._model(payload, ai, turn))),
+        ]
+        plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
+        ok = False
+        try:
+            interrupted = False
+            async for item in self._stream_graph(
+                    graph, _state(payload, conversation), config, stream_mode):
+                if item[0] == "custom" and item[1].get("type") == "done":
+                    interrupted = True
+                yield item
+            ok = True
+            if not interrupted:
+                values = (await graph.aget_state(config)).values
+                operation = await self._persist(payload, _final_text(values), ai, turn)
+                yield "values", {"operation": operation}
+        finally:
+            gate = getattr(self.svc, "ai", None)
+            if gate is not None:
+                await settle_turn(gate, turn, ok)
+            if plan_token is not None:
+                reset_employer_plan(plan_token)
+            for var, token in reversed(tokens):
+                var.reset(token)
+
+    async def _stream_graph(self, graph, state, config, stream_mode):
+        async for mode, chunk in graph.astream(
+                state, config, stream_mode=stream_mode or ["custom", "values"]):
+            yield mode, chunk
+            if mode == "values" and isinstance(chunk, dict) and chunk.get("__interrupt__"):
+                yield "custom", {"type": "done", "awaiting": "approval"}
+
+    async def _persist(self, payload: dict, reply: str, ai, turn: dict) -> ent.Operation:
+        from app.domain.services.ai import record_usage
+        from app.graphs.chat import _PLACEHOLDER_TITLES, _stable_ids
+        svc = self.svc
+        user_id = payload["user_id"]
+        conversation = await svc.conversations.get(user_id, payload["conversation_id"])
+        now = datetime.now(timezone.utc)
+        user_msg_id, assistant_msg_id, op_id = _stable_ids(payload.get("job_id"))
+        text = payload.get("text") or ""
+        user_msg = ent.Message(
+            id=user_msg_id, user_id=user_id, conversation_id=conversation.id,
+            role="USER", text=text, attachments=[], operation_id=op_id, created_at=now)
+        assistant_msg = ent.Message(
+            id=assistant_msg_id, user_id=user_id, conversation_id=conversation.id,
+            role="ASSISTANT", text=reply, attachments=[], operation_id=op_id, created_at=now)
+        value = {"assistantMessage": to_jsonable(assistant_msg), "approvalIds": []}
+        if text:
+            value["userMessage"] = to_jsonable(user_msg)
+        op = ent.Operation(
+            id=op_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
+            application_id=conversation.application_id, status=ent.OP_SUCCEEDED,
+            result=ent.OperationResult(kind=ent.OP_CHAT_MESSAGE, value=value),
+            created_at=now, updated_at=now)
+        completion = ent.AICompletion(
+            text=reply, input_tokens=turn.get("input_tokens", 0),
+            output_tokens=turn.get("output_tokens", 0))
+
+        async def work():
+            if text:
+                await svc.conversations.upsert_user_message(user_msg)
+            await svc.conversations.create_message(assistant_msg)
+            await svc.ops.create(op)
+            if ai is not None and turn.get("checked"):
+                usage_ids = [turn["usage_id"]] if turn.get("usage_id") else []
+                await record_usage(svc.usage, user_id, op_id, ai, completion, usage_ids,
+                                   job_id=payload.get("job_id"))
+            if text and (conversation.title or "") in _PLACEHOLDER_TITLES:
+                fresh = await svc.conversations.get(user_id, conversation.id)
+                fresh.title = text[:40]
+                await svc.conversations.update(fresh, fresh.revision)
+
+        await svc.db.run(work)
+        return op
 
     async def ainvoke(self, payload, config=None, **kwargs):
-        conversation, spec, graph = await self._open(payload)
-        token = bound_services.set(self.svc)
-        try:
-            state = _resume_state(payload, conversation) if spec.id == "resume" else _state(payload, conversation)
-            return await graph.ainvoke(state, config)
-        finally:
-            bound_services.reset(token)
+        result: dict = {}
+        async for mode, chunk in self.astream(payload, config):
+            if mode == "values" and isinstance(chunk, dict) and chunk.get("operation") is not None:
+                result["operation"] = chunk["operation"]
+        return result

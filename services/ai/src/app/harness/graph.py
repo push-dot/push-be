@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 from typing import Annotated, Any
 
@@ -12,12 +13,15 @@ from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from app.domain.access_mode import AccessMode
+from app.framework.models import _content
 from app.harness.approval import create_tool_approval
 from app.harness.core_client import CoreError
 from app.harness.policy import decide
 from app.harness.tools import ToolContext
 
 _CAP = 8
+
+turn_model: contextvars.ContextVar = contextvars.ContextVar("harness_turn_model", default=None)
 
 
 class HarnessState(TypedDict, total=False):
@@ -75,11 +79,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         messages = list(state.get("messages") or [])
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=spec.prompt), *messages]
+        chat = turn_model.get() or model
         if int(state.get("tool_calls_used") or 0) >= _CAP:
-            reply = await model.ainvoke(messages)
+            reply = await chat.ainvoke(messages)
             reply = AIMessage(content=reply.content)
         else:
-            reply = await model.bind_tools([{"name": tool.name} for tool in spec.tools]).ainvoke(messages)
+            reply = await chat.bind_tools(spec.tools).ainvoke(messages)
+        if not reply.tool_calls and _content(reply):
+            _emit({"token": _content(reply)})
         return {"messages": [reply], "awaiting": None}
 
     async def tools(state: HarnessState) -> dict:
