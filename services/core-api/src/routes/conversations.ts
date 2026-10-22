@@ -9,6 +9,13 @@ const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
+const CANONICAL_ACCESS: Record<string, string> = {
+  ALWAYS_ASK: "ALWAYS_ASK",
+  AUTO: "AUTO",
+  BYPASS: "BYPASS",
+  SUGGEST: "AUTO",
+  CONFIRM_ACTIONS: "ALWAYS_ASK",
+};
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
 
 function flag(value: string | undefined): boolean {
@@ -286,8 +293,15 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
-  if (access !== "SUGGEST" && access !== "CONFIRM_ACTIONS") {
-    throw new HttpError(400, "VALIDATION_ERROR", "must be SUGGEST or CONFIRM_ACTIONS", { field: "accessMode" });
+  let canonical = CANONICAL_ACCESS[access] ?? "";
+  if (!access) {
+    const saved = await one(ctx.deps.query,
+      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
+      [ctx.user.id]);
+    canonical = CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
+  }
+  if (!canonical) {
+    throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
   let context: Record<string, unknown> = {};
   if (body.context != null) {
@@ -330,7 +344,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     }
   }
   const payload: Record<string, unknown> = {
-    text: body.text, context, ai, accessMode: access, intent, applicationId: messageApplicationId,
+    text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
   };
   if (byok && ctx.env.BYOK_MASTER_KEY) {
     const key = await masterKey(ctx.env.BYOK_MASTER_KEY);

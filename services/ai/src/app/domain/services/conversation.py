@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
+from app.domain.access_mode import normalize_access_mode, resolve_access_mode
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import (
     DomainError, internal, map_revision_err, not_found, revision_conflict,
@@ -483,6 +484,7 @@ class ConversationService:
                            context: dict, ai: Optional[ent.AiOptions],
                            access_mode: str,
                            byok_key: str = "") -> ent.Operation:
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
         if external_jobs():
             return await self._enqueue(
@@ -498,12 +500,35 @@ class ConversationService:
             _BYOK_KEY.reset(token)
         return result["operation"]
 
+    async def _canonical_access(self, user_id, raw: str) -> str:
+        try:
+            requested = normalize_access_mode(raw if raw else None)
+        except ValueError:
+            raise validation_field(
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
+        if requested is not None:
+            return requested.value
+        saved = None
+        try:
+            row = await self.db.q().fetchrow(
+                "SELECT to_jsonb(user_settings)->>'ai_access_mode' AS ai_access_mode "
+                "FROM user_settings WHERE user_id = $1",
+                user_id,
+            )
+            if row is not None:
+                saved = row["ai_access_mode"]
+        except Exception:
+            saved = None
+        return resolve_access_mode(None, saved).value
+
     def _validate_message(self, text: str, access_mode: str) -> None:
         if not text or code_point_len(text) > 20000:
             raise validation_field("text", "text must be 1-20000 characters")
         if not ent.valid_access_mode(access_mode):
             raise validation_field(
-                "accessMode", "must be SUGGEST or CONFIRM_ACTIONS")
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
 
     def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
                     context: dict, ai: Optional[ent.AiOptions],
@@ -525,6 +550,7 @@ class ConversationService:
                              ai: Optional[ent.AiOptions], access_mode: str,
                              byok_key: str = "", intent: str | None = None,
                              application_id=None):
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
         if self._worker_task is not None or external_jobs():
             async for ev in self._stream_via_queue(
@@ -569,6 +595,7 @@ class ConversationService:
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            "accessMode": access_mode,
             **turn_from_payload({"intent": intent, "application_id": application_id}),
         }
         payload = self._stash_byok(user_id, payload, byok_key)
@@ -681,6 +708,7 @@ class ConversationService:
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            "accessMode": access_mode,
         }, byok_key)
         # One statement checks the conversation, inserts the job, and writes
         # the first status so SSE shows progress before the Workflow starts.
