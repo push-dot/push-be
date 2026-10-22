@@ -53,12 +53,17 @@ def _tool_event(state: dict) -> dict | None:
         return None
     if raw.get("state") not in _TOOL_STATES or not raw.get("name"):
         return None
-    return {
+    event = {
         "type": "tool",
         "name": raw["name"],
         "state": raw["state"],
         "summary": raw.get("summary") or "",
     }
+    if raw.get("tier"):
+        event["tier"] = raw["tier"]
+    if "result" in raw:
+        event["result"] = raw["result"]
+    return event
 
 
 def _todo_event(state: dict) -> dict | None:

@@ -24,6 +24,14 @@ class ToolContext:
 
 
 @dataclass(frozen=True)
+class HarnessSpec:
+    id: str
+    audience: str
+    prompt: str
+    tools: list[ToolSpec]
+
+
+@dataclass(frozen=True)
 class ToolSpec:
     name: str
     tier: Tier

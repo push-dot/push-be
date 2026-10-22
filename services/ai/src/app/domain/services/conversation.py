@@ -62,7 +62,7 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
 _LIVE_EVENT_TYPES = frozenset({
-    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled"})
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
 
 
 def _live_event(chunk: dict):
