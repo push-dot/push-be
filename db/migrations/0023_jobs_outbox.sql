@@ -2,7 +2,7 @@ CREATE TABLE ai_jobs (
     id uuid PRIMARY KEY,
     type text NOT NULL,
     queue text NOT NULL,
-    user_id uuid NOT NULL REFERENCES users(id),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     company_id uuid NULL REFERENCES companies(id) ON DELETE SET NULL,
     plan text NULL,
     status text NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'RUNNING', 'RETRY', 'DONE', 'FAILED', 'DEAD', 'CANCELLED')),
@@ -14,7 +14,7 @@ CREATE TABLE ai_jobs (
     result jsonb NULL,
     error jsonb NULL,
     idempotency_key text NULL,
-    conversation_id uuid NULL REFERENCES conversations(id),
+    conversation_id uuid NULL REFERENCES conversations(id) ON DELETE CASCADE,
     checkpoint jsonb NOT NULL DEFAULT '{}',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -35,7 +35,7 @@ CREATE INDEX idx_outbox_pending ON outbox (id) WHERE dispatched_at IS NULL;
 
 CREATE TABLE credit_reservations (
     job_id uuid PRIMARY KEY REFERENCES ai_jobs(id) ON DELETE CASCADE,
-    user_id uuid NOT NULL REFERENCES users(id),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     company_id uuid NULL REFERENCES companies(id) ON DELETE SET NULL,
     amount_micro bigint NOT NULL,
     status text NOT NULL CHECK (status IN ('RESERVED', 'SETTLED', 'RELEASED')),
@@ -56,7 +56,7 @@ CREATE TRIGGER outbox_notify
 AFTER INSERT ON outbox
 FOR EACH ROW EXECUTE FUNCTION notify_outbox();
 
-ALTER TABLE ai_usage ADD COLUMN job_id uuid NULL REFERENCES ai_jobs(id);
+ALTER TABLE ai_usage ADD COLUMN job_id uuid NULL REFERENCES ai_jobs(id) ON DELETE SET NULL;
 
 INSERT INTO ai_jobs (
     id, type, queue, user_id, status, attempts, max_attempts, run_after,
@@ -88,7 +88,7 @@ FROM chat_jobs;
 
 ALTER TABLE chat_events DROP CONSTRAINT chat_events_job_id_fkey;
 ALTER TABLE chat_events
-    ADD CONSTRAINT chat_events_job_id_fkey FOREIGN KEY (job_id) REFERENCES ai_jobs(id);
+    ADD CONSTRAINT chat_events_job_id_fkey FOREIGN KEY (job_id) REFERENCES ai_jobs(id) ON DELETE CASCADE;
 
 DROP TABLE chat_jobs;
 

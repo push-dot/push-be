@@ -21,7 +21,11 @@ test("migration 0023 creates jobs, outbox, credit_reservations and keeps chat_jo
   assert.match(sql, /dispatched_at IS NULL/);
   assert.match(sql, /CREATE (OR REPLACE )?FUNCTION notify_outbox\(\)/);
   assert.match(sql, /pg_notify\('outbox', NEW\.id::text\)/);
-  assert.match(sql, /ALTER TABLE ai_usage ADD COLUMN job_id uuid/);
+  assert.match(sql, /ALTER TABLE ai_usage ADD COLUMN job_id uuid NULL REFERENCES ai_jobs\(id\) ON DELETE SET NULL/);
+  assert.equal(sql.match(/REFERENCES users\(id\) ON DELETE CASCADE/g)?.length, 2);
+  assert.doesNotMatch(sql, /REFERENCES users\(id\),/);
+  assert.match(sql, /conversation_id uuid NULL REFERENCES conversations\(id\) ON DELETE CASCADE/);
+  assert.match(sql, /FOREIGN KEY \(job_id\) REFERENCES ai_jobs\(id\) ON DELETE CASCADE;/);
   assert.match(sql, /INSERT INTO ai_jobs \([\s\S]*FROM chat_jobs/);
   assert.match(sql, /CREATE VIEW chat_jobs AS/);
   assert.match(sql, /WHERE type IN \('chat', 'employer_ai'\) AND conversation_id IS NOT NULL/);
