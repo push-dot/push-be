@@ -240,3 +240,20 @@ def _state_input():
          "job_id": "job-2", "access_mode": "BYPASS"},
         {},
     )
+
+
+async def test_tool_card_args_with_uuids_are_json():
+    from uuid import UUID as _UUID
+
+    from app.harness.approval import create_tool_approval
+
+    class Uuid(BaseModel):
+        id: _UUID
+
+    db = MemApprovals()
+    tool = ToolSpec("apply_to_posting", Tier.RISKY_WRITE, Uuid, None, lambda _args: "지원")
+    event, created = await create_tool_approval(
+        db, user_id="u", conversation_id="c", job_id="j", tool=tool,
+        args=Uuid(id="11111111-1111-4111-8111-111111111111"), tool_call_id="t")
+    assert created
+    assert event["args"] == {"id": "11111111-1111-4111-8111-111111111111"}

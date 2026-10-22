@@ -32,7 +32,7 @@ def tool_action_event(approval_id: str, summary: str, tool_name: str, args: dict
 
 async def create_tool_approval(db, *, user_id, conversation_id, job_id, tool, args, tool_call_id) -> tuple[dict, bool]:
     approval_id = approval_id_for(str(job_id), str(tool_call_id))
-    payload = args if isinstance(args, dict) else args.model_dump()
+    payload = args if isinstance(args, dict) else args.model_dump(mode="json")
     event = tool_action_event(approval_id, tool.summarize(args) if not isinstance(args, dict) else tool.summarize(tool.args_model.model_validate(args)), tool.name, payload)
     existing = await db.q().fetchrow("SELECT id FROM approvals WHERE id = $1", UUID(approval_id))
     if existing is not None:
@@ -57,3 +57,4 @@ async def create_tool_approval(db, *, user_id, conversation_id, job_id, tool, ar
         utcnow() + timedelta(hours=24),
     )
     return event, True
+
