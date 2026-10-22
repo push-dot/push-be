@@ -1,6 +1,6 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, pageBody, requireUuid, sha256Hex } from "../http.ts";
+import { HttpError, data, fieldError, hashJson, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts, type Page } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
@@ -119,12 +119,6 @@ const failedUpdate = async (ctx: Ctx, table: string, id: string): Promise<never>
   const current = await one(ctx.deps.query, `SELECT revision FROM ${table} WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
   if (!current) throw notFound();
   throw conflict(current.revision);
-};
-
-/** `hash_json`: sha256 of `json.dumps(sort_keys=True, separators=(",", ":"))`. */
-const hashJson = (value: Record<string, unknown>): Promise<string> => {
-  const sorted = Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]));
-  return sha256Hex(JSON.stringify(sorted));
 };
 
 export const listApplications = async (ctx: Ctx): Promise<Response> => {

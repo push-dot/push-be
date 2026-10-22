@@ -1,7 +1,7 @@
 import { HttpError, fieldError, parseUuid } from "./http.ts";
 import { formatJsonTimestamp } from "./time.ts";
 
-export type FieldKind = "str" | "int" | "bool" | "uuid" | "uuid[]" | "str[]" | "object" | "any";
+export type FieldKind = "str" | "int" | "num" | "bool" | "uuid" | "uuid[]" | "str[]" | "object" | "any";
 
 export type FieldSpec = { kind: FieldKind; required?: boolean; nullable?: boolean };
 
@@ -13,6 +13,7 @@ const fits = (kind: FieldKind, value: unknown): unknown => {
   if (kind === "any") return value;
   if (kind === "str") return typeof value === "string" ? value : undefined;
   if (kind === "int") return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+  if (kind === "num") return typeof value === "number" ? value : undefined;
   if (kind === "bool") return typeof value === "boolean" ? value : undefined;
   if (kind === "uuid") return value == null ? undefined : parseUuid(String(value)) ?? undefined;
   if (kind === "object") return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
@@ -27,6 +28,11 @@ export const strictBody = async (request: Request, spec: Record<string, FieldSpe
   if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw invalid(); }
+  return strictObject(parsed, spec);
+};
+
+/** The same rules for a nested object (a sub-model of the request). */
+export const strictObject = (parsed: unknown, spec: Record<string, FieldSpec>): Body => {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw invalid();
   const input = parsed as Record<string, unknown>;
   const values: Record<string, unknown> = {};

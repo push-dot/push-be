@@ -49,3 +49,18 @@ test("interview routes go to core except the AI prepare", () => {
   assert.equal(ownerOf("PATCH", `/api/v1/interviews/${ID}`), "core");
   assert.equal(ownerOf("POST", `/api/v1/interviews/${ID}/prepare`), "python");
 });
+
+test("project routes go to core except AI blueprints and verification", () => {
+  assert.equal(ownerOf("GET", "/api/v1/projects"), "core");
+  assert.equal(ownerOf("GET", `/api/v1/projects/${ID}`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/select`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/projects/${ID}/runs`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/runs`), "core");
+  for (const step of ["start", "launch", "recover", "result"]) {
+    assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/runs/${ID}/${step}`), "core");
+  }
+  assert.equal(ownerOf("GET", `/api/v1/projects/${ID}/evidence`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/evidence`), "core");
+  assert.equal(ownerOf("POST", "/api/v1/projects/blueprints"), "python");
+  assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/evidence/${ID}/verify`), "python");
+});

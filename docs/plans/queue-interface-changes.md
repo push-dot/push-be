@@ -26,7 +26,7 @@ The plan's table name `jobs` is already the saved-job table from `0001_init.sql`
 - `assertPlanAllows(plan, gate)` takes a gate name (`employer_interview` → PRO, `pdf_attachment` → ULTRA), not `(user, type, payload)`. Those are the only plan gates on routes core owns. The rule table is `REQUIRED_PLAN` in `services/core-api/src/jobs/config.ts`.
 - The ai-worker no longer checks the employer interview plan; core rejects it before enqueue.
 - Per-user request rate limiting was already in core (`allow(..., "user", ...)` in `handler.ts`), so `ratelimit.ts` is unchanged.
-- Not moved yet: the project blueprint cap (FREE 5 / PRO 20 / ULTRA none) and Python's request limiter. Both guard routes that still run in Python (`POST /projects/blueprints` and the rest of `ai-api`). They move with Task 10d.
+- Not moved yet: the project blueprint cap (FREE 5 / PRO 20 / ULTRA none) and Python's request limiter. Both guard routes that still run in Python. The blueprint cap guards `POST /projects/blueprints`, which is AI work and stayed in Python when 10d moved the other project routes.
 
 ## Task 10c: sources, images, career evidence
 
@@ -71,3 +71,12 @@ Parity gaps: schema-level body errors (message text only, as in 10b). `rate` of 
 Moved to core: `GET/POST /interviews`, `GET/PATCH /interviews/{id}`. `POST /interviews/{id}/prepare` stays in Python (gateway treats it as AI). 33 parity cases, all equal, including SQL checks of the calendar event and `INTERVIEW` application event that create and patch write. Core writes the calendar event, interview and application event in one statement (Python used one transaction).
 
 Parity gaps: schema-level body errors (message text only). Time zones are checked with `Intl.DateTimeFormat` (as core's calendar routes already do) instead of `zoneinfo`; `Intl` also accepts different capitalization (`utc`), which Python rejects on Linux.
+
+## Task 10d: projects
+
+Moved to core: `GET /projects`, `GET /projects/{id}`, `POST /projects/{id}/select`, `GET/POST /projects/{id}/runs`, `POST /projects/{id}/runs/{runId}/start|launch|recover|result`, `GET/POST /projects/{id}/evidence`. Still in Python (AI): `POST /projects/blueprints`, `POST /projects/{id}/evidence/{evidenceId}/verify`. 61 parity cases, all equal, including the run `payloadHash` for a Korean and emoji prompt and an SQL check of approval consumption.
+
+- `hashJson` (`services/core-api/src/http.ts`) reproduces Python's `hash_json` exactly: sorted keys at every level, compact separators, non-ASCII escaped as `\uXXXX` (Python's default `ensure_ascii=True`). Applications drafts use it too.
+- Starting a run consumes the `CLI_EXECUTE` approval only while the run revision is unchanged, in the same statement that moves the run to `RUNNING`.
+
+Parity gaps: schema-level body errors (message text only).

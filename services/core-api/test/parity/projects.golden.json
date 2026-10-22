@@ -1,0 +1,1785 @@
+[
+ {
+  "name": "list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f5000000-0000-4000-8000-000000000002",
+     "revision": 3,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "Search service",
+     "skills": [],
+     "problem": "p",
+     "solution": "s",
+     "tasks": [],
+     "completionCriteria": [],
+     "metrics": [],
+     "estimatedEffort": {
+      "minHours": 1,
+      "maxHours": 2
+     },
+     "state": "SELECTED",
+     "createdAt": "2026-10-08T00:00:00Z",
+     "updatedAt": "2026-10-08T00:00:00Z"
+    },
+    {
+     "id": "f5000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "결제 재시도 큐",
+     "skills": [
+      "Go",
+      "Kafka"
+     ],
+     "problem": "결제가 실패하면 다시 시도한다",
+     "solution": "지연 큐를 만든다",
+     "tasks": [
+      {
+       "id": "t1",
+       "title": "큐 만들기",
+       "description": "Redis 지연 큐",
+       "acceptance": [
+        "runs locally",
+        "tests pass"
+       ]
+      }
+     ],
+     "completionCriteria": [
+      "committed to a remote repository"
+     ],
+     "metrics": [
+      {
+       "name": "test_coverage",
+       "unit": "percent",
+       "measurement": "coverage report",
+       "target": 80.0
+      }
+     ],
+     "estimatedEffort": {
+      "minHours": 4,
+      "maxHours": 16
+     },
+     "state": "DRAFT",
+     "createdAt": "2026-10-07T00:00:00Z",
+     "updatedAt": "2026-10-07T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list by application",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f5000000-0000-4000-8000-000000000002",
+     "revision": 3,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "Search service",
+     "skills": [],
+     "problem": "p",
+     "solution": "s",
+     "tasks": [],
+     "completionCriteria": [],
+     "metrics": [],
+     "estimatedEffort": {
+      "minHours": 1,
+      "maxHours": 2
+     },
+     "state": "SELECTED",
+     "createdAt": "2026-10-08T00:00:00Z",
+     "updatedAt": "2026-10-08T00:00:00Z"
+    },
+    {
+     "id": "f5000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "결제 재시도 큐",
+     "skills": [
+      "Go",
+      "Kafka"
+     ],
+     "problem": "결제가 실패하면 다시 시도한다",
+     "solution": "지연 큐를 만든다",
+     "tasks": [
+      {
+       "id": "t1",
+       "title": "큐 만들기",
+       "description": "Redis 지연 큐",
+       "acceptance": [
+        "runs locally",
+        "tests pass"
+       ]
+      }
+     ],
+     "completionCriteria": [
+      "committed to a remote repository"
+     ],
+     "metrics": [
+      {
+       "name": "test_coverage",
+       "unit": "percent",
+       "measurement": "coverage report",
+       "target": 80.0
+      }
+     ],
+     "estimatedEffort": {
+      "minHours": 4,
+      "maxHours": 16
+     },
+     "state": "DRAFT",
+     "createdAt": "2026-10-07T00:00:00Z",
+     "updatedAt": "2026-10-07T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list other application",
+  "status": 200,
+  "body": {
+   "data": [],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list bad application",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "applicationId"
+    }
+   }
+  }
+ },
+ {
+  "name": "list page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f5000000-0000-4000-8000-000000000002",
+     "revision": 3,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "Search service",
+     "skills": [],
+     "problem": "p",
+     "solution": "s",
+     "tasks": [],
+     "completionCriteria": [],
+     "metrics": [],
+     "estimatedEffort": {
+      "minHours": 1,
+      "maxHours": 2
+     },
+     "state": "SELECTED",
+     "createdAt": "2026-10-08T00:00:00Z",
+     "updatedAt": "2026-10-08T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wOFQwMDowMDowMFp8ZjUwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "get",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f5000000-0000-4000-8000-000000000001",
+    "revision": 1,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+    "title": "결제 재시도 큐",
+    "skills": [
+     "Go",
+     "Kafka"
+    ],
+    "problem": "결제가 실패하면 다시 시도한다",
+    "solution": "지연 큐를 만든다",
+    "tasks": [
+     {
+      "id": "t1",
+      "title": "큐 만들기",
+      "description": "Redis 지연 큐",
+      "acceptance": [
+       "runs locally",
+       "tests pass"
+      ]
+     }
+    ],
+    "completionCriteria": [
+     "committed to a remote repository"
+    ],
+    "metrics": [
+     {
+      "name": "test_coverage",
+      "unit": "percent",
+      "measurement": "coverage report",
+      "target": 80.0
+     }
+    ],
+    "estimatedEffort": {
+     "minHours": 4,
+     "maxHours": 16
+    },
+    "state": "DRAFT",
+    "createdAt": "2026-10-07T00:00:00Z",
+    "updatedAt": "2026-10-07T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "get other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "get bad id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "id"
+    }
+   }
+  }
+ },
+ {
+  "name": "runs list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f6000000-0000-4000-8000-000000000007",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "stale approval",
+     "payloadHash": "ph-7",
+     "state": "APPROVAL_REQUIRED",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": null,
+     "deviceId": null,
+     "detectedVersion": null,
+     "startedAt": null,
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:06Z",
+     "updatedAt": "2026-10-09T00:00:06Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000006",
+     "revision": 3,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "lost too",
+     "payloadHash": "ph-6",
+     "state": "RUNNING",
+     "launchStatus": "UNKNOWN",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:05Z",
+     "updatedAt": "2026-10-09T01:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000005",
+     "revision": 3,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "lost",
+     "payloadHash": "ph-5",
+     "state": "RUNNING",
+     "launchStatus": "UNKNOWN",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:04Z",
+     "updatedAt": "2026-10-09T01:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000004",
+     "revision": 3,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CLAUDE_CODE",
+     "workingDirectory": "/work/search",
+     "executable": "claude",
+     "arguments": [],
+     "prompt": "test it",
+     "payloadHash": "ph-4",
+     "state": "RUNNING",
+     "launchStatus": "STARTED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "2.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:03Z",
+     "updatedAt": "2026-10-09T01:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000003",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-3",
+     "state": "VERIFYING",
+     "launchStatus": "FINISHED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": "2026-10-09T02:00:00Z",
+     "failureReason": null,
+     "exitCode": 0,
+     "commitSha": "abc123",
+     "stdoutHash": "so",
+     "stderrHash": "se",
+     "createdAt": "2026-10-09T00:00:02Z",
+     "updatedAt": "2026-10-09T02:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-2",
+     "state": "RUNNING",
+     "launchStatus": "CLAIMED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:01Z",
+     "updatedAt": "2026-10-09T01:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-1",
+     "state": "APPROVAL_REQUIRED",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": null,
+     "deviceId": null,
+     "detectedVersion": null,
+     "startedAt": null,
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:00Z",
+     "updatedAt": "2026-10-09T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "runs list page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f6000000-0000-4000-8000-000000000007",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "stale approval",
+     "payloadHash": "ph-7",
+     "state": "APPROVAL_REQUIRED",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": null,
+     "deviceId": null,
+     "detectedVersion": null,
+     "startedAt": null,
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:06Z",
+     "updatedAt": "2026-10-09T00:00:06Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000006",
+     "revision": 3,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "lost too",
+     "payloadHash": "ph-6",
+     "state": "RUNNING",
+     "launchStatus": "UNKNOWN",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:05Z",
+     "updatedAt": "2026-10-09T01:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wOVQwMDowMDowNVp8ZjYwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDA2",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "runs list other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f7000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "runId": "f6000000-0000-4000-8000-000000000003",
+     "commitUrl": "https://github.com/me/search/commit/abc123",
+     "commitSha": "abc123",
+     "testResults": {
+      "testCommand": "go test ./...",
+      "testOutput": "ok",
+      "exitCode": 0
+     },
+     "metrics": [
+      {
+       "name": "p95",
+       "value": 12.5,
+       "unit": "ms"
+      }
+     ],
+     "summary": "fast",
+     "status": "PENDING",
+     "verificationMethod": null,
+     "verifiedAt": null,
+     "careerEvidenceId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-10T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "evidence list other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "run on draft",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "blueprint must be selected before creating a run",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "run bad provider",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported provider",
+    "requestId": "parity",
+    "details": {
+     "field": "provider"
+    }
+   }
+  }
+ },
+ {
+  "name": "run relative dir",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "absolute path required",
+    "requestId": "parity",
+    "details": {
+     "field": "workingDirectory"
+    }
+   }
+  }
+ },
+ {
+  "name": "run empty prompt",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "prompt"
+    }
+   }
+  }
+ },
+ {
+  "name": "run other project",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "run create",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "b8382132-79e1-432c-8fb6-89ba48d59441",
+    "revision": 1,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "GROK_BUILD",
+    "workingDirectory": "/work/검색",
+    "executable": "grok",
+    "arguments": [],
+    "prompt": "검색 서비스를 만들어 줘 😀",
+    "payloadHash": "bb626928970518259a2d4d3f420d66755a51c6b64134a846a09b43275033bc7b",
+    "state": "APPROVAL_REQUIRED",
+    "launchStatus": "NOT_CLAIMED",
+    "approvalId": null,
+    "deviceId": null,
+    "detectedVersion": null,
+    "startedAt": null,
+    "finishedAt": null,
+    "failureReason": null,
+    "exitCode": null,
+    "commitSha": null,
+    "stdoutHash": null,
+    "stderrHash": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "get after run",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f5000000-0000-4000-8000-000000000002",
+    "revision": 4,
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+    "title": "Search service",
+    "skills": [],
+    "problem": "p",
+    "solution": "s",
+    "tasks": [],
+    "completionCriteria": [],
+    "metrics": [],
+    "estimatedEffort": {
+     "minHours": 1,
+     "maxHours": 2
+    },
+    "state": "IN_PROGRESS",
+    "createdAt": "2026-10-08T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "select draft",
+  "status": 200,
+  "body": {
+   "data": {
+    "blueprint": {
+     "id": "f5000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "결제 재시도 큐",
+     "skills": [
+      "Go",
+      "Kafka"
+     ],
+     "problem": "결제가 실패하면 다시 시도한다",
+     "solution": "지연 큐를 만든다",
+     "tasks": [
+      {
+       "id": "t1",
+       "title": "큐 만들기",
+       "description": "Redis 지연 큐",
+       "acceptance": [
+        "runs locally",
+        "tests pass"
+       ]
+      }
+     ],
+     "completionCriteria": [
+      "committed to a remote repository"
+     ],
+     "metrics": [
+      {
+       "name": "test_coverage",
+       "unit": "percent",
+       "measurement": "coverage report",
+       "target": 80.0
+      }
+     ],
+     "estimatedEffort": {
+      "minHours": 4,
+      "maxHours": 16
+     },
+     "state": "SELECTED",
+     "createdAt": "2026-10-07T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    "manifest": {
+     "projectId": "f5000000-0000-4000-8000-000000000001",
+     "blueprintRevision": 2,
+     "files": [
+      {
+       "path": "README.md",
+       "encoding": "utf8",
+       "content": "# 결제 재시도 큐\n\n## Problem\n결제가 실패하면 다시 시도한다\n\n## Solution\n지연 큐를 만든다\n",
+       "sha256": "81aa86bb2a2482255cc51cbacc6aaeb0ae51aeb747fd9a322b0b271c2eafcdac"
+      },
+      {
+       "path": "docs/tasks.md",
+       "encoding": "utf8",
+       "content": "## 큐 만들기\nRedis 지연 큐\n\nAcceptance:\n- runs locally\n- tests pass\n\n",
+       "sha256": "539acf7c816598204bba6452824468694e7a455b09bc4052d78d3bb001d4c09e"
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "name": "select stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 2
+    }
+   }
+  }
+ },
+ {
+  "name": "select in progress",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "blueprint cannot be selected from IN_PROGRESS",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "select other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "start no device",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "deviceId"
+    }
+   }
+  }
+ },
+ {
+  "name": "start no version",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "detectedVersion"
+    }
+   }
+  }
+ },
+ {
+  "name": "start stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 1
+    }
+   }
+  }
+ },
+ {
+  "name": "start wrong approval",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval does not cover this target",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "start target revision",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "approval was issued for a different run revision",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "start expired",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval expired",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "start",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000001",
+    "revision": 2,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CODEX",
+    "workingDirectory": "/work/search",
+    "executable": "codex",
+    "arguments": [],
+    "prompt": "build it",
+    "payloadHash": "ph-1",
+    "state": "RUNNING",
+    "launchStatus": "NOT_CLAIMED",
+    "approvalId": "e1000000-0000-4000-8000-000000000003",
+    "deviceId": "dev-9",
+    "detectedVersion": "1.2",
+    "startedAt": "2026-10-22T12:00:00Z",
+    "finishedAt": null,
+    "failureReason": null,
+    "exitCode": null,
+    "commitSha": null,
+    "stdoutHash": null,
+    "stderrHash": null,
+    "createdAt": "2026-10-09T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "start again",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "run cannot start from RUNNING",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "start unknown run",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "launch bad status",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be CLAIMED, STARTED or UNKNOWN",
+    "requestId": "parity",
+    "details": {
+     "field": "launchStatus"
+    }
+   }
+  }
+ },
+ {
+  "name": "launch wrong device",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "run is bound to a different device",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "launch wrong hash",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "payload hash does not match the approved run",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "launch started without process",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "process info required for STARTED",
+    "requestId": "parity",
+    "details": {
+     "field": "process"
+    }
+   }
+  }
+ },
+ {
+  "name": "launch bad process time",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be RFC3339",
+    "requestId": "parity",
+    "details": {
+     "field": "process.startedAt"
+    }
+   }
+  }
+ },
+ {
+  "name": "launch started",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000002",
+    "revision": 3,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CODEX",
+    "workingDirectory": "/work/search",
+    "executable": "codex",
+    "arguments": [],
+    "prompt": "build it",
+    "payloadHash": "ph-2",
+    "state": "RUNNING",
+    "launchStatus": "STARTED",
+    "approvalId": null,
+    "deviceId": "dev-1",
+    "detectedVersion": "1.0",
+    "startedAt": "2026-10-09T01:00:00Z",
+    "finishedAt": null,
+    "failureReason": null,
+    "exitCode": null,
+    "commitSha": null,
+    "stdoutHash": null,
+    "stderrHash": null,
+    "createdAt": "2026-10-09T00:00:01Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "launch backwards",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "launchStatus cannot move from STARTED to CLAIMED",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "launch not running",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "run is not running",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "recover bad decision",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be REATTACH or MARK_FAILED",
+    "requestId": "parity",
+    "details": {
+     "field": "decision"
+    }
+   }
+  }
+ },
+ {
+  "name": "recover reattach no process",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "process info required for REATTACH",
+    "requestId": "parity",
+    "details": {
+     "field": "process"
+    }
+   }
+  }
+ },
+ {
+  "name": "recover reattach",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000005",
+    "revision": 4,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CODEX",
+    "workingDirectory": "/work/search",
+    "executable": "codex",
+    "arguments": [],
+    "prompt": "lost",
+    "payloadHash": "ph-5",
+    "state": "RUNNING",
+    "launchStatus": "STARTED",
+    "approvalId": null,
+    "deviceId": "dev-1",
+    "detectedVersion": "1.0",
+    "startedAt": "2026-10-09T01:00:00Z",
+    "finishedAt": null,
+    "failureReason": null,
+    "exitCode": null,
+    "commitSha": null,
+    "stdoutHash": null,
+    "stderrHash": null,
+    "createdAt": "2026-10-09T00:00:04Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "recover not unknown",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "recover is only allowed from UNKNOWN launch status",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "recover fail no reason",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required for MARK_FAILED",
+    "requestId": "parity",
+    "details": {
+     "field": "failureReason"
+    }
+   }
+  }
+ },
+ {
+  "name": "recover wrong device",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "run is bound to a different device",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "recover mark failed",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000006",
+    "revision": 4,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CODEX",
+    "workingDirectory": "/work/search",
+    "executable": "codex",
+    "arguments": [],
+    "prompt": "lost too",
+    "payloadHash": "ph-6",
+    "state": "FAILED",
+    "launchStatus": "FINISHED",
+    "approvalId": null,
+    "deviceId": "dev-1",
+    "detectedVersion": "1.0",
+    "startedAt": "2026-10-09T01:00:00Z",
+    "finishedAt": "2026-10-22T12:00:00Z",
+    "failureReason": "machine died",
+    "exitCode": null,
+    "commitSha": null,
+    "stdoutHash": null,
+    "stderrHash": null,
+    "createdAt": "2026-10-09T00:00:05Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "result not started",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "result requires a RUNNING run with STARTED launch status",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "result ok",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000004",
+    "revision": 4,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CLAUDE_CODE",
+    "workingDirectory": "/work/search",
+    "executable": "claude",
+    "arguments": [],
+    "prompt": "test it",
+    "payloadHash": "ph-4",
+    "state": "VERIFYING",
+    "launchStatus": "FINISHED",
+    "approvalId": null,
+    "deviceId": "dev-1",
+    "detectedVersion": "2.0",
+    "startedAt": "2026-10-09T01:00:00Z",
+    "finishedAt": "2026-10-22T12:00:00Z",
+    "failureReason": null,
+    "exitCode": 0,
+    "commitSha": "def456",
+    "stdoutHash": "a",
+    "stderrHash": "b",
+    "createdAt": "2026-10-09T00:00:03Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "result failed",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f6000000-0000-4000-8000-000000000002",
+    "revision": 4,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "provider": "CODEX",
+    "workingDirectory": "/work/search",
+    "executable": "codex",
+    "arguments": [],
+    "prompt": "build it",
+    "payloadHash": "ph-2",
+    "state": "FAILED",
+    "launchStatus": "FINISHED",
+    "approvalId": null,
+    "deviceId": "dev-1",
+    "detectedVersion": "1.0",
+    "startedAt": "2026-10-09T01:00:00Z",
+    "finishedAt": "2026-10-22T12:00:00Z",
+    "failureReason": "exit code 2",
+    "exitCode": 2,
+    "commitSha": null,
+    "stdoutHash": "a",
+    "stderrHash": "b",
+    "createdAt": "2026-10-09T00:00:01Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence bad url",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be an http(s) URL",
+    "requestId": "parity",
+    "details": {
+     "field": "commitUrl"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence unknown run",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "run not found",
+    "requestId": "parity",
+    "details": {
+     "field": "runId"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence run not verifying",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "run must be VERIFYING before evidence is submitted",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence other project",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence create",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "c1e371d1-da95-4b00-b173-dc05f3b5015c",
+    "revision": 1,
+    "projectId": "f5000000-0000-4000-8000-000000000002",
+    "runId": "f6000000-0000-4000-8000-000000000004",
+    "commitUrl": "https://github.com/me/search/commit/def456",
+    "commitSha": "def456",
+    "testResults": {
+     "testCommand": "go test",
+     "testOutput": "ok",
+     "exitCode": 0
+    },
+    "metrics": [
+     {
+      "name": "p95",
+      "value": 9.0,
+      "unit": "ms"
+     },
+     {
+      "name": "cov",
+      "value": 81.5,
+      "unit": "%"
+     }
+    ],
+    "summary": "faster",
+    "status": "PENDING",
+    "verificationMethod": null,
+    "verifiedAt": null,
+    "careerEvidenceId": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence bad metric",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateProjectEvidenceReq\nmetrics.0.value\n  Input should be a valid number [type=float_type, input_value='1', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.10/v/float_type",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "runs after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "b8382132-79e1-432c-8fb6-89ba48d59441",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "GROK_BUILD",
+     "workingDirectory": "/work/검색",
+     "executable": "grok",
+     "arguments": [],
+     "prompt": "검색 서비스를 만들어 줘 😀",
+     "payloadHash": "bb626928970518259a2d4d3f420d66755a51c6b64134a846a09b43275033bc7b",
+     "state": "APPROVAL_REQUIRED",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": null,
+     "deviceId": null,
+     "detectedVersion": null,
+     "startedAt": null,
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000007",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "stale approval",
+     "payloadHash": "ph-7",
+     "state": "APPROVAL_REQUIRED",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": null,
+     "deviceId": null,
+     "detectedVersion": null,
+     "startedAt": null,
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:06Z",
+     "updatedAt": "2026-10-09T00:00:06Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000006",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "lost too",
+     "payloadHash": "ph-6",
+     "state": "FAILED",
+     "launchStatus": "FINISHED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": "2026-10-22T12:00:00Z",
+     "failureReason": "machine died",
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:05Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000005",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "lost",
+     "payloadHash": "ph-5",
+     "state": "RUNNING",
+     "launchStatus": "STARTED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:04Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000004",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CLAUDE_CODE",
+     "workingDirectory": "/work/search",
+     "executable": "claude",
+     "arguments": [],
+     "prompt": "test it",
+     "payloadHash": "ph-4",
+     "state": "VERIFYING",
+     "launchStatus": "FINISHED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "2.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": "2026-10-22T12:00:00Z",
+     "failureReason": null,
+     "exitCode": 0,
+     "commitSha": "def456",
+     "stdoutHash": "a",
+     "stderrHash": "b",
+     "createdAt": "2026-10-09T00:00:03Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000003",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-3",
+     "state": "VERIFYING",
+     "launchStatus": "FINISHED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": "2026-10-09T02:00:00Z",
+     "failureReason": null,
+     "exitCode": 0,
+     "commitSha": "abc123",
+     "stdoutHash": "so",
+     "stderrHash": "se",
+     "createdAt": "2026-10-09T00:00:02Z",
+     "updatedAt": "2026-10-09T02:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000002",
+     "revision": 4,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-2",
+     "state": "FAILED",
+     "launchStatus": "FINISHED",
+     "approvalId": null,
+     "deviceId": "dev-1",
+     "detectedVersion": "1.0",
+     "startedAt": "2026-10-09T01:00:00Z",
+     "finishedAt": "2026-10-22T12:00:00Z",
+     "failureReason": "exit code 2",
+     "exitCode": 2,
+     "commitSha": null,
+     "stdoutHash": "a",
+     "stderrHash": "b",
+     "createdAt": "2026-10-09T00:00:01Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f6000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "provider": "CODEX",
+     "workingDirectory": "/work/search",
+     "executable": "codex",
+     "arguments": [],
+     "prompt": "build it",
+     "payloadHash": "ph-1",
+     "state": "RUNNING",
+     "launchStatus": "NOT_CLAIMED",
+     "approvalId": "e1000000-0000-4000-8000-000000000003",
+     "deviceId": "dev-9",
+     "detectedVersion": "1.2",
+     "startedAt": "2026-10-22T12:00:00Z",
+     "finishedAt": null,
+     "failureReason": null,
+     "exitCode": null,
+     "commitSha": null,
+     "stdoutHash": null,
+     "stderrHash": null,
+     "createdAt": "2026-10-09T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "evidence after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c1e371d1-da95-4b00-b173-dc05f3b5015c",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "runId": "f6000000-0000-4000-8000-000000000004",
+     "commitUrl": "https://github.com/me/search/commit/def456",
+     "commitSha": "def456",
+     "testResults": {
+      "testCommand": "go test",
+      "testOutput": "ok",
+      "exitCode": 0
+     },
+     "metrics": [
+      {
+       "name": "p95",
+       "value": 9.0,
+       "unit": "ms"
+      },
+      {
+       "name": "cov",
+       "value": 81.5,
+       "unit": "%"
+      }
+     ],
+     "summary": "faster",
+     "status": "PENDING",
+     "verificationMethod": null,
+     "verifiedAt": null,
+     "careerEvidenceId": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f7000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "projectId": "f5000000-0000-4000-8000-000000000002",
+     "runId": "f6000000-0000-4000-8000-000000000003",
+     "commitUrl": "https://github.com/me/search/commit/abc123",
+     "commitSha": "abc123",
+     "testResults": {
+      "testCommand": "go test ./...",
+      "testOutput": "ok",
+      "exitCode": 0
+     },
+     "metrics": [
+      {
+       "name": "p95",
+       "value": 12.5,
+       "unit": "ms"
+      }
+     ],
+     "summary": "fast",
+     "status": "PENDING",
+     "verificationMethod": null,
+     "verifiedAt": null,
+     "careerEvidenceId": null,
+     "createdAt": "2026-10-10T00:00:00Z",
+     "updatedAt": "2026-10-10T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f5000000-0000-4000-8000-000000000002",
+     "revision": 4,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "Search service",
+     "skills": [],
+     "problem": "p",
+     "solution": "s",
+     "tasks": [],
+     "completionCriteria": [],
+     "metrics": [],
+     "estimatedEffort": {
+      "minHours": 1,
+      "maxHours": 2
+     },
+     "state": "IN_PROGRESS",
+     "createdAt": "2026-10-08T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f5000000-0000-4000-8000-000000000001",
+     "revision": 2,
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "gapAnalysisId": "c2000000-0000-4000-8000-000000000001",
+     "title": "결제 재시도 큐",
+     "skills": [
+      "Go",
+      "Kafka"
+     ],
+     "problem": "결제가 실패하면 다시 시도한다",
+     "solution": "지연 큐를 만든다",
+     "tasks": [
+      {
+       "id": "t1",
+       "title": "큐 만들기",
+       "description": "Redis 지연 큐",
+       "acceptance": [
+        "runs locally",
+        "tests pass"
+       ]
+      }
+     ],
+     "completionCriteria": [
+      "committed to a remote repository"
+     ],
+     "metrics": [
+      {
+       "name": "test_coverage",
+       "unit": "percent",
+       "measurement": "coverage report",
+       "target": 80.0
+      }
+     ],
+     "estimatedEffort": {
+      "minHours": 4,
+      "maxHours": 16
+     },
+     "state": "SELECTED",
+     "createdAt": "2026-10-07T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "approvals after",
+  "status": 0,
+  "body": [
+   {
+    "id": "e1000000-0000-4000-8000-000000000003",
+    "status": "CONSUMED",
+    "revision": "3",
+    "consumed_at": "2026-10-22 12:00:00+00"
+   },
+   {
+    "id": "e1000000-0000-4000-8000-000000000004",
+    "status": "APPROVED",
+    "revision": "2",
+    "consumed_at": null
+   },
+   {
+    "id": "e1000000-0000-4000-8000-000000000005",
+    "status": "APPROVED",
+    "revision": "2",
+    "consumed_at": null
+   }
+  ]
+ }
+]

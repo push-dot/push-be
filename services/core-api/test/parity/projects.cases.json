@@ -1,0 +1,603 @@
+[
+ {
+  "name": "list",
+  "method": "GET",
+  "path": "/api/v1/projects",
+  "body": null
+ },
+ {
+  "name": "list by application",
+  "method": "GET",
+  "path": "/api/v1/projects?applicationId=c0000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "list other application",
+  "method": "GET",
+  "path": "/api/v1/projects?applicationId=c0000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "list bad application",
+  "method": "GET",
+  "path": "/api/v1/projects?applicationId=x",
+  "body": null
+ },
+ {
+  "name": "list page",
+  "method": "GET",
+  "path": "/api/v1/projects?limit=1",
+  "body": null
+ },
+ {
+  "name": "get",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "get other",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "get bad id",
+  "method": "GET",
+  "path": "/api/v1/projects/x",
+  "body": null
+ },
+ {
+  "name": "runs list",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": null
+ },
+ {
+  "name": "runs list page",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs?limit=2",
+  "body": null
+ },
+ {
+  "name": "runs list other",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003/runs",
+  "body": null
+ },
+ {
+  "name": "evidence list",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": null
+ },
+ {
+  "name": "evidence list other",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003/evidence",
+  "body": null
+ },
+ {
+  "name": "run on draft",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000001/runs",
+  "body": {
+   "provider": "CODEX",
+   "workingDirectory": "/w",
+   "prompt": "p"
+  }
+ },
+ {
+  "name": "run bad provider",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": {
+   "provider": "VIM",
+   "workingDirectory": "/w",
+   "prompt": "p"
+  }
+ },
+ {
+  "name": "run relative dir",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": {
+   "provider": "CODEX",
+   "workingDirectory": "w",
+   "prompt": "p"
+  }
+ },
+ {
+  "name": "run empty prompt",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": {
+   "provider": "CODEX",
+   "workingDirectory": "/w",
+   "prompt": ""
+  }
+ },
+ {
+  "name": "run other project",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003/runs",
+  "body": {
+   "provider": "CODEX",
+   "workingDirectory": "/w",
+   "prompt": "p"
+  }
+ },
+ {
+  "name": "run create",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": {
+   "provider": "GROK_BUILD",
+   "workingDirectory": "/work/검색",
+   "prompt": "검색 서비스를 만들어 줘 😀"
+  }
+ },
+ {
+  "name": "get after run",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002",
+  "body": null
+ },
+ {
+  "name": "select draft",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000001/select",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "select stale",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000001/select",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "select in progress",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/select",
+  "body": {
+   "expectedRevision": 4
+  }
+ },
+ {
+  "name": "select other",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003/select",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "start no device",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "1.2",
+   "deviceId": ""
+  }
+ },
+ {
+  "name": "start no version",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start stale",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 2,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start wrong approval",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000004",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start target revision",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000007/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000004",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start expired",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000007/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000005",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start again",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 2,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "start unknown run",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f5000000-0000-4000-8000-000000000001/start",
+  "body": {
+   "expectedRevision": 1,
+   "approvalId": "e1000000-0000-4000-8000-000000000003",
+   "detectedVersion": "1.2",
+   "deviceId": "dev-9"
+  }
+ },
+ {
+  "name": "launch bad status",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-2",
+   "launchStatus": "DONE"
+  }
+ },
+ {
+  "name": "launch wrong device",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-2",
+   "payloadHash": "ph-2",
+   "launchStatus": "STARTED"
+  }
+ },
+ {
+  "name": "launch wrong hash",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-1",
+   "payloadHash": "nope",
+   "launchStatus": "STARTED"
+  }
+ },
+ {
+  "name": "launch started without process",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-2",
+   "launchStatus": "STARTED"
+  }
+ },
+ {
+  "name": "launch bad process time",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-2",
+   "launchStatus": "STARTED",
+   "process": {
+    "pid": 42,
+    "startedAt": "x"
+   }
+  }
+ },
+ {
+  "name": "launch started",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 2,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-2",
+   "launchStatus": "STARTED",
+   "process": {
+    "pid": 42,
+    "startedAt": "2026-10-22T11:59:00Z"
+   }
+  }
+ },
+ {
+  "name": "launch backwards",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/launch",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-2",
+   "launchStatus": "CLAIMED"
+  }
+ },
+ {
+  "name": "launch not running",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000003/launch",
+  "body": {
+   "expectedRevision": 4,
+   "deviceId": "dev-1",
+   "payloadHash": "ph-3",
+   "launchStatus": "CLAIMED"
+  }
+ },
+ {
+  "name": "recover bad decision",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000005/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "decision": "RETRY"
+  }
+ },
+ {
+  "name": "recover reattach no process",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000005/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "decision": "REATTACH"
+  }
+ },
+ {
+  "name": "recover reattach",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000005/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "decision": "REATTACH",
+   "process": {
+    "pid": 7,
+    "startedAt": "2026-10-22T11:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "recover not unknown",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000005/recover",
+  "body": {
+   "expectedRevision": 4,
+   "deviceId": "dev-1",
+   "decision": "MARK_FAILED",
+   "failureReason": "x"
+  }
+ },
+ {
+  "name": "recover fail no reason",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000006/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "decision": "MARK_FAILED"
+  }
+ },
+ {
+  "name": "recover wrong device",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000006/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-x",
+   "decision": "MARK_FAILED",
+   "failureReason": "x"
+  }
+ },
+ {
+  "name": "recover mark failed",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000006/recover",
+  "body": {
+   "expectedRevision": 3,
+   "deviceId": "dev-1",
+   "decision": "MARK_FAILED",
+   "failureReason": "machine died"
+  }
+ },
+ {
+  "name": "result not started",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000003/result",
+  "body": {
+   "expectedRevision": 4,
+   "exitCode": 0,
+   "stdoutHash": "a",
+   "stderrHash": "b"
+  }
+ },
+ {
+  "name": "result ok",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000004/result",
+  "body": {
+   "expectedRevision": 3,
+   "exitCode": 0,
+   "commitSha": "def456",
+   "stdoutHash": "a",
+   "stderrHash": "b"
+  }
+ },
+ {
+  "name": "result failed",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs/f6000000-0000-4000-8000-000000000002/result",
+  "body": {
+   "expectedRevision": 3,
+   "exitCode": 2,
+   "stdoutHash": "a",
+   "stderrHash": "b"
+  }
+ },
+ {
+  "name": "evidence bad url",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": {
+   "runId": "f6000000-0000-4000-8000-000000000003",
+   "commitUrl": "git@x",
+   "testCommand": "t",
+   "testOutput": "o",
+   "exitCode": 0,
+   "summary": "s"
+  }
+ },
+ {
+  "name": "evidence unknown run",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": {
+   "runId": "f5000000-0000-4000-8000-000000000001",
+   "commitUrl": "https://g/c",
+   "testCommand": "t",
+   "testOutput": "o",
+   "exitCode": 0,
+   "summary": "s"
+  }
+ },
+ {
+  "name": "evidence run not verifying",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": {
+   "runId": "f6000000-0000-4000-8000-000000000005",
+   "commitUrl": "https://g/c",
+   "testCommand": "t",
+   "testOutput": "o",
+   "exitCode": 0,
+   "summary": "s"
+  }
+ },
+ {
+  "name": "evidence other project",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000003/evidence",
+  "body": {
+   "runId": "f6000000-0000-4000-8000-000000000003",
+   "commitUrl": "https://g/c",
+   "testCommand": "t",
+   "testOutput": "o",
+   "exitCode": 0,
+   "summary": "s"
+  }
+ },
+ {
+  "name": "evidence create",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": {
+   "runId": "f6000000-0000-4000-8000-000000000004",
+   "commitUrl": "https://github.com/me/search/commit/def456",
+   "testCommand": "go test",
+   "testOutput": "ok",
+   "exitCode": 0,
+   "metrics": [
+    {
+     "name": "p95",
+     "value": 9,
+     "unit": "ms"
+    },
+    {
+     "name": "cov",
+     "value": 81.5,
+     "unit": "%"
+    }
+   ],
+   "summary": "faster"
+  }
+ },
+ {
+  "name": "evidence bad metric",
+  "method": "POST",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": {
+   "runId": "f6000000-0000-4000-8000-000000000004",
+   "commitUrl": "https://g/c",
+   "testCommand": "t",
+   "testOutput": "o",
+   "exitCode": 0,
+   "metrics": [
+    {
+     "name": "x",
+     "value": "1",
+     "unit": "ms"
+    }
+   ],
+   "summary": "s"
+  }
+ },
+ {
+  "name": "runs after",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/runs",
+  "body": null
+ },
+ {
+  "name": "evidence after",
+  "method": "GET",
+  "path": "/api/v1/projects/f5000000-0000-4000-8000-000000000002/evidence",
+  "body": null
+ },
+ {
+  "name": "list after",
+  "method": "GET",
+  "path": "/api/v1/projects",
+  "body": null
+ },
+ {
+  "name": "approvals after",
+  "sql": "SELECT id::text AS id, status, revision::text AS revision, consumed_at::text AS consumed_at FROM approvals WHERE kind = 'CLI_EXECUTE' ORDER BY id"
+ }
+]
