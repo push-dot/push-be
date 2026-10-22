@@ -20,3 +20,10 @@ The plan's table name `jobs` is already the saved-job table from `0001_init.sql`
 - The worker inserts the `notifications` row with `ON CONFLICT (id) DO NOTHING` and pushes only when the row is new, so a duplicate delivery does not push twice. If the worker dies between the insert and the push, the retry skips the push.
 - Notification preference checks (`user_settings`) stay in core, before enqueue.
 - The notify handler sends no mail. No notification type sends mail today; signup verification and password reset mail stay in core.
+
+## Task 9: plan gates
+
+- `assertPlanAllows(plan, gate)` takes a gate name (`employer_interview` → PRO, `pdf_attachment` → ULTRA), not `(user, type, payload)`. Those are the only plan gates on routes core owns. The rule table is `REQUIRED_PLAN` in `services/core-api/src/jobs/config.ts`.
+- The ai-worker no longer checks the employer interview plan; core rejects it before enqueue.
+- Per-user request rate limiting was already in core (`allow(..., "user", ...)` in `handler.ts`), so `ratelimit.ts` is unchanged.
+- Not moved yet: the project blueprint cap (FREE 5 / PRO 20 / ULTRA none) and Python's request limiter. Both guard routes that still run in Python (`POST /projects/blueprints` and the rest of `ai-api`). They move with Task 10d.

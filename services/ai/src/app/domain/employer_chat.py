@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 
-from app.domain.errors import PLAN_REQUIRED, DomainError, validation_field
+from app.domain.errors import validation_field
 from app.domain.plan_levers import levers_for
 
 INTENTS = frozenset({"posting", "review", "interview", "general"})
@@ -33,11 +33,6 @@ def turn_from_payload(payload: dict | None) -> dict:
 
 
 def apply_employer_turn(ai, plan: str | None, intent: str | None, config: object):
-    tier = (plan or "").strip().upper()
-    if intent == "interview" and tier not in {"PRO", "ULTRA"}:
-        raise DomainError(
-            403, PLAN_REQUIRED, "interview requires the PRO plan",
-            {"requiredPlan": "PRO"})
     levers = levers_for("EMPLOYER", plan, config)
     ai.model = levers.model
     ai.effort = levers.effort

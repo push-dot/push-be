@@ -2,7 +2,7 @@ import { bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
-import { queueFor, type Plan } from "../jobs/config.ts";
+import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -281,12 +281,6 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
   }
 }
 
-const planTier = (value: unknown): Plan => {
-  const raw = value == null ? "" : String(value).trim().toUpperCase();
-  if (raw === "BASIC" || raw === "PRO" || raw === "ULTRA" || raw === "FREE") return raw;
-  return "FREE";
-};
-
 const enqueueChatMessage = async (
   ctx: Ctx,
   conversationId: string,
@@ -383,12 +377,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     const owned = await one(ctx.deps.query,
       "SELECT c.company_id, co.plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]);
-    if (owned && owned.company_id != null) {
-      const tier = owned.plan == null ? "" : String(owned.plan).trim().toUpperCase();
-      if (tier !== "PRO" && tier !== "ULTRA") {
-        throw new HttpError(403, "PLAN_REQUIRED", "interview requires the PRO plan", { requiredPlan: "PRO" });
-      }
-    }
+    if (owned && owned.company_id != null) assertPlanAllows(owned.plan, "employer_interview");
   }
   const payload: Record<string, unknown> = {
     text: body.text, context, ai, accessMode: access, intent, applicationId: messageApplicationId,
@@ -449,9 +438,7 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   if (row.verified_at == null) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
-  if (String(row.plan || "") !== "ULTRA") {
-    throw new HttpError(403, "PLAN_REQUIRED", "pdf attachments require the ULTRA plan", { requiredPlan: "ULTRA" });
-  }
+  assertPlanAllows(row.plan, "pdf_attachment");
   const form = await ctx.request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) {

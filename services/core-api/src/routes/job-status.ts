@@ -1,18 +1,12 @@
 import { one } from "../db.ts";
 import { HttpError, data, requireUuid } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
-import { queueFor, type JobType, type Plan } from "../jobs/config.ts";
+import { planTier, queueFor, type JobType } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const planTier = (value: unknown): Plan => {
-  const raw = value == null ? "" : String(value).trim().toUpperCase();
-  if (raw === "BASIC" || raw === "PRO" || raw === "ULTRA" || raw === "FREE") return raw;
-  return "FREE";
-};
 
 const readObject = async (request: Request): Promise<Record<string, unknown>> => {
   const raw = await request.text();

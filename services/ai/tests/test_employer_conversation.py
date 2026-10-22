@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -26,14 +27,12 @@ def _ai() -> ent.AiOptions:
     )
 
 
-def test_interview_on_basic_is_403_required_plan_pro():
+def test_interview_plan_gate_is_at_the_core_entry():
     cfg = load_config()
-    for plan in ("BASIC", None, ""):
-        with pytest.raises(DomainError) as err:
-            apply_employer_turn(_ai(), plan, "interview", cfg)
-        assert err.value.status == 403
-        assert err.value.code == "PLAN_REQUIRED"
-        assert err.value.details["requiredPlan"] == "PRO"
+    out = apply_employer_turn(_ai(), "BASIC", "interview", cfg)
+    assert out.model == levers_for("EMPLOYER", "BASIC", cfg).model
+    core = Path(__file__).resolve().parents[2] / "core-api" / "src"
+    assert 'assertPlanAllows(owned.plan, "employer_interview")' in (core / "routes" / "conversations.ts").read_text()
 
 
 def test_posting_intent_turns_web_search_on():
