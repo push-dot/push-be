@@ -46,3 +46,9 @@ Only part of 10c is done in this branch.
 - `ingest_source(source_id, tenant)` is `Ingestor.ingest_text(tenant, source_type, source_id, text)` plus the `ingest` job handler. The handler picks the reader from the payload: `sourceId`, `postingId`, `url`, `githubRepo` (`owner/name`: README + last 20 commit subjects), or `reindex: true`.
 - `reindex_all` walks `sources` that have no rows for the current embedding model and writes new rows. Rows for other models stay until they are dropped by hand after the switch.
 - `llama-index-core` is in the `local` extra (already listed), not in the base dependencies. `tests/test_rag_pipeline.py` skips when it is not installed.
+
+## Task 13: retrieval
+
+- `Retriever(db, embedder, reranker).search(query, tenant, k=5, *, kinds=None)` matches the planned signature as a method. `Hit` also carries `source_type`.
+- The keyword side uses `pg_trgm` `word_similarity` with `pg_trgm.word_similarity_threshold = 0.3` (set per transaction), on the first 200 characters of the query.
+- `RAG_ENGINE=llamaindex` switches chat retrieval (personal and employer, both use `collect_evidence`) to `rag_nodes`. Any other value keeps the old `rag_chunks` path. The chat tenant is the calling user; company-wide nodes are not searched from chat yet.

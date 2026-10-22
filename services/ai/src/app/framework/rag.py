@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from app.framework.flag import use_langchain
 
 _DIST = 0.6
@@ -146,7 +148,40 @@ async def _langchain(svc, state, seen: set) -> str:
     return await tools_mod.invoke_tool(tool, (state.get("text") or "")[:2000])
 
 
+_shared: dict = {}
+
+
+def _retriever(svc):
+    if "retriever" not in _shared:
+        import httpx
+
+        from app.embedding.factory import get_embedder, get_reranker
+        from app.rag.retriever import Retriever
+
+        client = httpx.AsyncClient(timeout=60)
+        redis = None
+        if os.environ.get("REDIS_URL"):
+            from redis.asyncio import Redis
+            redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        _shared["retriever"] = Retriever(svc.db, get_embedder(client, redis), get_reranker(client))
+    return _shared["retriever"]
+
+
+async def _llamaindex(svc, state, seen: set) -> str:
+    from app.rag.tenant import Tenant
+
+    hits = await _retriever(svc).search(
+        (state.get("text") or "")[:2000], Tenant(user_id=state["user_id"]), 6)
+    return format_section([
+        {"title": hit.citation_id, "text": hit.text}
+        for hit in hits if str(hit.source_id) not in seen])
+
+
 async def collect_evidence(svc, state, seen: set) -> str:
+    from app.rag.retriever import rag_engine
+
+    if rag_engine() == "llamaindex":
+        return await _llamaindex(svc, state, seen)
     if use_langchain():
         return await _langchain(svc, state, seen)
     return await _legacy(svc, state, seen)
