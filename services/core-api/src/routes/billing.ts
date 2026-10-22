@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, grantMicro, iapTopupMicro } from "../billing/credits.ts";
+import { DISPLAY_MICRO, ensureMonthlyGrant, grantMicro, iapTopupMicro } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -28,8 +28,6 @@ async function readObject(request: Request): Promise<Record<string, unknown>> {
 function configured(ctx: Ctx): boolean {
   return Boolean(ctx.env.STRIPE_SECRET_KEY);
 }
-
-const monthKey = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
 
 const utcMonth = (now: Date): { monthStart: string; monthEnd: string } => {
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
@@ -76,14 +74,7 @@ const companyLedger = async (ctx: Ctx, companyId: string, amount: number, refere
 
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
   if (!plan) return;
-  const amount = grantMicro(audience, plan);
-  if (amount <= 0) return;
-  const reference = monthKey(ctx.now);
-  if (audience === "EMPLOYER") {
-    await companyLedger(ctx, ownerId, amount, reference);
-    return;
-  }
-  await userLedger(ctx, ownerId, amount, reference);
+  await ensureMonthlyGrant(ctx.deps.query, { audience, plan, ownerId, now: ctx.now });
 };
 
 export async function billingStatus(ctx: Ctx): Promise<Response> {

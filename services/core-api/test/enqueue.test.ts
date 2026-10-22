@@ -39,7 +39,7 @@ test("enqueue reserves credits, writes job and outbox in one transaction", async
   });
   assert.equal(out.queue, "q:chat");
   assert.match(out.jobId, /^[0-9a-f-]{36}$/);
-  const writes = calls.filter((sql) => sql.includes("INSERT INTO"));
+  const writes = calls.filter((sql) => sql.includes("INSERT INTO") && !sql.includes("INSERT INTO billing_ledger"));
   assert.equal(writes.length, 1);
   assert.match(writes[0], /INSERT INTO ai_jobs/);
   assert.match(writes[0], /INSERT INTO credit_reservations/);
@@ -147,4 +147,42 @@ test("balance counts RESERVED without the 10-minute window", async () => {
   assert.equal(await availableMicro(tx, USER), 45n);
   assert.equal(calls.some((sql) => sql.includes("RESERVED")), true);
   assert.equal(calls.some((sql) => sql.includes("SETTLED")), true);
+});
+
+test("enqueue grants the plan's monthly credits before reserving, so a new FREE user can chat", async () => {
+  const calls: string[] = [];
+  const grants: unknown[][] = [];
+  let ledger: string | null = null;
+  const q = scripted((sql, params) => {
+    if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) return null;
+    if (sql.includes("INSERT INTO billing_ledger")) {
+      grants.push(params);
+      ledger = String(params[2]);
+      return null;
+    }
+    if (sql.includes("billing_ledger")) return ledger == null ? null : { balance_after: ledger };
+    if (sql.includes("ai_usage")) return { settled: "0" };
+    if (sql.includes("SUM") && sql.includes("credit_reservations")) return { reserved: "0" };
+    if (sql.includes("INSERT INTO ai_jobs")) return { id: String(params[0]), queue: String(params[2]) };
+    return null;
+  }, calls);
+  const out = await enqueueJob(q, {
+    type: "chat", userId: USER, plan: "FREE", payload: {}, byok: false, now: new Date("2026-10-22T00:00:00Z"),
+  });
+  assert.equal(out.queue, "q:chat");
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0][1], USER);
+  assert.equal(grants[0][2], 1_800_000);
+  assert.equal(grants[0][3], "monthly:2026-10");
+});
+
+test("employer jobs grant the company plan and BYOK jobs grant nothing", async () => {
+  const calls: string[] = [];
+  await enqueueJob(funded(calls, 10_000_000n), {
+    type: "employer_ai", userId: USER, companyId: COMPANY, plan: "PRO", payload: {}, byok: false, now: new Date("2026-10-22T00:00:00Z"),
+  });
+  assert.ok(calls.some((sql) => sql.includes("INSERT INTO billing_ledger") && sql.includes("company_id")));
+  const byok: string[] = [];
+  await enqueueJob(funded(byok, 0n), { type: "chat", userId: USER, plan: "FREE", payload: {}, byok: true });
+  assert.ok(!byok.some((sql) => sql.includes("INSERT INTO billing_ledger")));
 });
