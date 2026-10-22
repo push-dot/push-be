@@ -118,3 +118,14 @@ Parity gaps:
 ## Dead Python routes
 
 `POST /postings/{id}/fit` is removed from Python: the gateway has sent it to core since Task 7. Its fit logic (`infrastructure/posting_fit_cache.load_fit`) stays for the queue worker's `fit` handler. Every remaining Python route was checked against the gateway's `ownerOf()`: the rest still reach Python, except `/internal/chat/schedule`, which the gateway denies on purpose because core calls the VPS directly.
+
+## messages/stream moved to core
+
+`POST /conversations/{id}/messages/stream` is accepted by core now (e580f82 core, e65d63b gateway); Python no longer inserts chat jobs (ba7f402), and approval cards expire without a dispatcher (206e36e). Written from that branch's description; see those commits for details.
+
+Client impact:
+- 402, 403 and 429 come back as JSON error responses before any SSE starts. Clients must check the status before reading the stream.
+- The stream closes after `SSE_MAX_POLLS` polls. Clients resume with a retry or `GET /conversations/{id}/messages/stream/active`.
+- Company conversations need a verified company; otherwise 403 `BUSINESS_NOT_VERIFIED`.
+
+Deploy: apply migration 0025 before deploying the gateway.
