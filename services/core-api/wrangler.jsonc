@@ -9,6 +9,8 @@
   "workers_dev": false,
   "triggers": { "crons": ["15 * * * *"] },
   "observability": { "enabled": true },
+  // Neon runs in aws-ap-southeast-1; run next to it so each DB round trip stays short.
+  "placement": { "mode": "targeted", "region": "aws:ap-southeast-1" },
   "services": [
     { "binding": "API", "service": "push-be-python" }
   ],
