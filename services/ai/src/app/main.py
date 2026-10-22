@@ -175,10 +175,8 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         from langgraph.checkpoint.memory import MemorySaver
         saver = MemorySaver()
     else:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        saver_ctx = AsyncPostgresSaver.from_conn_string(cfg.database_url)
-        saver = await saver_ctx.__aenter__()
-        await saver.setup()
+        from app.db import open_chat_checkpointer
+        saver, saver_ctx = await open_chat_checkpointer(cfg.database_url)
     conversations = ConversationService(
         db, gate, saver, documents, jobs_svc, applications)
     if not external_jobs():
@@ -220,7 +218,11 @@ async def _shutdown(app: FastAPI) -> None:
     if conversations is not None and not external_jobs():
         await conversations.stop_worker()
     if saver_ctx is not None:
-        await saver_ctx.__aexit__(None, None, None)
+        close = getattr(saver_ctx, "close", None)
+        if close is not None:
+            await close()
+        else:
+            await saver_ctx.__aexit__(None, None, None)
     await oauth.aclose()
     await openai.aclose()
     await openai_byok.aclose()
