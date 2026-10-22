@@ -426,7 +426,7 @@ function sseFrame(row: Record<string, unknown>): string {
   if (row.type === "token") body = { type: "token", text: String(p.text ?? "") };
   else if (row.type === "status") body = { type: "status", text: String(p.text ?? "") };
   else if (row.type === "error") body = { type: "error", error: p.error ?? {} };
-  else if (row.type === "done") body = { type: "done", operation: p.operation ?? null };
+  else if (row.type === "done") body = { type: "done", operation: p.operation ?? null, ...(p.awaiting ? { awaiting: p.awaiting } : {}) };
   else if (row.type === "cancelled") body = { type: "cancelled" };
   else body = { type: row.type, ...p };
   body.seq = seq;

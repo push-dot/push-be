@@ -45,6 +45,7 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/messages$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/attachments$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/approvals\/[^/]+$/.test(path)) return method === "POST";
   if (path === "/api/v1/billing" || path === "/api/v1/billing/ledger") return method === "GET";
   if (
     path === "/api/v1/billing/checkout"

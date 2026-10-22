@@ -1,4 +1,5 @@
 import { bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
+import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
@@ -12,7 +13,16 @@ const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
+const CANONICAL_ACCESS: Record<string, string> = {
+  ALWAYS_ASK: "ALWAYS_ASK",
+  AUTO: "AUTO",
+  BYPASS: "BYPASS",
+  SUGGEST: "AUTO",
+  CONFIRM_ACTIONS: "ALWAYS_ASK",
+};
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
+const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
+const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -341,8 +351,15 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
-  if (access !== "SUGGEST" && access !== "CONFIRM_ACTIONS") {
-    throw new HttpError(400, "VALIDATION_ERROR", "must be SUGGEST or CONFIRM_ACTIONS", { field: "accessMode" });
+  let canonical = CANONICAL_ACCESS[access] ?? "";
+  if (!access) {
+    const saved = await one(ctx.deps.query,
+      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
+      [ctx.user.id]);
+    canonical = CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
+  }
+  if (!canonical) {
+    throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
   let context: Record<string, unknown> = {};
   if (body.context != null) {
@@ -380,7 +397,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     if (owned && owned.company_id != null) assertPlanAllows(owned.plan, "employer_interview");
   }
   const payload: Record<string, unknown> = {
-    text: body.text, context, ai, accessMode: access, intent, applicationId: messageApplicationId,
+    text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
   };
   if (byok && ctx.env.BYOK_MASTER_KEY) {
     const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
@@ -393,7 +410,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
@@ -456,4 +473,81 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
     "INSERT INTO conversation_attachments (id, conversation_id, company_id, file_name, mime_type, content) VALUES ($1,$2,$3,$4,$5,$6)",
     [id, conversationId, String(row.company_id), file.name, file.type, content]);
   return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
+};
+
+const optionIds = (raw: unknown): string[] => {
+  const list = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>).id ?? "") : ""));
+};
+
+export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  const approvalId = requireUuid(approvalRaw, "approvalId");
+  const body = await readObject(ctx.request);
+  forbidExtra(body, ["optionId"]);
+  if (typeof body.optionId !== "string" || !body.optionId) {
+    throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });
+  }
+  const optionId = body.optionId;
+  const row = await one(ctx.deps.query,
+    "SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
+    [approvalId, conversationId, ctx.user.id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!optionIds(row.options).includes(optionId)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
+  }
+  if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+  if (row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime()) {
+    await query(ctx.deps.query, "UPDATE approvals SET status = 'EXPIRED', updated_at = now() WHERE id = $1 AND status = 'PENDING'", [approvalId]);
+    throw new HttpError(410, "APPROVAL_EXPIRED", "approval expired");
+  }
+  const kind = String(row.kind ?? "");
+  const status = kind === "TOOL_ACTION" && optionId === "reject" ? "REJECTED" : "APPROVED";
+  const updated = await one(ctx.deps.query,
+    "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
+    [status, optionId, approvalId]);
+  if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+  const result = { id: approvalId, status, optionId };
+  const resumes = RESUMABLE.has(kind) || row.job_id != null;
+  const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
+  if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
+  try {
+    const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } } });
+    return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
+  } catch (err) {
+    await query(ctx.deps.query,
+      "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",
+      [approvalId, status]);
+    throw err;
+  }
+};
+
+export const postResumeJob = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  if (!ctx.request.headers.has("x-push-act-as")) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const body = await readObject(ctx.request);
+  forbidExtra(body, ["resume"]);
+  if (!body.resume || typeof body.resume !== "object" || Array.isArray(body.resume)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "resume is required", { field: "resume" });
+  }
+  const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: body.resume } });
+  return data(202, { jobId }, ctx.rid);
+};
+
+const APPROVAL_PATH = /^\/api\/v1\/conversations\/[^/]+\/approvals\/([^/]+)$/;
+
+export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
+  const approval = path.match(APPROVAL_PATH);
+  if (!approval || ctx.request.headers.has("idempotency-key")) return ctx;
+  let optionId = "";
+  try {
+    const body = JSON.parse(await ctx.request.clone().text()) as Record<string, unknown>;
+    optionId = typeof body.optionId === "string" ? body.optionId : "";
+  } catch {
+    return ctx;
+  }
+  const headers = new Headers(ctx.request.headers);
+  headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${optionId}`));
+  return { ...ctx, request: new Request(ctx.request, { headers }) };
 };

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from app.domain.errors import DomainError, not_found, validation_field
+from app.domain.errors import DomainError
 
 _TOOL_STATES = {"run", "ok", "err", "wait"}
 _TODO_STATES = {"todo", "now", "done"}
@@ -53,12 +54,17 @@ def _tool_event(state: dict) -> dict | None:
         return None
     if raw.get("state") not in _TOOL_STATES or not raw.get("name"):
         return None
-    return {
+    event = {
         "type": "tool",
         "name": raw["name"],
         "state": raw["state"],
         "summary": raw.get("summary") or "",
     }
+    if raw.get("tier"):
+        event["tier"] = raw["tier"]
+    if "result" in raw:
+        event["result"] = raw["result"]
+    return event
 
 
 def _todo_event(state: dict) -> dict | None:
@@ -149,38 +155,6 @@ def _approval_event(diff: dict, state: dict) -> dict:
     }
 
 
-def _option_ids(options) -> set:
-    if isinstance(options, str):
-        options = json.loads(options)
-    if not isinstance(options, list):
-        return set()
-    return {
-        item.get("id") for item in options
-        if isinstance(item, dict) and item.get("id") is not None
-    }
-
-
-async def resolve_chat_approval(db, user_id, conversation_id, approval_id, option_id: str) -> dict:
-    row = await db.q().fetchrow(
-        "SELECT id, status, options FROM approvals "
-        "WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
-        approval_id, conversation_id, user_id)
-    if row is None:
-        raise not_found()
-    if option_id not in _option_ids(row["options"]):
-        raise validation_field("optionId", "unknown option")
-    if row["status"] != "PENDING":
-        raise DomainError(409, "CONFLICT", "approval already decided")
-    tag = await db.q().execute(
-        "UPDATE approvals SET status = 'APPROVED', option_id = $1, "
-        "decided_at = now(), updated_at = now(), revision = revision + 1 "
-        "WHERE id = $2 AND conversation_id = $3 AND user_id = $4 AND status = 'PENDING'",
-        option_id, approval_id, conversation_id, user_id)
-    if not isinstance(tag, str) or tag.split()[-1] == "0":
-        raise DomainError(409, "CONFLICT", "approval already decided")
-    return {"id": str(approval_id), "status": "APPROVED", "optionId": option_id}
-
-
 async def publish_persisted_surface(state, db, emit, apply) -> bool:
     events = [
         event for event in surface_events(state)
@@ -192,7 +166,10 @@ async def publish_persisted_surface(state, db, emit, apply) -> bool:
     if approval is None:
         diff_event = next((event for event in events if event["type"] == "diff"), None)
         if diff_event is not None and apply is not None:
-            await apply(diff_event)
+            try:
+                await apply(diff_event)
+            except DomainError:
+                logging.getLogger(__name__).warning("chat edit not applied", exc_info=True)
         return False
     conv = state.get("conversation")
     user_id = state.get("user_id")
@@ -201,6 +178,13 @@ async def publish_persisted_surface(state, db, emit, apply) -> bool:
     diff = state.get("diff") or {}
     await insert_chat_approval(
         db, user_id, conv.id, approval, diff.get("documentId"))
+    if diff:
+        try:
+            await db.q().execute(
+                "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
+                UUID(str(approval["id"])), json.dumps(diff, ensure_ascii=False))
+        except Exception:
+            logging.getLogger(__name__).warning("chat edit diff not stored", exc_info=True)
     emit(approval)
     return True
 

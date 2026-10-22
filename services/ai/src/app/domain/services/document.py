@@ -63,6 +63,52 @@ def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
     return ent.Quality(evidence_fidelity=fidelity, method=method, issues=issues)
 
 
+def hunk_edits(hunks: list[dict]) -> list[tuple[str, str]]:
+    edits: list[tuple[str, str]] = []
+    anchor: str | None = None
+    removed: list[str] = []
+    added: list[str] = []
+
+    def flush() -> None:
+        if removed:
+            edits.append(("\n".join(removed), "\n".join(added)))
+        elif added:
+            if anchor is None:
+                raise validation_field("hunks", "an added line needs a context line before it")
+            edits.append((anchor, anchor + "\n" + "\n".join(added)))
+        removed.clear()
+        added.clear()
+
+    for hunk in hunks:
+        sign = hunk.get("sign") or ""
+        text = str(hunk.get("text") or "")
+        if sign == "-":
+            if added:
+                flush()
+            removed.append(text)
+        elif sign == "+":
+            added.append(text)
+        else:
+            flush()
+            anchor = text
+    flush()
+    return edits
+
+
+def _replaced(src: ent.DocumentVersion, edits: list[tuple[str, str]]):
+    content = copy.deepcopy(src.content)
+    blocks = copy.deepcopy(src.blocks)
+    for old, new in edits:
+        applied = [False]
+        dc.replace_in_node(content, old, new, applied)
+        if not applied[0]:
+            return content, blocks, False
+        for b in blocks:
+            if old in b.text:
+                b.text = b.text.replace(old, new, 1)
+    return content, blocks, bool(edits)
+
+
 @dataclass
 class ExcerptEntry:
     evidence_id: UUID
@@ -388,42 +434,69 @@ class DocumentService:
                     user_id, doc_id, p.source_version_id)
             except Exception:
                 raise internal()
-            new_content = copy.deepcopy(src.content)
-            applied = [False]
-            dc.replace_in_node(new_content, p.selection.text, p.replacement, applied)
-            new_blocks = copy.deepcopy(src.blocks)
-            for b in new_blocks:
-                if p.selection.text in b.text:
-                    b.text = b.text.replace(p.selection.text, p.replacement, 1)
-            if not applied[0]:
+            new_content, new_blocks, applied = _replaced(
+                src, [(p.selection.text, p.replacement)])
+            if not applied:
                 raise approval_stale(
                     "selection text no longer present in the version")
-            dc.validate_document_content(new_content, new_blocks)
-            await self._verify_blocks(user_id, d.application_id, new_blocks)
-            num = await self.documents.next_version_number(doc_id)
-            now = _now()
-            v = ent.DocumentVersion(
-                id=uuid4(), user_id=user_id, document_id=doc_id,
-                application_id=d.application_id, number=num, content=new_content,
-                blocks=new_blocks, change_note="applied proposal " + str(p.id),
-                quality=compute_quality(new_blocks, ent.METHOD_RULE_BASED),
-                created_at=now)
-            await self.documents.create_version(v)
-            await self.documents.mark_proposal_applied(p.id, now)
-            d.latest_version_id = v.id
-            d.finalized_version_id = None
-            if d.status == ent.DOC_FINALIZED:
-                d.status = ent.DOC_DRAFT
-            d.updated_at = now
-            try:
-                await self.documents.update(d, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            d.revision = expected + 1
+            v = await self._save_edit(user_id, d, expected, new_content, new_blocks,
+                                      "applied proposal " + str(p.id))
+            await self.documents.mark_proposal_applied(p.id, v.created_at)
             out_doc, out_ver = d, v
 
         await self.db.run(work)
         return out_doc, out_ver
+
+    async def apply_hunks(self, user_id: UUID, diff: dict) -> tuple[ent.Document, ent.DocumentVersion]:
+        doc_id = UUID(str(diff.get("documentId")))
+        edits = hunk_edits(diff.get("hunks") or [])
+        out_doc = out_ver = None
+
+        async def work():
+            nonlocal out_doc, out_ver
+            d = await self._get_mutable(user_id, doc_id)
+            expected_version = str(diff.get("revisionId") or "")
+            if d.latest_version_id is None or (
+                    expected_version and expected_version != str(d.latest_version_id)):
+                raise revision_conflict(d.revision)
+            try:
+                src = await self.documents.get_version(user_id, doc_id, d.latest_version_id)
+            except Exception:
+                raise internal()
+            new_content, new_blocks, applied = _replaced(src, edits)
+            if not applied:
+                raise revision_conflict(d.revision)
+            out_ver = await self._save_edit(user_id, d, d.revision, new_content, new_blocks,
+                                            "applied chat edit")
+            out_doc = d
+
+        await self.db.run(work)
+        return out_doc, out_ver
+
+    async def _save_edit(self, user_id: UUID, d: ent.Document, expected: int,
+                         content: dict, blocks: list[ent.Block], note: str) -> ent.DocumentVersion:
+        dc.validate_document_content(content, blocks)
+        await self._verify_blocks(user_id, d.application_id, blocks)
+        num = await self.documents.next_version_number(d.id)
+        now = _now()
+        v = ent.DocumentVersion(
+            id=uuid4(), user_id=user_id, document_id=d.id,
+            application_id=d.application_id, number=num, content=content,
+            blocks=blocks, change_note=note,
+            quality=compute_quality(blocks, ent.METHOD_RULE_BASED),
+            created_at=now)
+        await self.documents.create_version(v)
+        d.latest_version_id = v.id
+        d.finalized_version_id = None
+        if d.status == ent.DOC_FINALIZED:
+            d.status = ent.DOC_DRAFT
+        d.updated_at = now
+        try:
+            await self.documents.update(d, expected)
+        except Exception as err:
+            raise map_revision_err(err)
+        d.revision = expected + 1
+        return v
 
     async def review(self, user_id: UUID, doc_id: UUID,
                      version_id: UUID) -> ent.DocumentVersion:

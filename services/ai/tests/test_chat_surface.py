@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.api.errors import domain_error_handler
-from app.api.routers.conversations import _sse_frames, router
+from app.api.routers.conversations import _sse_frames
 from app.domain import entities as ent
-from app.domain.errors import DomainError
 from app.domain.services.conversation import ConversationService
 from app.graphs.chat import bind_chat_nodes, event_sink
 from app.graphs.chat_surface import insert_chat_approval, surface_events
@@ -21,7 +17,6 @@ DOC = "11111111-1111-4111-8111-111111111111"
 REV = "22222222-2222-4222-8222-222222222222"
 USER_ID = UUID("00000000-0000-4000-8000-0000000000aa")
 CONV_ID = UUID("00000000-0000-4000-8000-0000000000bb")
-APPR_ID = UUID("00000000-0000-4000-8000-0000000000cc")
 OPTIONS = [
     {"id": "apply", "label": "적용"},
     {"id": "skip", "label": "그대로 두기"},
@@ -343,10 +338,10 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
     svc.db = db
     applied = []
 
-    async def apply_hunks(diff):
+    async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.documents.apply_hunks = apply_hunks
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
     nodes = bind_chat_nodes(svc)
     state = {
         "user_id": user_id,
@@ -372,7 +367,9 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
         event_sink.reset(token)
     assert [event["type"] for event in sink] == ["diff", "fit", "approval"]
     assert applied == []
-    assert len(db.calls) == 1
+    assert len(db.calls) == 2
+    assert "SET tool_args" in db.calls[1][0]
+    assert json.loads(db.calls[1][1][1])["hunks"] == [{"line": 2, "sign": "-", "text": "old"}]
     sql, args = db.calls[0]
     assert "conversation_id" in sql
     assert "PENDING" in sql
@@ -390,10 +387,10 @@ async def test_persist_applies_the_diff_when_confirm_is_false():
     svc.db = db
     applied = []
 
-    async def apply_hunks(diff):
+    async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.documents.apply_hunks = apply_hunks
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
     nodes = bind_chat_nodes(svc)
     diff = {
         "documentId": DOC,
@@ -419,106 +416,6 @@ async def test_persist_applies_the_diff_when_confirm_is_false():
         "type": "diff", "documentId": DOC, "revisionId": REV,
         "hunks": [{"line": 2, "sign": "-", "text": "old"}],
     }]
-
-
-class _AsUser:
-    def __init__(self, app, user):
-        self.app = app
-        self.user = user
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            scope.setdefault("state", {})["user"] = self.user
-        await self.app(scope, receive, send)
-
-
-class _Rows:
-    def __init__(self, row, tag="UPDATE 1"):
-        self.row = row
-        self.calls = []
-        self.tag = tag
-
-    def q(self):
-        return self
-
-    async def fetchrow(self, sql, *args):
-        self.calls.append((sql, args))
-        if self.row is None:
-            return None
-        if CONV_ID not in args or USER_ID not in args:
-            return None
-        return dict(self.row)
-
-    async def execute(self, sql, *args):
-        self.calls.append((sql, args))
-        return self.tag
-
-
-def _client(db: _Rows) -> TestClient:
-    app = FastAPI()
-    app.add_exception_handler(DomainError, domain_error_handler)
-    app.include_router(router, prefix="/api/v1")
-    app.add_middleware(_AsUser, user=ent.User(
-        id=USER_ID, display_name="Ada",
-        created_at=datetime.now(timezone.utc)))
-    app.state.db = db
-    return TestClient(app)
-
-
-def _pending():
-    return {"id": APPR_ID, "status": "PENDING", "options": OPTIONS}
-
-
-def test_resolve_approval_returns_the_choice():
-    db = _Rows(_pending())
-    res = _client(db).post(
-        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
-        json={"optionId": "apply"},
-        headers={"Authorization": "Bearer test"})
-    assert res.status_code == 200
-    assert res.json()["data"] == {
-        "id": str(APPR_ID), "status": "APPROVED", "optionId": "apply"}
-    updates = [call for call in db.calls if call[0].lstrip().upper().startswith("UPDATE")]
-    assert len(updates) == 1
-    assert "apply" in updates[0][1]
-    assert "APPROVED" in updates[0][0]
-
-
-def test_resolve_unknown_option_is_validation_error():
-    db = _Rows(_pending())
-    res = _client(db).post(
-        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
-        json={"optionId": "nope"})
-    assert res.status_code == 400
-    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert not any(call[0].lstrip().upper().startswith("UPDATE") for call in db.calls)
-
-
-def test_resolve_missing_approval_is_404():
-    res = _client(_Rows(None)).post(
-        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
-        json={"optionId": "apply"})
-    assert res.status_code == 404
-    assert res.json()["error"]["code"] == "NOT_FOUND"
-
-
-def test_resolve_second_decide_is_conflict():
-    row = _pending()
-    row["status"] = "APPROVED"
-    res = _client(_Rows(row)).post(
-        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
-        json={"optionId": "apply"})
-    assert res.status_code == 409
-    assert res.json()["error"]["code"] == "CONFLICT"
-
-
-def test_resolve_update_match_zero_is_conflict():
-    db = _Rows(_pending(), tag="UPDATE 0")
-    res = _client(db).post(
-        f"/api/v1/conversations/{CONV_ID}/approvals/{APPR_ID}",
-        json={"optionId": "apply"})
-    assert res.status_code == 409
-    assert res.json()["error"]["code"] == "CONFLICT"
 
 
 def _data_frames(frames: list[str]) -> list[dict]:
@@ -552,3 +449,43 @@ async def test_sse_frames_forwards_tool_and_future():
         "type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 6}
     assert frames[4] == {
         "type": "error", "error": {"code": "INTERNAL", "message": "no"}, "seq": 7}
+
+
+async def test_sse_frames_done_awaiting():
+    async def gen():
+        yield ("done", {"awaiting": "choice"}, 8)
+
+    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
+    assert frames[-1] == {"type": "done", "operation": None, "awaiting": "choice", "seq": 8}
+
+
+async def test_persist_survives_a_conflicting_auto_edit():
+    from app.domain.errors import revision_conflict
+    user_id = uuid4()
+    conv = _conv(user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    svc.db = _Rec()
+
+    async def apply_hunks(user, diff):
+        raise revision_conflict(2)
+
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
+    nodes = bind_chat_nodes(svc)
+    token = event_sink.set([])
+    try:
+        await nodes["persist"]({
+            "user_id": user_id, "text": "edit", "attachments": [], "conversation": conv,
+            "confirm_before_edit": False,
+            "diff": {"documentId": DOC, "revisionId": REV,
+                     "hunks": [{"line": 2, "sign": "-", "text": "old"}]},
+        })
+    finally:
+        event_sink.reset(token)
+
+
+async def test_sse_frames_done_awaiting_keeps_the_operation():
+    async def gen():
+        yield ("done", {"awaiting": "choice", "operation": {"status": "SUCCEEDED"}}, 9)
+
+    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
+    assert frames[-1] == {"type": "done", "operation": {"status": "SUCCEEDED"}, "awaiting": "choice", "seq": 9}

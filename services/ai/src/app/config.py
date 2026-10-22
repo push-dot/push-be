@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -56,6 +57,8 @@ class Config:
     model_ultra: str = "anthropic/claude-opus-5-5"
     model_employer_ultra: str = "anthropic/claude-fable-5-1"
     openrouter_deepseek_providers: str = "Together,Fireworks,Novita"
+    core_origin: str = ""
+    internal_api_secret: str = ""
 
 
 def load_config() -> Config:
@@ -101,4 +104,24 @@ def load_config() -> Config:
         model_employer_ultra=env("MODEL_EMPLOYER_ULTRA", "anthropic/claude-fable-5-1"),
         openrouter_deepseek_providers=env(
             "OPENROUTER_DEEPSEEK_PROVIDERS", "Together,Fireworks,Novita"),
+        core_origin=env("CORE_ORIGIN"),
+        internal_api_secret=env("INTERNAL_API_SECRET"),
     )
+
+
+_harness_cf_warned = False
+
+
+def harness_enabled() -> bool:
+    global _harness_cf_warned
+    if os.environ.get("AI_HARNESS", "").strip().lower() not in {"1", "true", "yes"}:
+        return False
+    from app.jobs import external_jobs
+    if not external_jobs():
+        return True
+    # The Cloudflare Workflow path retires with feat/be-queue-rag (cb6a521), so the harness is not ported there.
+    if not _harness_cf_warned:
+        logging.getLogger(__name__).warning(
+            "AI_HARNESS is on but chat runs on the Cloudflare Workflow path; using the legacy graph")
+        _harness_cf_warned = True
+    return False

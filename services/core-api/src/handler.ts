@@ -1,11 +1,12 @@
 import { isUnique, one, query } from "./db.ts";
+import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
@@ -74,6 +75,16 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
       const job = await dispatchNotificationJobs(ctx, path);
       if (job) return job;
     }
+    const acted = await actAs(request, env, deps.query);
+    if (acted) {
+      const user = await userForActAs(deps.query, acted);
+      if (!(await allow(deps.query, "user", user.id, 600, now.getTime()))) {
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      const ctx = base(request, env, deps, rid, url, now, user);
+      if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
+      return await idempotent(ctx, path);
+    }
     if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
@@ -91,7 +102,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
     }
     const ctx = base(request, env, deps, rid, url, now, user);
     if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
-    return await idempotent(ctx, path);
+    return await idempotent(await withApprovalAnswerKey(ctx, path), path);
   } catch (err) {
     if (err instanceof HttpError) return errorOf(err, rid);
     return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -142,6 +153,10 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && message) return postMessage(ctx, message[1]);
   const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);
   if (method === "POST" && attachment) return postAttachment(ctx, attachment[1]);
+  const approval = path.match(/^\/api\/v1\/conversations\/([^/]+)\/approvals\/([^/]+)$/);
+  if (method === "POST" && approval) return resolveApproval(ctx, approval[1], approval[2]);
+  const resumeJob = path.match(/^\/api\/v1\/conversations\/([^/]+)\/resume-jobs$/);
+  if (method === "POST" && resumeJob) return postResumeJob(ctx, resumeJob[1]);
 
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);

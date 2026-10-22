@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
+from app.domain.access_mode import normalize_access_mode, resolve_access_mode
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import (
     DomainError, internal, map_revision_err, not_found, revision_conflict,
@@ -61,7 +62,7 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
 _LIVE_EVENT_TYPES = frozenset({
-    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled"})
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
 
 
 def _live_event(chunk: dict):
@@ -198,6 +199,14 @@ class ConversationService:
     def graph(self):
         # LangGraph compile is the heavy import. Health and auth requests
         # never touch it; the first local chat message in an isolate does.
+        from app.config import harness_enabled
+        if harness_enabled():
+            from app.harness.runtime import HarnessRuntime
+            runtime = getattr(self, "_harness_runtime", None)
+            if runtime is None:
+                runtime = HarnessRuntime(self)
+                self._harness_runtime = runtime
+            return runtime
         if self._compiled is None:
             self._compiled = build_chat_graph(self, self._checkpointer)
         return self._compiled
@@ -268,6 +277,11 @@ class ConversationService:
                     await self.jobs.reset_stale()
                 except Exception:
                     log.exception("chat job stale sweep failed")
+                try:
+                    from app.harness.approval import expire_approvals
+                    await expire_approvals(self.db)
+                except Exception:
+                    log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()
@@ -298,17 +312,22 @@ class ConversationService:
             token = _BYOK_KEY.set(self._byok_keys.get(job_id, ""))
             terminal = False
             try:
-                async for mode, chunk in self.graph.astream(
+                source = self.graph
+                if p.get("resume"):
+                    from app.harness.jobs import approved_edit
+                    source = await approved_edit(self, p, job["user_id"]) or source
+                async for mode, chunk in source.astream(
                         {
                             "user_id": job["user_id"],
                             "conversation_id": job["conversation_id"],
-                            "text": p["text"],
+                            "text": p.get("text") or "",
                             "context": p.get("context") or {},
                             "ai": p.get("ai"),
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
                             "job_id": str(job_id),
                             **turn_from_payload(p),
+                            **({"resume": p["resume"]} if p.get("resume") else {}),
                         },
                         config={"configurable": {
                             "thread_id": str(job["conversation_id"])}},
@@ -483,6 +502,7 @@ class ConversationService:
                            context: dict, ai: Optional[ent.AiOptions],
                            access_mode: str,
                            byok_key: str = "") -> ent.Operation:
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
         if external_jobs():
             return await self._enqueue(
@@ -498,12 +518,35 @@ class ConversationService:
             _BYOK_KEY.reset(token)
         return result["operation"]
 
+    async def _canonical_access(self, user_id, raw: str) -> str:
+        try:
+            requested = normalize_access_mode(raw if raw else None)
+        except ValueError:
+            raise validation_field(
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
+        if requested is not None:
+            return requested.value
+        saved = None
+        try:
+            row = await self.db.q().fetchrow(
+                "SELECT to_jsonb(user_settings)->>'ai_access_mode' AS ai_access_mode "
+                "FROM user_settings WHERE user_id = $1",
+                user_id,
+            )
+            if row is not None:
+                saved = row["ai_access_mode"]
+        except Exception:
+            saved = None
+        return resolve_access_mode(None, saved).value
+
     def _validate_message(self, text: str, access_mode: str) -> None:
         if not text or code_point_len(text) > 20000:
             raise validation_field("text", "text must be 1-20000 characters")
         if not ent.valid_access_mode(access_mode):
             raise validation_field(
-                "accessMode", "must be SUGGEST or CONFIRM_ACTIONS")
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
 
     def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
                     context: dict, ai: Optional[ent.AiOptions],
@@ -525,6 +568,7 @@ class ConversationService:
                              ai: Optional[ent.AiOptions], access_mode: str,
                              byok_key: str = "", intent: str | None = None,
                              application_id=None):
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
         if self._worker_task is not None or external_jobs():
             async for ev in self._stream_via_queue(
@@ -569,6 +613,7 @@ class ConversationService:
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            "accessMode": access_mode,
             **turn_from_payload({"intent": intent, "application_id": application_id}),
         }
         payload = self._stash_byok(user_id, payload, byok_key)
@@ -621,7 +666,7 @@ class ConversationService:
                 elif t == "status":
                     yield ("status", p.get("text", ""), r["id"])
                 elif t == "done":
-                    yield ("done", p.get("operation"), r["id"])
+                    yield ("done", p if p.get("awaiting") else p.get("operation"), r["id"])
                     return
                 elif t == "error":
                     yield ("error", p.get("error") or {}, r["id"])
@@ -681,6 +726,7 @@ class ConversationService:
             "context": context or {},
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
+            "accessMode": access_mode,
         }, byok_key)
         # One statement checks the conversation, inserts the job, and writes
         # the first status so SSE shows progress before the Workflow starts.

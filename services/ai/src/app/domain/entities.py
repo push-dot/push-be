@@ -701,7 +701,7 @@ class Message(Model):
     created_at: datetime
 
 
-ACCESS_MODES = {"SUGGEST", "CONFIRM_ACTIONS"}
+ACCESS_MODES = {"SUGGEST", "CONFIRM_ACTIONS", "ALWAYS_ASK", "AUTO", "BYPASS"}
 
 
 def valid_access_mode(m: str) -> bool:

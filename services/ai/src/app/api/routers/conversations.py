@@ -11,7 +11,6 @@ from app.db import NotFoundError
 from app.domain.errors import DomainError, not_found
 from app.jsonutil import to_jsonable
 from app.api import schemas as s
-from app.graphs.chat_surface import resolve_chat_approval
 from app.infrastructure.store_conversations import ConversationStore
 from app.api.deps import deps, ai_options, bind_json, current_user, data, param_id
 
@@ -53,6 +52,9 @@ async def _sse_frames(gen, request: Request):
                 body = {"type": "status", "text": payload}
             elif kind == "error":
                 body = {"type": "error", "error": payload}
+            elif kind == "done" and isinstance(payload, dict) and payload.get("awaiting"):
+                body = {"type": "done", "operation": to_jsonable(payload.get("operation")),
+                        "awaiting": payload["awaiting"]}
             elif kind == "done":
                 body = {"type": "done", "operation": to_jsonable(payload)}
             elif kind == "cancelled":
@@ -83,20 +85,6 @@ def _sse_response(gen):
     return StreamingResponse(
         gen, media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-class _ResolveApprovalReq(s.Req):
-    option_id: str
-
-
-@router.post("/conversations/{id}/approvals/{approval_id}")
-async def resolve_conversation_approval(id: str, approval_id: str, request: Request):
-    req = await bind_json(request, _ResolveApprovalReq)
-    body = await resolve_chat_approval(
-        request.app.state.db, current_user(request).id,
-        param_id(id, "id"), param_id(approval_id, "approvalId"),
-        req.option_id)
-    return data(200, body)
 
 
 def _shares(request: Request) -> ConversationStore:
