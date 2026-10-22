@@ -19,7 +19,7 @@ async def test_pg_jobs_sql_round_trip():
     conn = await asyncpg.connect(user="cyjoon", database=name, host="/tmp")
     try:
         await conn.execute(
-            "CREATE TABLE jobs ("
+            "CREATE TABLE ai_jobs ("
             "id uuid PRIMARY KEY, type text NOT NULL, queue text NOT NULL, "
             "status text NOT NULL, run_after timestamptz NOT NULL, "
             "heartbeat_at timestamptz NULL, updated_at timestamptz NOT NULL)")
@@ -28,7 +28,7 @@ async def test_pg_jobs_sql_round_trip():
             "id bigserial PRIMARY KEY, job_id uuid NOT NULL, queue text NOT NULL, "
             "dispatched_at timestamptz NULL)")
         await conn.execute(
-            "INSERT INTO jobs (id, type, queue, status, run_after, updated_at) "
+            "INSERT INTO ai_jobs (id, type, queue, status, run_after, updated_at) "
             "VALUES ($1, 'chat', 'q:chat', 'QUEUED', $2, $2)",
             CHAT, NOW)
         await conn.execute("INSERT INTO outbox (job_id, queue) VALUES ($1, 'q:chat')", CHAT)
@@ -42,12 +42,12 @@ async def test_pg_jobs_sql_round_trip():
         queued = await db.pending_jobs(NOW)
         assert [row["id"] for row in queued] == [CHAT]
         await conn.execute(
-            "UPDATE jobs SET status = 'RUNNING', heartbeat_at = $2 WHERE id = $1",
+            "UPDATE ai_jobs SET status = 'RUNNING', heartbeat_at = $2 WHERE id = $1",
             CHAT, NOW)
         running = await db.running_jobs()
         assert running[0]["type"] == "chat"
         await db.mark_retry([CHAT], NOW)
-        status = await conn.fetchval("SELECT status FROM jobs WHERE id = $1", CHAT)
+        status = await conn.fetchval("SELECT status FROM ai_jobs WHERE id = $1", CHAT)
         assert status == "RETRY"
         again = await db.pending_jobs(NOW)
         assert [row["id"] for row in again] == [CHAT]

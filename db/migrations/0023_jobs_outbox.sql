@@ -1,4 +1,4 @@
-CREATE TABLE jobs (
+CREATE TABLE ai_jobs (
     id uuid PRIMARY KEY,
     type text NOT NULL,
     queue text NOT NULL,
@@ -21,11 +21,11 @@ CREATE TABLE jobs (
     UNIQUE (user_id, idempotency_key)
 );
 
-CREATE INDEX idx_jobs_queued ON jobs (queue, run_after) WHERE status IN ('QUEUED', 'RETRY');
+CREATE INDEX idx_ai_jobs_queued ON ai_jobs (queue, run_after) WHERE status IN ('QUEUED', 'RETRY');
 
 CREATE TABLE outbox (
     id bigserial PRIMARY KEY,
-    job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id uuid NOT NULL REFERENCES ai_jobs(id) ON DELETE CASCADE,
     queue text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     dispatched_at timestamptz NULL
@@ -34,7 +34,7 @@ CREATE TABLE outbox (
 CREATE INDEX idx_outbox_pending ON outbox (id) WHERE dispatched_at IS NULL;
 
 CREATE TABLE credit_reservations (
-    job_id uuid PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id uuid PRIMARY KEY REFERENCES ai_jobs(id) ON DELETE CASCADE,
     user_id uuid NOT NULL REFERENCES users(id),
     company_id uuid NULL REFERENCES companies(id) ON DELETE SET NULL,
     amount_micro bigint NOT NULL,
@@ -56,9 +56,9 @@ CREATE TRIGGER outbox_notify
 AFTER INSERT ON outbox
 FOR EACH ROW EXECUTE FUNCTION notify_outbox();
 
-ALTER TABLE ai_usage ADD COLUMN job_id uuid NULL REFERENCES jobs(id);
+ALTER TABLE ai_usage ADD COLUMN job_id uuid NULL REFERENCES ai_jobs(id);
 
-INSERT INTO jobs (
+INSERT INTO ai_jobs (
     id, type, queue, user_id, status, attempts, max_attempts, run_after,
     payload, error, conversation_id, checkpoint, created_at, updated_at
 )
@@ -88,7 +88,7 @@ FROM chat_jobs;
 
 ALTER TABLE chat_events DROP CONSTRAINT chat_events_job_id_fkey;
 ALTER TABLE chat_events
-    ADD CONSTRAINT chat_events_job_id_fkey FOREIGN KEY (job_id) REFERENCES jobs(id);
+    ADD CONSTRAINT chat_events_job_id_fkey FOREIGN KEY (job_id) REFERENCES ai_jobs(id);
 
 DROP TABLE chat_jobs;
 
@@ -110,7 +110,7 @@ SELECT
     created_at,
     updated_at,
     checkpoint
-FROM jobs
+FROM ai_jobs
 WHERE type = 'chat' AND conversation_id IS NOT NULL;
 
 CREATE FUNCTION chat_jobs_view_status(old_status text) RETURNS text
@@ -131,7 +131,7 @@ $$;
 CREATE FUNCTION chat_jobs_view_insert() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO jobs (
+    INSERT INTO ai_jobs (
         id, type, queue, user_id, status, attempts, max_attempts, run_after,
         payload, error, conversation_id, checkpoint, created_at, updated_at
     ) VALUES (
@@ -157,7 +157,7 @@ $$;
 CREATE FUNCTION chat_jobs_view_update() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    UPDATE jobs SET
+    UPDATE ai_jobs SET
         user_id = NEW.user_id,
         conversation_id = NEW.conversation_id,
         payload = COALESCE(NEW.payload, '{}'::jsonb),
@@ -175,7 +175,7 @@ $$;
 CREATE FUNCTION chat_jobs_view_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    DELETE FROM jobs WHERE id = OLD.id;
+    DELETE FROM ai_jobs WHERE id = OLD.id;
     RETURN OLD;
 END;
 $$;

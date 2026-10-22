@@ -14,7 +14,7 @@ const RESERVATION_STATUSES = ["RESERVED", "SETTLED", "RELEASED"];
 
 test("migration 0023 creates jobs, outbox, credit_reservations and keeps chat_jobs readable", () => {
   const sql = readFileSync(migrationPath, "utf8");
-  assert.match(sql, /CREATE TABLE jobs \(/);
+  assert.match(sql, /CREATE TABLE ai_jobs \(/);
   assert.match(sql, /CREATE TABLE outbox \(/);
   assert.match(sql, /CREATE TABLE credit_reservations \(/);
   assert.match(sql, /UNIQUE \(user_id, idempotency_key\)/);
@@ -22,7 +22,7 @@ test("migration 0023 creates jobs, outbox, credit_reservations and keeps chat_jo
   assert.match(sql, /CREATE (OR REPLACE )?FUNCTION notify_outbox\(\)/);
   assert.match(sql, /pg_notify\('outbox', NEW\.id::text\)/);
   assert.match(sql, /ALTER TABLE ai_usage ADD COLUMN job_id uuid/);
-  assert.match(sql, /INSERT INTO jobs \([\s\S]*FROM chat_jobs/);
+  assert.match(sql, /INSERT INTO ai_jobs \([\s\S]*FROM chat_jobs/);
   assert.match(sql, /CREATE VIEW chat_jobs AS/);
   const jobCheck = sql.match(/jobs[\s\S]*?CHECK \(status IN \(([^)]+)\)\)/);
   assert.ok(jobCheck);

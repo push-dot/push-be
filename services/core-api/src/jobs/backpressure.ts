@@ -9,7 +9,7 @@ export const checkBackpressure = async (
 ): Promise<{ ok: true } | { ok: false; retryAfterSec: number }> => {
   const row = await one(
     db,
-    "SELECT count(*)::int AS n FROM jobs WHERE queue = $1 AND status IN ('QUEUED', 'RETRY')",
+    "SELECT count(*)::int AS n FROM ai_jobs WHERE queue = $1 AND status IN ('QUEUED', 'RETRY')",
     [queue],
   );
   if (Number(row?.n || 0) > queueDepthLimit(plan)) {

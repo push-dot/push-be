@@ -40,18 +40,18 @@ class PgJobs:
 
     async def running_jobs(self):
         rows = await self.conn.fetch(
-            "SELECT id, type, heartbeat_at FROM jobs WHERE status = 'RUNNING'")
+            "SELECT id, type, heartbeat_at FROM ai_jobs WHERE status = 'RUNNING'")
         return [_row(row, "id", "type", "heartbeat_at") for row in rows]
 
     async def mark_retry(self, ids, now) -> None:
         await self.conn.execute(
-            "UPDATE jobs SET status = 'RETRY', run_after = $1, updated_at = $1 "
+            "UPDATE ai_jobs SET status = 'RETRY', run_after = $1, updated_at = $1 "
             "WHERE status = 'RUNNING' AND id = ANY($2::uuid[])",
             now, list(ids))
 
     async def pending_jobs(self, now):
         rows = await self.conn.fetch(
-            "SELECT id, queue, updated_at FROM jobs "
+            "SELECT id, queue, updated_at FROM ai_jobs "
             "WHERE status IN ('QUEUED', 'RETRY', 'PENDING') AND run_after <= $1",
             now)
         return [_row(row, "id", "queue", "updated_at") for row in rows]

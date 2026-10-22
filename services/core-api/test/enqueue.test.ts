@@ -20,11 +20,11 @@ const scripted = (
 };
 
 const funded = (calls: string[], balance: bigint): Query => scripted((sql, params) => {
-  if (sql.includes("idempotency_key") && sql.includes("FROM jobs")) return null;
+  if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) return null;
   if (sql.includes("billing_ledger")) return { balance_after: balance.toString() };
   if (sql.includes("ai_usage")) return { settled: "0" };
   if (sql.includes("SUM") && sql.includes("credit_reservations")) return { reserved: "0" };
-  if (sql.includes("INSERT INTO jobs")) return { id: String(params[0]), queue: String(params[2]) };
+  if (sql.includes("INSERT INTO ai_jobs")) return { id: String(params[0]), queue: String(params[2]) };
   return null;
 }, calls);
 
@@ -41,7 +41,7 @@ test("enqueue reserves credits, writes job and outbox in one transaction", async
   assert.match(out.jobId, /^[0-9a-f-]{36}$/);
   const writes = calls.filter((sql) => sql.includes("INSERT INTO"));
   assert.equal(writes.length, 1);
-  assert.match(writes[0], /INSERT INTO jobs/);
+  assert.match(writes[0], /INSERT INTO ai_jobs/);
   assert.match(writes[0], /INSERT INTO credit_reservations/);
   assert.match(writes[0], /INSERT INTO outbox/);
   assert.equal(queueFor("chat", "FREE", "PERSONAL"), "q:chat");
@@ -79,7 +79,7 @@ test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CRE
       return true;
     },
   );
-  assert.equal(calls.some((sql) => sql.includes("INSERT INTO jobs")), false);
+  assert.equal(calls.some((sql) => sql.includes("INSERT INTO ai_jobs")), false);
 });
 
 test("byok job reserves nothing", async () => {
@@ -94,13 +94,13 @@ test("byok job reserves nothing", async () => {
   assert.equal(out.queue, "q:chat");
   assert.equal(calls.some((sql) => sql.includes("billing_ledger")), false);
   assert.equal(calls.some((sql) => sql.includes("credit_reservations")), false);
-  assert.match(calls.find((sql) => sql.includes("INSERT INTO jobs")) || "", /INSERT INTO outbox/);
+  assert.match(calls.find((sql) => sql.includes("INSERT INTO ai_jobs")) || "", /INSERT INTO outbox/);
 });
 
 test("same idempotencyKey returns the existing jobId", async () => {
   const calls: string[] = [];
   const tx = scripted((sql) => {
-    if (sql.includes("idempotency_key") && sql.includes("FROM jobs")) {
+    if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) {
       return { id: "33333333-3333-4333-8333-333333333333", queue: "q:chat" };
     }
     return null;

@@ -27,10 +27,10 @@ export type EnqueueInput = {
   byok: boolean;
 };
 
-const EXISTING = "SELECT id, queue FROM jobs WHERE user_id = $1 AND idempotency_key = $2";
+const EXISTING = "SELECT id, queue FROM ai_jobs WHERE user_id = $1 AND idempotency_key = $2";
 
 const INSERT_WITH_RESERVE = `WITH ins_job AS (
-  INSERT INTO jobs (
+  INSERT INTO ai_jobs (
     id, type, queue, user_id, company_id, plan, status, attempts, max_attempts,
     payload, idempotency_key, conversation_id
   ) VALUES ($1, $2, $3, $4, $5, $6, 'QUEUED', 0, $7, $8::jsonb, $9, $10)
@@ -49,7 +49,7 @@ JOIN ins_res ON ins_res.job_id = ins_job.id
 JOIN ins_out ON ins_out.job_id = ins_job.id`;
 
 const INSERT_OPEN = `WITH ins_job AS (
-  INSERT INTO jobs (
+  INSERT INTO ai_jobs (
     id, type, queue, user_id, company_id, plan, status, attempts, max_attempts,
     payload, idempotency_key, conversation_id
   ) VALUES ($1, $2, $3, $4, $5, $6, 'QUEUED', 0, $7, $8::jsonb, $9, $10)
