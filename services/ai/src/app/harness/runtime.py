@@ -202,6 +202,8 @@ class HarnessRuntime:
     def _ai(self, payload: dict, spec, plan) -> ent.AiOptions | None:
         raw = payload.get("ai")
         if spec.id != "employer":
+            from app.domain.managed_ai import with_managed_default
+            raw = with_managed_default(raw)
             return ent.AiOptions(**raw) if raw else None
         from app.config import load_config
         from app.domain.employer_chat import apply_employer_turn
