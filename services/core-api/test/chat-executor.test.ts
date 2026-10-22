@@ -53,7 +53,6 @@ function message(key: string): Request {
       ai: {
         provider: "OPENAI",
         model: "deepseek/deepseek-v4.1-flash",
-        credentialMode: "MANAGED",
         effort: "LOW",
       },
     }),

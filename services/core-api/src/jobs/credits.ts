@@ -40,9 +40,9 @@ export const availableMicro = async (tx: Query, userId: string, companyId?: stri
 
 export const reserveCredits = async (
   tx: Query,
-  input: { userId: string; companyId?: string; amount: bigint; byok: boolean },
+  input: { userId: string; companyId?: string; amount: bigint },
 ): Promise<void> => {
-  if (input.byok || input.amount <= 0n) return;
+  if (input.amount <= 0n) return;
   const available = await availableMicro(tx, input.userId, input.companyId);
   if (available < input.amount) {
     throw new HttpError(402, "INSUFFICIENT_CREDITS", "insufficient credits");
