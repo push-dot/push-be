@@ -2,7 +2,7 @@ from __future__ import annotations
 from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.claimctx import LostClaim, bound_claim
 from app.db import DB
@@ -43,53 +43,6 @@ def user_message_id(job_id: UUID) -> UUID:
 class ChatJobStore:
     def __init__(self, db: DB):
         self.db = db
-
-    async def enqueue(self, user_id: UUID, conversation_id: UUID,
-                      payload: dict) -> UUID:
-        job_id = uuid4()
-        await self.db.q().execute(
-            "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
-            "VALUES ($1,$2,$3,$4)",
-            job_id, user_id, conversation_id, _dump(payload))
-        return job_id
-
-    async def enqueue_started(self, user_id: UUID, conversation_id: UUID,
-                              payload: dict, status_text: str) -> Optional[UUID]:
-        """Insert the job, the user message, and a status event.
-
-        The conversation check and the three inserts are one statement.
-        The message id is derived from the job id, so running this statement
-        again for the same job does not add a second USER row. Archived
-        chats are still inserted; resolve_context rejects them later,
-        matching ``conversations.get``.
-        """
-        job_id = uuid4()
-        raw_text = payload.get("text") if isinstance(payload, dict) else ""
-        text = "" if raw_text is None else str(raw_text)
-        row = await self.db.q().fetchrow(
-            "WITH conv AS ("
-            "SELECT id FROM conversations WHERE id = $2 AND ("
-            "user_id = $1 OR (company_id IS NOT NULL AND company_id = "
-            "(SELECT company_id FROM company_members WHERE user_id = $1)))"
-            "), job AS ("
-            "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
-            "SELECT $3, $1, conv.id, $4 FROM conv RETURNING id"
-            "), msg AS ("
-            "INSERT INTO messages (id, user_id, conversation_id, role, text, "
-            "attachments, operation_id, created_at) "
-            "SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() "
-            "FROM conv ON CONFLICT (id) DO NOTHING RETURNING id"
-            "), ev AS ("
-            "INSERT INTO chat_events (job_id, type, payload) "
-            "SELECT job.id, 'status', $5 FROM job RETURNING job_id"
-            ") "
-            "SELECT job.id FROM job JOIN ev ON ev.job_id = job.id "
-            "LEFT JOIN msg ON true",
-            user_id, conversation_id, job_id, _dump(payload),
-            _dump({"text": status_text}), user_message_id(job_id), text or "")
-        if row is None:
-            return None
-        return row["id"]
 
     async def claim(self) -> Optional[dict]:
         row = await self.db.pool.fetchrow(

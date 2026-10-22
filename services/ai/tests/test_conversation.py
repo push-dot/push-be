@@ -156,48 +156,6 @@ async def test_post_message_success_creates_operation():
     assert len(ops.created) == 1
 
 
-async def test_external_post_message_returns_queued_without_polling(monkeypatch):
-    monkeypatch.setattr(
-        "app.domain.services.conversation.external_jobs", lambda: True)
-    scheduled = []
-
-    async def schedule(job_id, byok):
-        scheduled.append((str(job_id), byok))
-
-    monkeypatch.setattr(
-        "app.domain.services.conversation.schedule_chat_job", schedule)
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    convs = StubConversationStore(conv=conv)
-    svc = _svc(convs)
-    jobs = StubChatJobStore()
-    polls = {"n": 0}
-
-    async def enqueue_started(uid, cid, payload, status_text):
-        jobs.payload = payload
-        jobs.status_text = status_text
-        return jobs.job_id
-
-    async def events_since(job_id, after):
-        polls["n"] += 1
-        return []
-
-    jobs.enqueue_started = enqueue_started
-    jobs.events_since = events_since
-    svc.jobs = jobs
-    op = await svc.post_message(
-        user_id, conv.id, "hi", {}, None, "SUGGEST", "")
-    assert op.status == ent.OP_QUEUED
-    assert op.id == jobs.job_id
-    assert op.result is not None
-    assert op.result.value == {"jobId": str(jobs.job_id)}
-    assert scheduled == [(str(jobs.job_id), "")]
-    assert jobs.status_text == "대기 중"
-    assert polls["n"] == 0
-    assert convs.messages == []
-    assert svc._compiled is None
-
-
 def _managed_ai():
     return ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-luna",
                          credential_mode="MANAGED", effort="LOW")
@@ -219,111 +177,6 @@ def _gate_for(user_id, plan, embeds):
 
     gate.embed = embed
     return gate
-
-
-async def test_external_free_plan_chat_is_rejected_before_enqueue(monkeypatch):
-    monkeypatch.setattr(
-        "app.domain.services.conversation.external_jobs", lambda: True)
-    scheduled = []
-
-    async def schedule(job_id, byok):
-        scheduled.append(job_id)
-
-    monkeypatch.setattr(
-        "app.domain.services.conversation.schedule_chat_job", schedule)
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    convs = StubConversationStore(conv=conv)
-    embeds = {"n": 0}
-    gate = _gate_for(user_id, "FREE", embeds)
-    gate.usage.items.append(ent.AiUsage(
-        id=uuid4(), user_id=user_id, provider="OPENAI", model="m",
-        managed=True, input_tokens=1, output_tokens=1,
-        cost_micro_credits=1_800_000, status="SETTLED", created_at=_now()))
-    spent = list(gate.usage.items)
-    svc = _svc(convs, gate=gate, usage=gate.usage)
-    jobs = StubChatJobStore()
-    enqueued = {"n": 0}
-
-    async def enqueue_started(*args, **kwargs):
-        enqueued["n"] += 1
-        return jobs.job_id
-
-    jobs.enqueue_started = enqueue_started
-    svc.jobs = jobs
-    with pytest.raises(DomainError) as e:
-        await svc.post_message(
-            user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST", "")
-    assert e.value.status == 403
-    assert e.value.code == "FEATURE_DISABLED"
-    assert "FREE" in e.value.message
-    assert enqueued["n"] == 0
-    assert scheduled == []
-    assert embeds["n"] == 0
-    assert gate.usage.items == spent
-    assert convs.messages == []
-
-
-async def test_external_stream_rejects_free_plan_before_enqueue(monkeypatch):
-    monkeypatch.setattr(
-        "app.domain.services.conversation.external_jobs", lambda: True)
-    scheduled = []
-
-    async def schedule(job_id, byok):
-        scheduled.append(job_id)
-
-    monkeypatch.setattr(
-        "app.domain.services.conversation.schedule_chat_job", schedule)
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    embeds = {"n": 0}
-    gate = _gate_for(user_id, "FREE", embeds)
-    gate.usage.items.append(ent.AiUsage(
-        id=uuid4(), user_id=user_id, provider="OPENAI", model="m",
-        managed=True, input_tokens=1, output_tokens=1,
-        cost_micro_credits=1_800_000, status="SETTLED", created_at=_now()))
-    svc = _svc(StubConversationStore(conv=conv), gate=gate, usage=gate.usage)
-    jobs = StubChatJobStore()
-    enqueued = {"n": 0}
-
-    async def enqueue_started(*args, **kwargs):
-        enqueued["n"] += 1
-        return jobs.job_id
-
-    jobs.enqueue_started = enqueue_started
-    svc.jobs = jobs
-    with pytest.raises(DomainError) as e:
-        async for _ in svc.stream_message(
-                user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST"):
-            pass
-    assert e.value.status == 403
-    assert e.value.code == "FEATURE_DISABLED"
-    assert enqueued["n"] == 0
-    assert scheduled == []
-    assert embeds["n"] == 0
-
-
-async def test_external_paid_plan_still_enqueues(monkeypatch):
-    monkeypatch.setattr(
-        "app.domain.services.conversation.external_jobs", lambda: True)
-
-    async def schedule(job_id, byok):
-        return None
-
-    monkeypatch.setattr(
-        "app.domain.services.conversation.schedule_chat_job", schedule)
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    embeds = {"n": 0}
-    gate = _gate_for(user_id, "PRO", embeds)
-    svc = _svc(StubConversationStore(conv=conv), gate=gate, usage=gate.usage)
-    jobs = StubChatJobStore()
-    svc.jobs = jobs
-    op = await svc.post_message(
-        user_id, conv.id, "이력서 도와줘", {}, _managed_ai(), "SUGGEST", "")
-    assert op.status == ent.OP_QUEUED
-    assert embeds["n"] == 0
-    assert gate.usage.items == []
 
 
 class _Chunks:
@@ -554,30 +407,6 @@ async def test_feature_disabled_does_not_save_user_message(monkeypatch):
         event_sink.reset(sink)
     assert e.value.code == "FEATURE_DISABLED"
     assert store.messages == []
-
-
-async def test_external_post_message_missing_conversation(monkeypatch):
-    monkeypatch.setattr(
-        "app.domain.services.conversation.external_jobs", lambda: True)
-
-    async def schedule(job_id, byok):
-        return None
-
-    monkeypatch.setattr(
-        "app.domain.services.conversation.schedule_chat_job", schedule)
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    svc = _svc(StubConversationStore(conv=conv))
-    jobs = StubChatJobStore()
-
-    async def enqueue_started(uid, cid, payload, status_text):
-        return None
-
-    jobs.enqueue_started = enqueue_started
-    svc.jobs = jobs
-    with pytest.raises(DomainError) as e:
-        await svc.post_message(user_id, conv.id, "hi", {}, None, "SUGGEST", "")
-    assert e.value.code == "NOT_FOUND"
 
 
 async def test_flush_chat_events_publishes_status_and_token_chunks():

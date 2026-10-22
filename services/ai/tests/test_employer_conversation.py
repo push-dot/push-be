@@ -14,7 +14,6 @@ from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.plan_levers import levers_for
 from app.graphs.chat import bind_chat_nodes, event_sink
-from app.infrastructure.store_chat_jobs import ChatJobStore
 from app.infrastructure.store_conversations import ConversationStore
 from tests.stubs import StubConversationStore
 from tests.test_conversation import _svc
@@ -143,7 +142,7 @@ class _DB:
         return self.pool
 
 
-async def test_company_member_load_and_enqueue_sql_uses_membership():
+async def test_company_member_load_sql_uses_membership():
     captured = _Capture()
     store = ConversationStore(_DB(captured))
     with pytest.raises(NotFoundError):
@@ -151,7 +150,3 @@ async def test_company_member_load_and_enqueue_sql_uses_membership():
     assert "company_members" in captured.sql
     await store.list_messages(uuid4(), uuid4(), PageRequest(limit=12))
     assert "company_members" in captured.sql
-    jobs = ChatJobStore(_DB(captured))
-    await jobs.enqueue_started(uuid4(), uuid4(), {"text": "이어서"}, "대기 중")
-    assert "company_members" in captured.sql
-    assert "user_id = $1" in captured.sql
