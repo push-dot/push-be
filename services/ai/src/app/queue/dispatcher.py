@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.clock import utcnow
-from app.queue.config import HEARTBEAT_LIMIT_S, SWEEP_S
+from app.queue.config import SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.streams import StreamQueue
 
 
@@ -51,9 +51,10 @@ class PgJobs:
 
     async def pending_jobs(self, now):
         rows = await self.conn.fetch(
-            "SELECT id, queue FROM jobs WHERE status IN ('QUEUED', 'RETRY') AND run_after <= $1",
+            "SELECT id, queue, updated_at FROM jobs "
+            "WHERE status IN ('QUEUED', 'RETRY', 'PENDING') AND run_after <= $1",
             now)
-        return [_row(row, "id", "queue") for row in rows]
+        return [_row(row, "id", "queue", "updated_at") for row in rows]
 
 
 def _row(row, *keys):
@@ -106,7 +107,8 @@ class Dispatcher:
             beat = row["heartbeat_at"]
             if beat is None:
                 continue
-            limit = HEARTBEAT_LIMIT_S.get(row["type"], HEARTBEAT_LIMIT_S["chat"])
+            limits = heartbeat_limits()
+            limit = limits.get(row["type"], limits["chat"])
             if (now - beat).total_seconds() >= limit:
                 ids.append(row["id"])
         if ids:
@@ -122,16 +124,28 @@ class Dispatcher:
         return len(rows)
 
     async def _rehydrate(self, db, now) -> int:
-        grouped: dict[str, list] = {}
-        for row in await db.pending_jobs(now):
-            grouped.setdefault(row["queue"], []).append(row["id"])
+        delayed = await self.queue.delayed_job_ids()
+        present: dict[str, set[str]] = {}
+        limits = visibility_limits()
         added = 0
-        for queue, ids in grouped.items():
-            if await self.queue.redis.xlen(queue) != 0:
+        for row in await db.pending_jobs(now):
+            job_id = str(row["id"])
+            queue = row["queue"]
+            if job_id in delayed:
                 continue
-            for job_id in ids:
-                await self.queue.add(queue, UUID(str(job_id)))
-                added += 1
+            updated = row.get("updated_at")
+            if updated is None:
+                continue
+            limit = limits.get(queue, limits["q:chat"])
+            if (now - updated).total_seconds() < limit:
+                continue
+            if queue not in present:
+                present[queue] = await self.queue.job_ids(queue)
+            if job_id in present[queue]:
+                continue
+            await self.queue.add(queue, UUID(job_id))
+            present[queue].add(job_id)
+            added += 1
         return added
 
 

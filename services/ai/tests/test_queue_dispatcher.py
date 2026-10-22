@@ -6,7 +6,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 
 from app.queue.backoff import backoff_seconds
-from app.queue.config import HEARTBEAT_LIMIT_S
+from app.queue.config import HEARTBEAT_LIMIT_S, visibility_limits
 from app.queue.dispatcher import Dispatcher, kick_app
 from app.queue.streams import StreamQueue
 
@@ -42,11 +42,12 @@ class MemoryDB:
             if job["id"] in set(ids) and job["status"] == "RUNNING":
                 job["status"] = "RETRY"
                 job["run_after"] = now
+                job["updated_at"] = now
 
     async def pending_jobs(self, now):
         return [
             job for job in self.jobs
-            if job["status"] in ("QUEUED", "RETRY") and job["run_after"] <= now
+            if job["status"] in ("QUEUED", "RETRY", "PENDING") and job["run_after"] <= now
         ]
 
 
@@ -63,7 +64,7 @@ def dispatcher(redis, jobs=None, outbox=None, holder=None):
     return Dispatcher(StreamQueue(redis), opener(state, jobs or [], outbox or []), SECRET), state
 
 
-def job(id_, type_, queue, status, heartbeat_at=None, run_after=None):
+def job(id_, type_, queue, status, heartbeat_at=None, run_after=None, updated_at=None):
     return {
         "id": id_,
         "type": type_,
@@ -71,6 +72,7 @@ def job(id_, type_, queue, status, heartbeat_at=None, run_after=None):
         "status": status,
         "heartbeat_at": heartbeat_at,
         "run_after": NOW if run_after is None else run_after,
+        "updated_at": updated_at,
     }
 
 
@@ -113,13 +115,47 @@ async def test_promote_due_moves_delayed_jobs():
 @pytest.mark.asyncio
 async def test_rehydrate_from_jobs_after_redis_flush():
     redis = FakeRedis(decode_responses=True)
-    jobs = [job(CHAT, "chat", "q:chat", "QUEUED")]
+    old = NOW - timedelta(seconds=visibility_limits()["q:chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "QUEUED", updated_at=old)]
     box, _ = dispatcher(redis, jobs=jobs)
     await box.run_once(NOW)
     assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
     await redis.delete("q:chat")
     await box.run_once(NOW)
     assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_lost_job_when_stream_is_not_empty():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    held = UUID("33333333-3333-4333-8333-333333333333")
+    fresh = UUID("44444444-4444-4444-8444-444444444444")
+    old = NOW - timedelta(seconds=visibility_limits()["q:chat"] + 5)
+    await queue.add("q:chat", DOC)
+    await queue.delay("q:chat", held, NOW + timedelta(hours=1))
+    jobs = [
+        job(CHAT, "chat", "q:chat", "QUEUED", updated_at=old),
+        job(fresh, "chat", "q:chat", "QUEUED", updated_at=NOW),
+        job(DOC, "chat", "q:chat", "QUEUED", updated_at=old),
+        job(held, "chat", "q:chat", "RETRY", updated_at=old),
+    ]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(DOC), str(CHAT)]
+    await box.run_once(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(DOC), str(CHAT)]
+    assert await redis.zcard("q:delayed") == 1
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_limit_reads_env_override(monkeypatch):
+    monkeypatch.setenv("HEARTBEAT_LIMIT_CHAT_S", "30")
+    redis = FakeRedis(decode_responses=True)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=31))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    assert jobs[0]["status"] == "RETRY"
 
 
 @pytest.mark.asyncio

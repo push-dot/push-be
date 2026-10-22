@@ -63,6 +63,19 @@ class StreamQueue:
             await self.redis.zrem(DELAYED_KEY, member)
         return len(due)
 
+    async def job_ids(self, queue: str) -> set[str]:
+        rows = await self.redis.xrange(queue)
+        return {str(fields["jobId"]) for _, fields in rows if fields.get("jobId")}
+
+    async def delayed_job_ids(self) -> set[str]:
+        members = await self.redis.zrange(DELAYED_KEY, 0, -1)
+        found = set()
+        for member in members:
+            parts = str(member).split("|", 1)
+            if len(parts) == 2:
+                found.add(parts[1])
+        return found
+
     async def dead(self, job_id: UUID, reason: str) -> None:
         await self.redis.xadd(
             DEAD_QUEUE,
