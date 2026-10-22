@@ -4,7 +4,7 @@ import {
   HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid,
 } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
-import { deliverPush } from "../push/notifier.ts";
+import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
 
 const JOB_CATEGORIES = new Set(["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]);
@@ -1759,10 +1759,7 @@ async function notify(ctx: Ctx, userId: string, type: string, title: string, bod
   if (!column) return;
   const pref = await one(ctx.deps.query, `SELECT ${column} AS enabled FROM user_settings WHERE user_id = $1`, [userId]);
   if (pref && !asBool(pref.enabled)) return;
-  await query(ctx.deps.query,
-    "INSERT INTO notifications (id, user_id, type, title, body, target, read_at, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NULL,$7)",
-    [crypto.randomUUID(), userId, type, title, body, JSON.stringify(target), ctx.now.toISOString()]);
-  await deliverPush(ctx, userId, title, body, target);
+  await sendNotification(ctx, { userId, type, title, body, target });
 }
 
 function notificationDto(row: Record<string, unknown>): Record<string, unknown> {

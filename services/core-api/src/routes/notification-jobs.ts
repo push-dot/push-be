@@ -1,6 +1,6 @@
 import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError, requireUuid, sha256Hex } from "../http.ts";
-import { deliverPush } from "../push/notifier.ts";
+import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -46,20 +46,6 @@ const claim = async (ctx: Ctx, key: string): Promise<boolean> => {
   return Boolean(row);
 };
 
-const insertNote = async (
-  ctx: Ctx,
-  userId: string,
-  type: string,
-  title: string,
-  body: string,
-  target: Record<string, unknown>,
-): Promise<void> => {
-  await query(ctx.deps.query,
-    "INSERT INTO notifications (id, user_id, type, title, body, target, read_at, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NULL,$7)",
-    [crypto.randomUUID(), userId, type, title, body, JSON.stringify(target), ctx.now.toISOString()]);
-  await deliverPush(ctx, userId, title, body, target);
-};
-
 const utcDay = (moment: Date, shiftDays: number): string => {
   const day = new Date(Date.UTC(moment.getUTCFullYear(), moment.getUTCMonth(), moment.getUTCDate() + shiftDays));
   return day.toISOString().slice(0, 10);
@@ -73,12 +59,9 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
   const title = body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title);
   if (title.length > 200) throw fieldError("title", "must be at most 200 characters");
   if (!(await allowed(ctx, userId, "notify_ai_done"))) return data(201, { id: null }, ctx.rid);
-  const id = crypto.randomUUID();
-  const target = { kind: "conversation", id: conversationId };
-  await query(ctx.deps.query,
-    "INSERT INTO notifications (id, user_id, type, title, body, target, read_at, created_at) VALUES ($1,$2,$3,$4,'',$5::jsonb,NULL,$6)",
-    [id, userId, "AI_DONE", title, JSON.stringify(target), ctx.now.toISOString()]);
-  await deliverPush(ctx, userId, title, "", target);
+  const id = await sendNotification(ctx, {
+    userId, type: "AI_DONE", title, body: "", target: { kind: "conversation", id: conversationId },
+  });
   return data(201, { id }, ctx.rid);
 };
 
@@ -97,7 +80,7 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
     if (!(await claim(ctx, `deadline:${userId}:${postingId}:${deadlineDay}`))) continue;
     if (!(await allowed(ctx, userId, "notify_deadline"))) continue;
     const title = String(row.title ?? "");
-    await insertNote(ctx, userId, "DEADLINE", title, title, { kind: "posting", id: postingId });
+    await sendNotification(ctx, { userId, type: "DEADLINE", title, body: title, target: { kind: "posting", id: postingId } });
     deadlines += 1;
   }
   const lookback = new Date(ctx.now.getTime() - 2 * DAY_MS).toISOString();
@@ -112,7 +95,7 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
     if (!(await claim(ctx, `remind:${eventId}`))) continue;
     if (!(await allowed(ctx, userId, "notify_deadline"))) continue;
     const title = String(row.title ?? "");
-    await insertNote(ctx, userId, "DEADLINE", title, "", { kind: "calendar", id: eventId });
+    await sendNotification(ctx, { userId, type: "DEADLINE", title, body: "", target: { kind: "calendar", id: eventId } });
     reminded += 1;
   }
   return data(200, { deadlines, reminders: reminded }, ctx.rid);
