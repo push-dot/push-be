@@ -35,7 +35,6 @@ Only part of 10c is done in this branch.
 - `POST /api/v1/sources` moved to core. Core always stores the bytes in `sources.content` with path `db://sources/<id>` (Python's `BLOB_STORE=db` mode); Workers cannot write VPS disk. Validation and error bodies match Python (`kind`/`file` required, 20 MiB, same MIME list). The 201 body adds `jobId` (the `ingest` job) after the Python fields.
 - `ingest` jobs reserve no credits (`ESTIMATE_MICRO.ingest = 0n`). Embedding runs on the self-hosted TEI service, and a reservation would make uploads fail for users with no balance, which they never did before.
 - Still in Python: `GET /sources`, `GET /sources/{id}`, `GET /sources/{id}/content`, `GET /sources/{id}/profile-draft`, `DELETE /sources/{id}`, `/uploads/images`, and the `career-evidence` routes. Older sources live on VPS disk, which core cannot read, and the profile draft parses files, which core must not do.
-- 10a (documents), 10b (applications), and 10d (integrations, experiments, interviews, projects) were not started. See the final report.
 
 ## Task 12: RAG nodes and ingest
 
@@ -79,3 +78,20 @@ Only part of 10c is done in this branch.
 - The spec §6 budget (7.3 GB) did not subtract the 1.6–2.0 GB Dokploy, Traefik and other apps already use. Compose limits now sum to 5,056 MB, which leaves at least 1 GB free.
 - The temporary `ai` container is gone. `ai-worker` serves the remaining Python HTTP routes in the same process when `SERVE_API=1`.
 - `RERANK_PROVIDER` (new): `similarity` (default) reranks with embedding cosine similarity; `tei` uses the `rerank` container, which is now behind the `rerank` compose profile. bge-reranker-v2-m3 needs about 2.5 GB, which does not fit next to `embed`.
+
+## Task 10: parity harness
+
+- `services/ai/scripts/record_parity.py <group>` runs the Python routes against a scratch Postgres (`PARITY_PG_URL`) loaded with `services/core-api/test/parity/seed.sql`, clock frozen at 2026-10-22T12:00:00Z, and writes `<group>.golden.json`.
+- `services/core-api/test/parity-<group>.test.ts` sends the same requests (`<group>.cases.json`) to core. With `PARITY_PG_URL` it runs against the real database (Neon driver through a local WebSocket proxy, `test/parity/pg.ts`); add `PARITY_RECORD=1` to save core's query results to `<group>.queries.json`. Without a database it replays that file, so `npm test` checks parity offline.
+- Comparison: status code plus the JSON body with key order. Normalized before comparing: ids generated during the run (`<new-uuid>`), the order of rows created in the same instant (both sides break that tie with random ids), and pydantic's schema error text (see gaps).
+- Re-recording needs the Python routes, which are deleted once a group moves. Check out the commit before the move to re-record a golden file.
+- The core test script now quotes its glob (`'test/**/*.ts'`). Unquoted, the shell expanded it to the files in `test/parity/` only.
+
+## Task 10b: applications
+
+Moved to core: `GET/POST /applications`, `POST /applications/import`, `GET/PATCH /applications/{id}`, `GET /applications/{id}/timeline`, `GET /applications/{id}/checklist`, `POST /applications/{id}/submission-drafts`, `GET/POST /applications/{id}/submissions`. `POST /applications/{id}/resume-run` stays in Python (AI). 57 parity cases, all equal.
+
+Parity gaps:
+- Schema-level body errors (missing field, extra field, wrong JSON type, bad UUID) return the same 400 `VALIDATION_ERROR` with `details: null`, but the message is `invalid request body` instead of `invalid request body: <pydantic error text>`.
+- `appliedAt` and `nextActionAt` accept the usual RFC3339 forms (date, date-time, fraction up to 6 digits, `Z` or offset). Python `datetime.fromisoformat` also accepts rarer ISO forms (basic format, week dates); core answers 400 for those.
+- Submit: Python runs the checks and writes in one transaction. Core runs the same checks, then writes approval consumption, the submission, the stage change and both events in one statement. If the application revision changes between the check and that statement, the approval is consumed and the submission recorded without the stage change; Python would roll back.

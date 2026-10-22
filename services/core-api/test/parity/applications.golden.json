@@ -1,0 +1,1165 @@
+[
+ {
+  "name": "list all",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c0000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Platform Engineer",
+     "stage": "APPLIED",
+     "notes": "",
+     "appliedAt": "2026-10-03T00:00:00Z",
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "updatedAt": "2026-10-03T00:00:00Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000001",
+     "revision": 3,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "PREPARING",
+     "notes": "first",
+     "appliedAt": null,
+     "nextActionAt": "2026-10-30T09:00:00Z",
+     "imported": false,
+     "fitScore": 72,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000004",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Beta",
+     "title": "Rejected Role",
+     "stage": "REJECTED",
+     "notes": "",
+     "appliedAt": null,
+     "nextActionAt": null,
+     "imported": true,
+     "createdAt": "2026-09-01T00:00:00Z",
+     "updatedAt": "2026-09-01T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list by stage",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c0000000-0000-4000-8000-000000000001",
+     "revision": 3,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "PREPARING",
+     "notes": "first",
+     "appliedAt": null,
+     "nextActionAt": "2026-10-30T09:00:00Z",
+     "imported": false,
+     "fitScore": 72,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-05T00:00:00.123456Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list bad stage",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported stage",
+    "requestId": "parity",
+    "details": {
+     "field": "stage"
+    }
+   }
+  }
+ },
+ {
+  "name": "list query",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c0000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Platform Engineer",
+     "stage": "APPLIED",
+     "notes": "",
+     "appliedAt": "2026-10-03T00:00:00Z",
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "updatedAt": "2026-10-03T00:00:00Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000001",
+     "revision": 3,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "PREPARING",
+     "notes": "first",
+     "appliedAt": null,
+     "nextActionAt": "2026-10-30T09:00:00Z",
+     "imported": false,
+     "fitScore": 72,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-05T00:00:00.123456Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list page 1",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c0000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Platform Engineer",
+     "stage": "APPLIED",
+     "notes": "",
+     "appliedAt": "2026-10-03T00:00:00Z",
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "updatedAt": "2026-10-03T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wM1QwMDowMDowMFp8YzAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "list bad limit",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a positive integer",
+    "requestId": "parity",
+    "details": {
+     "field": "limit"
+    }
+   }
+  }
+ },
+ {
+  "name": "list bad cursor",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid cursor",
+    "requestId": "parity",
+    "details": {
+     "field": "cursor"
+    }
+   }
+  }
+ },
+ {
+  "name": "get",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000001",
+    "revision": 3,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Backend Engineer",
+    "stage": "PREPARING",
+    "notes": "first",
+    "appliedAt": null,
+    "nextActionAt": "2026-10-30T09:00:00Z",
+    "imported": false,
+    "fitScore": 72,
+    "createdAt": "2026-10-02T00:00:00Z",
+    "updatedAt": "2026-10-05T00:00:00.123456Z"
+   }
+  }
+ },
+ {
+  "name": "get other user",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "get bad id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "id"
+    }
+   }
+  }
+ },
+ {
+  "name": "timeline",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c1000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "PREPARING",
+      "from": "DISCOVERED"
+     },
+     "createdAt": "2026-10-04T00:00:00Z"
+    },
+    {
+     "id": "c1000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "IMPORTED",
+     "payload": {
+      "stage": "PREPARING",
+      "appliedAt": null
+     },
+     "createdAt": "2026-10-03T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "timeline page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "c1000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "PREPARING",
+      "from": "DISCOVERED"
+     },
+     "createdAt": "2026-10-04T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wNFQwMDowMDowMFp8YzEwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "timeline other user",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "checklist",
+  "status": 200,
+  "body": {
+   "data": {
+    "items": [
+     {
+      "key": "evidence",
+      "label": "Career evidence collected",
+      "completed": true
+     },
+     {
+      "key": "analysis",
+      "label": "Gap analysis completed",
+      "completed": true
+     },
+     {
+      "key": "document_finalized",
+      "label": "Document finalized",
+      "completed": true
+     },
+     {
+      "key": "applied",
+      "label": "Application submitted",
+      "completed": false
+     },
+     {
+      "key": "interview_prep",
+      "label": "Interview session scheduled",
+      "completed": false
+     }
+    ],
+    "automationEnabled": false
+   }
+  }
+ },
+ {
+  "name": "checklist applied",
+  "status": 200,
+  "body": {
+   "data": {
+    "items": [
+     {
+      "key": "evidence",
+      "label": "Career evidence collected",
+      "completed": true
+     },
+     {
+      "key": "analysis",
+      "label": "Gap analysis completed",
+      "completed": false
+     },
+     {
+      "key": "document_finalized",
+      "label": "Document finalized",
+      "completed": false
+     },
+     {
+      "key": "applied",
+      "label": "Application submitted",
+      "completed": true
+     },
+     {
+      "key": "interview_prep",
+      "label": "Interview session scheduled",
+      "completed": false
+     }
+    ],
+    "automationEnabled": false
+   }
+  }
+ },
+ {
+  "name": "submissions list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "e2000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000002",
+     "mode": "MANUAL_RECORD",
+     "adapter": null,
+     "status": "SUCCEEDED",
+     "documentVersionIds": [],
+     "approvalId": null,
+     "receiptUrl": null,
+     "errorCode": null,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "updatedAt": "2026-10-03T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "create",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "ec31a70d-419e-454a-b267-0e35f1f47b38",
+    "revision": 1,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Backend Engineer",
+    "stage": "DISCOVERED",
+    "notes": "hello",
+    "appliedAt": null,
+    "nextActionAt": null,
+    "imported": false,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "create default notes",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "99f4add3-7d60-41f4-bd9f-e52213da61b6",
+    "revision": 1,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Backend Engineer",
+    "stage": "DISCOVERED",
+    "notes": "",
+    "appliedAt": null,
+    "nextActionAt": null,
+    "imported": false,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "create other job",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "create missing job",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateApplicationReq\njobId\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "create extra field",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateApplicationReq\nx\n  Extra inputs are not permitted [type=extra_forbidden, input_value=1, input_type=int]\n    For further information visit https://errors.pydantic.dev/2.10/v/extra_forbidden",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "create bad uuid",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateApplicationReq\njobId\n  Value error, badly formed hexadecimal UUID string [type=value_error, input_value='nope', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.10/v/value_error",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "import",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "71112df5-6688-4dff-8af9-50f3cc01a6c2",
+    "revision": 1,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Backend Engineer",
+    "stage": "INTERVIEW",
+    "notes": "past",
+    "appliedAt": "2026-09-01T10:00:00Z",
+    "nextActionAt": null,
+    "imported": true,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "import not confirmed",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be true to record a past application",
+    "requestId": "parity",
+    "details": {
+     "field": "confirmed"
+    }
+   }
+  }
+ },
+ {
+  "name": "import discovered",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported stage for import",
+    "requestId": "parity",
+    "details": {
+     "field": "stage"
+    }
+   }
+  }
+ },
+ {
+  "name": "import bad time",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be RFC3339",
+    "requestId": "parity",
+    "details": {
+     "field": "appliedAt"
+    }
+   }
+  }
+ },
+ {
+  "name": "import other job",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "draft adapter disabled",
+  "status": 403,
+  "body": {
+   "error": {
+    "code": "FEATURE_DISABLED",
+    "message": "adapter submission is not enabled for this site",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "draft bad mode",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be MANUAL_RECORD or ADAPTER",
+    "requestId": "parity",
+    "details": {
+     "field": "mode"
+    }
+   }
+  }
+ },
+ {
+  "name": "draft adapter on manual",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "adapter is only valid with ADAPTER mode",
+    "requestId": "parity",
+    "details": {
+     "field": "adapter"
+    }
+   }
+  }
+ },
+ {
+  "name": "draft no versions",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "at least one document version is required",
+    "requestId": "parity",
+    "details": {
+     "field": "documentVersionIds"
+    }
+   }
+  }
+ },
+ {
+  "name": "draft unknown version",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "version e0000000-0000-4000-8000-000000000001 not found",
+    "requestId": "parity",
+    "details": {
+     "field": "documentVersionIds"
+    }
+   }
+  }
+ },
+ {
+  "name": "draft other app version",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "version d1000000-0000-4000-8000-000000000003 belongs to another application",
+    "requestId": "parity",
+    "details": {
+     "field": "documentVersionIds"
+    }
+   }
+  }
+ },
+ {
+  "name": "draft not finalized",
+  "status": 422,
+  "body": {
+   "error": {
+    "code": "DOCUMENT_NOT_FINALIZED",
+    "message": "document version d1000000-0000-4000-8000-000000000002 is not finalized",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "draft stale revision",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 3
+    }
+   }
+  }
+ },
+ {
+  "name": "draft",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "6f7a48b4-5d65-48f1-ba69-8762324c261d",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "applicationRevision": 3,
+    "mode": "MANUAL_RECORD",
+    "adapter": null,
+    "documentVersionIds": [
+     "d1000000-0000-4000-8000-000000000001"
+    ],
+    "confirmedSubmitted": true,
+    "payloadHash": "2cb88e16b201411f318b9bdde4c5008e74c00802df48d839159d2ac2b1e146df",
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "submit pending approval",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval is not approved",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "submit wrong target",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_REQUIRED",
+    "message": "approval does not cover this target",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "submit unknown draft",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "draft not found",
+    "requestId": "parity",
+    "details": {
+     "field": "draftId"
+    }
+   }
+  }
+ },
+ {
+  "name": "submit stale revision",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 3
+    }
+   }
+  }
+ },
+ {
+  "name": "submit",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "ea9c0a21-043c-4b89-96c8-23b86f770227",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "mode": "MANUAL_RECORD",
+    "adapter": null,
+    "status": "SUCCEEDED",
+    "documentVersionIds": [
+     "d1000000-0000-4000-8000-000000000001"
+    ],
+    "approvalId": "e1000000-0000-4000-8000-000000000001",
+    "receiptUrl": null,
+    "errorCode": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "get after submit",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000001",
+    "revision": 4,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Backend Engineer",
+    "stage": "APPLIED",
+    "notes": "first",
+    "appliedAt": "2026-10-22T12:00:00Z",
+    "nextActionAt": "2026-10-30T09:00:00Z",
+    "imported": false,
+    "fitScore": 72,
+    "createdAt": "2026-10-02T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "timeline after submit",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "ab133089-0db4-4391-9e80-25003c8db7ee",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "SUBMISSION",
+     "payload": {
+      "mode": "MANUAL_RECORD",
+      "status": "SUCCEEDED",
+      "submissionId": "ea9c0a21-043c-4b89-96c8-23b86f770227"
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "2305fe3b-efb3-4002-909d-2ae531952319",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "APPLIED",
+      "from": "PREPARING"
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "c1000000-0000-4000-8000-000000000001",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "PREPARING",
+      "from": "DISCOVERED"
+     },
+     "createdAt": "2026-10-04T00:00:00Z"
+    },
+    {
+     "id": "c1000000-0000-4000-8000-000000000002",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "IMPORTED",
+     "payload": {
+      "stage": "PREPARING",
+      "appliedAt": null
+     },
+     "createdAt": "2026-10-03T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "submissions after submit",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "ea9c0a21-043c-4b89-96c8-23b86f770227",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "mode": "MANUAL_RECORD",
+     "adapter": null,
+     "status": "SUCCEEDED",
+     "documentVersionIds": [
+      "d1000000-0000-4000-8000-000000000001"
+     ],
+     "approvalId": "e1000000-0000-4000-8000-000000000001",
+     "receiptUrl": null,
+     "errorCode": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "submit approval consumed",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "APPROVAL_STALE",
+    "message": "application changed since the draft was created; create a new draft and approval",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 4
+    }
+   }
+  }
+ },
+ {
+  "name": "patch to applied",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000002",
+    "revision": 2,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Platform Engineer",
+    "stage": "APPLIED",
+    "notes": "",
+    "appliedAt": "2026-10-03T00:00:00Z",
+    "nextActionAt": null,
+    "imported": false,
+    "createdAt": "2026-10-03T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "patch bad stage",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported stage",
+    "requestId": "parity",
+    "details": {
+     "field": "stage"
+    }
+   }
+  }
+ },
+ {
+  "name": "patch backwards",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "cannot move from APPLIED to PREPARING",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch terminal",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "cannot move from REJECTED to OFFER",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch forward",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000002",
+    "revision": 3,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Platform Engineer",
+    "stage": "SCREENING",
+    "notes": "called",
+    "appliedAt": "2026-10-03T00:00:00Z",
+    "nextActionAt": "2026-11-01T00:30:00Z",
+    "imported": false,
+    "createdAt": "2026-10-03T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "patch clear next",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000002",
+    "revision": 4,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Platform Engineer",
+    "stage": "SCREENING",
+    "notes": "called",
+    "appliedAt": "2026-10-03T00:00:00Z",
+    "nextActionAt": null,
+    "imported": false,
+    "createdAt": "2026-10-03T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "patch bad time",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be RFC3339",
+    "requestId": "parity",
+    "details": {
+     "field": "nextActionAt"
+    }
+   }
+  }
+ },
+ {
+  "name": "patch other user",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "patch withdraw",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "c0000000-0000-4000-8000-000000000002",
+    "revision": 5,
+    "jobId": "b0000000-0000-4000-8000-000000000001",
+    "company": "Acme",
+    "title": "Platform Engineer",
+    "stage": "WITHDRAWN",
+    "notes": "called",
+    "appliedAt": "2026-10-03T00:00:00Z",
+    "nextActionAt": null,
+    "imported": false,
+    "createdAt": "2026-10-03T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "timeline after patches",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "704b2d59-763d-4ad1-9201-3fa4d4ec7fa8",
+     "applicationId": "c0000000-0000-4000-8000-000000000002",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "SCREENING",
+      "from": "APPLIED"
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "2ff67e11-3aae-4044-b9b7-3d3cd12869cc",
+     "applicationId": "c0000000-0000-4000-8000-000000000002",
+     "type": "STAGE_CHANGED",
+     "payload": {
+      "to": "WITHDRAWN",
+      "from": "SCREENING"
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "list after writes",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "ec31a70d-419e-454a-b267-0e35f1f47b38",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "DISCOVERED",
+     "notes": "hello",
+     "appliedAt": null,
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "99f4add3-7d60-41f4-bd9f-e52213da61b6",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "DISCOVERED",
+     "notes": "",
+     "appliedAt": null,
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "71112df5-6688-4dff-8af9-50f3cc01a6c2",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "INTERVIEW",
+     "notes": "past",
+     "appliedAt": "2026-09-01T10:00:00Z",
+     "nextActionAt": null,
+     "imported": true,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000002",
+     "revision": 5,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Platform Engineer",
+     "stage": "WITHDRAWN",
+     "notes": "called",
+     "appliedAt": "2026-10-03T00:00:00Z",
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000001",
+     "revision": 4,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "APPLIED",
+     "notes": "first",
+     "appliedAt": "2026-10-22T12:00:00Z",
+     "nextActionAt": "2026-10-30T09:00:00Z",
+     "imported": false,
+     "fitScore": 72,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "c0000000-0000-4000-8000-000000000004",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Beta",
+     "title": "Rejected Role",
+     "stage": "REJECTED",
+     "notes": "",
+     "appliedAt": null,
+     "nextActionAt": null,
+     "imported": true,
+     "createdAt": "2026-09-01T00:00:00Z",
+     "updatedAt": "2026-09-01T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ }
+]

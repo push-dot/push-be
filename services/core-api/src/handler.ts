@@ -10,6 +10,7 @@ import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.t
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
 import { createSource } from "./routes/sources.ts";
+import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
@@ -180,6 +181,9 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
 
   const consents = await dispatchConsents(ctx, path);
   if (consents) return consents;
+
+  const applications = await dispatchApplications(ctx, path);
+  if (applications) return applications;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

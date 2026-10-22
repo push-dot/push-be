@@ -64,6 +64,12 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/ai\/jobs\/[^/]+$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return method === "POST";
   if (path === "/api/v1/sources") return method === "POST";
+  if (path === "/api/v1/applications") return method === "GET" || method === "POST";
+  if (path === "/api/v1/applications/import") return method === "POST";
+  if (/^\/api\/v1\/applications\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
+  if (/^\/api\/v1\/applications\/[^/]+\/(timeline|checklist)$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/applications\/[^/]+\/submission-drafts$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/applications\/[^/]+\/submissions$/.test(path)) return method === "GET" || method === "POST";
   if (path === "/api/v1/jobs") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/jobs\/[^/]+\/analyses$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/jobs\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
