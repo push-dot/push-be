@@ -656,7 +656,7 @@ class ConversationService:
                 elif t == "status":
                     yield ("status", p.get("text", ""), r["id"])
                 elif t == "done":
-                    yield ("done", p.get("operation"), r["id"])
+                    yield ("done", p if p.get("awaiting") else p.get("operation"), r["id"])
                     return
                 elif t == "error":
                     yield ("error", p.get("error") or {}, r["id"])

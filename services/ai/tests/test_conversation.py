@@ -631,3 +631,17 @@ async def test_flush_chat_events_forwards_a_tool_and_flushes_the_token_batch():
         ("token", {"text": "bb"}),
         ("tool", {"name": "read", "state": "run", "summary": "file"}),
     ]
+
+
+async def test_pump_job_events_keeps_done_awaiting():
+    svc = _svc(StubConversationStore())
+    jobs = StubChatJobStore()
+
+    async def events_since(job_id, after):
+        rows = [{"id": 5, "type": "done", "payload": {"awaiting": "approval"}}]
+        return [row for row in rows if row["id"] > after]
+
+    jobs.events_since = events_since
+    svc.jobs = jobs
+    events = [event async for event in svc._pump_job_events(jobs.job_id)]
+    assert events == [("done", {"awaiting": "approval"}, 5)]

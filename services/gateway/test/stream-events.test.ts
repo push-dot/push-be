@@ -142,3 +142,13 @@ test("cancelled ends the poll and does not forward later rows", async () => {
   assert.equal(text.includes("after-cancel"), false);
   assert.equal(text.includes("second-poll"), false);
 });
+
+test("a done row that waits for the user keeps awaiting", async () => {
+  resetLimits();
+  const text = await stream(authQuery(() => [
+    { id: 20, type: "approval", payload: { id: "a1", kind: "TOOL_ACTION", title: "지원", options: [] } },
+    { id: 21, type: "done", payload: { awaiting: "approval" } },
+  ]));
+  const done = framesOf(text).find((frame) => frame.type === "done");
+  assert.deepEqual(done, { type: "done", operation: null, awaiting: "approval", seq: 21 });
+});

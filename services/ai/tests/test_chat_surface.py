@@ -552,3 +552,11 @@ async def test_sse_frames_forwards_tool_and_future():
         "type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 6}
     assert frames[4] == {
         "type": "error", "error": {"code": "INTERNAL", "message": "no"}, "seq": 7}
+
+
+async def test_sse_frames_done_awaiting():
+    async def gen():
+        yield ("done", {"awaiting": "choice"}, 8)
+
+    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
+    assert frames[-1] == {"type": "done", "operation": None, "awaiting": "choice", "seq": 8}
