@@ -354,7 +354,8 @@ export const submitApplication = async (ctx: Ctx, idRaw: string): Promise<Respon
   };
   const done = await one(ctx.deps.query,
     `WITH ap AS (UPDATE approvals SET revision = revision + 1, status = 'CONSUMED', consumed_at = $3, updated_at = $3
-       WHERE id = $1 AND user_id = $2 AND revision = $4 RETURNING id),
+       WHERE id = $1 AND user_id = $2 AND revision = $4
+         AND EXISTS (SELECT 1 FROM applications WHERE id = $6 AND user_id = $2 AND revision = $10) RETURNING id),
      sub AS (INSERT INTO submissions (${SUB_COLS}) SELECT $5, $2, $6, $7, $8, 'SUCCEEDED', $9::jsonb, ap.id, NULL, NULL, $3, $3 FROM ap RETURNING id),
      app AS (UPDATE applications SET revision = revision + 1, stage = 'APPLIED', applied_at = $3, updated_at = $3
        FROM ap WHERE applications.id = $6 AND applications.user_id = $2 AND applications.revision = $10 AND $11 RETURNING applications.id),
@@ -365,7 +366,11 @@ export const submitApplication = async (ctx: Ctx, idRaw: string): Promise<Respon
       JSON.stringify(sub.document_version_ids), expected, move, crypto.randomUUID(),
       JSON.stringify({ from: stage, to: "APPLIED" }), crypto.randomUUID(),
       JSON.stringify({ submissionId: sub.id, mode: sub.mode, status: "SUCCEEDED" })]);
-  if (!done) await failedUpdate(ctx, "approvals", approvalId);
+  if (!done) {
+    const latest = await loadApp(ctx, appId);
+    if (Number(latest.revision) !== expected) throw conflict(latest.revision);
+    await failedUpdate(ctx, "approvals", approvalId);
+  }
   return data(201, submissionDto(sub), ctx.rid);
 };
 
