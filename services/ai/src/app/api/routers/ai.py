@@ -16,38 +16,14 @@ router = APIRouter()
 async def ai_models(request: Request):
     d = deps(request)
     provider = request.query_params.get("provider", "")
-    cred_mode = request.query_params.get("credentialMode", "")
     if provider and not ent.valid_ai_provider(provider):
         raise validation_field("provider", "unsupported provider")
-    if cred_mode and not ent.valid_credential_mode(cred_mode):
-        raise validation_field("credentialMode", "unsupported credentialMode")
-    if cred_mode == "BYOK" and provider:
-        key = request.headers.get("x-byok-key", "")
-        if not key:
-            return data(200, [])
-        ids = await d.ai.gate.list_byok_models(provider, key)
-        return data(200, [{"provider": provider, "model": m, "label": m,
-                           "available": True,
-                           "supportedEfforts": ["LOW", "MEDIUM", "HIGH"]}
-                          for m in ids])
-    byok_openai = False
-    if d.cfg.byok_enabled and d.ai_keys is not None:
-        try:
-            await d.ai_keys.get(current_user(request).id, "OPENAI")
-            byok_openai = True
-        except Exception:
-            pass
     models = []
     for m in ent.OPENAI_MODELS:
         if provider and provider != m.provider:
             continue
-        managed_ok = d.cfg.managed_go if m.model.startswith("opencode-go/") \
+        available = d.cfg.managed_go if m.model.startswith("opencode-go/") \
             else d.cfg.managed_ai
-        available = managed_ok or byok_openai
-        if cred_mode == "MANAGED":
-            available = managed_ok
-        elif cred_mode == "BYOK":
-            available = byok_openai
         models.append({"provider": m.provider, "model": m.model,
                        "label": m.label, "available": available,
                        "supportedEfforts": ["LOW", "MEDIUM", "HIGH"]})

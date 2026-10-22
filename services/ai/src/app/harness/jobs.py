@@ -53,7 +53,6 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict | None:
     from app.config import harness_enabled
     from app.domain.employer_chat import turn_from_payload
     from app.domain.services.conversation import _live_event
-    from app.graphs.chat import byok_key_var
     from app.jsonutil import to_jsonable
     from app.queue.worker import JobCancelled, JobFailed
 
@@ -74,7 +73,6 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict | None:
         **turn_from_payload(payload),
         **({"resume": payload["resume"]} if payload.get("resume") else {}),
     }
-    token = byok_key_var.set(svc._byok_from_payload(job["user_id"], payload))
     result: dict = {}
     try:
         async for mode, chunk in source.astream(
@@ -98,6 +96,4 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict | None:
         error = {"code": err.code, "message": err.message, "details": err.details}
         await ctx.emit("error", {"error": error})
         raise JobFailed(error)
-    finally:
-        byok_key_var.reset(token)
     return result

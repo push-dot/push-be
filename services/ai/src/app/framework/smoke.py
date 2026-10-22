@@ -153,7 +153,7 @@ async def one_turn(framework: str) -> dict:
         client.chat = legacy_chat
         client.embed = embed
         now = datetime.now(timezone.utc)
-        gate = AIGate(_FakeDB(), "sk-smoke", None, client)
+        gate = AIGate(_FakeDB(), "sk-smoke", client)
         gate.users = _Users(ent.User(
             id=user_id, provider="dev", provider_subject="smoke",
             display_name="smoke", created_at=now, plan="ULTRA"))
@@ -185,7 +185,6 @@ async def one_turn(framework: str) -> dict:
                 "ai": {
                     "provider": "OPENAI",
                     "model": "openai/gpt-test",
-                    "credential_mode": "MANAGED",
                     "effort": "LOW",
                 },
             })

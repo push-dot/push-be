@@ -154,7 +154,7 @@ async def test_schedule_sets_the_wake_event():
     previous = get_job_scheduler()
     await svc.start_worker()
     try:
-        await schedule_chat_job("job-1", "")
+        await schedule_chat_job("job-1")
         assert svc._wake.is_set() is True
     finally:
         await svc.stop_worker()

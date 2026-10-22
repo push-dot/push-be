@@ -158,14 +158,14 @@ async def test_post_message_success_creates_operation():
 
 def _managed_ai():
     return ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-luna",
-                         credential_mode="MANAGED", effort="LOW")
+                         effort="LOW")
 
 
 def _gate_for(user_id, plan, embeds):
     from app.domain.services.ai import AIGate
     from tests.stubs import StubChatCompleter, StubUserStore
 
-    gate = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    gate = AIGate(FakeDB(), "sk-managed", StubChatCompleter())
     gate.users = StubUserStore(ent.User(
         id=user_id, provider="dev", provider_subject="d", display_name="Ada",
         created_at=_now(), plan=plan))
@@ -300,7 +300,7 @@ async def test_stream_message_ai_tokens_concat():
     usage = StubAiUsageStore()
 
     class _Gate:
-        async def stream(self, _uid, _ai, _sys, _user, out, byok_key="", search_query="", assistant_prefix="", job_id=None):
+        async def stream(self, _uid, _ai, _sys, _user, out, search_query="", assistant_prefix="", job_id=None):
             for t in ["Hel", "lo"]:
                 yield t
             out["input_tokens"] = 3
@@ -308,7 +308,7 @@ async def test_stream_message_ai_tokens_concat():
 
     svc = _svc(convs, gate=_Gate(), usage=usage)
     ai = ent.AiOptions(provider="OPENAI", model="m",
-                       credential_mode="MANAGED", effort="LOW")
+                       effort="LOW")
     events = [e async for e in svc.stream_message(
         user_id, conv.id, "hi", {}, ai, "SUGGEST")]
     tokens = [p for k, p, _ in events if k == "token"]
@@ -395,7 +395,6 @@ async def test_feature_disabled_does_not_save_user_message(monkeypatch):
         "ai": {
             "provider": "OPENAI",
             "model": "openai/gpt-5.6-luna",
-            "credential_mode": "MANAGED",
             "effort": "LOW",
         },
     }

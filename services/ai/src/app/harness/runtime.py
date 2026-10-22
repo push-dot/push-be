@@ -12,7 +12,6 @@ from langgraph.types import Command
 from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
 from app.framework.models import _content
-from app.graphs.chat import byok_key_var
 from app.harness.core_client import CoreClient, idempotency_key
 from app.harness.graph import _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
@@ -210,7 +209,7 @@ class HarnessRuntime:
         gate = getattr(self.svc, "ai", None)
         cfg = gate._levers_config() if gate is not None and hasattr(gate, "_levers_config") else load_config()
         base = ent.AiOptions(**raw) if raw else ent.AiOptions(
-            provider="OPENAI", model="managed", credential_mode="MANAGED", effort="LOW")
+            provider="OPENAI", model="managed", effort="LOW")
         return apply_employer_turn(base, plan, payload.get("intent"), cfg)
 
     def _model(self, payload: dict, ai, turn: dict):
@@ -230,8 +229,6 @@ class HarnessRuntime:
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
             (bound_core, bound_core.set(self._core)),
         ]
-        if payload.get("resume") and not byok_key_var.get():
-            tokens.append((byok_key_var, byok_key_var.set(await self._job_byok(payload))))
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         run = self._resume_turn if spec.id == "resume" else self._chat_turn
         ok = False
@@ -247,15 +244,6 @@ class HarnessRuntime:
                 reset_employer_plan(plan_token)
             for var, token in reversed(tokens):
                 var.reset(token)
-
-    async def _job_byok(self, payload: dict) -> str:
-        row = await self.svc.db.q().fetchrow(
-            "SELECT payload FROM chat_jobs WHERE id = $1", UUID(str(payload["job_id"])))
-        read = getattr(self.svc, "_byok_from_payload", None)
-        if row is None or read is None:
-            return ""
-        stored = row["payload"]
-        return read(payload["user_id"], json.loads(stored) if isinstance(stored, str) else stored)
 
     async def _chat_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
         snapshot = await graph.aget_state(config)

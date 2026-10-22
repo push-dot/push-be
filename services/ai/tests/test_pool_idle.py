@@ -103,7 +103,6 @@ async def test_shutdown_closes_the_checkpointer_pool():
     app.state._closers = (
         Conversations(), Saver(),
         Client(), Client(), Client(), Client(), Client(),
-        Client(), Client(), Client(), Client(),
         Pool(),
     )
     await _shutdown(app)

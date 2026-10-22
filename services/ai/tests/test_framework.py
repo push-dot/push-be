@@ -453,7 +453,7 @@ async def test_prepare_reply_keeps_the_rag_status_frame(monkeypatch):
             "attachments": [],
             "ai": {
                 "provider": "OPENAI", "model": "m",
-                "credential_mode": "MANAGED", "effort": "LOW",
+                "effort": "LOW",
             },
         })
     finally:
@@ -472,7 +472,7 @@ def _user(user_id):
 def _managed():
     return ent.AiOptions(
         provider="OPENAI", model="openai/gpt-test",
-        credential_mode="MANAGED", effort="LOW")
+        effort="LOW")
 
 
 class _FakeChatModel:
@@ -529,7 +529,7 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
 
     client.chat = legacy_chat
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     done = await gate.complete(user_id, _managed(), "sys", POISON)
@@ -539,36 +539,6 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
     assert holder["kwargs"]["model"] == "anthropic/claude-opus-5-5"
     assert holder["model"].messages[-1]["content"] == POISON
     assert "tools" not in holder["kwargs"]
-
-
-async def test_gate_claude_stays_on_anthropic(monkeypatch):
-    _langchain_env(monkeypatch)
-    from app.domain.services.ai import AIGate
-    from app.infrastructure.anthropic_client import AnthropicClient
-    from tests.stubs import FakeDB, StubAiKeyStore, StubCipher
-    holder = _patch_model(monkeypatch)
-    client = AnthropicClient()
-    called = {}
-
-    async def chat(api_key, model, system, user, reasoning="", extra_headers=None):
-        called["user"] = user
-        return ent.AICompletion(text="claude", input_tokens=1, output_tokens=1)
-
-    client.chat = chat
-    user_id = uuid4()
-    gate = AIGate(FakeDB(), "", StubCipher(plaintext="sk-claude"), client)
-    gate.users = StubUserStore(_user(user_id))
-    gate.usage = StubAiUsageStore()
-    gate.keys = StubAiKeyStore(ent.AiKey(
-        user_id=user_id, provider="CLAUDE", last_four="aude",
-        ciphertext=b"1", nonce=b"2", updated_at=_now()))
-    ai = ent.AiOptions(
-        provider="CLAUDE", model="claude-sonnet",
-        credential_mode="BYOK", effort="LOW")
-    done = await gate.complete(user_id, ai, "", "hello", byok_key="sk-claude")
-    assert done.text == "claude"
-    assert called["user"] == "hello"
-    assert holder == {}
 
 
 async def test_gate_import_error_falls_back(monkeypatch):
@@ -591,7 +561,7 @@ async def test_gate_import_error_falls_back(monkeypatch):
 
     client.chat = chat
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     done = await gate.complete(user_id, _managed(), "", "hi")
@@ -613,7 +583,7 @@ async def test_gate_stream_frames_stay_token_strings(monkeypatch):
 
     client.chat_stream = chat_stream
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     usage = {}

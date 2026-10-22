@@ -79,7 +79,6 @@ class PatchJobReq(Req):
 class AiOptionsReq(Req):
     provider: str
     model: str
-    credential_mode: str
     effort: str
     ultra_resume: bool = False
     web_search: bool = False

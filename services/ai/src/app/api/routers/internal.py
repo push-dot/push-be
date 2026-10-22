@@ -33,5 +33,5 @@ async def schedule_chat(request: Request):
         return JSONResponse(
             status_code=400,
             content=error_body("VALIDATION_ERROR", "invalid request body", rid))
-    await schedule_chat_job(str(body["jobId"]), str(body.get("byok") or ""))
+    await schedule_chat_job(str(body["jobId"]))
     return data(200, {"scheduled": True})

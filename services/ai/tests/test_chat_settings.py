@@ -250,7 +250,6 @@ def _job_svc(error=None):
     svc.db = _DB()
     svc.jobs = _Jobs()
     svc._compiled = _Graph(error)
-    svc._byok_keys = {}
     svc._sem = asyncio.Semaphore(1)
     return svc
 
@@ -325,8 +324,7 @@ async def test_workflow_persist_inserts_ai_done():
     svc = ConversationService.__new__(ConversationService)
     svc.db = _DB()
     svc.jobs = Jobs()
-    svc.ai = SimpleNamespace(cipher=None)
-    svc._byok_keys = {}
+    svc.ai = SimpleNamespace()
 
     async def persist(state):
         return {"operation": {"status": "SUCCEEDED"}}
