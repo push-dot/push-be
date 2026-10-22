@@ -1,17 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.api.errors import domain_error_handler
-from app.api.routers.postings import router
-from app.domain import entities as ent
+from app.infrastructure.posting_fit_cache import load_fit
 from app.domain import posting_fit
-from app.domain.errors import DomainError
 from app.domain.posting_fit import compute_fit, fit_view
 from app.main import create_app
 
@@ -67,17 +61,6 @@ def test_empty_requirements_use_description():
         "topGap": "경험 연관성",
         "plan": "FREE",
     }
-
-
-class _AsUser:
-    def __init__(self, app, user):
-        self.app = app
-        self.user = user
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            scope.setdefault("state", {})["user"] = self.user
-        await self.app(scope, receive, send)
 
 
 class _Db:
@@ -137,21 +120,8 @@ def _document(user_id=USER_ID):
     }
 
 
-def _client(db: _Db, user_plan: str = "ULTRA") -> TestClient:
-    app = FastAPI()
-    app.add_exception_handler(DomainError, domain_error_handler)
-    app.include_router(router, prefix="/api/v1")
-    app.add_middleware(_AsUser, user=ent.User(
-        id=USER_ID, display_name="Ada", plan=user_plan,
-        created_at=datetime.now(timezone.utc)))
-    app.state.db = db
-    return TestClient(app)
-
-
-def _post(db: _Db, user_plan: str = "ULTRA"):
-    return _client(db, user_plan).post(
-        f"/api/v1/postings/{POSTING_ID}/fit",
-        json={"documentId": str(DOC_ID)})
+def _fit(db: _Db):
+    return asyncio.run(load_fit(db, USER_ID, POSTING_ID, DOC_ID))
 
 
 def test_second_call_does_not_recompute(monkeypatch):
@@ -164,54 +134,45 @@ def test_second_call_does_not_recompute(monkeypatch):
 
     monkeypatch.setattr(posting_fit, "part_scores", _wrapped)
     db = _Db(_posting(), _document(), "PRO")
-    first = _post(db)
-    second = _post(db)
-    assert first.status_code == 200
-    assert first.json()["data"] == {
+    first = _fit(db)
+    second = _fit(db)
+    assert first == {
         "fitScore": 3.3,
         "parts": {"techStack": 50, "experienceLink": 0, "keyword": 50},
         "topGap": "경험 연관성",
         "plan": "PRO",
     }
-    assert second.status_code == 200
-    assert second.json()["data"] == first.json()["data"]
+    assert second == first
     assert calls["n"] == 1
     assert db.inserts == 1
 
 
 def test_blank_db_plan_is_free():
     db = _Db(_posting(), _document(), "  ")
-    res = _post(db)
-    assert res.status_code == 200
-    assert res.json()["data"]["plan"] == "FREE"
+    assert _fit(db)["plan"] == "FREE"
 
 
 def test_unknown_document_is_404():
     db = _Db(_posting(), None, "PRO")
-    res = _post(db)
-    assert res.status_code == 404
-    assert res.json()["error"]["code"] == "NOT_FOUND"
+    assert _fit(db) is None
     assert db.inserts == 0
 
 
 def test_other_users_document_is_404():
     db = _Db(_posting(), _document(OTHER_ID), "PRO")
-    res = _post(db)
-    assert res.status_code == 404
+    assert _fit(db) is None
     assert db.inserts == 0
 
 
 def test_unknown_posting_is_404():
     db = _Db(None, _document(), "PRO")
-    res = _post(db)
-    assert res.status_code == 404
+    assert _fit(db) is None
     assert db.inserts == 0
 
 
-def test_fit_route_is_registered():
+def test_fit_route_moved_to_core():
     matched = [
         route for route in create_app().routes
         if getattr(route, "path", "") == "/api/v1/postings/{id}/fit"
-        and "POST" in (getattr(route, "methods", ()) or ())
     ]
-    assert matched
+    assert matched == []

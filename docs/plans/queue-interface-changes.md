@@ -114,3 +114,7 @@ Parity gaps:
 - Schema-level body errors (message text only), as in other groups.
 - Python wrote a version and moved the document to it in one transaction; core does it in one statement guarded by the document revision.
 - The finalize approval hash and export `contentHash` use Python's `json.dumps` rules. A float in TipTap content written as `1.0` by Python hashes differently than core's `1`; editor content uses integers.
+
+## Dead Python routes
+
+`POST /postings/{id}/fit` is removed from Python: the gateway has sent it to core since Task 7. Its fit logic (`infrastructure/posting_fit_cache.load_fit`) stays for the queue worker's `fit` handler. Every remaining Python route was checked against the gateway's `ownerOf()`: the rest still reach Python, except `/internal/chat/schedule`, which the gateway denies on purpose because core calls the VPS directly.

@@ -48,7 +48,7 @@ from app.api.middleware import ApiMiddleware
 from app.api.routers import (
     ai, applications, approvals, conversations, documents, evidence,
     internal, interviews, jobs, operations,
-    postings, projects,
+    projects,
 )
 
 
@@ -272,7 +272,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.add_middleware(SharedSecretMiddleware)
     app.add_middleware(RequestIDMiddleware)
 
-    for r in (evidence.router, jobs.router, postings.router, applications.router,
+    for r in (evidence.router, jobs.router, applications.router,
               documents.router, projects.router, interviews.router,
               conversations.router, approvals.router,
               operations.router, ai.router):
