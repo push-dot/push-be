@@ -330,7 +330,7 @@ jobs:
             set -a
             . ./.env
             set +a
-            docker compose -p push-ai -f infra/vps/compose.yaml up -d --build"
+            docker compose -p push-ai -f infra/vps/compose.yaml up -d --build --remove-orphans"
           ok=0
           for _ in $(seq 1 36); do
             code="$(curl -sS -o /tmp/healthz -w "%{http_code}" --max-time 15 "$HEALTH_URL" || true)"

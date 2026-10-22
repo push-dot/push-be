@@ -66,6 +66,7 @@ function isCore(method: string, path: string): boolean {
   // AI worker act-as routes; core checks document ownership and rejects resume-jobs without act-as.
   if (/^\/api\/v1\/documents\/[^/]+\/edits$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/resume-jobs$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/artifacts\/[^/]+$/.test(path)) return method === "GET";
   if (path === "/api/v1/documents") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
   if (/^\/api\/v1\/documents\/[^/]+\/(versions|exports)$/.test(path)) return method === "GET" || method === "POST";

@@ -1,4 +1,4 @@
-import { bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
+import { base64ToBytes, bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
@@ -560,4 +560,43 @@ export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx
   const headers = new Headers(ctx.request.headers);
   headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${optionId}`));
   return { ...ctx, request: new Request(ctx.request, { headers }) };
+};
+
+const ARTIFACT_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  md: "text/markdown; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  txt: "text/plain; charset=utf-8",
+};
+
+const artifactName = (raw: string): string => {
+  let name: string;
+  try { name = decodeURIComponent(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid artifact name"); }
+  if (!name || name.startsWith(".") || /[/\\\0]/.test(name) || name.includes("..")) {
+    throw new HttpError(400, "VALIDATION_ERROR", "invalid artifact name");
+  }
+  return name;
+};
+
+const ARTIFACT_SQL = "SELECT encode(COALESCE(content, convert_to(body, 'UTF8')), 'base64') AS content FROM workspace_files"
+  + " WHERE conversation_id = $1 AND name = $3 AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = $1 AND (c.user_id = $2 OR ("
+  + memberOfCaller("c.company_id", "$2") + ")))";
+
+/** GET /conversations/:id/artifacts/:name — bytes of one harness artifact from workspace_files. */
+export const getArtifact = async (ctx: Ctx, idRaw: string, nameRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const name = artifactName(nameRaw);
+  const row = await one(ctx.deps.query, ARTIFACT_SQL, [id, ctx.user.id, name]);
+  if (!row || row.content == null) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const bytes = base64ToBytes(String(row.content).replace(/\s+/g, ""));
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+  const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  return new Response(bytes as Uint8Array<ArrayBuffer>, {
+    status: 200,
+    headers: {
+      "content-type": ARTIFACT_TYPES[ext] ?? "application/octet-stream",
+      "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "x-request-id": ctx.rid,
+    },
+  });
 };

@@ -6,7 +6,7 @@ import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
@@ -156,6 +156,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && attachment) return postAttachment(ctx, attachment[1]);
   const approval = path.match(/^\/api\/v1\/conversations\/([^/]+)\/approvals\/([^/]+)$/);
   if (method === "POST" && approval) return resolveApproval(ctx, approval[1], approval[2]);
+  const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
   const resumeJob = path.match(/^\/api\/v1\/conversations\/([^/]+)\/resume-jobs$/);
   if (method === "POST" && resumeJob) return postResumeJob(ctx, resumeJob[1]);
 
