@@ -411,11 +411,12 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
   const byok = ctx.request.headers.get("x-byok-key") || "";
   await allowChat(ctx, ai, byok);
-  if (intent === "interview") {
-    const owned = await one(ctx.deps.query,
-      "SELECT c.company_id, co.plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
-      [conversationId, ctx.user.id]);
-    if (owned && owned.company_id != null) assertPlanAllows(owned.plan, "employer_interview");
+  const owned = await one(ctx.deps.query,
+    "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+    [conversationId, ctx.user.id]);
+  if (owned && owned.company_id != null) {
+    if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+    if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
   }
   const payload: Record<string, unknown> = {
     text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,

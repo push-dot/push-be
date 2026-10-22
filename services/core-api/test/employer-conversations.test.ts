@@ -339,7 +339,7 @@ const interviewOnPlan = async (plan: string | null, key: string) => {
       return { rows: [{ id: "job-locked" }], rowCount: 1 };
     }
     if (sql.includes("FROM conversations") || sql.includes("JOIN companies")) {
-      return { rows: [{ id: CONV, company_id: COMPANY, plan }], rowCount: 1 };
+      return { rows: [{ id: CONV, company_id: COMPANY, plan, verified_at: NOW.toISOString() }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   }));
@@ -376,7 +376,7 @@ test("interview without ai on a PRO company plan is queued", async () => {
       return { rows: [{ id: "job-pro" }], rowCount: 1 };
     }
     if (sql.includes("FROM conversations") || sql.includes("JOIN companies")) {
-      return { rows: [{ id: CONV, company_id: COMPANY, plan: "PRO" }], rowCount: 1 };
+      return { rows: [{ id: CONV, company_id: COMPANY, plan: "PRO", verified_at: NOW.toISOString() }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   }));

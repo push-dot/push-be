@@ -10,32 +10,10 @@ from fastapi.responses import StreamingResponse
 from app.db import NotFoundError
 from app.domain.errors import DomainError, not_found
 from app.jsonutil import to_jsonable
-from app.api import schemas as s
 from app.infrastructure.store_conversations import ConversationStore
-from app.api.deps import deps, ai_options, bind_json, current_user, data, param_id
+from app.api.deps import current_user, data, param_id
 
 router = APIRouter()
-
-
-@router.post("/conversations/{id}/messages/stream")
-async def post_message_stream(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.PostMessageReq)
-    context = (req.context.model_dump(by_alias=True) if req.context else {})
-    user_id = current_user(request).id
-    conversation_id = param_id(id, "id")
-
-    async def events():
-        async for frame in _sse_frames(
-                d.conversations.stream_message(
-                    user_id, conversation_id, req.text, context, ai_options(req.ai),
-                    req.access_mode,
-                    request.headers.get("x-byok-key", ""),
-                    req.intent, req.application_id),
-                request):
-            yield frame
-
-    return _sse_response(events())
 
 
 async def _sse_frames(gen, request: Request):

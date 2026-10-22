@@ -277,6 +277,11 @@ class ConversationService:
                     await self.jobs.reset_stale()
                 except Exception:
                     log.exception("chat job stale sweep failed")
+                try:
+                    from app.queue.admin import AdminJobs
+                    await AdminJobs(self.db.q()).expire_approvals(_now())
+                except Exception:
+                    log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()
@@ -499,9 +504,6 @@ class ConversationService:
                            byok_key: str = "") -> ent.Operation:
         access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        if external_jobs():
-            return await self._enqueue(
-                user_id, conversation_id, text, context, ai, access_mode, byok_key)
         token = _BYOK_KEY.set(byok_key)
         try:
             result = await self.graph.ainvoke(
@@ -565,12 +567,6 @@ class ConversationService:
                              application_id=None):
         access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        if self._worker_task is not None or external_jobs():
-            async for ev in self._stream_via_queue(
-                    user_id, conversation_id, text, context, ai, access_mode,
-                    byok_key, intent, application_id):
-                yield ev
-            return
         token = _BYOK_KEY.set(byok_key)
         try:
             async for mode, chunk in self.graph.astream(
@@ -590,38 +586,6 @@ class ConversationService:
                     yield ("done", chunk["operation"], None)
         finally:
             _BYOK_KEY.reset(token)
-
-    async def _allow_chat(self, user_id, ai, byok_key: str = "") -> None:
-        # The Workflow still checks inside the model call. This one runs
-        # first so a rejected chat never enqueues, never embeds, and returns
-        # the same 403 the synchronous path returned.
-        if ai is None or self.ai is None:
-            return
-        await self.ai.check(user_id, ai, byok_key)
-
-    async def _stream_via_queue(self, user_id, conversation_id, text, context,
-                                ai, access_mode, byok_key, intent=None,
-                                application_id=None):
-        await self._allow_chat(user_id, ai, byok_key)
-        payload = {
-            "text": text,
-            "context": context or {},
-            "ai": ai.model_dump(by_alias=True) if ai else None,
-            "access_mode": access_mode,
-            "accessMode": access_mode,
-            **turn_from_payload({"intent": intent, "application_id": application_id}),
-        }
-        payload = self._stash_byok(user_id, payload, byok_key)
-        job_id = await self.jobs.enqueue_started(
-            user_id, conversation_id, payload, "대기 중")
-        if job_id is None:
-            raise not_found()
-        if byok_key:
-            self._byok_keys[job_id] = byok_key
-        if external_jobs():
-            await schedule_chat_job(job_id, byok_key)
-        async for ev in self._pump_job_events(job_id):
-            yield ev
 
     async def active_job_id(self, user_id: UUID,
                             conversation_id: UUID) -> Optional[UUID]:
@@ -685,19 +649,6 @@ class ConversationService:
                     idle = 0
             await asyncio.sleep(0.25 if external_jobs() else 0.2)
 
-    def _stash_byok(self, user_id: UUID, payload: dict, byok_key: str) -> dict:
-        cipher = getattr(self.ai, "cipher", None)
-        if not byok_key or cipher is None:
-            return payload
-        import base64
-        ct, nonce = cipher.encrypt(byok_key, user_id, "chat-job")
-        stored = dict(payload)
-        stored["_byok"] = {
-            "ct": base64.b64encode(ct).decode(),
-            "nonce": base64.b64encode(nonce).decode(),
-        }
-        return stored
-
     def _byok_from_payload(self, user_id, payload) -> str:
         cipher = getattr(self.ai, "cipher", None)
         blob = (payload or {}).get("_byok") if isinstance(payload, dict) else None
@@ -712,37 +663,6 @@ class ConversationService:
                 uid, "chat-job")
         except Exception:
             return ""
-
-    async def _enqueue(self, user_id, conversation_id, text, context,
-                                ai, access_mode, byok_key) -> ent.Operation:
-        await self._allow_chat(user_id, ai, byok_key)
-        payload = self._stash_byok(user_id, {
-            "text": text,
-            "context": context or {},
-            "ai": ai.model_dump(by_alias=True) if ai else None,
-            "access_mode": access_mode,
-            "accessMode": access_mode,
-        }, byok_key)
-        # One statement checks the conversation, inserts the job, and writes
-        # the first status so SSE shows progress before the Workflow starts.
-        job_id = await self.jobs.enqueue_started(
-            user_id, conversation_id, payload, "대기 중")
-        if job_id is None:
-            raise not_found()
-        if byok_key:
-            self._byok_keys[job_id] = byok_key
-        await schedule_chat_job(job_id, byok_key)
-        # The Workflow emits tokens and the finished operation. Waiting here
-        # held the HTTP request for the whole model call (~10s plus a Neon
-        # poll per tick). Clients already treat QUEUED as a 202 body and
-        # follow the stream or the active SSE replay.
-        now = _now()
-        return ent.Operation(
-            id=job_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
-            status=ent.OP_QUEUED,
-            result=ent.OperationResult(
-                kind=ent.OP_CHAT_MESSAGE, value={"jobId": str(job_id)}),
-            created_at=now, updated_at=now)
 
     async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
         jid = UUID(str(job_id))

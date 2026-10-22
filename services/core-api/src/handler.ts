@@ -150,7 +150,7 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "PATCH" && conv) return patchConversation(ctx, conv[1]);
   const archive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/archive$/);
   if (method === "POST" && archive) return archiveConversation(ctx, archive[1]);
-  const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
+  const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages(?:\/stream)?$/);
   if (method === "POST" && message) return postMessage(ctx, message[1]);
   const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);
   if (method === "POST" && attachment) return postAttachment(ctx, attachment[1]);

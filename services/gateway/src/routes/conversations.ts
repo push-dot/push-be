@@ -4,6 +4,7 @@ import {
   asBool, conditional, errorResponse, fieldError, freshRead, jsonResponse, jsonRows,
   pageLimit, parseUuid, USER_CACHE_CONTROL,
 } from "../http.ts";
+import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
 import { LIST_SQL, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
@@ -49,7 +50,7 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
     + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
     + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
     + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING') THEN 'NEEDS_APPROVAL' "
+    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
     + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
     + "ELSE 'DONE' END AS status "
     + "FROM conversations c "
@@ -361,7 +362,25 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
   }
   if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
   const afterRaw = url.searchParams.get("after") || request.headers.get("last-event-id") || "";
-  let after = /^[0-9]+$/.test(afterRaw) ? Number(afterRaw) : 0;
+  return jobEvents(jobId, /^[0-9]+$/.test(afterRaw) ? Number(afterRaw) : 0, env, deps, rid);
+}
+
+export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> => {
+  const queued = await proxy(request, env.CORE, rid);
+  if (queued.status !== 202) return queued;
+  let jobId = "";
+  try {
+    const body = await queued.json() as { data?: { result?: { value?: { jobId?: unknown } } } };
+    jobId = String(body.data?.result?.value?.jobId ?? "");
+  } catch {
+    jobId = "";
+  }
+  if (!parseUuid(jobId)) return errorResponse(500, "INTERNAL", "internal error", rid);
+  return jobEvents(jobId, 0, env, deps, rid);
+};
+
+const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string): Response => {
+  let after = start;
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const encoder = new TextEncoder();
@@ -413,7 +432,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
       "x-request-id": rid,
     },
   });
-}
+};
 
 function sseFrame(row: Record<string, unknown>): string {
   const seq = Number(row.id);

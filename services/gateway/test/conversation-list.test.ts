@@ -143,7 +143,7 @@ const assertStatusSql = (sql: string): void => {
   const needs = sql.indexOf("THEN 'NEEDS_APPROVAL'");
   const running = sql.indexOf("THEN 'RUNNING'");
   assert.ok(needs >= 0 && running > needs);
-  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM approvals a WHERE a\.conversation_id = c\.id AND a\.status = 'PENDING'\) THEN 'NEEDS_APPROVAL'/);
+  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM approvals a WHERE a\.conversation_id = c\.id AND a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)\) THEN 'NEEDS_APPROVAL'/);
   assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status IN \('PENDING', 'RUNNING'\)\) THEN 'RUNNING'/);
   assert.match(sql, /ELSE 'DONE' END AS status/);
   assert.match(sql, /LEFT JOIN LATERAL \(SELECT m\.text FROM messages m WHERE m\.conversation_id = c\.id ORDER BY m\.created_at DESC, m\.id DESC LIMIT 1\) last_msg ON true/);
@@ -309,4 +309,13 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   assert.equal(forBody.data[0].id, NEEDS_ID);
   assert.equal(forBody.data[0].createdBy.displayName, "Bea");
   assert.equal(forBody.data[0].postingId, POSTING_ID);
+});
+
+test("an expired approval card does not flag the conversation as NEEDS_APPROVAL", async () => {
+  const { LIST_SQL } = await import("../src/middleware/ratelimit.ts");
+  const { readFile } = await import("node:fs/promises");
+  const inline = await readFile(new URL("../src/routes/conversations.ts", import.meta.url), "utf8");
+  for (const sql of [LIST_SQL, inline]) {
+    assert.match(sql, /a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)/);
+  }
 });
