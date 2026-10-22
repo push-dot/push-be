@@ -160,3 +160,31 @@ async def test_schedule_sets_the_wake_event():
         await svc.stop_worker()
     assert get_job_scheduler() is previous
     set_job_scheduler(previous)
+
+
+@pytest.mark.asyncio
+async def test_stale_sweep_also_expires_old_approval_cards(monkeypatch):
+    executed = []
+
+    class Jobs:
+        async def claim(self):
+            raise asyncio.CancelledError()
+
+        async def reset_stale(self, max_age_s=None):
+            return 0
+
+    class Conn:
+        async def execute(self, sql, *args):
+            executed.append(sql)
+            return "UPDATE 0"
+
+    class Db:
+        def q(self):
+            return Conn()
+
+    monkeypatch.setattr("app.domain.services.conversation.STALE_SWEEP_S", 0)
+    svc = _service(Jobs())
+    svc.db = Db()
+    with pytest.raises(asyncio.CancelledError):
+        await svc._worker_loop()
+    assert any("SET status = 'EXPIRED'" in sql for sql in executed)

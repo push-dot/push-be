@@ -140,7 +140,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at, "
   + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
   + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-  + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING') THEN 'NEEDS_APPROVAL' "
+  + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
   + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
   + "ELSE 'DONE' END AS status "
   + "FROM conversations c JOIN live ON live.id = c.user_id "

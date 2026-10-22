@@ -50,7 +50,7 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
     + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
     + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
     + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING') THEN 'NEEDS_APPROVAL' "
+    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
     + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
     + "ELSE 'DONE' END AS status "
     + "FROM conversations c "
