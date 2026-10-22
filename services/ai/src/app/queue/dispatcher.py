@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import hmac
+import logging
 import os
 from dataclasses import dataclass
 from uuid import UUID
@@ -9,8 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.clock import utcnow
-from app.queue.config import SWEEP_S, heartbeat_limits, visibility_limits
+from app.queue.admin import AdminJobs
+from app.queue.alerts import db_conditions, redis_conditions
+from app.queue.config import ALERT_S, SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.streams import StreamQueue
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,12 +26,7 @@ class DispatchStats:
     rehydrated: int
 
 
-class PgJobs:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def close(self) -> None:
-        await self.conn.close()
+class PgJobs(AdminJobs):
 
     async def pending_outbox(self):
         rows = await self.conn.fetch(
@@ -62,21 +62,35 @@ def _row(row, *keys):
 
 
 class Dispatcher:
-    def __init__(self, queue: StreamQueue, open_db, secret: str):
+    def __init__(self, queue: StreamQueue, open_db, secret: str, *,
+                 admin_token: str = "", now=utcnow, alerts=None):
         self.queue = queue
         self.open_db = open_db
         self.secret = secret
+        self.admin_token = admin_token
+        self.now = now
+        self.alerts = alerts
+        self.db_conditions: dict = {}
 
-    async def run_once(self, now) -> DispatchStats:
+    async def run_once(self, now, *, maintain: bool = False) -> DispatchStats:
         db = await self.open_db()
         try:
             requeued = await self._requeue_stale(db, now)
             promoted = await self.queue.promote_due(now)
             dispatched = await self._dispatch_outbox(db, now)
             rehydrated = await self._rehydrate(db, now)
-            return DispatchStats(dispatched, promoted, requeued, rehydrated)
+            stats = DispatchStats(dispatched, promoted, requeued, rehydrated)
+            if maintain:
+                await db.purge_finished(now)
+                self.db_conditions = db_conditions(stats, await db.neon_stats())
+            return stats
         finally:
             await db.close()
+
+    async def check_alerts(self, now) -> None:
+        if self.alerts is None:
+            return
+        await self.alerts.evaluate({**await redis_conditions(self.queue, now), **self.db_conditions}, now)
 
     async def run_forever(self) -> None:
         import uvicorn
@@ -85,21 +99,28 @@ class Dispatcher:
         server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info"))
         stop = asyncio.Event()
 
-        async def sweep() -> None:
+        async def every(seconds: int, fn) -> None:
             while not stop.is_set():
                 try:
-                    await asyncio.wait_for(stop.wait(), SWEEP_S)
+                    await asyncio.wait_for(stop.wait(), seconds)
                 except TimeoutError:
-                    await self.run_once(utcnow())
+                    try:
+                        await fn(self.now())
+                    except Exception:
+                        logger.exception("dispatcher periodic task failed")
 
-        task = asyncio.create_task(sweep())
+        tasks = [
+            asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
+            asyncio.create_task(every(ALERT_S, self.check_alerts)),
+        ]
         try:
             await server.serve()
         finally:
             stop.set()
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     async def _requeue_stale(self, db, now) -> int:
         ids = []
@@ -150,14 +171,21 @@ class Dispatcher:
 
 
 def kick_app(dispatcher: Dispatcher) -> FastAPI:
+    from app.api.routers.admin_queue import admin_router
+
     app = FastAPI()
+    app.include_router(admin_router(dispatcher))
+
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True}
 
     @app.post("/internal/kick")
     async def kick(request: Request):
         header = request.headers.get("x-push-dispatch-secret") or ""
         if not _secret_ok(header, dispatcher.secret):
             return JSONResponse(status_code=401, content={"error": {"code": "UNAUTHORIZED"}})
-        await dispatcher.run_once(utcnow())
+        await dispatcher.run_once(dispatcher.now())
         return JSONResponse(status_code=200, content={"data": {"ok": True}})
 
     return app

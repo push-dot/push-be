@@ -55,6 +55,9 @@ async def build_chat(svc) -> None:
 
 
 async def main() -> None:
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     from redis.asyncio import Redis
 
     from app.clock import utcnow

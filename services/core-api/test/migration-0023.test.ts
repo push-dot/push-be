@@ -27,6 +27,7 @@ test("migration 0023 creates jobs, outbox, credit_reservations and keeps chat_jo
   assert.match(sql, /conversation_id uuid NULL REFERENCES conversations\(id\) ON DELETE CASCADE/);
   assert.match(sql, /FOREIGN KEY \(job_id\) REFERENCES ai_jobs\(id\) ON DELETE CASCADE;/);
   assert.match(sql, /INSERT INTO ai_jobs \([\s\S]*FROM chat_jobs/);
+  assert.match(sql, /started_at timestamptz NULL/);
   assert.match(sql, /CREATE VIEW chat_jobs AS/);
   assert.match(sql, /WHERE type IN \('chat', 'employer_ai'\) AND conversation_id IS NOT NULL/);
   const jobCheck = sql.match(/jobs[\s\S]*?CHECK \(status IN \(([^)]+)\)\)/);

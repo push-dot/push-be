@@ -3,7 +3,7 @@ from uuid import UUID
 
 from redis.exceptions import ResponseError
 
-from app.queue.config import DEAD_QUEUE, DELAYED_KEY, STREAM_MAXLEN
+from app.queue.config import DEAD_QUEUE, DELAYED_KEY, PAUSE_PREFIX, STREAM_MAXLEN
 
 
 @dataclass(frozen=True)
@@ -83,6 +83,38 @@ class StreamQueue:
             maxlen=STREAM_MAXLEN,
             approximate=True,
         )
+
+    async def paused(self, queue: str) -> bool:
+        return bool(await self.redis.exists(PAUSE_PREFIX + queue))
+
+    async def pause(self, queue: str) -> None:
+        await self.redis.set(PAUSE_PREFIX + queue, "1")
+
+    async def resume(self, queue: str) -> None:
+        await self.redis.delete(PAUSE_PREFIX + queue)
+
+    async def stream_stats(self, queue: str, group: str, now) -> dict:
+        length = await self.redis.xlen(queue)
+        last, pending, oldest = "0-0", 0, []
+        try:
+            groups = await self.redis.xinfo_groups(queue)
+        except ResponseError:
+            groups = []
+        for info in groups:
+            if info["name"] == group:
+                last, pending = info["last-delivered-id"], int(info["pending"])
+        if pending:
+            oldest.append((await self.redis.xpending(queue, group))["min"])
+        undelivered = await self.redis.xrange(queue, min="(" + last, count=1)
+        if undelivered:
+            oldest.append(undelivered[0][0])
+        now_ms = int(now.timestamp() * 1000)
+        age = max((now_ms - int(str(i).split("-")[0]) for i in oldest), default=0)
+        return {"length": length, "oldestAgeSec": max(age // 1000, 0), "pending": pending}
+
+    async def dead_since(self, since) -> int:
+        rows = await self.redis.xrange(DEAD_QUEUE, min=str(int(since.timestamp() * 1000)))
+        return len(rows)
 
     async def _group(self, queue: str, group: str) -> None:
         try:

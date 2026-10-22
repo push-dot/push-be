@@ -14,6 +14,8 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
+COPY scripts ./scripts
+COPY eval ./eval
 
 RUN pip install --no-cache-dir ".[local]" \
     && playwright install --with-deps chromium \

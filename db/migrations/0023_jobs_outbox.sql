@@ -10,6 +10,7 @@ CREATE TABLE ai_jobs (
     max_attempts int NOT NULL,
     run_after timestamptz NOT NULL DEFAULT now(),
     heartbeat_at timestamptz NULL,
+    started_at timestamptz NULL,
     payload jsonb NOT NULL,
     result jsonb NULL,
     error jsonb NULL,
@@ -22,6 +23,7 @@ CREATE TABLE ai_jobs (
 );
 
 CREATE INDEX idx_ai_jobs_queued ON ai_jobs (queue, run_after) WHERE status IN ('QUEUED', 'RETRY');
+CREATE INDEX idx_ai_jobs_finished ON ai_jobs (updated_at) WHERE status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED');
 
 CREATE TABLE outbox (
     id bigserial PRIMARY KEY,

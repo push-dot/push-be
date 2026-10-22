@@ -1,46 +1,68 @@
 # Hostinger KVM 2 (2 vCPU / 8 GB) via Dokploy.
 # Dokploy supplies Docker and Traefik. This file does not run Postgres:
 # DATABASE_URL points at Neon. Migrations stay manual (RUN_MIGRATIONS=0).
-# CHAT_EXECUTOR=local keeps the in-process FOR UPDATE SKIP LOCKED worker.
+# QUEUE_BACKEND=redis runs chat and other AI jobs in ai-worker from Redis Streams.
+# QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller in ai.
 # Do not set CF_WORKER or CHAT_EXECUTOR=workflow on this host.
+# Memory: redis 512m, embed 2.5g, rerank 1.25g, ai-worker 1.5g, ingest 768m,
+# ai + dispatcher + notify 768m. Measure and adjust before raising the VPS plan.
+
+x-ai-image: &ai-image
+  build:
+    context: ../../services/ai
+    dockerfile: Dockerfile
+  image: push-ai:local
+  restart: unless-stopped
+
+x-queue-env: &queue-env
+  APP_ENV: production
+  DB_DRIVER: asyncpg
+  PG_TRANSPORT: tcp
+  RUN_MIGRATIONS: "0"
+  DATABASE_URL: ${DATABASE_URL}
+  QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+x-ai-env: &ai-env
+  <<: *queue-env
+  PORT: "8080"
+  STORAGE_DIR: /data/sources
+  CHAT_EXECUTOR: local
+  CHECKPOINTER: postgres
+  PLAYWRIGHT_NO_SANDBOX: "1"
+  AI_SHARED_SECRET: ${AI_SHARED_SECRET}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
+  BYOK_MASTER_KEY: ${BYOK_MASTER_KEY:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+  STRIPE_PRICE_ULTRA: ${STRIPE_PRICE_ULTRA:-}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-tei}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+  EMBEDDING_API_MODEL: ${EMBEDDING_API_MODEL:-openai/text-embedding-3-small}
+  TEI_EMBED_URL: http://embed:80
+  TEI_RERANK_URL: http://rerank:80
+  RAG_ENGINE: ${RAG_ENGINE:-legacy}
 
 services:
+  # ai-api: temporary. Serves the Python routes core has not taken over yet.
   ai:
-    build:
-      context: ../../services/ai
-      dockerfile: Dockerfile
-    image: push-ai:local
-    restart: unless-stopped
-    mem_limit: 6g
-    shm_size: 1gb
+    <<: *ai-image
+    mem_limit: 512m
+    shm_size: 256m
     environment:
-      APP_ENV: production
-      PORT: "8080"
-      STORAGE_DIR: /data/sources
-      CHAT_EXECUTOR: local
-      CHECKPOINTER: postgres
-      DB_DRIVER: asyncpg
-      PG_TRANSPORT: tcp
-      RUN_MIGRATIONS: "0"
-      PLAYWRIGHT_NO_SANDBOX: "1"
-      DATABASE_URL: ${DATABASE_URL}
-      AI_SHARED_SECRET: ${AI_SHARED_SECRET}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
-      BYOK_MASTER_KEY: ${BYOK_MASTER_KEY:-}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
-      STRIPE_PRICE_ULTRA: ${STRIPE_PRICE_ULTRA:-}
+      <<: *ai-env
     volumes:
       - ai-data:/data
     networks:
       - dokploy-network
+      - push-internal
     expose:
       - "8080"
     healthcheck:
@@ -62,11 +84,130 @@ services:
       - traefik.http.routers.push-ai.tls.certresolver=letsencrypt
       - traefik.http.services.push-ai.loadbalancer.server.port=8080
 
+  dispatcher:
+    <<: *ai-image
+    command: ["python", "-m", "app.workers.dispatcher_main"]
+    mem_limit: 128m
+    environment:
+      <<: *queue-env
+      DISPATCH_PORT: "8091"
+      DISPATCH_SECRET: ${DISPATCH_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      DISCORD_ALERT_WEBHOOK_URL: ${DISCORD_ALERT_WEBHOOK_URL:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      NEON_STORAGE_LIMIT_BYTES: ${NEON_STORAGE_LIMIT_BYTES:-1073741824}
+    depends_on:
+      - redis
+    networks:
+      - dokploy-network
+      - push-internal
+    expose:
+      - "8091"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz')
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.push-dispatch.rule=Host(`${DISPATCH_HOST}`)
+      - traefik.http.routers.push-dispatch.entrypoints=websecure
+      - traefik.http.routers.push-dispatch.tls=true
+      - traefik.http.routers.push-dispatch.tls.certresolver=letsencrypt
+      - traefik.http.services.push-dispatch.loadbalancer.server.port=8091
+
+  ai-worker:
+    <<: *ai-image
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "app.workers.ai_worker_main"]
+    mem_limit: 1536m
+    environment:
+      <<: *ai-env
+      QUEUE_GROUP: ai
+      QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-4}
+    volumes:
+      - ai-data:/data
+    depends_on:
+      - redis
+    networks:
+      - push-internal
+
+  ingest-worker:
+    <<: *ai-image
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "app.workers.ingest_worker_main"]
+    mem_limit: 768m
+    environment:
+      <<: *ai-env
+      QUEUE_GROUP: ingest
+      QUEUE_CONCURRENCY: ${INGEST_WORKER_CONCURRENCY:-2}
+    volumes:
+      - ai-data:/data:ro
+    depends_on:
+      - redis
+      - embed
+    networks:
+      - push-internal
+
+  notify-worker:
+    <<: *ai-image
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "app.workers.notify_worker_main"]
+    mem_limit: 128m
+    environment:
+      <<: *queue-env
+      QUEUE_GROUP: notify
+      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
+    depends_on:
+      - redis
+    networks:
+      - push-internal
+
+  redis:
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "900 1 300 100"
+      - --maxmemory
+      - 400mb
+      - --maxmemory-policy
+      - volatile-lru
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    networks:
+      - push-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   embed:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
     command: ["--model-id", "BAAI/bge-m3", "--max-client-batch-size", "32"]
     restart: unless-stopped
-    mem_limit: 2.5g
+    mem_limit: 2560m
     volumes:
       - tei-models:/data
     networks:
@@ -78,7 +219,7 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
     command: ["--model-id", "BAAI/bge-reranker-v2-m3", "--max-client-batch-size", "32"]
     restart: unless-stopped
-    mem_limit: 1.5g
+    mem_limit: 1280m
     volumes:
       - tei-models:/data
     networks:
@@ -88,6 +229,7 @@ services:
 
 volumes:
   ai-data:
+  redis-data:
   tei-models:
 
 networks:

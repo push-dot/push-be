@@ -303,7 +303,8 @@ class ChatJobStore:
 
     async def worker_claim(self, job_id, now) -> Optional[dict]:
         row = await self.db.q().fetchrow(
-            "UPDATE ai_jobs SET status='RUNNING', heartbeat_at=$2, updated_at=$2 "
+            "UPDATE ai_jobs SET status='RUNNING', heartbeat_at=$2, updated_at=$2, "
+            "started_at=COALESCE(started_at, $2) "
             "WHERE id=$1 AND status IN ('QUEUED','RETRY') "
             "RETURNING id, type, queue, user_id, company_id, conversation_id, "
             "payload, attempts, max_attempts, status, checkpoint",

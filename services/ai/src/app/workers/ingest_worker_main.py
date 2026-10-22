@@ -5,6 +5,9 @@ INGEST_QUEUES = ["q:ingest"]
 
 
 async def main() -> None:
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     import httpx
     from redis.asyncio import Redis
 

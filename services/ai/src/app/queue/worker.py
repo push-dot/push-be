@@ -1,4 +1,7 @@
 import asyncio
+import json
+import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -8,6 +11,11 @@ from app.queue.fairness import release_slot, try_slot
 from app.queue.locks import LockBusy, job_lock
 from app.queue.ratelimit import acquire_token
 from app.queue.streams import Message, StreamQueue
+
+
+logger = logging.getLogger(__name__)
+
+LOG_FIELDS = ("docIds", "promptHash", "tokensIn", "tokensOut")
 
 
 class JobCancelled(Exception):
@@ -21,10 +29,11 @@ class JobFailed(Exception):
 
 
 class JobContext:
-    def __init__(self, job, heartbeat, emit):
+    def __init__(self, job, heartbeat, emit, log=None):
         self.job = job
         self.heartbeat = heartbeat
         self.emit = emit
+        self.log = {} if log is None else log
 
 
 class Worker:
@@ -91,13 +100,17 @@ class Worker:
             await self.process(msg)
 
     async def next_message(self):
-        for queue in self.queues:
+        active = [queue for queue in self.queues if not await self.queue.paused(queue)]
+        for queue in active:
             found = await self.queue.read(self.group, self.consumer, [queue], 1, 0)
             if found:
                 return found[0]
         if self.block_ms <= 0:
             return None
-        found = await self.queue.read(self.group, self.consumer, self.queues, 1, self.block_ms)
+        if not active:
+            await asyncio.sleep(self.block_ms / 1000)
+            return None
+        found = await self.queue.read(self.group, self.consumer, active, 1, self.block_ms)
         return found[0] if found else None
 
     async def reclaim(self, min_idle_ms: int | None = None) -> int:
@@ -116,14 +129,24 @@ class Worker:
         if job is None:
             await self.queue.ack(msg.queue, self.group, msg.id)
             return "skip"
+        started = time.perf_counter()
+        log: dict = {}
         try:
             async with self._lock(job):
-                return await self._run(job, msg)
+                outcome = await self._run(job, msg, log)
         except LockBusy:
             await self._delay(job, msg, self.now())
-            return "delayed"
+            outcome = "delayed"
+        logger.info(json.dumps({
+            "jobId": str(job["id"]),
+            "type": job["type"],
+            "step": outcome,
+            **{key: log.get(key) for key in LOG_FIELDS},
+            "latencyMs": int((time.perf_counter() - started) * 1000),
+        }, ensure_ascii=False))
+        return outcome
 
-    async def _run(self, job, msg: Message) -> str:
+    async def _run(self, job, msg: Message, log: dict) -> str:
         slots = []
         try:
             user_key = f"slot:user:{job['user_id']}"
@@ -146,7 +169,7 @@ class Worker:
                 await self.db.emit(job["id"], kind, payload)
 
             try:
-                result = await self.handlers[job["type"]](JobContext(job, heartbeat, emit))
+                result = await self.handlers[job["type"]](JobContext(job, heartbeat, emit, log))
             except JobCancelled:
                 await self.db.cancel(job["id"], self.now())
                 await self.release(self.db, job["id"])

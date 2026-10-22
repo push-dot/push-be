@@ -64,3 +64,12 @@ Only part of 10c is done in this branch.
 - `AI_FRAMEWORK` is gone. The VPS always uses LangChain (prompt templates, `ChatOpenAI` for OpenAI-compatible providers, `StructuredTool`, `SentenceSplitter`).
 - The non-LangChain path stays only for `CF_WORKER=1`, because the Cloudflare Python Worker (`push-be-python`) runs on Pyodide and cannot load LangChain. The gateway still falls back to that Worker when `AI_ORIGIN` is unset. Delete the path together with `push-be-python`, once `AI_ORIGIN` is fixed and the last Python CRUD routes have moved (Task 10).
 - The `ImportError` fallbacks in `domain/services/ai.py` are kept for the same reason.
+
+## Task 16: operations
+
+- The admin endpoints are served by the dispatcher (`kick_app` mounts `api/routers/admin_queue.py`), not by `ai-api`. `ai-api` is temporary and sits behind the gateway-secret middleware; the dispatcher outlives it and already holds the queue. Paths are `/admin/...` on `DISPATCH_HOST`.
+- Retry and cancel answer 409 when the job is not in a state that allows it.
+- Alerts are split by cost: Redis-only checks (`queue_wait`, `dead_recent`) every minute, DB checks (`heartbeat_lost`, `db_size`) on the 15-minute sweep, so the dispatcher never wakes Neon once a minute. Alert state lives in dispatcher memory; a restart can resend an active alert once. There is no embedding-throughput alert; `bench_embed.py` measures it before deploy.
+- `ai_jobs.started_at` was added to 0023 for wait and run percentiles. Retention runs on each sweep and relies on the cascades fixed in 747d56a.
+- Workers skip a stream while `pause:<stream>` exists in Redis.
+- `ragNodes` in the stats comes from `pg_class.reltuples`, an estimate that is 0 before the first `ANALYZE`.

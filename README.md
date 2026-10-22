@@ -32,9 +32,9 @@ Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`
 ## 핵심 설계
 
 - **단계 게이트 워크플로** — `app/graphs/chat.py`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
-- **내구 큐 + 워커** — `chat_jobs` 테이블 + `FOR UPDATE SKIP LOCKED` 워커. 서버가 재시작돼도 잡이 PENDING으로 돌아가 재실행
+- **내구 큐 + 워커** — core가 `ai_jobs`·`outbox`·크레딧 예약을 한 트랜잭션에 쓰고 `202 {jobId}`를 돌려준다. VPS 디스패처가 outbox를 Redis Streams(`q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`)로 넘기고, 종류별 워커가 consumer group으로 처리한다. 원본 기록은 Postgres라서 Redis가 비어도 다시 채운다. 진행 상태는 `GET /api/v1/ai/jobs/{id}`. 운영은 [infra/vps/README.md](infra/vps/README.md)
 - **재연결 가능한 SSE** — `GET /conversations/{id}/messages/stream/active`가 진행 중 잡의 이벤트를 처음부터 재생해 이탈→복귀해도 스트림 복원
-- **근거 RAG** — evidence를 청킹·임베딩해 pgvector로 top-k 검색 후 프롬프트 주입
+- **근거 RAG** — LlamaIndex `SentenceSplitter`(512/64)로 자르고 TEI `bge-m3`(1024차원)로 임베딩해 `rag_nodes`에 둔다. 검색은 pgvector 밀집 검색과 `pg_trgm` 키워드 검색을 합친 뒤 `bge-reranker-v2-m3`로 재정렬한다. 모든 검색은 사용자나 회사 필터가 있어야 한다. `RAG_ENGINE=legacy`면 기존 `rag_chunks` 경로를 쓴다
 - **역할별 모델 라우팅** — `AIGate`가 generate/research/임베딩 역할별로 다른 모델을 호출. 관리형 모델과 BYOK 모두 지원
 - **문서 파이프라인** — 생성 산출물을 `내 서류` 문서 버전으로 동기화하고 PDF(ReportLab)·DOCX(직접 zip+XML)로 렌더링
 - **지원 항목 자동 연결** — 공고 URL 감지 시 JobPosting + Application을 생성(또는 `source_url`로 중복 제거)하고 대화에 링크
@@ -44,16 +44,15 @@ Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`
 ## 아키텍처
 
 ```
-POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
-                                │
-                     워커: FOR UPDATE SKIP LOCKED
-                                │
-                     LangGraph 실행 → chat_events 기록
-                     (토큰/상태/done, interrupt 게이트)
-                                │
-                     PostgreSQL: conversations, messages,
-                     evidence(+pgvector), jobs, applications,
-                     documents, chat_jobs, chat_events
+앱·웹 ─► gateway ─► core ── ai_jobs + outbox + credit_reservations (한 트랜잭션) ─► 202 {jobId}
+                      │                     │
+                      │ POST /internal/kick │ 15분 스윕
+                      ▼                     ▼
+          VPS dispatcher ─► Redis Streams ─► ai-worker (LangGraph + LangChain)
+                                          ├► ingest-worker (LlamaIndex → rag_nodes, TEI)
+                                          └► notify-worker (Expo 푸시)
+                                                │
+                       chat_events · ai_jobs 상태 ─► gateway SSE / GET /api/v1/ai/jobs/{id}
 ```
 
 계층은 `app/api`(라우터·스키마) → Domain(서비스·상태기계) → Infrastructure(DB·외부 API 클라이언트) 방향으로만 의존한다. 파싱은 `app/ingest`, 그래프는 `app/graphs`다.

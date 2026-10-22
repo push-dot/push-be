@@ -4,6 +4,16 @@ STREAM_MAXLEN = 100_000
 DELAYED_KEY = "q:delayed"
 DEAD_QUEUE = "q:dead"
 SWEEP_S = 15 * 60
+ALERT_S = 60
+PAUSE_PREFIX = "pause:"
+
+QUEUE_GROUPS = {
+    "q:chat:priority": "ai",
+    "q:chat": "ai",
+    "q:document": "ai",
+    "q:ingest": "ingest",
+    "q:notify": "notify",
+}
 
 _HEARTBEAT_DEFAULTS = {
     "chat": ("HEARTBEAT_LIMIT_CHAT_S", 120),

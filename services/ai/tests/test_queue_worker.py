@@ -245,3 +245,50 @@ async def test_user_slot_limit_requeues_with_delay():
     assert db.jobs[FIRST]["status"] == "DONE"
     assert await try_slot(redis, f"slot:user:{USER}", 1) is True
     await release_slot(redis, f"slot:user:{USER}")
+
+
+@pytest.mark.asyncio
+async def test_paused_queue_is_not_read():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    db = MemoryJobs()
+    db.jobs[FIRST] = queued(FIRST, "q:chat:priority")
+    db.jobs[SECOND] = queued(SECOND, "q:chat")
+    await queue.add("q:chat:priority", FIRST)
+    await queue.add("q:chat", SECOND)
+    await queue.pause("q:chat:priority")
+    box = worker(redis, db, {"chat": handler}, block_ms=0)
+    msg = await box.next_message()
+    assert msg.job_id == SECOND
+    assert await box.next_message() is None
+    await queue.resume("q:chat:priority")
+    assert (await box.next_message()).job_id == FIRST
+
+
+@pytest.mark.asyncio
+async def test_worker_writes_one_json_log_line_per_job(caplog):
+    import json
+    import logging
+    redis = FakeRedis(decode_responses=True)
+    db = MemoryJobs()
+    db.jobs[FIRST] = queued(FIRST)
+
+    async def logged(ctx):
+        ctx.log.update({"docIds": ["d1"], "promptHash": "abc", "tokensIn": 5, "tokensOut": 7})
+        return {"messageId": "m"}
+
+    box = worker(redis, db, {"chat": logged})
+    await box.queue.add("q:chat", FIRST)
+    msg = (await box.queue.read("ai", "worker-a", ["q:chat"], 1, 0))[0]
+    with caplog.at_level(logging.INFO, logger="app.queue.worker"):
+        await box.process(msg)
+    lines = [json.loads(r.message) for r in caplog.records if r.name == "app.queue.worker"]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["jobId"] == str(FIRST)
+    assert line["type"] == "chat"
+    assert line["step"] == "done"
+    assert line["docIds"] == ["d1"]
+    assert line["promptHash"] == "abc"
+    assert (line["tokensIn"], line["tokensOut"]) == (5, 7)
+    assert isinstance(line["latencyMs"], int)
