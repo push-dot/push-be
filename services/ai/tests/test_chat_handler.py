@@ -145,3 +145,17 @@ def test_cloudflare_chat_workflow_and_cron_are_retired():
     config = json.loads(raw)
     assert "workflows" not in config
     assert config["triggers"]["crons"] == []
+
+
+def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
+    from app.jobs import runs_local_chat_worker
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    monkeypatch.delenv("CHAT_EXECUTOR", raising=False)
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    assert runs_local_chat_worker() is False
+    monkeypatch.setenv("QUEUE_BACKEND", "postgres")
+    assert runs_local_chat_worker() is True
+    monkeypatch.setenv("CHAT_EXECUTOR", "workflow")
+    assert runs_local_chat_worker() is False
+    main = (Path(__file__).resolve().parents[1] / "src" / "app" / "main.py").read_text()
+    assert main.count("runs_local_chat_worker()") == 2

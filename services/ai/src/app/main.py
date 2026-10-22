@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException
 
 from app.config import Config, load_config
 from app.db import create_pool, run_migrations, DB, migrations_dir
-from app.jobs import external_jobs
+from app.jobs import external_jobs, runs_local_chat_worker
 from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
@@ -179,7 +179,7 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         saver, saver_ctx = await open_chat_checkpointer(cfg.database_url)
     conversations = ConversationService(
         db, gate, saver, documents, jobs_svc, applications)
-    if not external_jobs():
+    if runs_local_chat_worker():
         await conversations.start_worker()
     resume_workflow = ResumeWorkflowService(
         db, applications, jobs_svc, documents, evidence_svc, approvals)
@@ -215,7 +215,7 @@ async def _shutdown(app: FastAPI) -> None:
         return
     (conversations, saver_ctx, oauth, openai, openai_byok,
      openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool) = closers
-    if conversations is not None and not external_jobs():
+    if conversations is not None and runs_local_chat_worker():
         await conversations.stop_worker()
     if saver_ctx is not None:
         close = getattr(saver_ctx, "close", None)
