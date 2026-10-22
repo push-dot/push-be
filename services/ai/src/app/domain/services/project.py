@@ -9,7 +9,7 @@ from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
     approval_stale, internal, invalid_transition, map_revision_err, not_found,
-    revision_conflict, validation_field,
+    plan_required, revision_conflict, validation_field,
 )
 from app.domain.services.ai import AIGate
 from app.domain.services.approval import ApprovalService, hash_json
@@ -31,6 +31,15 @@ PEV_VERIFIED = "VERIFIED"
 
 def _now() -> datetime:
     return utcnow()
+
+
+def blueprint_cap(plan: str | None) -> int | None:
+    key = (plan or "FREE").strip().upper()
+    if key == ent.PLAN_ULTRA:
+        return None
+    if key == ent.PLAN_PRO:
+        return 20
+    return 5
 
 
 def build_blueprints(user_id: UUID, application_id: UUID, gap_analysis_id: UUID,
@@ -119,6 +128,11 @@ class ProjectService:
                                   gap_analysis_id: UUID,
                                   ai: Optional[ent.AiOptions]) -> ent.Operation:
         await self.ai.check(user_id, ai)
+        try:
+            user = await self.ai.users.get(user_id)
+        except NotFoundError:
+            raise not_found()
+        cap = blueprint_cap(user.plan)
         op = None
 
         async def work():
@@ -137,6 +151,9 @@ class ProjectService:
             now = _now()
             blueprints = build_blueprints(
                 user_id, application_id, gap_analysis_id, analysis, now)
+            held = await self.projects.count_blueprints(user_id)
+            if cap is not None and held + len(blueprints) > cap:
+                raise plan_required("project blueprint limit reached")
             for b in blueprints:
                 await self.projects.create_blueprint(b)
             op = ent.Operation(

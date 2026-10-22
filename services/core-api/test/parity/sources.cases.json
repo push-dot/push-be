@@ -1,0 +1,423 @@
+[
+ {
+  "name": "sources list",
+  "method": "GET",
+  "path": "/api/v1/sources",
+  "body": null
+ },
+ {
+  "name": "sources upload kind",
+  "method": "GET",
+  "path": "/api/v1/sources?kind=UPLOAD",
+  "body": null
+ },
+ {
+  "name": "sources ai kind",
+  "method": "GET",
+  "path": "/api/v1/sources?kind=AI",
+  "body": null
+ },
+ {
+  "name": "sources bad kind",
+  "method": "GET",
+  "path": "/api/v1/sources?kind=BAD",
+  "body": null
+ },
+ {
+  "name": "sources page 1",
+  "method": "GET",
+  "path": "/api/v1/sources?limit=2",
+  "body": null
+ },
+ {
+  "name": "sources page 2",
+  "method": "GET",
+  "path": "/api/v1/sources?limit=2&cursor=MjAyNi0xMC0wM1QwMDowMDowMFp8ZjEwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+  "body": null
+ },
+ {
+  "name": "sources bad cursor",
+  "method": "GET",
+  "path": "/api/v1/sources?cursor=zzz",
+  "body": null
+ },
+ {
+  "name": "source get",
+  "method": "GET",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "source get other",
+  "method": "GET",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000004",
+  "body": null
+ },
+ {
+  "name": "source get bad id",
+  "method": "GET",
+  "path": "/api/v1/sources/x",
+  "body": null
+ },
+ {
+  "name": "source content text",
+  "method": "GET",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000001/content",
+  "body": null
+ },
+ {
+  "name": "source content pdf",
+  "method": "GET",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000002/content",
+  "body": null
+ },
+ {
+  "name": "source content other",
+  "method": "GET",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000004/content",
+  "body": null
+ },
+ {
+  "name": "source delete referenced",
+  "method": "DELETE",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000002",
+  "body": null
+ },
+ {
+  "name": "source delete",
+  "method": "DELETE",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "source delete again",
+  "method": "DELETE",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "source delete other",
+  "method": "DELETE",
+  "path": "/api/v1/sources/f1000000-0000-4000-8000-000000000004",
+  "body": null
+ },
+ {
+  "name": "source upload",
+  "method": "POST",
+  "path": "/api/v1/sources",
+  "body": {
+   "multipart": {
+    "fields": {
+     "kind": "RESUME"
+    },
+    "file": {
+     "name": "new.txt",
+     "type": "text/plain",
+     "base64": "7IOIIOydtOugpeyEnCDrgrTsmqk="
+    }
+   }
+  },
+  "ignoreKeys": [
+   "jobId"
+  ]
+ },
+ {
+  "name": "source upload no kind",
+  "method": "POST",
+  "path": "/api/v1/sources",
+  "body": {
+   "multipart": {
+    "fields": {},
+    "file": {
+     "name": "new.txt",
+     "type": "text/plain",
+     "base64": "7IOIIOydtOugpeyEnCDrgrTsmqk="
+    }
+   }
+  }
+ },
+ {
+  "name": "source upload bad type",
+  "method": "POST",
+  "path": "/api/v1/sources",
+  "body": {
+   "multipart": {
+    "fields": {
+     "kind": "RESUME"
+    },
+    "file": {
+     "name": "a.png",
+     "type": "image/png",
+     "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    }
+   }
+  }
+ },
+ {
+  "name": "image upload",
+  "method": "POST",
+  "path": "/api/v1/uploads/images",
+  "body": {
+   "multipart": {
+    "fields": {},
+    "file": {
+     "name": "a.png",
+     "type": "image/png",
+     "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    }
+   }
+  }
+ },
+ {
+  "name": "image upload mismatch",
+  "method": "POST",
+  "path": "/api/v1/uploads/images",
+  "body": {
+   "multipart": {
+    "fields": {},
+    "file": {
+     "name": "a.png",
+     "type": "image/png",
+     "base64": "/9j/4AAQSkZJRg=="
+    }
+   }
+  }
+ },
+ {
+  "name": "image upload no file",
+  "method": "POST",
+  "path": "/api/v1/uploads/images",
+  "body": {
+   "multipart": {
+    "fields": {
+     "x": "1"
+    },
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "image get public",
+  "method": "GET",
+  "path": "/api/v1/uploads/images/0123456789abcdef0123456789abcdef.png",
+  "body": null,
+  "auth": false
+ },
+ {
+  "name": "image get missing",
+  "method": "GET",
+  "path": "/api/v1/uploads/images/ffffffffffffffffffffffffffffffff.jpg",
+  "body": null,
+  "auth": false
+ },
+ {
+  "name": "image get bad key",
+  "method": "GET",
+  "path": "/api/v1/uploads/images/nope.png",
+  "body": null,
+  "auth": false
+ },
+ {
+  "name": "evidence list",
+  "method": "GET",
+  "path": "/api/v1/career-evidence",
+  "body": null
+ },
+ {
+  "name": "evidence list kind",
+  "method": "GET",
+  "path": "/api/v1/career-evidence?kind=RESUME",
+  "body": null
+ },
+ {
+  "name": "evidence list bad kind",
+  "method": "GET",
+  "path": "/api/v1/career-evidence?kind=BAD",
+  "body": null
+ },
+ {
+  "name": "evidence list query",
+  "method": "GET",
+  "path": "/api/v1/career-evidence?query=pay",
+  "body": null
+ },
+ {
+  "name": "evidence list page",
+  "method": "GET",
+  "path": "/api/v1/career-evidence?limit=1",
+  "body": null
+ },
+ {
+  "name": "evidence get",
+  "method": "GET",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000002",
+  "body": null
+ },
+ {
+  "name": "evidence get empty provenance",
+  "method": "GET",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "evidence get other",
+  "method": "GET",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000004",
+  "body": null
+ },
+ {
+  "name": "evidence create",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "PROJECT",
+   "title": "Search",
+   "sourceText": "Built search",
+   "sourceUrl": "https://example.com/p",
+   "skills": [
+    "Go"
+   ]
+  }
+ },
+ {
+  "name": "evidence create minimal",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "Rust",
+   "sourceText": "Rust"
+  }
+ },
+ {
+  "name": "evidence create supersedes",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "Rust 2",
+   "sourceText": "Rust",
+   "supersedesId": "f0000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "evidence create supersedes missing",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "Rust 2",
+   "sourceText": "Rust",
+   "supersedesId": "f0000000-0000-4000-8000-000000000004"
+  }
+ },
+ {
+  "name": "evidence create bad kind",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "X",
+   "title": "t",
+   "sourceText": "s"
+  }
+ },
+ {
+  "name": "evidence create long title",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+   "sourceText": "s"
+  }
+ },
+ {
+  "name": "evidence create empty text",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "t",
+   "sourceText": ""
+  }
+ },
+ {
+  "name": "evidence create bad url",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "t",
+   "sourceText": "s",
+   "sourceUrl": "ftp://x"
+  }
+ },
+ {
+  "name": "evidence create bad skill",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "t",
+   "sourceText": "s",
+   "skills": [
+    ""
+   ]
+  }
+ },
+ {
+  "name": "evidence create extra",
+  "method": "POST",
+  "path": "/api/v1/career-evidence",
+  "body": {
+   "kind": "SKILL",
+   "title": "t",
+   "sourceText": "s",
+   "x": 1
+  }
+ },
+ {
+  "name": "evidence archive stale",
+  "method": "POST",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000002/archive",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "evidence archive",
+  "method": "POST",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000002/archive",
+  "body": {
+   "expectedRevision": 2
+  }
+ },
+ {
+  "name": "evidence archive again",
+  "method": "POST",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000002/archive",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "evidence archive other",
+  "method": "POST",
+  "path": "/api/v1/career-evidence/f0000000-0000-4000-8000-000000000004/archive",
+  "body": {
+   "expectedRevision": 1
+  }
+ },
+ {
+  "name": "evidence list after",
+  "method": "GET",
+  "path": "/api/v1/career-evidence",
+  "body": null
+ },
+ {
+  "name": "sources list after",
+  "method": "GET",
+  "path": "/api/v1/sources",
+  "body": null
+ }
+]

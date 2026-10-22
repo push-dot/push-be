@@ -140,6 +140,11 @@ class ChatState(TypedDict, total=False):
     prepared: bool
     prompt_user: str
     prompt_system: str
+    intent: Optional[str]
+    application_id: Any
+    employer_owned: bool
+    company_plan: str
+    confirm_before_edit: bool
 
 
 def bind_chat_nodes(svc):
@@ -228,9 +233,46 @@ def bind_chat_nodes(svc):
             kinds.append(e.kind)
             context_parts.append(
                 "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
+        await _ingest_links(state, conv)
+        from app.domain.chat_settings import (
+            apply_chat_settings, load_chat_settings)
+        row = None
+        try:
+            row = await load_chat_settings(svc.db.q(), user_id)
+        except Exception:
+            row = None
         return {"conversation": conv, "attachments": attachments,
                 "context_text": "\n\n".join(context_parts),
-                "evidence_kinds": kinds}
+                "evidence_kinds": kinds,
+                **apply_chat_settings(state, row)}
+
+    async def _ingest_links(state, conv) -> None:
+        from app.domain.link_ingest import (
+            has_https, ingest_chat_links, older_message_counted)
+        text = state.get("text") or ""
+        context = state.get("context") or {}
+        if not has_https(text) and not context:
+            return
+        try:
+            query = svc.db.q()
+            job_id = state.get("job_id")
+            exclude_id = None
+            if job_id:
+                exclude_id, _, _ = _stable_ids(job_id)
+            counted = await older_message_counted(
+                query, conv.id, exclude_id, text)
+            await ingest_chat_links(
+                query,
+                user_id=state["user_id"],
+                conversation_id=conv.id,
+                text=text,
+                context=context,
+                already_counted=counted,
+                exclude_message_id=exclude_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("link ingest failed")
 
     async def _persist_user_msg(state: ChatState) -> None:
         user_msg_id, _, _ = _stable_ids(state.get("job_id"))
@@ -241,6 +283,12 @@ def bind_chat_nodes(svc):
             attachments=state.get("attachments") or [],
             operation_id=None, created_at=_now())
         await svc.db.run(lambda: svc.conversations.create_message(user_msg))
+
+    def _emit_prepared(state: dict) -> None:
+        from app.graphs.chat_surface import surface_events
+        for event in surface_events(state):
+            if event["type"] in ("tool", "todo", "choice"):
+                _emit(event)
 
     async def prepare_reply(state: ChatState) -> dict:
         # Own workflow step: page fetch, RAG, and prompt assembly.
@@ -267,14 +315,87 @@ def bind_chat_nodes(svc):
                 pass
             raise
 
+    async def _employer_turn(state: ChatState, conv):
+        company_id = getattr(conv, "company_id", None)
+        if not company_id:
+            return None, None
+        plan = None
+        try:
+            plan = await svc.conversations.company_plan(company_id)
+        except NotFoundError:
+            plan = None
+        from app.config import load_config
+        from app.domain.employer_chat import apply_employer_turn
+        gate = getattr(svc, "ai", None)
+        cfg = (gate._levers_config()
+               if gate is not None and hasattr(gate, "_levers_config")
+               else load_config())
+        intent = state.get("intent")
+        raw = state.get("ai")
+        base = ent.AiOptions(**raw) if raw is not None else ent.AiOptions(
+            provider="OPENAI", model="managed",
+            credential_mode="MANAGED", effort="LOW")
+        return apply_employer_turn(base, plan, intent, cfg), plan
+
+    async def _reference_lines(state, conv, resume_flow, employer, company_plan):
+        from app.config import load_config
+        from app.domain.plan_levers import levers_for
+        from app.domain.reference_text import prompt_lines, prompt_samples
+        from app.infrastructure.store_jobs import ReferenceSampleStore
+        intent = state.get("intent")
+        store = ReferenceSampleStore(svc.db)
+        if employer:
+            if intent not in {"review", "interview"}:
+                return []
+            app_id = state.get("application_id") or state.get("applicationId")
+            if not app_id:
+                return []
+            owner = await store.application_owner(app_id)
+            if owner is None:
+                return []
+            row = await store.context(owner)
+            if row is None:
+                return []
+            ctx = dict(row)
+            score = await store.latest_fit(app_id)
+            audience = "EMPLOYER"
+            plan = company_plan
+        else:
+            if not resume_flow:
+                return []
+            row = await store.context(state["user_id"])
+            if row is None:
+                return []
+            ctx = dict(row)
+            app_id = getattr(conv, "application_id", None)
+            score = await store.latest_fit(app_id) if app_id else None
+            audience = "PERSONAL"
+            plan = ctx.get("plan")
+        category = ctx.get("job_category")
+        tenure = ctx.get("tenure_years")
+        if category is None or tenure is None:
+            return []
+        gate = getattr(svc, "ai", None)
+        cfg = (gate._levers_config()
+               if gate is not None and hasattr(gate, "_levers_config")
+               else load_config())
+        levers = levers_for(audience, plan, cfg)
+        samples = await store.list_for_prompt(category)
+        picked = prompt_samples(
+            samples, category, tenure, score, levers.tenure, levers.score_band)
+        return prompt_lines(picked)
+
     async def _prepare_reply(state: ChatState) -> dict:
+        _emit_prepared(state)
         from app.ingest.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
+        conv = state.get("conversation")
+        employer_opts, company_plan = await _employer_turn(state, conv)
         ai = state.get("ai")
-        if ai is None:
+        if ai is None and employer_opts is None:
             return {"prepared": True, "prompt_user": "", "prompt_system": "",
                     "resume_flow": False, "phase": 0}
-        opts = ent.AiOptions(**ai)
+        opts = employer_opts if employer_opts is not None else ent.AiOptions(**ai)
         role_models = opts.models or {}
         sections = []
         if state.get("context_text"):
@@ -424,9 +545,24 @@ def bind_chat_nodes(svc):
                     user_msg = "\n\n".join(sections)
         system = (await asyncio.to_thread(_phase_prompt, phase)
                   if resume_flow else "")
-        return {"prepared": True, "prompt_user": user_msg,
-                "prompt_system": system, "resume_flow": resume_flow,
-                "phase": phase, "conversation": conv}
+        if employer_opts is not None and state.get("intent") == "posting":
+            from app.domain.employer_chat import posting_system_prompt
+            system = (system + "\n" + posting_system_prompt()).strip()
+        try:
+            lines = await _reference_lines(
+                state, conv, resume_flow, employer_opts is not None, company_plan)
+        except Exception:
+            lines = []
+        if lines:
+            system = (system + "\n" + "\n".join(lines)).strip()
+        prepared = {"prepared": True, "prompt_user": user_msg,
+                    "prompt_system": system, "resume_flow": resume_flow,
+                    "phase": phase, "conversation": conv}
+        if employer_opts is not None:
+            prepared["ai"] = employer_opts.model_dump(by_alias=True)
+            prepared["employer_owned"] = True
+            prepared["company_plan"] = company_plan or ""
+        return prepared
 
     async def _complete_prepared(state: ChatState) -> dict:
         ai = state.get("ai")
@@ -435,7 +571,7 @@ def bind_chat_nodes(svc):
             return {"completion": None}
         opts = ent.AiOptions(**ai)
         role_models = opts.models or {}
-        if role_models.get("generate"):
+        if role_models.get("generate") and not state.get("employer_owned"):
             opts.model = role_models["generate"]
         usage = {"input_tokens": 0, "output_tokens": 0}
         user_msg = state.get("prompt_user") or ""
@@ -447,43 +583,60 @@ def bind_chat_nodes(svc):
         emitted = 0
         _emit({"status": "응답 작성 중"})
         import os
-        if os.environ.get("LLM_STREAM", "1") == "0":
-            completion = await svc.ai.complete(
-                state["user_id"], opts, system, user_msg,
-                byok_key=byok_key_var.get(), search_query=state["text"],
-                job_id=state.get("job_id"))
-            text = completion.text or ""
-            step = 48
-            for i in range(0, len(text), step):
-                _emit({"token": text[i:i + step]})
-            return {"completion": completion,
-                    "usage_ids": [completion.usage_id] if completion.usage_id else [],
-                    "resume_flow": resume_flow, "phase": phase}
-        for round_ in range(3):
-            usage.pop("finish", None)
-            async for tok in svc.ai.stream(
-                    state["user_id"], opts, system, user_msg, usage,
-                    byok_key=byok_key_var.get(),
-                    search_query=state["text"],
-                    assistant_prefix="".join(parts) if round_ else "",
-                    job_id=state.get("job_id")):
-                parts.append(tok)
-                if resume_flow:
-                    safe = visible_prefix("".join(parts))
-                    if len(safe) > emitted:
-                        _emit({"token": safe[emitted:]})
-                        emitted = len(safe)
-                else:
-                    _emit({"token": tok})
-            if usage.get("finish") != "length":
-                break
-            _emit({"status": "응답이 길어 이어서 작성 중"})
-        return {"completion": ent.AICompletion(
-            text="".join(parts),
-            input_tokens=usage["input_tokens"],
-            output_tokens=usage["output_tokens"]),
-            "usage_ids": usage.get("usage_ids") or [],
-            "resume_flow": resume_flow, "phase": phase}
+        from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
+        token = (bind_employer_plan(state.get("company_plan") or "")
+                 if state.get("employer_owned") else None)
+        try:
+            if os.environ.get("LLM_STREAM", "1") == "0":
+                completion = await svc.ai.complete(
+                    state["user_id"], opts, system, user_msg,
+                    byok_key=byok_key_var.get(), search_query=state["text"],
+                    job_id=state.get("job_id"))
+                text = completion.text or ""
+                step = 48
+                for i in range(0, len(text), step):
+                    _emit({"token": text[i:i + step]})
+                return {"completion": completion,
+                        "usage_ids": [completion.usage_id] if completion.usage_id else [],
+                        "resume_flow": resume_flow, "phase": phase}
+            for round_ in range(3):
+                usage.pop("finish", None)
+                async for tok in svc.ai.stream(
+                        state["user_id"], opts, system, user_msg, usage,
+                        byok_key=byok_key_var.get(),
+                        search_query=state["text"],
+                        assistant_prefix="".join(parts) if round_ else "",
+                        job_id=state.get("job_id")):
+                    parts.append(tok)
+                    if resume_flow:
+                        safe = visible_prefix("".join(parts))
+                        if len(safe) > emitted:
+                            _emit({"token": safe[emitted:]})
+                            emitted = len(safe)
+                    else:
+                        _emit({"token": tok})
+                if usage.get("finish") != "length":
+                    break
+                _emit({"status": "응답이 길어 이어서 작성 중"})
+            return {"completion": ent.AICompletion(
+                text="".join(parts),
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"]),
+                "usage_ids": usage.get("usage_ids") or [],
+                "resume_flow": resume_flow, "phase": phase}
+        finally:
+            if token is not None:
+                reset_employer_plan(token)
+
+    async def _emit_persisted(state: dict) -> bool:
+        from app.graphs.chat_surface import publish_persisted_surface
+        document_svc = getattr(svc, "document_svc", None)
+        apply = None
+        if document_svc is not None:
+            async def apply(diff):
+                from app.harness.document_edits import apply_edit, env_core
+                await apply_edit(env_core(), state["user_id"], diff)
+        return await publish_persisted_surface(state, svc.db, _emit, apply)
 
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
@@ -497,6 +650,7 @@ def bind_chat_nodes(svc):
                 # Storing the local stub there shipped a fake assistant
                 # message. The Workflow retries this step instead.
                 raise RuntimeError("chat completion missing")
+        blocked = await _emit_persisted(state)
         now = _now()
         user_msg_id, assistant_msg_id, op_id = _stable_ids(
             state.get("job_id"))
@@ -514,8 +668,9 @@ def bind_chat_nodes(svc):
         else:
             reply = completion.text
         assistant_text = reply
+        needs_approval = False
         doc_attachments: list[ent.MessageAttachment] = []
-        if state.get("resume_flow") and completion is not None:
+        if state.get("resume_flow") and completion is not None and not blocked:
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
             try:
@@ -547,6 +702,7 @@ def bind_chat_nodes(svc):
             gate = gate_for_phase(new_phase - 1) if new_phase > state.get(
                 "phase", 0) else ""
             if gate and needs_gate(reply):
+                needs_approval = True
                 assistant_text = reply + "\n\n---\n\n" + gate
                 _emit({"token": "\n\n---\n\n" + gate})
             if saved:
@@ -600,7 +756,11 @@ def bind_chat_nodes(svc):
                         "auto title failed")
 
         await svc.db.run(work)
-        return {"operation": op}
+        return {
+            "operation": op,
+            "messageId": str(assistant_msg.id),
+            "needs_approval": needs_approval,
+        }
 
     svc.chat_nodes = {
         "resolve_context": resolve_context,

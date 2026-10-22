@@ -106,3 +106,44 @@ class GapAnalysisStore(Store):
         return await self.q().fetchval(
             "SELECT count(*) FROM gap_analyses WHERE user_id = $1 AND application_id = $2",
             user_id, application_id)
+
+
+class ReferenceSampleStore(Store):
+    async def context(self, user_id: UUID):
+        return await self.q().fetchrow(
+            "SELECT u.plan AS plan, p.job_category AS job_category, "
+            "p.tenure_years AS tenure_years, c.reference_data AS reference_data "
+            "FROM users u "
+            "LEFT JOIN profiles p ON p.user_id = u.id "
+            "LEFT JOIN user_consents c ON c.user_id = u.id "
+            "WHERE u.id = $1",
+            user_id)
+
+    async def insert(self, sample_id, source_user_id, job_category, tenure_years,
+                     fit_score, band, plan, features, sentence_templates,
+                     part_scores) -> None:
+        await self.q().execute(
+            "INSERT INTO reference_samples ("
+            "id, source_user_id, job_category, tenure_years, fit_score, score_band, "
+            "part_scores, plan, features, sentence_templates) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+            sample_id, source_user_id, job_category, tenure_years, fit_score, band,
+            dump(part_scores), plan, dump(features), dump(sentence_templates))
+
+    async def application_owner(self, application_id):
+        return await self.q().fetchval(
+            "SELECT user_id FROM applications WHERE id = $1",
+            application_id)
+
+    async def latest_fit(self, application_id):
+        return await self.q().fetchval(
+            "SELECT fit_score FROM gap_analyses WHERE application_id = $1 "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            application_id)
+
+    async def list_for_prompt(self, job_category):
+        rows = await self.q().fetch(
+            "SELECT job_category, tenure_years, score_band, features "
+            "FROM reference_samples WHERE job_category = $1",
+            job_category)
+        return [dict(row) for row in rows]

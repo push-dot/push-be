@@ -57,6 +57,55 @@ function post(path: string, body: unknown, key: string): Request {
   });
 }
 
+const LINK = "11111111-2222-4333-8444-555555555555";
+
+const patch = (path: string, body: unknown): Request => new Request("https://core.example" + path, {
+  method: "PATCH",
+  headers: { authorization: "Bearer secret-token", "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+type LinkRow = {
+  id: string;
+  kind: string;
+  url: string;
+  title: string;
+  status: string;
+  fit_count: number;
+  ai_read: boolean;
+  created_at: string;
+};
+
+const storedLink = (): LinkRow => ({
+  id: LINK,
+  kind: "github",
+  url: "https://github.com/ada",
+  title: "Old title",
+  status: "READING",
+  fit_count: 2,
+  ai_read: false,
+  created_at: "2026-01-02T03:04:05Z",
+});
+
+const linkUpdate = (row: LinkRow, sql: string, params: unknown[] = []): LinkRow | null => {
+  if (!sql.includes("UPDATE user_links") || !/RETURNING/i.test(sql)) return null;
+  if (String(params[0]) !== row.id || String(params[1]) !== USER) return null;
+  const next = { ...row };
+  const take = (column: string, write: (value: unknown) => void) => {
+    const match = sql.match(new RegExp(`${column}\\s*=\\s*(?:COALESCE\\s*\\(\\s*)?\\$(\\d+)`, "i"));
+    if (!match) return;
+    const value = params[Number(match[1]) - 1];
+    if (value !== null && value !== undefined) write(value);
+  };
+  take("title", (value) => { next.title = String(value); });
+  take("kind", (value) => { next.kind = String(value); });
+  take("url", (value) => { next.url = String(value); });
+  take("ai_read", (value) => { next.ai_read = value === true; });
+  take("status", (value) => { next.status = String(value); });
+  take("fit_count", (value) => { next.fit_count = Number(value); });
+  return next;
+};
+
 test("posting filters become SQL parameters", async () => {
   resetLimits();
   const seen: Call[] = [];
@@ -167,4 +216,88 @@ test("posting list queries reference every bound parameter", async () => {
       assert.equal(max, call.params.length, call.sql);
     }
   }
+});
+
+test("patch link title and aiRead keeps the stored url", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const row = storedLink();
+  const res = await handle(
+    patch(`/api/v1/me/links/${LINK}`, { title: "New title", aiRead: true }),
+    env(),
+    deps(authed(seen, false, async (sql, params) => {
+      const updated = linkUpdate(row, sql, params);
+      return updated ? { rows: [updated], rowCount: 1 } : { rows: [], rowCount: 0 };
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: Record<string, unknown> };
+  assert.deepEqual(body.data, {
+    id: LINK,
+    kind: "github",
+    url: "https://github.com/ada",
+    title: "New title",
+    status: "READING",
+    fitCount: 2,
+    aiRead: true,
+    createdAt: "2026-01-02T03:04:05Z",
+  });
+});
+
+test("patch link kind and url", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const row = storedLink();
+  const res = await handle(
+    patch(`/api/v1/me/links/${LINK}`, { kind: "portfolio", url: "https://example.com/work" }),
+    env(),
+    deps(authed(seen, false, async (sql, params) => {
+      const updated = linkUpdate(row, sql, params);
+      return updated ? { rows: [updated], rowCount: 1 } : { rows: [], rowCount: 0 };
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: Record<string, unknown> };
+  assert.deepEqual(body.data, {
+    id: LINK,
+    kind: "portfolio",
+    url: "https://example.com/work",
+    title: "Old title",
+    status: "READING",
+    fitCount: 2,
+    aiRead: false,
+    createdAt: "2026-01-02T03:04:05Z",
+  });
+});
+
+test("patch of an unknown link id is 404", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const missing = "99999999-9999-4999-8999-999999999999";
+  const res = await handle(
+    patch(`/api/v1/me/links/${missing}`, { title: "Gone" }),
+    env(),
+    deps(authed(seen, false, async (sql, params) => {
+      const updated = linkUpdate(storedLink(), sql, params);
+      return updated ? { rows: [updated], rowCount: 1 } : { rows: [], rowCount: 0 };
+    })),
+  );
+  assert.equal(res.status, 404);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE user_links")), true);
+});
+
+test("patch link rejects an unsupported kind", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(
+    patch(`/api/v1/me/links/${LINK}`, { kind: "nope" }),
+    env(),
+    deps(authed(seen, false)),
+  );
+  assert.equal(res.status, 422);
+  const body = await res.json() as { error: { code: string; details: { field: string } } };
+  assert.equal(body.error.code, "VALIDATION_ERROR");
+  assert.equal(body.error.details.field, "kind");
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE user_links") || call.sql.includes("INSERT INTO user_links")), false);
 });

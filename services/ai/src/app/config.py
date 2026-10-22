@@ -51,6 +51,13 @@ class Config:
     gmail_beta: bool = False
     job_site_adapters: dict = field(default_factory=dict)
     experiments: list = field(default_factory=list)
+    model_free: str = "deepseek/deepseek-v4.1-flash"
+    model_pro: str = "anthropic/claude-sonnet-5-5"
+    model_ultra: str = "anthropic/claude-opus-5-5"
+    model_employer_ultra: str = "anthropic/claude-fable-5-1"
+    openrouter_deepseek_providers: str = "Together,Fireworks,Novita"
+    core_origin: str = ""
+    internal_api_secret: str = ""
 
 
 def load_config() -> Config:
@@ -90,4 +97,16 @@ def load_config() -> Config:
         gmail_beta=os.environ.get("GOOGLE_GMAIL_BETA_ENABLED") == "true",
         job_site_adapters={},
         experiments=env_json("EXPERIMENTS"),
+        model_free=env("MODEL_FREE", "deepseek/deepseek-v4.1-flash"),
+        model_pro=env("MODEL_PRO", "anthropic/claude-sonnet-5-5"),
+        model_ultra=env("MODEL_ULTRA", "anthropic/claude-opus-5-5"),
+        model_employer_ultra=env("MODEL_EMPLOYER_ULTRA", "anthropic/claude-fable-5-1"),
+        openrouter_deepseek_providers=env(
+            "OPENROUTER_DEEPSEEK_PROVIDERS", "Together,Fireworks,Novita"),
+        core_origin=env("CORE_ORIGIN"),
+        internal_api_secret=env("INTERNAL_API_SECRET"),
     )
+
+
+def harness_enabled() -> bool:
+    return os.environ.get("AI_HARNESS", "").strip().lower() in {"1", "true", "yes"}

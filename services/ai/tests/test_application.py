@@ -104,3 +104,36 @@ async def test_import_rejects_discovered():
     with pytest.raises(DomainError) as e:
         await svc.import_(uuid4(), uuid4(), "DISCOVERED", _now(), "", True)
     assert e.value.code == "VALIDATION_ERROR"
+
+
+def test_application_json_omits_fit_score_until_an_analysis_exists():
+    from app.jsonutil import to_jsonable
+    assert "fitScore" not in to_jsonable(_app())
+    scored = _app().model_copy(update={"fit_score": 72})
+    assert to_jsonable(scored)["fitScore"] == 72
+
+
+async def test_application_store_selects_latest_fit_score():
+    from app.db import NotFoundError
+    from app.infrastructure.store_applications import ApplicationStore
+
+    class Query:
+        def __init__(self):
+            self.sql = ""
+
+        async def fetchrow(self, sql, *args):
+            self.sql = sql
+            return None
+
+    class DB:
+        def __init__(self, query):
+            self.query = query
+
+        def q(self):
+            return self.query
+
+    query = Query()
+    with pytest.raises(NotFoundError):
+        await ApplicationStore(DB(query)).get(uuid4(), uuid4())
+    assert "gap_analyses" in query.sql
+    assert "fit_score" in query.sql

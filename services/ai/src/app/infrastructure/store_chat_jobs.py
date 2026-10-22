@@ -2,7 +2,7 @@ from __future__ import annotations
 from app.clock import utcnow
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.claimctx import LostClaim, bound_claim
 from app.db import DB
@@ -44,51 +44,6 @@ class ChatJobStore:
     def __init__(self, db: DB):
         self.db = db
 
-    async def enqueue(self, user_id: UUID, conversation_id: UUID,
-                      payload: dict) -> UUID:
-        job_id = uuid4()
-        await self.db.q().execute(
-            "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
-            "VALUES ($1,$2,$3,$4)",
-            job_id, user_id, conversation_id, _dump(payload))
-        return job_id
-
-    async def enqueue_started(self, user_id: UUID, conversation_id: UUID,
-                              payload: dict, status_text: str) -> Optional[UUID]:
-        """Insert the job, the user message, and a status event.
-
-        The conversation check and the three inserts are one statement.
-        The message id is derived from the job id, so running this statement
-        again for the same job does not add a second USER row. Archived
-        chats are still inserted; resolve_context rejects them later,
-        matching ``conversations.get``.
-        """
-        job_id = uuid4()
-        raw_text = payload.get("text") if isinstance(payload, dict) else ""
-        text = "" if raw_text is None else str(raw_text)
-        row = await self.db.q().fetchrow(
-            "WITH conv AS ("
-            "SELECT id FROM conversations WHERE id = $2 AND user_id = $1"
-            "), job AS ("
-            "INSERT INTO chat_jobs (id, user_id, conversation_id, payload) "
-            "SELECT $3, $1, conv.id, $4 FROM conv RETURNING id"
-            "), msg AS ("
-            "INSERT INTO messages (id, user_id, conversation_id, role, text, "
-            "attachments, operation_id, created_at) "
-            "SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() "
-            "FROM conv ON CONFLICT (id) DO NOTHING RETURNING id"
-            "), ev AS ("
-            "INSERT INTO chat_events (job_id, type, payload) "
-            "SELECT job.id, 'status', $5 FROM job RETURNING job_id"
-            ") "
-            "SELECT job.id FROM job JOIN ev ON ev.job_id = job.id "
-            "LEFT JOIN msg ON true",
-            user_id, conversation_id, job_id, _dump(payload),
-            _dump({"text": status_text}), user_message_id(job_id), text or "")
-        if row is None:
-            return None
-        return row["id"]
-
     async def claim(self) -> Optional[dict]:
         row = await self.db.pool.fetchrow(
             "UPDATE chat_jobs SET status='RUNNING', attempt=attempt+1, "
@@ -101,8 +56,7 @@ class ChatJobStore:
 
     async def finish(self, job_id: UUID, status: str,
                      error: Optional[str] = None) -> None:
-        # DONE and FAILED stay. A later error from a stale run cannot
-        # reopen a chat that already finished.
+        # DONE, FAILED, and CANCELLED stay. A later finish cannot reopen them.
         token = bound_claim(job_id)
         if token:
             tag = await self.db.q().execute(
@@ -114,16 +68,18 @@ class ChatJobStore:
             return
         await self.db.q().execute(
             "UPDATE chat_jobs SET status=$2, error=$3, updated_at=$4 "
-            "WHERE id=$1 AND status NOT IN ('DONE', 'FAILED')",
+            "WHERE id=$1 AND status NOT IN ('DONE', 'FAILED', 'CANCELLED')",
             job_id, status, error, _now())
 
     async def requeue(self, job_id: UUID, delay_s: float) -> None:
         async def work():
-            await self.db.q().execute(
+            tag = await self.db.q().execute(
                 "UPDATE chat_jobs SET status='PENDING', "
                 "run_at=now() + make_interval(secs => $2), updated_at=$3, "
                 "checkpoint = COALESCE(checkpoint, '{}'::jsonb) - 'claim' "
-                "WHERE id=$1", job_id, delay_s, _now())
+                "WHERE id=$1 AND status <> 'CANCELLED'", job_id, delay_s, _now())
+            if _affected(tag) == 0:
+                return
             await self.db.q().execute(
                 "DELETE FROM chat_events WHERE job_id=$1", job_id)
 
@@ -297,3 +253,89 @@ class ChatJobStore:
             "AND created_at <= now() - make_interval(secs => $2::double precision) "
             "ORDER BY created_at LIMIT $1", limit, min_age_s)
         return [r["id"] for r in rows]
+
+    async def worker_claim(self, job_id, now) -> Optional[dict]:
+        row = await self.db.q().fetchrow(
+            "UPDATE ai_jobs SET status='RUNNING', heartbeat_at=$2, updated_at=$2, "
+            "started_at=COALESCE(started_at, $2) "
+            "WHERE id=$1 AND status IN ('QUEUED','RETRY') "
+            "RETURNING id, type, queue, user_id, company_id, conversation_id, "
+            "payload, attempts, max_attempts, status, checkpoint",
+            job_id, now)
+        return dict(row) if row else None
+
+    async def worker_finish(self, job_id, result, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='DONE', result=$2, updated_at=$3 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, _dump(result), now)
+
+    async def worker_fail(self, job_id, error, now) -> dict:
+        row = await self.db.q().fetchrow(
+            "UPDATE ai_jobs SET attempts=attempts+1, error=$2, updated_at=$3, "
+            "status=CASE WHEN attempts+1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
+            "WHERE id=$1 RETURNING status, attempts, max_attempts, queue",
+            job_id, _dump(error), now)
+        return dict(row)
+
+    async def worker_fail_final(self, job_id, error, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='FAILED', error=$2, updated_at=$3 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, _dump(error), now)
+
+    async def worker_release(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='QUEUED', heartbeat_at=NULL, updated_at=$2 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, now)
+
+    async def worker_touch(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET heartbeat_at=$2, updated_at=$2 WHERE id=$1",
+            job_id, now)
+
+    async def worker_cancel(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='CANCELLED', updated_at=$2 "
+            "WHERE id=$1 AND status IN ('QUEUED','RETRY','RUNNING')",
+            job_id, now)
+
+    async def worker_status(self, job_id) -> Optional[str]:
+        return await self.db.q().fetchval("SELECT status FROM ai_jobs WHERE id=$1", job_id)
+
+    async def worker_set_state(self, job_id, state: str) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET checkpoint = COALESCE(checkpoint, '{}'::jsonb) "
+            "|| jsonb_build_object('conversation_state', $2::text), updated_at=$3 "
+            "WHERE id=$1",
+            job_id, state, _now())
+
+
+class QueueJobs:
+    def __init__(self, store: ChatJobStore):
+        self.store = store
+
+    async def claim(self, job_id, now):
+        return await self.store.worker_claim(job_id, now)
+
+    async def finish(self, job_id, result, now):
+        await self.store.worker_finish(job_id, result, now)
+
+    async def fail(self, job_id, error, now):
+        return await self.store.worker_fail(job_id, error, now)
+
+    async def fail_final(self, job_id, error, now):
+        await self.store.worker_fail_final(job_id, error, now)
+
+    async def release_claim(self, job_id, now):
+        await self.store.worker_release(job_id, now)
+
+    async def touch(self, job_id, now):
+        await self.store.worker_touch(job_id, now)
+
+    async def emit(self, job_id, kind, payload):
+        await self.store.emit(job_id, kind, payload)
+
+    async def cancel(self, job_id, now):
+        await self.store.worker_cancel(job_id, now)

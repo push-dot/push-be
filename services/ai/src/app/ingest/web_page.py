@@ -403,9 +403,9 @@ def github_usernames(text: str) -> list[str]:
     return out
 
 
-async def fetch_github_context(username: str) -> str:
+async def fetch_github_context(username: str, transport=None) -> str:
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, transport=transport) as c:
             r = await c.get(
                 f"https://api.github.com/users/{username}/repos",
                 params={"per_page": 30, "sort": "pushed", "type": "owner"},

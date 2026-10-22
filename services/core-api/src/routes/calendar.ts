@@ -1,11 +1,11 @@
-import { one, query } from "../db.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
-const TYPES = new Set(["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM"]);
+const TYPES = new Set(["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT"]);
 
-function validTz(tz: string): boolean {
+export function validTz(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return true;
@@ -27,6 +27,7 @@ function eventDto(row: Record<string, unknown>): Record<string, unknown> {
     source: String(row.source ?? "LOCAL"),
     externalId: row.external_id == null ? null : String(row.external_id),
     notes: String(row.notes ?? ""),
+    remindAt: ts(row.remind_at),
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
@@ -66,7 +67,7 @@ export async function listEvents(ctx: Ctx): Promise<Response> {
   }
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id, new Date(fromMs).toISOString(), new Date(toMs).toISOString()];
-  let sql = "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at FROM calendar_events WHERE user_id = $1 AND starts_at >= $2 AND starts_at <= $3";
+  let sql = "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at, to_jsonb(calendar_events) ->> 'remind_at' AS remind_at FROM calendar_events WHERE user_id = $1 AND starts_at >= $2 AND starts_at <= $3";
   const app = ctx.url.searchParams.get("applicationId");
   if (app) {
     params.push(requireUuid(app, "applicationId"));
@@ -100,6 +101,7 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
   const tz = typeof body.timeZone === "string" && body.timeZone ? body.timeZone : "UTC";
   if (!validTz(tz)) throw new HttpError(400, "VALIDATION_ERROR", "invalid IANA time zone", { field: "timeZone" });
   const notes = typeof body.notes === "string" ? body.notes : "";
+  const remindAt = body.remindAt == null || body.remindAt === "" ? null : parseTime(body.remindAt, "remindAt");
   let applicationId: string | null = null;
   if (body.applicationId != null) {
     applicationId = requireUuid(String(body.applicationId), "applicationId");
@@ -108,12 +110,19 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
   }
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$10)",
-    [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes, now]);
+  try {
+    await query(ctx.deps.query,
+      "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$11)",
+      [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes, remindAt, now]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query,
+      "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$10)",
+      [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes, now]);
+  }
   return data(201, eventDto({
     id, revision: 1, application_id: applicationId, type, title, starts_at: starts, ends_at: ends,
-    time_zone: tz, source: "LOCAL", external_id: null, notes, created_at: now, updated_at: now,
+    time_zone: tz, source: "LOCAL", external_id: null, notes, remind_at: remindAt, created_at: now, updated_at: now,
   }), ctx.rid);
 }
 

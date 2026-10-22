@@ -43,7 +43,7 @@ def validate_document_input(title: str, kind: str, template: str) -> None:
     if not ent.valid_document_kind(kind):
         raise validation_field("kind", "must be RESUME, PORTFOLIO or COVER_LETTER")
     if not ent.valid_document_template(template):
-        raise validation_field("template", "must be CLASSIC, MODERN or COMPACT")
+        raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
 
 
 def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
@@ -61,6 +61,20 @@ def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
                 message="evidence span does not literally appear in block text"))
     fidelity = (len(blocks) - unsupported) * 100 // len(blocks) if blocks else None
     return ent.Quality(evidence_fidelity=fidelity, method=method, issues=issues)
+
+
+def _replaced(src: ent.DocumentVersion, edits: list[tuple[str, str]]):
+    content = copy.deepcopy(src.content)
+    blocks = copy.deepcopy(src.blocks)
+    for old, new in edits:
+        applied = [False]
+        dc.replace_in_node(content, old, new, applied)
+        if not applied[0]:
+            return content, blocks, False
+        for b in blocks:
+            if old in b.text:
+                b.text = b.text.replace(old, new, 1)
+    return content, blocks, bool(edits)
 
 
 @dataclass
@@ -107,6 +121,7 @@ class DocumentService:
             except Exception:
                 raise internal()
         validate_document_input(title, kind, template)
+        template = ent.stored_document_template(template)
         now = _now()
         d = ent.Document(
             id=uuid4(), user_id=user_id, revision=1, application_id=application_id,
@@ -145,10 +160,10 @@ class DocumentService:
                 d.title = title
             if template is not None:
                 if not ent.valid_document_template(template):
-                    raise validation_field(
-                        "template", "must be CLASSIC, MODERN or COMPACT")
-                if template != d.template:
-                    d.template = template
+                    raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
+                stored = ent.stored_document_template(template)
+                if stored != d.template:
+                    d.template = stored
                     d.finalized_version_id = None
                     if d.status == ent.DOC_FINALIZED:
                         d.status = ent.DOC_DRAFT
@@ -387,42 +402,43 @@ class DocumentService:
                     user_id, doc_id, p.source_version_id)
             except Exception:
                 raise internal()
-            new_content = copy.deepcopy(src.content)
-            applied = [False]
-            dc.replace_in_node(new_content, p.selection.text, p.replacement, applied)
-            new_blocks = copy.deepcopy(src.blocks)
-            for b in new_blocks:
-                if p.selection.text in b.text:
-                    b.text = b.text.replace(p.selection.text, p.replacement, 1)
-            if not applied[0]:
+            new_content, new_blocks, applied = _replaced(
+                src, [(p.selection.text, p.replacement)])
+            if not applied:
                 raise approval_stale(
                     "selection text no longer present in the version")
-            dc.validate_document_content(new_content, new_blocks)
-            await self._verify_blocks(user_id, d.application_id, new_blocks)
-            num = await self.documents.next_version_number(doc_id)
-            now = _now()
-            v = ent.DocumentVersion(
-                id=uuid4(), user_id=user_id, document_id=doc_id,
-                application_id=d.application_id, number=num, content=new_content,
-                blocks=new_blocks, change_note="applied proposal " + str(p.id),
-                quality=compute_quality(new_blocks, ent.METHOD_RULE_BASED),
-                created_at=now)
-            await self.documents.create_version(v)
-            await self.documents.mark_proposal_applied(p.id, now)
-            d.latest_version_id = v.id
-            d.finalized_version_id = None
-            if d.status == ent.DOC_FINALIZED:
-                d.status = ent.DOC_DRAFT
-            d.updated_at = now
-            try:
-                await self.documents.update(d, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            d.revision = expected + 1
+            v = await self._save_edit(user_id, d, expected, new_content, new_blocks,
+                                      "applied proposal " + str(p.id))
+            await self.documents.mark_proposal_applied(p.id, v.created_at)
             out_doc, out_ver = d, v
 
         await self.db.run(work)
         return out_doc, out_ver
+
+    async def _save_edit(self, user_id: UUID, d: ent.Document, expected: int,
+                         content: dict, blocks: list[ent.Block], note: str) -> ent.DocumentVersion:
+        dc.validate_document_content(content, blocks)
+        await self._verify_blocks(user_id, d.application_id, blocks)
+        num = await self.documents.next_version_number(d.id)
+        now = _now()
+        v = ent.DocumentVersion(
+            id=uuid4(), user_id=user_id, document_id=d.id,
+            application_id=d.application_id, number=num, content=content,
+            blocks=blocks, change_note=note,
+            quality=compute_quality(blocks, ent.METHOD_RULE_BASED),
+            created_at=now)
+        await self.documents.create_version(v)
+        d.latest_version_id = v.id
+        d.finalized_version_id = None
+        if d.status == ent.DOC_FINALIZED:
+            d.status = ent.DOC_DRAFT
+        d.updated_at = now
+        try:
+            await self.documents.update(d, expected)
+        except Exception as err:
+            raise map_revision_err(err)
+        d.revision = expected + 1
+        return v
 
     async def review(self, user_id: UUID, doc_id: UUID,
                      version_id: UUID) -> ent.DocumentVersion:

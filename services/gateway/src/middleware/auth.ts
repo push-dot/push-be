@@ -10,7 +10,7 @@ import type { User } from "../types.ts";
 import { codedError, errorResponse, sha256Hex } from "../http.ts";
 import {
   acceptGrant, allow, allowShared, AUTH_RATE_SQL, AUTH_SQL, isolate, leases,
-  nextBatch, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
+  nextBatch, queryToleratingCompany, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
 } from "./ratelimit.ts";
 
 function authTtlMs(env: FrontEnv): number {
@@ -25,6 +25,12 @@ function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: numb
     displayName: user.displayName,
     locale: user.locale,
     createdAt: user.createdAt,
+    accountType: user.accountType,
+    companyId: user.companyId,
+    companyRole: user.companyRole,
+    email: user.email,
+    provider: user.provider,
+    plan: user.plan,
     expiresAtMs,
   };
   isolate.putAuth(hash, cached, nowMs, ttlMs);
@@ -68,6 +74,12 @@ function userFromCached(cached: CachedUser): User {
     displayName: cached.displayName,
     locale: cached.locale,
     createdAt: cached.createdAt,
+    accountType: cached.accountType,
+    companyId: cached.companyId,
+    companyRole: cached.companyRole,
+    email: cached.email,
+    provider: cached.provider,
+    plan: cached.plan,
   };
 }
 type TokenCtx = {
@@ -139,7 +151,7 @@ export async function tokenContext(request: Request, env: FrontEnv, deps: Deps, 
 export async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: string): Promise<User | Response> {
   let rows: Record<string, unknown>[];
   try {
-    rows = await deps.query(AUTH_SQL, [ctx.hash]);
+    rows = await queryToleratingCompany(deps.query, AUTH_SQL, [ctx.hash]);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
@@ -187,11 +199,11 @@ export async function requireUser(request: Request, env: FrontEnv, deps: Deps, r
   let rows: Record<string, unknown>[];
   let shared = true;
   try {
-    rows = await deps.query(AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
+    rows = await queryToleratingCompany(deps.query, AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
   } catch {
     shared = false;
     try {
-      rows = await deps.query(AUTH_SQL, [ctx.hash]);
+      rows = await queryToleratingCompany(deps.query, AUTH_SQL, [ctx.hash]);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -199,8 +211,9 @@ export async function requireUser(request: Request, env: FrontEnv, deps: Deps, r
   return interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, shared, rid, deps, rememberBag(ctx, env));
 }
 async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
-  const rows = await deps.query(
-    "SELECT id, display_name, locale, " + tsText("created_at") + " AS created_at FROM users WHERE id = $1::uuid",
+  const rows = await queryToleratingCompany(
+    deps.query,
+    "SELECT u.id, u.display_name, u.locale, " + tsText("u.created_at") + " AS created_at, u.is_employer, u.email, u.provider, u.plan, m.company_id, m.role AS company_role FROM users u LEFT JOIN company_members m ON m.user_id = u.id WHERE u.id = $1::uuid",
     [env.DEV_USER_ID || ""],
   );
   if (!rows.length) {
@@ -209,11 +222,23 @@ async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   return userFrom(rows[0]);
 }
 
+const employerFlag = (value: unknown): boolean =>
+  value === true || value === "t" || value === "true" || value === 1;
+
+const textOrNull = (value: unknown): string | null =>
+  value == null || value === "" ? null : String(value);
+
 export function userFrom(row: Record<string, unknown>): User {
   return {
     id: String(row.id),
     displayName: String(row.display_name ?? ""),
     locale: String(row.locale ?? "ko"),
     createdAt: formatJsonTimestamp(row.created_at),
+    accountType: employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL",
+    companyId: textOrNull(row.company_id),
+    companyRole: textOrNull(row.company_role),
+    email: row.email == null ? "" : String(row.email),
+    provider: row.provider == null ? "" : String(row.provider),
+    plan: String(row.plan ?? "FREE"),
   };
 }

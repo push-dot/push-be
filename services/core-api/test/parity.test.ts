@@ -99,7 +99,7 @@ test("auth and idempotency errors match the Python middleware", async () => {
   assert.equal(body.error.details.field, "Idempotency-Key");
 });
 
-test("a free managed chat is rejected before enqueue and a paid chat is queued", async () => {
+test("an exhausted free managed chat is rejected and a paid chat is queued", async () => {
   resetLimits();
   const sqls: string[] = [];
   let scheduled = "";
@@ -110,7 +110,7 @@ test("a free managed chat is rejected before enqueue and a paid chat is queued",
     }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 1_800_000 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.startsWith("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
@@ -132,6 +132,34 @@ test("a free managed chat is rejected before enqueue and a paid chat is queued",
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "FEATURE_DISABLED");
   assert.equal(sqls.some((sql) => sql.includes("chat_jobs")), false);
 
+  const api = {
+    async fetch(request: Request) {
+      scheduled = await request.text();
+      return new Response('{"data":{"scheduled":true}}', { status: 200 });
+    },
+  };
+  const open: Deps["query"] = async (sql) => {
+    if (sql.includes("access_tokens")) {
+      return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
+    }
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("FROM users")) return { rows: [{ plan: null }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-free" }], rowCount: 1 };
+    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-free" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const opened = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret-token",
+      "content-type": "application/json",
+      "idempotency-key": "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    },
+    body,
+  }), env({ API: api }), deps(open));
+  assert.equal(opened.status, 202);
+
   const paid: Deps["query"] = async (sql) => {
     sqls.push(sql);
     if (sql.includes("access_tokens")) {
@@ -143,12 +171,6 @@ test("a free managed chat is rejected before enqueue and a paid chat is queued",
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-2" }], rowCount: 1 };
     if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
-  };
-  const api = {
-    async fetch(request: Request) {
-      scheduled = await request.text();
-      return new Response('{"data":{"scheduled":true}}', { status: 200 });
-    },
   };
   const queued = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
     method: "POST",
@@ -165,6 +187,20 @@ test("a free managed chat is rejected before enqueue and a paid chat is queued",
   assert.equal(op.data.type, "CHAT_MESSAGE");
   assert.equal(op.data.result.value.jobId, op.data.id);
   assert.match(scheduled, /jobId/);
+  const go = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret-token",
+      "content-type": "application/json",
+      "idempotency-key": "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    },
+    body: JSON.stringify({
+      text: "hello",
+      accessMode: "SUGGEST",
+      ai: { provider: "OPENAI", model: "opencode-go/deepseek-v4.1-flash", credentialMode: "MANAGED", effort: "LOW" },
+    }),
+  }), env({ API: api }), deps(paid));
+  assert.equal(go.status, 202);
 });
 
 test("a conversation patch reports the current revision", async () => {

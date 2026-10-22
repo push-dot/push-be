@@ -43,8 +43,9 @@ async def test_gate_complete_managed():
     g = _gate(managed_key="sk-managed", chat=chat)
     c = await g.complete(uuid4(), _managed(), "sys", "hi")
     assert c.text == "hello" and c.input_tokens == 3 and c.output_tokens == 5
-    assert chat.got == {"key": "sk-managed", "model": "gpt-4o-mini",
-                       "system": "sys", "user": "hi", "reasoning": "low"}
+    assert chat.got == {"key": "sk-managed",
+                       "model": "anthropic/claude-opus-5-5",
+                       "system": "sys", "user": "hi", "reasoning": "high"}
 
 
 async def test_gate_complete_managed_not_configured():
@@ -141,9 +142,17 @@ async def test_gate_managed_monthly_limit():
     user_id = uuid4()
     g = _gate("sk-managed", chat=StubChatCompleter())
     g.users = StubUserStore(_user("FREE"))
+    await g.check(user_id, _managed())
+    g.usage = StubAiUsageStore([
+        ent.AiUsage(id=uuid4(), user_id=user_id, provider="OPENAI",
+                    model="m", managed=True, input_tokens=1, output_tokens=1,
+                    cost_micro_credits=1_800_000,
+                    status="SETTLED", created_at=_now())])
     with pytest.raises(DomainError) as e:
         await g.check(user_id, _managed())
     assert e.value.code == "FEATURE_DISABLED"
+    assert "FREE" in e.value.message
+    g.usage = StubAiUsageStore()
     g.users = StubUserStore(_user("PRO"))
     await g.check(user_id, _managed())
     g.usage = StubAiUsageStore([
@@ -194,17 +203,37 @@ async def test_gate_routes_go_model_to_go_client():
                        model="opencode-go/deepseek-v4.1-flash",
                        credential_mode="MANAGED", effort="LOW")
     c = await g.complete(user_id, ai, "", "hi")
+    assert c.text == "router"
+    assert managed_chat.got["model"] == "anthropic/claude-opus-5-5"
+    assert go_chat.got == {}
+
+
+async def test_managed_plan_go_model_routes_to_go_client():
+    from app.config import Config
+    user_id = uuid4()
+    managed_chat = StubChatCompleter(text="router")
+    go_chat = StubChatCompleter(text="go")
+    g = AIGate(FakeDB(), "sk-managed", None, managed_chat, managed_chat,
+               go_chat=go_chat, go_key="sk-go",
+               config=Config(model_ultra="opencode-go/deepseek-v4.1-flash"))
+    g.users = StubUserStore(_user("ULTRA"))
+    g.usage = StubAiUsageStore()
+    ai = ent.AiOptions(provider="OPENAI", model="client-model",
+                       credential_mode="MANAGED", effort="LOW")
+    c = await g.complete(user_id, ai, "", "hi")
     assert c.text == "go"
     assert go_chat.got["key"] == "sk-go"
     assert go_chat.got["model"] == "deepseek-v4.1-flash"
+    assert managed_chat.got == {}
 
 
 async def test_gate_go_model_requires_go_key():
-    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter())
+    from app.config import Config
+    g = AIGate(FakeDB(), "sk-managed", None, StubChatCompleter(),
+               config=Config(model_ultra="opencode-go/deepseek-v4.1-flash"))
     g.users = StubUserStore(_user())
     g.usage = StubAiUsageStore()
-    ai = ent.AiOptions(provider="OPENAI",
-                       model="opencode-go/deepseek-v4.1-flash",
+    ai = ent.AiOptions(provider="OPENAI", model="client-model",
                        credential_mode="MANAGED", effort="LOW")
     with pytest.raises(DomainError) as e:
         await g.check(uuid4(), ai)
@@ -218,7 +247,7 @@ async def test_gate_web_search_managed_uses_online_suffix():
     ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
                        effort="LOW", web_search=True)
     await g.complete(user_id, ai, "sys", "hi")
-    assert chat.got["model"] == "m:online"
+    assert chat.got["model"] == "anthropic/claude-opus-5-5:online"
 
 
 async def test_gate_reasoning_effort_managed_only():
@@ -234,8 +263,9 @@ async def test_gate_reasoning_effort_managed_only():
     g.users = StubUserStore(_user())
     g.usage = StubAiUsageStore()
     ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
-                       effort="HIGH")
+                       effort="LOW")
     await g.complete(user_id, ai, "", "hi")
+    assert managed_chat.got["model"] == "anthropic/claude-opus-5-5"
     assert managed_chat.got["reasoning"] == "high"
     ai = ent.AiOptions(provider="OPENAI", model="gpt-4o",
                        credential_mode="BYOK", effort="HIGH")

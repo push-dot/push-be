@@ -38,7 +38,21 @@ def set_job_scheduler(fn: Scheduler) -> None:
     _scheduler = fn
 
 
+def get_job_scheduler() -> Optional[Scheduler]:
+    return _scheduler
+
+
+def queue_backend() -> str:
+    return os.environ.get("QUEUE_BACKEND", "postgres").strip().lower() or "postgres"
+
+
+def runs_local_chat_worker() -> bool:
+    return not external_jobs() and queue_backend() != "redis"
+
+
 async def schedule_chat_job(job_id, byok: str = "") -> None:
+    if queue_backend() == "redis":
+        return
     if _scheduler is None:
         return
     claim = str(uuid4())

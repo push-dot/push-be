@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.api.gateway_secret import SharedSecretMiddleware, secrets_match
-from app.domain.errors import DomainError
-from app.infrastructure.images import save_image
+from app.infrastructure.images import image_bytes
 from scripts import seed_local
 
 
@@ -25,21 +24,23 @@ def test_seed_allows_development(monkeypatch):
     seed_local.assert_development()
 
 
-def test_save_image_writes_under_images(tmp_path: Path):
-    png = b"\x89PNG\r\n\x1a\n" + b"rest"
-    key, url = save_image(str(tmp_path), png, "image/png")
-    path = tmp_path / "images" / key
-    assert path.is_file()
-    assert path.read_bytes() == png
-    assert url == "/api/v1/uploads/images/" + key
-    source = Path(__file__).resolve().parents[1].joinpath("src/app/infrastructure/images.py").read_text()
-    assert "shortcut: local disk, swap to R2 at deploy" in source
+@pytest.mark.asyncio
+async def test_image_bytes_reads_postgres_and_rejects_bad_keys():
+    seen = []
 
+    class Q:
+        async def fetchval(self, sql, *args):
+            seen.append(args)
+            return b"\x89PNG"
 
-def test_save_image_rejects_other_types(tmp_path: Path):
-    with pytest.raises(DomainError) as caught:
-        save_image(str(tmp_path), b"not an image", "text/plain")
-    assert caught.value.status == 400
+    class Db:
+        def q(self):
+            return Q()
+
+    key = "0123456789abcdef0123456789abcdef.png"
+    assert await image_bytes(Db(), key) == b"\x89PNG"
+    assert await image_bytes(Db(), "../etc/passwd") is None
+    assert seen == [(key,)]
 
 
 def test_shared_secret_constant_time_length():

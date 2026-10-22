@@ -9,10 +9,10 @@ import type { Deps, FrontEnv } from "./types.ts";
 import { errorResponse, preflight, requestIdOf, withCors } from "./http.ts";
 import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
-import { listConversations, listMessages, streamActive } from "./routes/conversations.ts";
+import { listConversations, listMessages, streamActive, streamCancel, streamMessage } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
-import { invalidateAfterWrite, proxy, proxyPython, purgeModelCache } from "./routes/proxy.ts";
+import { invalidateAfterWrite, isInternalCall, proxy, proxyPython, purgeModelCache } from "./routes/proxy.ts";
 
 export type { Deps, FrontEnv, Query } from "./types.ts";
 export { releaseExpired, resetLimits } from "./middleware/ratelimit.ts";
@@ -65,6 +65,13 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (request.method === "GET" && active) {
     return streamActive(request, env, deps, url, active[1], rid, limits, now);
   }
+  if (request.method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/messages\/stream$/.test(path)) {
+    return streamMessage(request, env, deps, rid);
+  }
+  const cancel = path.match(/^\/api\/v1\/conversations\/([^/]+)\/stream\/cancel$/);
+  if (request.method === "POST" && cancel) {
+    return streamCancel(request, env, deps, cancel[1], rid, limits, now);
+  }
   if (request.method === "GET" && path === "/api/v1/ai/models") {
     return aiModels(request, env, deps, url, rid, limits, now);
   }
@@ -74,7 +81,7 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   const owner = ownerOf(request.method, path);
   if (owner === "deny") return errorResponse(404, "NOT_FOUND", "resource not found", rid);
   const proxied = owner === "core"
-    ? await proxy(request, env.CORE, rid)
+    ? await proxy(request, env.CORE, rid, await isInternalCall(request, env))
     : await proxyPython(request, env, deps, rid);
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
