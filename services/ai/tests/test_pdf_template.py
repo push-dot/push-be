@@ -237,6 +237,7 @@ def test_simple_and_ats_pdfs_differ_and_ats_text_extracts():
 
 
 def test_photo_bytes_change_the_pdf():
+    pytest.importorskip("reportlab")  # photo embedding needs the local extra
     plain = render_pdf(LINES, "ATS")
     stamped = render_pdf(LINES, "ATS", _png())
     assert stamped.startswith(b"%PDF")
@@ -302,6 +303,7 @@ def test_export_rejects_an_unknown_template(tmp_path):
 
 
 def test_export_photo_uses_the_uploaded_image_row(tmp_path):
+    pytest.importorskip("reportlab")  # photo embedding needs the local extra
     doc = _document("ATS")
     version = _version(doc)
     key = "ab" * 16 + ".png"

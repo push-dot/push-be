@@ -163,7 +163,7 @@ def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_api_server_exit_stops_the_worker(monkeypatch):
-    import uvicorn
+    uvicorn = pytest.importorskip("uvicorn")  # local extra; CI installs the Workers set
 
     from app.workers.ai_worker_main import serve_api
 

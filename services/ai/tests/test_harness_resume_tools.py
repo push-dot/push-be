@@ -5,6 +5,7 @@ import json
 from uuid import uuid4
 
 import httpx
+import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -67,6 +68,7 @@ def _pdf(text: str) -> bytes:
 
 
 async def test_parse_attachment_reads_evidence_then_conversation_pdfs():
+    pytest.importorskip("reportlab")  # local extra; CI installs the Workers set
     evidence = {"title": "이력서", "source_text": "Python 3 years"}
     assert (await _call("parse_attachment", _ctx(_Rows(evidence=evidence)), {"attachment_id": str(uuid4())})) == {
         "title": "이력서", "text": "Python 3 years"}
