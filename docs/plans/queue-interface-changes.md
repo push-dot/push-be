@@ -36,3 +36,13 @@ Only part of 10c is done in this branch.
 - `ingest` jobs reserve no credits (`ESTIMATE_MICRO.ingest = 0n`). Embedding runs on the self-hosted TEI service, and a reservation would make uploads fail for users with no balance, which they never did before.
 - Still in Python: `GET /sources`, `GET /sources/{id}`, `GET /sources/{id}/content`, `GET /sources/{id}/profile-draft`, `DELETE /sources/{id}`, `/uploads/images`, and the `career-evidence` routes. Older sources live on VPS disk, which core cannot read, and the profile draft parses files, which core must not do.
 - 10a (documents), 10b (applications), and 10d (integrations, experiments, interviews, projects) were not started. See the final report.
+
+## Task 12: RAG nodes and ingest
+
+- `rag_nodes.user_id` is nullable. A row needs a user or a company (`rag_nodes_tenant_chk`). Company postings are stored with only `company_id`.
+- A trigger on `sources` deletes that source's `rag_nodes` rows, so a deleted upload stops being searchable without a code change in the Python delete route. Account purge reaches `rag_nodes` through `ON DELETE CASCADE`.
+- LlamaIndex `PGVectorStore` is not used. It owns its table layout (`data_<name>`, a `metadata_` JSON column) and cannot hold the tenant columns that the mandatory filter and deletion rely on. LlamaIndex `SentenceSplitter(512, 64)` builds the `TextNode`s; `RagNodeStore` (asyncpg) writes them.
+- The splitter counts tokens with an offline approximation (one Hangul syllable or one Latin word per token), so ingest never downloads a tokenizer at runtime.
+- `ingest_source(source_id, tenant)` is `Ingestor.ingest_text(tenant, source_type, source_id, text)` plus the `ingest` job handler. The handler picks the reader from the payload: `sourceId`, `postingId`, `url`, `githubRepo` (`owner/name`: README + last 20 commit subjects), or `reindex: true`.
+- `reindex_all` walks `sources` that have no rows for the current embedding model and writes new rows. Rows for other models stay until they are dropped by hand after the switch.
+- `llama-index-core` is in the `local` extra (already listed), not in the base dependencies. `tests/test_rag_pipeline.py` skips when it is not installed.
