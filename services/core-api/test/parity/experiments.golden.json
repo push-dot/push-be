@@ -192,8 +192,8 @@
     "variants": {
      "control": {},
      "short": {
-      "conversion": 2,
-      "exposure": 3
+      "exposure": 3,
+      "conversion": 2
      }
     }
    }

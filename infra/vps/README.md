@@ -133,4 +133,6 @@ Cloudflare 대시보드에 넣는다. `wrangler.jsonc`는 수정하지 않는다
 | `push-be-core` | `DISPATCH_ORIGIN` | `https://<DISPATCH_HOST>` |
 | `push-be-core` | `DISPATCH_SECRET` | VPS와 같은 값 |
 
+Google OAuth 클라이언트의 승인된 리디렉션 URI에 `https://<게이트웨이 호스트>/api/v1/integrations/google/callback`을 추가한다. 이 경로는 이제 core가 받고, 요청이 들어온 게이트웨이 호스트로 콜백 주소를 만든다.
+
 core는 작업을 넣고 커밋한 뒤 `DISPATCH_ORIGIN/internal/kick`을 부른다. 이 호출이 실패해도 작업은 `outbox`에 남고, 다음 15분 스윕에서 처리된다.

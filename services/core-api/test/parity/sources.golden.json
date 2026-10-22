@@ -324,7 +324,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "0e0438f8-4444-4f22-8bef-39afdf1a2c7b",
+    "id": "584e15b0-2d82-4cb7-a26b-3ae6663141eb",
     "fileName": "new.txt",
     "mimeType": "text/plain",
     "size": 20,
@@ -366,8 +366,8 @@
   "status": 201,
   "body": {
    "data": {
-    "key": "f80b7578afbd42428ebc9e5881366256.png",
-    "url": "/api/v1/uploads/images/f80b7578afbd42428ebc9e5881366256.png"
+    "key": "a1658fbea2a940138d982082d9388523.png",
+    "url": "/api/v1/uploads/images/a1658fbea2a940138d982082d9388523.png"
    }
   }
  },
@@ -717,7 +717,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "d2128c41-d657-48a7-9a2b-89071756566a",
+    "id": "2b5479ea-1354-456e-ad90-1bbe51fdf81e",
     "revision": 1,
     "kind": "PROJECT",
     "title": "Search",
@@ -745,7 +745,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "9c224eef-c236-4d8d-addc-a80bf6e68b41",
+    "id": "35f24bdc-656f-4793-9d24-666482642435",
     "revision": 1,
     "kind": "SKILL",
     "title": "Rust",
@@ -771,7 +771,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "5012f8d1-6463-4e39-a081-ceeb6fca09e4",
+    "id": "b387d5a2-7054-4c0e-8b53-d4230033eeb5",
     "revision": 1,
     "kind": "SKILL",
     "title": "Rust 2",
@@ -986,29 +986,27 @@
   "body": {
    "data": [
     {
-     "id": "d2128c41-d657-48a7-9a2b-89071756566a",
+     "id": "b387d5a2-7054-4c0e-8b53-d4230033eeb5",
      "revision": 1,
-     "kind": "PROJECT",
-     "title": "Search",
-     "sourceText": "Built search",
-     "sourceUrl": "https://example.com/p",
-     "skills": [
-      "Go"
-     ],
+     "kind": "SKILL",
+     "title": "Rust 2",
+     "sourceText": "Rust",
+     "sourceUrl": null,
+     "skills": [],
      "verificationStatus": "USER_PROVIDED",
      "provenance": {
       "sourceId": null,
       "projectEvidenceId": null,
-      "contentHash": "efa7b6e0d0b4a6b5331a09a49cbc2d6af4ee5acde0b3bdb017ccbea6ed4f33f2",
+      "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
       "sourceLocation": null
      },
-     "supersedesId": null,
+     "supersedesId": "f0000000-0000-4000-8000-000000000001",
      "archived": false,
      "createdAt": "2026-10-22T12:00:00Z",
      "updatedAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "9c224eef-c236-4d8d-addc-a80bf6e68b41",
+     "id": "35f24bdc-656f-4793-9d24-666482642435",
      "revision": 1,
      "kind": "SKILL",
      "title": "Rust",
@@ -1028,21 +1026,23 @@
      "updatedAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "5012f8d1-6463-4e39-a081-ceeb6fca09e4",
+     "id": "2b5479ea-1354-456e-ad90-1bbe51fdf81e",
      "revision": 1,
-     "kind": "SKILL",
-     "title": "Rust 2",
-     "sourceText": "Rust",
-     "sourceUrl": null,
-     "skills": [],
+     "kind": "PROJECT",
+     "title": "Search",
+     "sourceText": "Built search",
+     "sourceUrl": "https://example.com/p",
+     "skills": [
+      "Go"
+     ],
      "verificationStatus": "USER_PROVIDED",
      "provenance": {
       "sourceId": null,
       "projectEvidenceId": null,
-      "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
+      "contentHash": "efa7b6e0d0b4a6b5331a09a49cbc2d6af4ee5acde0b3bdb017ccbea6ed4f33f2",
       "sourceLocation": null
      },
-     "supersedesId": "f0000000-0000-4000-8000-000000000001",
+     "supersedesId": null,
      "archived": false,
      "createdAt": "2026-10-22T12:00:00Z",
      "updatedAt": "2026-10-22T12:00:00Z"
@@ -1080,7 +1080,7 @@
   "body": {
    "data": [
     {
-     "id": "0e0438f8-4444-4f22-8bef-39afdf1a2c7b",
+     "id": "584e15b0-2d82-4cb7-a26b-3ae6663141eb",
      "fileName": "new.txt",
      "mimeType": "text/plain",
      "size": 20,

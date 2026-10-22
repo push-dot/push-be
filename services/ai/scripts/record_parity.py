@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PARITY = ROOT.parent / "core-api" / "test" / "parity"
+PARITY = Path(os.environ.get("PARITY_DIR") or ROOT.parent / "core-api" / "test" / "parity")
 NOW_NS = 1_792_670_400 * 1_000_000_000
 TOKEN = "parity-token"
 sys.path.insert(0, str(ROOT / "src"))

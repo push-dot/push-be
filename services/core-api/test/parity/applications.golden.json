@@ -332,7 +332,7 @@
      {
       "key": "interview_prep",
       "label": "Interview session scheduled",
-      "completed": false
+      "completed": true
      }
     ],
     "automationEnabled": false
@@ -368,7 +368,7 @@
      {
       "key": "interview_prep",
       "label": "Interview session scheduled",
-      "completed": false
+      "completed": true
      }
     ],
     "automationEnabled": false
@@ -405,7 +405,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "ec31a70d-419e-454a-b267-0e35f1f47b38",
+    "id": "51c89ddd-8bf1-42ac-8aec-97fe2513d1ad",
     "revision": 1,
     "jobId": "b0000000-0000-4000-8000-000000000001",
     "company": "Acme",
@@ -425,7 +425,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "99f4add3-7d60-41f4-bd9f-e52213da61b6",
+    "id": "b5b689b4-51ff-4d22-a76f-ecb1e3f8a328",
     "revision": 1,
     "jobId": "b0000000-0000-4000-8000-000000000001",
     "company": "Acme",
@@ -493,7 +493,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "71112df5-6688-4dff-8af9-50f3cc01a6c2",
+    "id": "0bf02975-d5d0-4ee5-a9c9-39211354d7ee",
     "revision": 1,
     "jobId": "b0000000-0000-4000-8000-000000000001",
     "company": "Acme",
@@ -675,7 +675,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "6f7a48b4-5d65-48f1-ba69-8762324c261d",
+    "id": "62556d9c-346a-4ec1-9a40-80630ef2df1b",
     "applicationId": "c0000000-0000-4000-8000-000000000001",
     "applicationRevision": 3,
     "mode": "MANUAL_RECORD",
@@ -746,7 +746,7 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "ea9c0a21-043c-4b89-96c8-23b86f770227",
+    "id": "41c513e8-3885-43ca-bd14-ad0b6061a25a",
     "applicationId": "c0000000-0000-4000-8000-000000000001",
     "mode": "MANUAL_RECORD",
     "adapter": null,
@@ -789,23 +789,23 @@
   "body": {
    "data": [
     {
-     "id": "ab133089-0db4-4391-9e80-25003c8db7ee",
-     "applicationId": "c0000000-0000-4000-8000-000000000001",
-     "type": "SUBMISSION",
-     "payload": {
-      "mode": "MANUAL_RECORD",
-      "status": "SUCCEEDED",
-      "submissionId": "ea9c0a21-043c-4b89-96c8-23b86f770227"
-     },
-     "createdAt": "2026-10-22T12:00:00Z"
-    },
-    {
-     "id": "2305fe3b-efb3-4002-909d-2ae531952319",
+     "id": "98f07693-0d69-447d-8ff6-f689d2e0f17a",
      "applicationId": "c0000000-0000-4000-8000-000000000001",
      "type": "STAGE_CHANGED",
      "payload": {
       "to": "APPLIED",
       "from": "PREPARING"
+     },
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "4ccd60b0-8066-4d62-b4f2-b136dd510d36",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "type": "SUBMISSION",
+     "payload": {
+      "mode": "MANUAL_RECORD",
+      "status": "SUCCEEDED",
+      "submissionId": "41c513e8-3885-43ca-bd14-ad0b6061a25a"
      },
      "createdAt": "2026-10-22T12:00:00Z"
     },
@@ -842,7 +842,7 @@
   "body": {
    "data": [
     {
-     "id": "ea9c0a21-043c-4b89-96c8-23b86f770227",
+     "id": "41c513e8-3885-43ca-bd14-ad0b6061a25a",
      "applicationId": "c0000000-0000-4000-8000-000000000001",
      "mode": "MANUAL_RECORD",
      "adapter": null,
@@ -1039,7 +1039,7 @@
   "body": {
    "data": [
     {
-     "id": "704b2d59-763d-4ad1-9201-3fa4d4ec7fa8",
+     "id": "81ea48f5-fccb-4c70-baeb-064779d7c519",
      "applicationId": "c0000000-0000-4000-8000-000000000002",
      "type": "STAGE_CHANGED",
      "payload": {
@@ -1049,7 +1049,7 @@
      "createdAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "2ff67e11-3aae-4044-b9b7-3d3cd12869cc",
+     "id": "6318712a-f1c2-482c-9c1d-3182809c967f",
      "applicationId": "c0000000-0000-4000-8000-000000000002",
      "type": "STAGE_CHANGED",
      "payload": {
@@ -1071,21 +1071,7 @@
   "body": {
    "data": [
     {
-     "id": "ec31a70d-419e-454a-b267-0e35f1f47b38",
-     "revision": 1,
-     "jobId": "b0000000-0000-4000-8000-000000000001",
-     "company": "Acme",
-     "title": "Backend Engineer",
-     "stage": "DISCOVERED",
-     "notes": "hello",
-     "appliedAt": null,
-     "nextActionAt": null,
-     "imported": false,
-     "createdAt": "2026-10-22T12:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
-    },
-    {
-     "id": "99f4add3-7d60-41f4-bd9f-e52213da61b6",
+     "id": "b5b689b4-51ff-4d22-a76f-ecb1e3f8a328",
      "revision": 1,
      "jobId": "b0000000-0000-4000-8000-000000000001",
      "company": "Acme",
@@ -1099,7 +1085,21 @@
      "updatedAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "71112df5-6688-4dff-8af9-50f3cc01a6c2",
+     "id": "51c89ddd-8bf1-42ac-8aec-97fe2513d1ad",
+     "revision": 1,
+     "jobId": "b0000000-0000-4000-8000-000000000001",
+     "company": "Acme",
+     "title": "Backend Engineer",
+     "stage": "DISCOVERED",
+     "notes": "hello",
+     "appliedAt": null,
+     "nextActionAt": null,
+     "imported": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "0bf02975-d5d0-4ee5-a9c9-39211354d7ee",
      "revision": 1,
      "jobId": "b0000000-0000-4000-8000-000000000001",
      "company": "Acme",

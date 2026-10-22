@@ -48,7 +48,14 @@ Parity gaps:
 - `services/ai/scripts/record_parity.py <group>` runs the Python routes against a scratch Postgres (`PARITY_PG_URL`) loaded with `services/core-api/test/parity/seed.sql`, clock frozen at 2026-10-22T12:00:00Z, and writes `<group>.golden.json`.
 - `services/core-api/test/parity-<group>.test.ts` sends the same requests (`<group>.cases.json`) to core. With `PARITY_PG_URL` it runs against the real database (Neon driver through a local WebSocket proxy, `test/parity/pg.ts`); add `PARITY_RECORD=1` to save core's query results to `<group>.queries.json`. Without a database it replays that file, so `npm test` checks parity offline.
 - Comparison: status code plus the JSON body with key order. Normalized before comparing: ids generated during the run (`<new-uuid>`), the order of rows created in the same instant (both sides break that tie with random ids), and pydantic's schema error text (see gaps).
-- Re-recording needs the Python routes, which are deleted once a group moves. Check out the commit before the move to re-record a golden file.
+- Re-recording needs the Python routes, which are deleted once a group moves. Extract the last tree that still has them and run the current recorder against it:
+  ```bash
+  git archive b34b1c4 services/ai | tar -x -C /tmp/parity-old
+  cp services/ai/scripts/record_parity.py /tmp/parity-old/services/ai/scripts/
+  cd /tmp/parity-old/services/ai && PARITY_DIR=<repo>/services/core-api/test/parity \
+    PARITY_PG_URL=postgresql://...scratch... python -I scripts/record_parity.py <group>
+  ```
+  Then run the core test with `PARITY_PG_URL` and `PARITY_RECORD=1`. All groups were re-recorded against the final seed this way (270 cases).
 - The core test script now quotes its glob (`'test/**/*.ts'`). Unquoted, the shell expanded it to the files in `test/parity/` only.
 
 ## Task 10b: applications

@@ -302,7 +302,7 @@
  },
  {
   "name": "integration codes after",
-  "sql": "SELECT code, (used_at IS NOT NULL)::text AS used FROM integration_codes ORDER BY code"
+  "sql": "SELECT code, (used_at IS NOT NULL)::text AS used FROM integration_codes WHERE code LIKE 'code-%' UNION ALL SELECT 'new codes', count(*)::text FROM integration_codes WHERE code NOT LIKE 'code-%' ORDER BY 1"
  },
  {
   "name": "oauth states after",

@@ -261,13 +261,13 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "34740848-f189-4b69-84ca-ccc28bc60024",
+    "id": "2120f84b-53d4-44db-a94a-3afeff5d4a47",
     "revision": 1,
     "applicationId": "c0000000-0000-4000-8000-000000000001",
     "title": "Final round",
     "scheduledAt": "2026-11-20T01:00:00Z",
     "durationMinutes": 90,
-    "eventId": "d7640441-877a-4e3f-97a4-f28f8c82566d",
+    "eventId": "07b0c94e-5f42-4e6a-894e-6e584fba3f50",
     "evidenceIds": [
      "f0000000-0000-4000-8000-000000000001"
     ],
@@ -290,13 +290,13 @@
   "status": 201,
   "body": {
    "data": {
-    "id": "eee0f982-f288-4158-934f-64c2d8824f54",
+    "id": "72dba982-5386-4038-8d07-92d903b562d2",
     "revision": 1,
     "applicationId": "c0000000-0000-4000-8000-000000000002",
     "title": "Phone screen",
     "scheduledAt": "2026-11-21T00:00:00Z",
     "durationMinutes": null,
-    "eventId": "b0659a8d-f98c-4868-aee5-34b60a4521b8",
+    "eventId": "72280728-7bfe-43c0-9e2d-d89c8c7b6398",
     "evidenceIds": [],
     "companySources": [],
     "notes": "",
@@ -604,13 +604,13 @@
   "body": {
    "data": [
     {
-     "id": "eee0f982-f288-4158-934f-64c2d8824f54",
+     "id": "72dba982-5386-4038-8d07-92d903b562d2",
      "revision": 1,
      "applicationId": "c0000000-0000-4000-8000-000000000002",
      "title": "Phone screen",
      "scheduledAt": "2026-11-21T00:00:00Z",
      "durationMinutes": null,
-     "eventId": "b0659a8d-f98c-4868-aee5-34b60a4521b8",
+     "eventId": "72280728-7bfe-43c0-9e2d-d89c8c7b6398",
      "evidenceIds": [],
      "companySources": [],
      "notes": "",
@@ -619,13 +619,13 @@
      "updatedAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "34740848-f189-4b69-84ca-ccc28bc60024",
+     "id": "2120f84b-53d4-44db-a94a-3afeff5d4a47",
      "revision": 1,
      "applicationId": "c0000000-0000-4000-8000-000000000001",
      "title": "Final round",
      "scheduledAt": "2026-11-20T01:00:00Z",
      "durationMinutes": 90,
-     "eventId": "d7640441-877a-4e3f-97a4-f28f8c82566d",
+     "eventId": "07b0c94e-5f42-4e6a-894e-6e584fba3f50",
      "evidenceIds": [
       "f0000000-0000-4000-8000-000000000001"
      ],
@@ -686,12 +686,12 @@
   "body": [
    {
     "type": "INTERVIEW",
-    "payload": "{\"interviewId\": \"34740848-f189-4b69-84ca-ccc28bc60024\", \"scheduledAt\": \"2026-11-20T01:00:00Z\"}",
+    "payload": "{\"interviewId\": \"2120f84b-53d4-44db-a94a-3afeff5d4a47\", \"scheduledAt\": \"2026-11-20T01:00:00Z\"}",
     "created_at": "2026-10-22 12:00:00+00"
    },
    {
     "type": "INTERVIEW",
-    "payload": "{\"interviewId\": \"eee0f982-f288-4158-934f-64c2d8824f54\", \"scheduledAt\": \"2026-11-21T00:00:00Z\"}",
+    "payload": "{\"interviewId\": \"72dba982-5386-4038-8d07-92d903b562d2\", \"scheduledAt\": \"2026-11-21T00:00:00Z\"}",
     "created_at": "2026-10-22 12:00:00+00"
    }
   ]
@@ -708,6 +708,26 @@
     "ends_at": "2026-11-04 02:00:00+00",
     "time_zone": "Asia/Seoul",
     "source": "LOCAL",
+    "notes": ""
+   },
+   {
+    "application_id": null,
+    "type": "CUSTOM",
+    "title": "Synced call",
+    "starts_at": "2026-11-05 01:00:00+00",
+    "ends_at": "2026-11-05 02:00:00+00",
+    "time_zone": "Asia/Seoul",
+    "source": "GOOGLE",
+    "notes": ""
+   },
+   {
+    "application_id": null,
+    "type": "CUSTOM",
+    "title": "To cancel",
+    "starts_at": "2026-11-06 01:00:00+00",
+    "ends_at": "2026-11-06 02:00:00+00",
+    "time_zone": "UTC",
+    "source": "GOOGLE",
     "notes": ""
    },
    {
