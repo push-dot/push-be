@@ -1,0 +1,491 @@
+[
+ {
+  "name": "list all",
+  "method": "GET",
+  "path": "/api/v1/applications",
+  "body": null
+ },
+ {
+  "name": "list by stage",
+  "method": "GET",
+  "path": "/api/v1/applications?stage=PREPARING",
+  "body": null
+ },
+ {
+  "name": "list bad stage",
+  "method": "GET",
+  "path": "/api/v1/applications?stage=BOGUS",
+  "body": null
+ },
+ {
+  "name": "list query",
+  "method": "GET",
+  "path": "/api/v1/applications?query=acme",
+  "body": null
+ },
+ {
+  "name": "list page 1",
+  "method": "GET",
+  "path": "/api/v1/applications?limit=1",
+  "body": null
+ },
+ {
+  "name": "list bad limit",
+  "method": "GET",
+  "path": "/api/v1/applications?limit=0",
+  "body": null
+ },
+ {
+  "name": "list bad cursor",
+  "method": "GET",
+  "path": "/api/v1/applications?cursor=%%%",
+  "body": null
+ },
+ {
+  "name": "get",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "get other user",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "get bad id",
+  "method": "GET",
+  "path": "/api/v1/applications/nope",
+  "body": null
+ },
+ {
+  "name": "timeline",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/timeline",
+  "body": null
+ },
+ {
+  "name": "timeline page",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/timeline?limit=1",
+  "body": null
+ },
+ {
+  "name": "timeline other user",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000003/timeline",
+  "body": null
+ },
+ {
+  "name": "checklist",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/checklist",
+  "body": null
+ },
+ {
+  "name": "checklist applied",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002/checklist",
+  "body": null
+ },
+ {
+  "name": "submissions list",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002/submissions",
+  "body": null
+ },
+ {
+  "name": "create",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "notes": "hello"
+  }
+ },
+ {
+  "name": "create default notes",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "create other job",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000002"
+  }
+ },
+ {
+  "name": "create missing job",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {}
+ },
+ {
+  "name": "create extra field",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "x": 1
+  }
+ },
+ {
+  "name": "create bad uuid",
+  "method": "POST",
+  "path": "/api/v1/applications",
+  "body": {
+   "jobId": "nope"
+  }
+ },
+ {
+  "name": "import",
+  "method": "POST",
+  "path": "/api/v1/applications/import",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "stage": "INTERVIEW",
+   "appliedAt": "2026-09-01T10:00:00Z",
+   "notes": "past",
+   "confirmed": true
+  }
+ },
+ {
+  "name": "import not confirmed",
+  "method": "POST",
+  "path": "/api/v1/applications/import",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "stage": "APPLIED",
+   "appliedAt": "2026-09-01T10:00:00Z"
+  }
+ },
+ {
+  "name": "import discovered",
+  "method": "POST",
+  "path": "/api/v1/applications/import",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "stage": "DISCOVERED",
+   "appliedAt": "2026-09-01T10:00:00Z",
+   "confirmed": true
+  }
+ },
+ {
+  "name": "import bad time",
+  "method": "POST",
+  "path": "/api/v1/applications/import",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000001",
+   "stage": "APPLIED",
+   "appliedAt": "yesterday",
+   "confirmed": true
+  }
+ },
+ {
+  "name": "import other job",
+  "method": "POST",
+  "path": "/api/v1/applications/import",
+  "body": {
+   "jobId": "b0000000-0000-4000-8000-000000000002",
+   "stage": "APPLIED",
+   "appliedAt": "2026-09-01T10:00:00Z",
+   "confirmed": true
+  }
+ },
+ {
+  "name": "draft adapter disabled",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "ADAPTER",
+   "adapter": "saramin",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000001"
+   ]
+  }
+ },
+ {
+  "name": "draft bad mode",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "EMAIL",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000001"
+   ]
+  }
+ },
+ {
+  "name": "draft adapter on manual",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD",
+   "adapter": "x",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000001"
+   ]
+  }
+ },
+ {
+  "name": "draft no versions",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD"
+  }
+ },
+ {
+  "name": "draft unknown version",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD",
+   "documentVersionIds": [
+    "e0000000-0000-4000-8000-000000000001"
+   ]
+  }
+ },
+ {
+  "name": "draft other app version",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000003"
+   ]
+  }
+ },
+ {
+  "name": "draft not finalized",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000002"
+   ]
+  }
+ },
+ {
+  "name": "draft stale revision",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 2,
+   "mode": "MANUAL_RECORD",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000001"
+   ]
+  }
+ },
+ {
+  "name": "draft",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submission-drafts",
+  "body": {
+   "expectedRevision": 3,
+   "mode": "MANUAL_RECORD",
+   "documentVersionIds": [
+    "d1000000-0000-4000-8000-000000000001"
+   ],
+   "confirmedSubmitted": true
+  }
+ },
+ {
+  "name": "submit pending approval",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 3,
+   "draftId": "e0000000-0000-4000-8000-000000000002",
+   "approvalId": "e1000000-0000-4000-8000-000000000002"
+  }
+ },
+ {
+  "name": "submit wrong target",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 3,
+   "draftId": "e0000000-0000-4000-8000-000000000002",
+   "approvalId": "e1000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "submit unknown draft",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 3,
+   "draftId": "e1000000-0000-4000-8000-000000000001",
+   "approvalId": "e1000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "submit stale revision",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 1,
+   "draftId": "e0000000-0000-4000-8000-000000000001",
+   "approvalId": "e1000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "submit",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 3,
+   "draftId": "e0000000-0000-4000-8000-000000000001",
+   "approvalId": "e1000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "get after submit",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "timeline after submit",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/timeline",
+  "body": null
+ },
+ {
+  "name": "submissions after submit",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": null
+ },
+ {
+  "name": "submit approval consumed",
+  "method": "POST",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001/submissions",
+  "body": {
+   "expectedRevision": 4,
+   "draftId": "e0000000-0000-4000-8000-000000000001",
+   "approvalId": "e1000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "patch stale",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 1,
+   "notes": "x"
+  }
+ },
+ {
+  "name": "patch to applied",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 1,
+   "stage": "APPLIED"
+  }
+ },
+ {
+  "name": "patch bad stage",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 2,
+   "stage": "BOGUS"
+  }
+ },
+ {
+  "name": "patch backwards",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 2,
+   "stage": "PREPARING"
+  }
+ },
+ {
+  "name": "patch terminal",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000004",
+  "body": {
+   "expectedRevision": 1,
+   "stage": "OFFER"
+  }
+ },
+ {
+  "name": "patch forward",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 2,
+   "stage": "SCREENING",
+   "notes": "called",
+   "nextActionAt": "2026-11-01T09:30:00+09:00"
+  }
+ },
+ {
+  "name": "patch clear next",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 3,
+   "nextActionAt": null
+  }
+ },
+ {
+  "name": "patch bad time",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 4,
+   "nextActionAt": "soon"
+  }
+ },
+ {
+  "name": "patch other user",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000003",
+  "body": {
+   "expectedRevision": 1,
+   "notes": "x"
+  }
+ },
+ {
+  "name": "patch withdraw",
+  "method": "PATCH",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 4,
+   "stage": "WITHDRAWN"
+  }
+ },
+ {
+  "name": "timeline after patches",
+  "method": "GET",
+  "path": "/api/v1/applications/c0000000-0000-4000-8000-000000000002/timeline",
+  "body": null
+ },
+ {
+  "name": "list after writes",
+  "method": "GET",
+  "path": "/api/v1/applications",
+  "body": null
+ }
+]

@@ -3,73 +3,29 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from app.domain import entities as ent
-from app.domain.errors import validation_field
 from app.api import schemas as s
-from app.api.deps import (deps,
-    ai_options,
-    bind_json, current_user, data, optional_query_uuid, page_body,
-    page_request, param_id,
-)
+from app.api.deps import ai_options, bind_json, current_user, deps, data, param_id
 
 router = APIRouter()
 
-
-@router.get("/documents")
-async def list_documents(request: Request):
-    d = deps(request)
-    page = page_request(request)
-    application_id = optional_query_uuid(request, "applicationId")
-    kind = request.query_params.get("kind") or None
-    if kind is not None and not ent.valid_document_kind(kind):
-        raise validation_field("kind", "unsupported kind")
-    p = await d.documents.list(current_user(request).id, application_id,
-                               kind, page)
-    return page_body(p)
+# Document CRUD, versions, chat edits, review, finalize, archive and export
+# records moved to push-be-core (services/core-api/src/routes/documents.ts).
+# Rendering a PDF/DOCX and the AI revision proposal stay here.
 
 
-@router.post("/documents", status_code=201)
-async def create_document(request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.CreateDocumentReq)
-    doc = await d.documents.create(current_user(request).id,
-                                   req.application_id, req.title, req.kind,
-                                   req.template, req.language)
-    return data(201, doc)
+async def _avatar_bytes(request: Request) -> bytes | None:
+    from app.infrastructure.images import image_bytes
 
-
-@router.get("/documents/{id}")
-async def get_document(id: str, request: Request):
-    d = deps(request)
-    doc = await d.documents.get(current_user(request).id, param_id(id, "id"))
-    return data(200, doc)
-
-
-@router.patch("/documents/{id}")
-async def patch_document(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.PatchDocumentReq)
-    doc = await d.documents.patch(current_user(request).id, param_id(id, "id"),
-                                  req.expected_revision, req.title,
-                                  req.template, req.language)
-    return data(200, doc)
-
-
-@router.get("/documents/{id}/versions")
-async def list_versions(id: str, request: Request):
-    d = deps(request)
-    p = await d.documents.list_versions(current_user(request).id,
-                                        param_id(id, "id"),
-                                        page_request(request))
-    return page_body(p)
-
-
-@router.get("/documents/{id}/versions/{versionId}")
-async def get_version(id: str, versionId: str, request: Request):
-    d = deps(request)
-    v = await d.documents.get_version(current_user(request).id,
-                                      param_id(id, "id"),
-                                      param_id(versionId, "versionId"))
-    return data(200, v)
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        return None
+    row = await db.q().fetchrow(
+        "SELECT avatar_key FROM profiles WHERE user_id = $1",
+        current_user(request).id)
+    key = None if row is None else row["avatar_key"]
+    if not key:
+        return None
+    return await image_bytes(db, key)
 
 
 @router.get("/documents/{id}/versions/{versionId}/export")
@@ -84,6 +40,9 @@ async def export_version(id: str, versionId: str, request: Request):
     fmt = (request.query_params.get("format") or "PDF").upper()
     if fmt not in ("PDF", "DOCX"):
         raise validation_field("format", "must be PDF or DOCX")
+    raw_template = request.query_params.get("template")
+    if raw_template is not None and not ent.valid_document_template(raw_template):
+        raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
     doc = await d.documents.get(current_user(request).id, param_id(id, "id"))
     v = await d.documents.get_version(current_user(request).id,
                                       param_id(id, "id"),
@@ -94,7 +53,11 @@ async def export_version(id: str, versionId: str, request: Request):
     lines = tiptap_to_lines(v.content or {})
     import asyncio
     if fmt == "PDF":
-        body = await asyncio.to_thread(render_pdf, lines)
+        template = raw_template if raw_template is not None else doc.template
+        photo = None
+        if request.query_params.get("photo") == "1":
+            photo = await _avatar_bytes(request)
+        body = await asyncio.to_thread(render_pdf, lines, template, photo)
         media, ext = "application/pdf", "pdf"
     else:
         body = await asyncio.to_thread(render_docx, lines)
@@ -111,32 +74,6 @@ async def export_version(id: str, versionId: str, request: Request):
                  f"filename*=UTF-8''{filename}"})
 
 
-@router.post("/documents/{id}/versions", status_code=201)
-async def create_version(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.CreateVersionReq)
-    blocks = [ent.Block(id=b.id, text=b.text,
-                        evidence_refs=[ent.EvidenceRef(
-                            evidence_id=r.evidence_id, start=r.start,
-                            end=r.end) for r in b.evidence_refs])
-              for b in req.blocks]
-    doc, v = await d.documents.create_version(
-        current_user(request).id, param_id(id, "id"), req.expected_revision,
-        req.content, blocks, req.change_note)
-    return data(201, {"document": doc, "version": v})
-
-
-@router.post("/documents/{id}/generate", status_code=202)
-async def generate_document(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.GenerateDocReq)
-    op = await d.documents.generate(current_user(request).id,
-                                    param_id(id, "id"), req.expected_revision,
-                                    req.evidence_ids, req.analysis_id,
-                                    ai_options(req.ai), req.language)
-    return data(202, op)
-
-
 @router.post("/documents/{id}/revisions", status_code=202)
 async def create_revision(id: str, request: Request):
     d = deps(request)
@@ -147,77 +84,3 @@ async def create_revision(id: str, request: Request):
         current_user(request).id, param_id(id, "id"), req.expected_revision,
         req.version_id, sel, req.action, req.instruction, ai_options(req.ai))
     return data(202, op)
-
-
-@router.post("/documents/{id}/revisions/{revisionId}/apply")
-async def apply_revision(id: str, revisionId: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.ExpectedRevisionReq)
-    doc, v = await d.documents.apply_revision(
-        current_user(request).id, param_id(id, "id"),
-        param_id(revisionId, "revisionId"), req.expected_revision)
-    return data(200, {"document": doc, "version": v})
-
-
-@router.post("/documents/{id}/review")
-async def review_document(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.ReviewReq)
-    v = await d.documents.review(current_user(request).id, param_id(id, "id"),
-                                 req.version_id)
-    return data(200, {"quality": v.quality, "blocks": v.blocks})
-
-
-@router.post("/documents/{id}/finalize")
-async def finalize_document(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.FinalizeReq)
-    doc = await d.documents.finalize(current_user(request).id,
-                                     param_id(id, "id"),
-                                     req.expected_revision, req.version_id,
-                                     req.approval_id)
-    return data(200, doc)
-
-
-@router.post("/documents/{id}/archive")
-async def archive_document(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.ExpectedRevisionReq)
-    doc = await d.documents.archive(current_user(request).id,
-                                    param_id(id, "id"),
-                                    req.expected_revision)
-    return data(200, doc)
-
-
-@router.post("/documents/{id}/exports", status_code=201)
-async def create_export(id: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.CreateExportReq)
-    e = await d.documents.create_export(current_user(request).id,
-                                        param_id(id, "id"), req.version_id,
-                                        req.format, req.renderer_version)
-    return data(201, e)
-
-
-@router.post("/documents/{id}/exports/{exportId}/result")
-async def record_export_result(id: str, exportId: str, request: Request):
-    d = deps(request)
-    req = await bind_json(request, s.ExportResultReq)
-    e = await d.documents.record_export_result(
-        current_user(request).id, param_id(id, "id"),
-        param_id(exportId, "exportId"), req.sha256, req.byte_length,
-        req.page_count,
-        ent.ExportValidation(korean_text=req.validation.korean_text,
-                             links=req.validation.links,
-                             ats_text=req.validation.ats_text),
-        req.status, req.error_code)
-    return data(200, e)
-
-
-@router.get("/documents/{id}/exports")
-async def list_exports(id: str, request: Request):
-    d = deps(request)
-    p = await d.documents.list_exports(current_user(request).id,
-                                       param_id(id, "id"),
-                                       page_request(request))
-    return page_body(p)

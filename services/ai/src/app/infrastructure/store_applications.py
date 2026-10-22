@@ -9,6 +9,9 @@ from app.infrastructure.store_common import Conds, Store, list_page, to_model
 
 _APP_COLS = ("id, user_id, revision, job_id, company, title, stage, notes, "
              "applied_at, next_action_at, imported, created_at, updated_at")
+_FIT_SCORE = ("(SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = applications.id "
+              "ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score")
+_APP_SELECT = _APP_COLS + ", " + _FIT_SCORE
 _EVENT_COLS = "id, user_id, application_id, type, payload, created_at"
 _DRAFT_COLS = ("id, user_id, application_id, application_revision, mode, adapter, "
                "document_version_ids, confirmed_submitted, payload_hash, created_at")
@@ -25,11 +28,11 @@ class ApplicationStore(Store):
 
     async def get(self, user_id: UUID, id_: UUID) -> Application:
         return to_model(Application, await self.one(
-            f"SELECT {_APP_COLS} FROM applications WHERE id = $1 AND user_id = $2", id_, user_id))
+            f"SELECT {_APP_SELECT} FROM applications WHERE id = $1 AND user_id = $2", id_, user_id))
 
     async def find_by_job(self, user_id: UUID, job_id: UUID) -> Optional[Application]:
         row = await self.q().fetchrow(
-            f"SELECT {_APP_COLS} FROM applications WHERE user_id = $1 AND job_id = $2 "
+            f"SELECT {_APP_SELECT} FROM applications WHERE user_id = $1 AND job_id = $2 "
             "ORDER BY created_at DESC LIMIT 1", user_id, job_id)
         return to_model(Application, row) if row else None
 
@@ -41,7 +44,7 @@ class ApplicationStore(Store):
         if query:
             c.add("(company ILIKE {} OR title ILIKE {})", "%" + query + "%", "%" + query + "%")
         c.cursor(page)
-        sql, args = c.query(_APP_COLS, "applications", page.effective_limit())
+        sql, args = c.query(_APP_SELECT, "applications", page.effective_limit())
         rows = await self.q().fetch(sql, *args)
         return list_page(rows, page, Application, lambda a: Cursor(a.created_at, a.id))
 

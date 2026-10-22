@@ -5,30 +5,45 @@ from typing import Optional
 import httpx
 
 from app.domain import entities as ent
+from app.domain.plan_levers import provider_for
 
 
-def stream_body(model: str, messages: list, reasoning: str) -> dict:
-    body = {"model": model, "messages": messages, "stream": True,
-            "stream_options": {"include_usage": True},
-            "max_tokens": 65536}
+def completion_body(model: str, messages: list, reasoning: str = "",
+                    provider: dict | None = None) -> dict:
+    body = {"model": model, "messages": messages}
     if reasoning:
         body["reasoning"] = {"effort": reasoning}
+    if provider:
+        body["provider"] = provider
+    return body
+
+
+def stream_body(model: str, messages: list, reasoning: str,
+                provider: dict | None = None) -> dict:
+    body = completion_body(model, messages, reasoning, provider)
+    body["stream"] = True
+    body["stream_options"] = {"include_usage": True}
+    body["max_tokens"] = 65536
     return body
 
 
 class OpenAIClient:
-    def __init__(self, base_url: str = "https://api.openai.com/v1"):
+    def __init__(self, base_url: str = "https://api.openai.com/v1", config=None):
         self._client = httpx.AsyncClient(timeout=60)
         self.base_url = base_url
+        self.config = config
+
+    def _provider(self, model: str):
+        if self.config is None:
+            return None
+        return provider_for(model, self.config)
 
     async def chat(self, api_key: str, model: str, system: str,
                    user: str, reasoning: str = "",
                    extra_headers: Optional[dict] = None) -> dict:
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": user}]
-        body = {"model": model, "messages": messages}
-        if reasoning:
-            body["reasoning"] = {"effort": reasoning}
+        body = completion_body(model, messages, reasoning, self._provider(model))
         headers = {"Authorization": "Bearer " + api_key}
         headers.update(extra_headers or {})
         resp = await self._client.post(
@@ -60,7 +75,7 @@ class OpenAIClient:
         headers.update(extra_headers or {})
         async with self._client.stream(
                 "POST", self.base_url + "/chat/completions",
-                json=stream_body(model, messages, reasoning),
+                json=stream_body(model, messages, reasoning, self._provider(model)),
                 headers=headers) as resp:
             if resp.status_code != 200:
                 await resp.aread()

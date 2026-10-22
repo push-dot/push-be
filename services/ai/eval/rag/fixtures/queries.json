@@ -1,0 +1,609 @@
+[
+ {
+  "id": "q01",
+  "tenant": "user-a",
+  "query": "결제 승인 지연을 얼마나 줄였나요?",
+  "relevant": [
+   "a-resume"
+  ],
+  "answerTerms": [
+   "210ms"
+  ]
+ },
+ {
+  "id": "q02",
+  "tenant": "user-a",
+  "query": "평균 복구 시간을 줄인 경험",
+  "relevant": [
+   "a-resume"
+  ],
+  "answerTerms": [
+   "12분"
+  ]
+ },
+ {
+  "id": "q03",
+  "tenant": "user-a",
+  "query": "정산 배치를 병렬화한 경험이 있나요",
+  "relevant": [
+   "a-resume"
+  ],
+  "answerTerms": [
+   "300만 건"
+  ]
+ },
+ {
+  "id": "q04",
+  "tenant": "user-a",
+  "query": "주로 쓰는 백엔드 기술 스택",
+  "relevant": [
+   "a-resume"
+  ],
+  "answerTerms": [
+   "Kotlin"
+  ]
+ },
+ {
+  "id": "q05",
+  "tenant": "user-a",
+  "query": "검색 엔진 마이그레이션 경험",
+  "relevant": [
+   "a-project-search"
+  ],
+  "answerTerms": [
+   "OpenSearch"
+  ]
+ },
+ {
+  "id": "q06",
+  "tenant": "user-a",
+  "query": "검색 클릭률을 올린 방법",
+  "relevant": [
+   "a-project-search"
+  ],
+  "answerTerms": [
+   "18%"
+  ]
+ },
+ {
+  "id": "q07",
+  "tenant": "user-a",
+  "query": "한국어 형태소 분석기를 써 본 적 있나요",
+  "relevant": [
+   "a-project-search"
+  ],
+  "answerTerms": [
+   "노리"
+  ]
+ },
+ {
+  "id": "q08",
+  "tenant": "user-a",
+  "query": "상품 변경이 검색에 반영되는 시간",
+  "relevant": [
+   "a-project-search"
+  ],
+  "answerTerms": [
+   "30초"
+  ]
+ },
+ {
+  "id": "q09",
+  "tenant": "user-a",
+  "query": "핀테크에 지원하는 이유",
+  "relevant": [
+   "a-cover-fintech"
+  ],
+  "answerTerms": [
+   "정확성"
+  ]
+ },
+ {
+  "id": "q10",
+  "tenant": "user-a",
+  "query": "이중 결제 사고를 어떻게 막았나요",
+  "relevant": [
+   "a-cover-fintech"
+  ],
+  "answerTerms": [
+   "멱등키"
+  ]
+ },
+ {
+  "id": "q11",
+  "tenant": "user-a",
+  "query": "아웃박스 패턴 도입 경험",
+  "relevant": [
+   "a-cover-fintech"
+  ],
+  "answerTerms": [
+   "아웃박스"
+  ]
+ },
+ {
+  "id": "q12",
+  "tenant": "user-a",
+  "query": "블랙프라이데이 장애 회고",
+  "relevant": [
+   "a-oncall"
+  ],
+  "answerTerms": [
+   "서킷 브레이커"
+  ]
+ },
+ {
+  "id": "q13",
+  "tenant": "user-a",
+  "query": "카드사 응답 지연 때 타임아웃을 어떻게 바꿨나요",
+  "relevant": [
+   "a-oncall"
+  ],
+  "answerTerms": [
+   "800ms"
+  ]
+ },
+ {
+  "id": "q14",
+  "tenant": "user-a",
+  "query": "벌크헤드 패턴을 적용한 사례",
+  "relevant": [
+   "a-oncall"
+  ],
+  "answerTerms": [
+   "벌크헤드"
+  ]
+ },
+ {
+  "id": "q15",
+  "tenant": "user-a",
+  "query": "AWS 자격증이 있나요",
+  "relevant": [
+   "a-cert"
+  ],
+  "answerTerms": [
+   "Solutions Architect"
+  ]
+ },
+ {
+  "id": "q16",
+  "tenant": "user-a",
+  "query": "쿠버네티스 관리자 자격",
+  "relevant": [
+   "a-cert"
+  ],
+  "answerTerms": [
+   "CKA"
+  ]
+ },
+ {
+  "id": "q17",
+  "tenant": "user-a",
+  "query": "주니어 멘토링 경험",
+  "relevant": [
+   "a-mentoring"
+  ],
+  "answerTerms": [
+   "7명"
+  ]
+ },
+ {
+  "id": "q18",
+  "tenant": "user-a",
+  "query": "테스트 커버리지를 높인 경험",
+  "relevant": [
+   "a-mentoring"
+  ],
+  "answerTerms": [
+   "73%"
+  ]
+ },
+ {
+  "id": "q19",
+  "tenant": "user-a",
+  "query": "직접 출시한 모바일 앱",
+  "relevant": [
+   "a-side-app"
+  ],
+  "answerTerms": [
+   "모아"
+  ]
+ },
+ {
+  "id": "q20",
+  "tenant": "user-a",
+  "query": "Flutter 사이드 프로젝트 사용자 수",
+  "relevant": [
+   "a-side-app"
+  ],
+  "answerTerms": [
+   "2천 명"
+  ]
+ },
+ {
+  "id": "q21",
+  "tenant": "user-a",
+  "query": "Kafka를 써 본 프로젝트",
+  "relevant": [
+   "a-resume",
+   "a-project-search"
+  ],
+  "answerTerms": [
+   "Kafka"
+  ]
+ },
+ {
+  "id": "q22",
+  "tenant": "user-b",
+  "query": "예약 완료율을 올린 사례",
+  "relevant": [
+   "b-resume"
+  ],
+  "answerTerms": [
+   "71%"
+  ]
+ },
+ {
+  "id": "q23",
+  "tenant": "user-b",
+  "query": "디자인 시스템을 만든 경험",
+  "relevant": [
+   "b-resume"
+  ],
+  "answerTerms": [
+   "노을 UI"
+  ]
+ },
+ {
+  "id": "q24",
+  "tenant": "user-b",
+  "query": "어떤 디자인 도구를 쓰나요",
+  "relevant": [
+   "b-resume"
+  ],
+  "answerTerms": [
+   "Figma"
+  ]
+ },
+ {
+  "id": "q25",
+  "tenant": "user-b",
+  "query": "고령 사용자 인터뷰 결과",
+  "relevant": [
+   "b-research"
+  ],
+  "answerTerms": [
+   "12명"
+  ]
+ },
+ {
+  "id": "q26",
+  "tenant": "user-b",
+  "query": "큰 글씨 모드 실험 결과",
+  "relevant": [
+   "b-research"
+  ],
+  "answerTerms": [
+   "22%"
+  ]
+ },
+ {
+  "id": "q27",
+  "tenant": "user-b",
+  "query": "지역 서비스에 지원한 이유",
+  "relevant": [
+   "b-cover"
+  ],
+  "answerTerms": [
+   "동네"
+  ]
+ },
+ {
+  "id": "q28",
+  "tenant": "user-b",
+  "query": "접근성 개선을 이끈 경험",
+  "relevant": [
+   "b-cover",
+   "b-research"
+  ],
+  "answerTerms": [
+   "접근성"
+  ]
+ },
+ {
+  "id": "q29",
+  "tenant": "user-b",
+  "query": "받은 상이 있나요",
+  "relevant": [
+   "b-award"
+  ],
+  "answerTerms": [
+   "굿디자인"
+  ]
+ },
+ {
+  "id": "q30",
+  "tenant": "user-b",
+  "query": "졸업 전시 수상",
+  "relevant": [
+   "b-award"
+  ],
+  "answerTerms": [
+   "최우수상"
+  ]
+ },
+ {
+  "id": "q31",
+  "tenant": "user-b",
+  "query": "개발자와 함께 한 워크숍",
+  "relevant": [
+   "b-workshop"
+  ],
+  "answerTerms": [
+   "디자인 토큰"
+  ]
+ },
+ {
+  "id": "q32",
+  "tenant": "user-b",
+  "query": "iOS 안드로이드 색 불일치 해결",
+  "relevant": [
+   "b-workshop"
+  ],
+  "answerTerms": [
+   "0건"
+  ]
+ },
+ {
+  "id": "q33",
+  "tenant": "user-b",
+  "query": "애니메이션 가이드 기준",
+  "relevant": [
+   "b-motion"
+  ],
+  "answerTerms": [
+   "200ms"
+  ]
+ },
+ {
+  "id": "q34",
+  "tenant": "user-b",
+  "query": "체감 속도 설문 점수 변화",
+  "relevant": [
+   "b-motion"
+  ],
+  "answerTerms": [
+   "4.1"
+  ]
+ },
+ {
+  "id": "q35",
+  "tenant": "company-c",
+  "query": "결제 백엔드 채용 자격 요건",
+  "relevant": [
+   "c-posting-backend"
+  ],
+  "answerTerms": [
+   "멱등성"
+  ]
+ },
+ {
+  "id": "q36",
+  "tenant": "company-c",
+  "query": "백엔드 우대 사항",
+  "relevant": [
+   "c-posting-backend"
+  ],
+  "answerTerms": [
+   "카드사 연동"
+  ]
+ },
+ {
+  "id": "q37",
+  "tenant": "company-c",
+  "query": "결제 플랫폼 하루 처리량",
+  "relevant": [
+   "c-posting-backend"
+  ],
+  "answerTerms": [
+   "1천만 건"
+  ]
+ },
+ {
+  "id": "q38",
+  "tenant": "company-c",
+  "query": "데이터 엔지니어가 쓰는 도구",
+  "relevant": [
+   "c-posting-data"
+  ],
+  "answerTerms": [
+   "dbt"
+  ]
+ },
+ {
+  "id": "q39",
+  "tenant": "company-c",
+  "query": "이상 거래 탐지 피처 파이프라인",
+  "relevant": [
+   "c-posting-data"
+  ],
+  "answerTerms": [
+   "이상 거래"
+  ]
+ },
+ {
+  "id": "q40",
+  "tenant": "company-c",
+  "query": "데이터 엔지니어 우대 사항",
+  "relevant": [
+   "c-posting-data"
+  ],
+  "answerTerms": [
+   "Spark"
+  ]
+ },
+ {
+  "id": "q41",
+  "tenant": "company-c",
+  "query": "디자이너 채용 자격 요건",
+  "relevant": [
+   "c-posting-designer"
+  ],
+  "answerTerms": [
+   "금융 또는 커머스"
+  ]
+ },
+ {
+  "id": "q42",
+  "tenant": "company-c",
+  "query": "디자이너 우대 사항",
+  "relevant": [
+   "c-posting-designer"
+  ],
+  "answerTerms": [
+   "접근성 인증"
+  ]
+ },
+ {
+  "id": "q43",
+  "tenant": "company-c",
+  "query": "백엔드 면접은 몇 단계인가요",
+  "relevant": [
+   "c-interview-guide"
+  ],
+  "answerTerms": [
+   "3단계"
+  ]
+ },
+ {
+  "id": "q44",
+  "tenant": "company-c",
+  "query": "시스템 설계 면접에서 묻는 것",
+  "relevant": [
+   "c-interview-guide"
+  ],
+  "answerTerms": [
+   "멱등키"
+  ]
+ },
+ {
+  "id": "q45",
+  "tenant": "company-c",
+  "query": "코딩 테스트 시간",
+  "relevant": [
+   "c-interview-guide"
+  ],
+  "answerTerms": [
+   "90분"
+  ]
+ },
+ {
+  "id": "q46",
+  "tenant": "company-c",
+  "query": "근무 제도와 휴무",
+  "relevant": [
+   "c-benefits"
+  ],
+  "answerTerms": [
+   "4.5일"
+  ]
+ },
+ {
+  "id": "q47",
+  "tenant": "company-c",
+  "query": "자기계발비 지원 금액",
+  "relevant": [
+   "c-benefits"
+  ],
+  "answerTerms": [
+   "300만 원"
+  ]
+ },
+ {
+  "id": "q48",
+  "tenant": "company-c",
+  "query": "원격 근무 가능 여부",
+  "relevant": [
+   "c-benefits"
+  ],
+  "answerTerms": [
+   "원격 근무"
+  ]
+ },
+ {
+  "id": "q49",
+  "tenant": "company-c",
+  "query": "기능 개발은 어떻게 시작하나요",
+  "relevant": [
+   "c-culture"
+  ],
+  "answerTerms": [
+   "제안서"
+  ]
+ },
+ {
+  "id": "q50",
+  "tenant": "company-c",
+  "query": "장애 포스트모템 규칙",
+  "relevant": [
+   "c-culture"
+  ],
+  "answerTerms": [
+   "48시간"
+  ]
+ },
+ {
+  "id": "q51",
+  "tenant": "company-c",
+  "query": "신규 입사자 첫 주에 하는 일",
+  "relevant": [
+   "c-onboarding"
+  ],
+  "answerTerms": [
+   "테스트 결제"
+  ]
+ },
+ {
+  "id": "q52",
+  "tenant": "company-c",
+  "query": "온콜 섀도잉은 언제부터",
+  "relevant": [
+   "c-onboarding"
+  ],
+  "answerTerms": [
+   "둘째 주"
+  ]
+ },
+ {
+  "id": "q53",
+  "tenant": "company-c",
+  "query": "카드 번호 저장 방식",
+  "relevant": [
+   "c-security"
+  ],
+  "answerTerms": [
+   "토큰화"
+  ]
+ },
+ {
+  "id": "q54",
+  "tenant": "company-c",
+  "query": "운영 데이터베이스 접근 방법",
+  "relevant": [
+   "c-security"
+  ],
+  "answerTerms": [
+   "Teleport"
+  ]
+ },
+ {
+  "id": "q55",
+  "tenant": "company-c",
+  "query": "PCI 인증",
+  "relevant": [
+   "c-security"
+  ],
+  "answerTerms": [
+   "PCI DSS"
+  ]
+ }
+]

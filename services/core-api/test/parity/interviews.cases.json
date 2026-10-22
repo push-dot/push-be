@@ -1,0 +1,374 @@
+[
+ {
+  "name": "list",
+  "method": "GET",
+  "path": "/api/v1/interviews",
+  "body": null
+ },
+ {
+  "name": "list by application",
+  "method": "GET",
+  "path": "/api/v1/interviews?applicationId=c0000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "list bad application",
+  "method": "GET",
+  "path": "/api/v1/interviews?applicationId=x",
+  "body": null
+ },
+ {
+  "name": "list from",
+  "method": "GET",
+  "path": "/api/v1/interviews?from=2026-11-15T00:00:00Z",
+  "body": null
+ },
+ {
+  "name": "list to",
+  "method": "GET",
+  "path": "/api/v1/interviews?to=2026-11-15T00:00:00Z",
+  "body": null
+ },
+ {
+  "name": "list bad from",
+  "method": "GET",
+  "path": "/api/v1/interviews?from=tomorrow",
+  "body": null
+ },
+ {
+  "name": "list page",
+  "method": "GET",
+  "path": "/api/v1/interviews?limit=1",
+  "body": null
+ },
+ {
+  "name": "get",
+  "method": "GET",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "get other",
+  "method": "GET",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000003",
+  "body": null
+ },
+ {
+  "name": "get bad id",
+  "method": "GET",
+  "path": "/api/v1/interviews/x",
+  "body": null
+ },
+ {
+  "name": "create",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000001",
+   "title": "Final round",
+   "scheduledAt": "2026-11-20T10:00:00+09:00",
+   "durationMinutes": 90,
+   "evidenceIds": [
+    "f0000000-0000-4000-8000-000000000001"
+   ],
+   "companySources": [
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    }
+   ],
+   "notes": "n",
+   "timeZone": "Asia/Seoul"
+  }
+ },
+ {
+  "name": "create minimal",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "Phone screen",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "timeZone": ""
+  }
+ },
+ {
+  "name": "create missing tz",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z"
+  }
+ },
+ {
+  "name": "create bad tz",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "timeZone": "Mars/Base"
+  }
+ },
+ {
+  "name": "create bad time",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "soon",
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create empty title",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create other app",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000003",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create unknown evidence",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "evidenceIds": [
+    "f0000000-0000-4000-8000-000000000004"
+   ],
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create future source",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "companySources": [
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2027-01-01T00:00:00Z"
+    }
+   ],
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create bad source url",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "companySources": [
+    {
+     "sourceUrl": "ftp://x",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    }
+   ],
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create bad source time",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "companySources": [
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "x"
+    }
+   ],
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "create too many sources",
+  "method": "POST",
+  "path": "/api/v1/interviews",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000002",
+   "title": "x",
+   "scheduledAt": "2026-11-21T00:00:00Z",
+   "companySources": [
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    },
+    {
+     "sourceUrl": "https://acme.example/careers",
+     "sourceText": "We value ownership",
+     "accessedAt": "2026-10-20T09:00:00+09:00"
+    }
+   ],
+   "timeZone": "UTC"
+  }
+ },
+ {
+  "name": "patch stale",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 1,
+   "title": "x"
+  }
+ },
+ {
+  "name": "patch title notes",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 2,
+   "title": "Tech interview 2",
+   "notes": "bring id",
+   "reflection": "prep more"
+  }
+ },
+ {
+  "name": "patch reschedule",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 3,
+   "scheduledAt": "2026-11-04T10:00:00+09:00"
+  }
+ },
+ {
+  "name": "patch sources",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 4,
+   "companySources": []
+  }
+ },
+ {
+  "name": "patch bad title",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 5,
+   "title": ""
+  }
+ },
+ {
+  "name": "patch bad time",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000001",
+  "body": {
+   "expectedRevision": 5,
+   "scheduledAt": "x"
+  }
+ },
+ {
+  "name": "patch no event",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000002",
+  "body": {
+   "expectedRevision": 1,
+   "scheduledAt": "2026-12-02T05:00:00Z"
+  }
+ },
+ {
+  "name": "patch other",
+  "method": "PATCH",
+  "path": "/api/v1/interviews/f4000000-0000-4000-8000-000000000003",
+  "body": {
+   "expectedRevision": 1,
+   "notes": "x"
+  }
+ },
+ {
+  "name": "list after",
+  "method": "GET",
+  "path": "/api/v1/interviews",
+  "body": null
+ },
+ {
+  "name": "application events after",
+  "sql": "SELECT type, payload::text AS payload, created_at::text AS created_at FROM application_events WHERE type = 'INTERVIEW' ORDER BY payload->>'scheduledAt'"
+ },
+ {
+  "name": "calendar events after",
+  "sql": "SELECT application_id::text AS application_id, type, title, starts_at::text AS starts_at, ends_at::text AS ends_at, time_zone, source, notes FROM calendar_events ORDER BY starts_at, title"
+ }
+]

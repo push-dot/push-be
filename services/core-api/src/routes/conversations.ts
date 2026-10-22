@@ -1,13 +1,28 @@
 import { bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
+import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
+import { checkBackpressure } from "../jobs/backpressure.ts";
+import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
+import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
-const CREDITS: Record<string, number> = { PRO: 30_000_000, ULTRA: 100_000_000 };
+const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
+const INTENTS = new Set(["posting", "review", "interview", "general"]);
+const CANONICAL_ACCESS: Record<string, string> = {
+  ALWAYS_ASK: "ALWAYS_ASK",
+  AUTO: "AUTO",
+  BYPASS: "BYPASS",
+  SUGGEST: "AUTO",
+  CONFIRM_ACTIONS: "ALWAYS_ASK",
+};
+const PDF_MAX_BYTES = 10 * 1024 * 1024;
+const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
+const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -43,9 +58,56 @@ function convDto(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+const optionalUuid = (value: unknown, field: string): string | null => {
+  if (value == null) return null;
+  return requireUuid(String(value), field);
+};
+
+const memberOfCaller = (companyExpr: string, userParam: string): string =>
+  `${companyExpr} IS NOT NULL AND ${companyExpr} = (SELECT company_id FROM company_members WHERE user_id = ${userParam})`;
+
+const visibleConversation = (idParam: string, userParam: string): string =>
+  `id = ${idParam} AND (user_id = ${userParam} OR (${memberOfCaller("company_id", userParam)}))`;
+
+const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
+  forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
+  if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (codePoints(body.title) > 300) {
+    throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
+  }
+  const postingId = optionalUuid(body.postingId, "postingId");
+  const applicationId = optionalUuid(body.applicationId, "applicationId");
+  const member = await one(ctx.deps.query,
+    "SELECT m.company_id, m.role, c.verified_at, c.plan FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
+    [ctx.user.id]);
+  if (!member || member.verified_at == null) {
+    throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+  }
+  if (postingId) {
+    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]);
+    if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  }
+  if (applicationId) {
+    const application = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1", [applicationId]);
+    if (!application) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  }
+  const id = crypto.randomUUID();
+  const now = ctx.now.toISOString();
+  await query(ctx.deps.query,
+    "INSERT INTO conversations (id, user_id, revision, application_id, title, pinned, archived, created_at, updated_at, company_id, posting_id) VALUES ($1,$2,1,$3,$4,false,false,$5,$5,$6,$7)",
+    [id, ctx.user.id, applicationId, body.title, now, String(member.company_id), postingId]);
+  return data(201, convDto({
+    id, revision: 1, application_id: applicationId, title: body.title, pinned: false, created_at: now, updated_at: now,
+  }), ctx.rid);
+};
+
 export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
-  forbidExtra(body, ["applicationId", "title"]);
+  if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
+  forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  if (body.audience != null && body.audience !== "PERSONAL") {
+    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  }
   if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   if (codePoints(body.title) > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
@@ -74,7 +136,7 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, title, pinned, archived, created_at FROM conversations WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, title, pinned, archived, created_at FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -95,7 +157,7 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = $6, updated_at = $7 WHERE id = $1 AND user_id = $2 AND revision = $8 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = $6, updated_at = $7 WHERE " + visibleConversation("$1", "$2") + " AND revision = $8 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, title, pinned, current.archived === true || current.archived === "t", now, body.expectedRevision],
     id, ctx.user.id);
   return data(200, convDto(updated), ctx.rid);
@@ -109,7 +171,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, title, pinned, created_at FROM conversations WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, title, pinned, created_at, company_id FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -117,9 +179,12 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE id = $1 AND user_id = $2 AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
+  if (current.company_id != null) {
+    await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
+  }
   const refs = await query(ctx.deps.query,
     "SELECT DISTINCT (a->>'id')::uuid AS eid FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id = $2 AND a->>'type' = 'EVIDENCE'",
     [ctx.user.id, id]);
@@ -183,15 +248,14 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
     if (ai.credentialMode === "MANAGED") {
       const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
       const spent = await one(ctx.deps.query,
-        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND (status = 'SETTLED' OR (status = 'RESERVED' AND created_at > now() - interval '10 minutes'))",
+        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
         [ctx.user.id, start]);
-      const plan = String(user.plan);
-      if (Number(spent?.spent || 0) >= (CREDITS[plan] || 0)) {
+      const raw = user.plan == null ? "" : String(user.plan).trim();
+      const plan = raw === "" ? "FREE" : raw;
+      if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
         throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
       }
-      if (String(ai.model).startsWith("opencode-go/")) {
-        if (!flag(ctx.env.MANAGED_GO)) throw new HttpError(503, "NOT_CONFIGURED", "OpenCode Go is not configured");
-      } else if (!flag(ctx.env.MANAGED_AI)) {
+      if (!flag(ctx.env.MANAGED_AI)) {
         throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
       }
       return;
@@ -206,16 +270,117 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
   }
 }
 
+async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): Promise<void> {
+  const fetchImpl = ctx.deps.fetch ?? fetch;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-push-internal": "1",
+    "x-request-id": ctx.rid,
+  };
+  const secret = (ctx.env.AI_SHARED_SECRET || "").trim();
+  if (secret) headers["x-push-ai-secret"] = secret;
+  try {
+    const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jobId, byok }),
+    });
+    if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
+  } catch {
+    console.error("vps chat wake failed");
+  }
+}
+
+// The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
+// AI_ORIGIN is set. Clearing it schedules through the service binding again.
+export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Promise<void> => {
+  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (origin) {
+    await wakeVps(ctx, origin, jobId, byok);
+    return;
+  }
+  if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
+  const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-push-internal": "1",
+      "x-request-id": ctx.rid,
+    },
+    body: JSON.stringify({ jobId, byok }),
+  }));
+  if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
+};
+
+const enqueueChatMessage = async (
+  ctx: Ctx,
+  conversationId: string,
+  payload: Record<string, unknown>,
+  text: string,
+  byok: string,
+): Promise<Response> => {
+  const owned = await one(ctx.deps.query,
+    "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+    [conversationId, ctx.user.id]);
+  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const companyId = owned.company_id == null ? undefined : String(owned.company_id);
+  const plan = planTier(companyId ? owned.company_plan : owned.user_plan);
+  const type = companyId ? "employer_ai" : "chat";
+  const audience = companyId ? "EMPLOYER" : "PERSONAL";
+  const queue = queueFor(type, plan, audience);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  if (!pressure.ok) {
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+  }
+  const headerKey = (ctx.request.headers.get("idempotency-key") || "").trim();
+  const { jobId } = await enqueueJob(ctx.deps.query, {
+    type,
+    userId: ctx.user.id,
+    companyId,
+    plan,
+    payload,
+    idempotencyKey: headerKey || undefined,
+    conversationId,
+    byok: byok.length > 0,
+  });
+  const messageId = await uuid5Url("push:chat:" + jobId + ":user");
+  const inserted = await one(ctx.deps.query,
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
+    [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
+  if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  const now = ts(ctx.now);
+  return data(202, {
+    id: jobId,
+    type: "CHAT_MESSAGE",
+    applicationId: null,
+    status: "QUEUED",
+    progress: null,
+    result: { kind: "CHAT_MESSAGE", value: { jobId } },
+    error: null,
+    inputRequest: null,
+    createdAt: now,
+    updatedAt: now,
+  }, ctx.rid);
+};
+
 export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const conversationId = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
-  forbidExtra(body, ["text", "context", "ai", "accessMode"]);
+  forbidExtra(body, ["text", "context", "ai", "accessMode", "intent", "applicationId"]);
   if (typeof body.text !== "string" || codePoints(body.text) < 1 || codePoints(body.text) > 20000) {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
-  if (access !== "SUGGEST" && access !== "CONFIRM_ACTIONS") {
-    throw new HttpError(400, "VALIDATION_ERROR", "must be SUGGEST or CONFIRM_ACTIONS", { field: "accessMode" });
+  let canonical = CANONICAL_ACCESS[access] ?? "";
+  if (!access) {
+    const saved = await one(ctx.deps.query,
+      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
+      [ctx.user.id]);
+    canonical = CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
+  }
+  if (!canonical) {
+    throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
   let context: Record<string, unknown> = {};
   if (body.context != null) {
@@ -236,35 +401,41 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     };
   }
   const ai = aiDto(body.ai);
+  let intent: string | null = null;
+  if (body.intent != null) {
+    if (typeof body.intent !== "string" || !INTENTS.has(body.intent)) {
+      throw new HttpError(400, "VALIDATION_ERROR", "unsupported intent", { field: "intent" });
+    }
+    intent = body.intent;
+  }
+  const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
   const byok = ctx.request.headers.get("x-byok-key") || "";
   await allowChat(ctx, ai, byok);
-  const payload: Record<string, unknown> = { text: body.text, context, ai, accessMode: access };
+  const owned = await one(ctx.deps.query,
+    "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+    [conversationId, ctx.user.id]);
+  if (owned && owned.company_id != null) {
+    if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+    if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
+  }
+  const payload: Record<string, unknown> = {
+    text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
+  };
   if (byok && ctx.env.BYOK_MASTER_KEY) {
     const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
     const sealed = await encryptAes(key, byok, ctx.user.id, "chat-job");
     payload._byok = { ct: bytesToBase64(sealed.ciphertext), nonce: bytesToBase64(sealed.nonce) };
   }
+  if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis") {
+    return enqueueChatMessage(ctx, conversationId, payload, body.text, byok);
+  }
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND user_id = $1), job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
-  // AI_ORIGIN is set. Clearing it schedules through the service binding again.
-  if (!(ctx.env.AI_ORIGIN || "").trim()) {
-    if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
-    const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-push-internal": "1",
-        "x-request-id": ctx.rid,
-      },
-      body: JSON.stringify({ jobId, byok }),
-    }));
-    if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
-  }
+  await scheduleChatJob(ctx, jobId, byok);
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
@@ -279,3 +450,114 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     updatedAt: now,
   }, ctx.rid);
 }
+
+export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query,
+    "SELECT c.id, c.company_id, co.plan, co.verified_at FROM conversations c JOIN company_members m ON m.company_id = c.company_id AND m.user_id = $2 JOIN companies co ON co.id = c.company_id WHERE c.id = $1",
+    [conversationId, ctx.user.id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (row.verified_at == null) {
+    throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
+  }
+  assertPlanAllows(row.plan, "pdf_attachment");
+  const form = await ctx.request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "file is required", { field: "file" });
+  }
+  if (file.type !== "application/pdf") {
+    throw new HttpError(400, "VALIDATION_ERROR", "only pdf files are accepted", { field: "file" });
+  }
+  if (file.size > PDF_MAX_BYTES) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "file must be at most 10 MiB", { field: "file" });
+  }
+  const content = new Uint8Array(await file.arrayBuffer());
+  const id = crypto.randomUUID();
+  await query(ctx.deps.query,
+    "INSERT INTO conversation_attachments (id, conversation_id, company_id, file_name, mime_type, content) VALUES ($1,$2,$3,$4,$5,$6)",
+    [id, conversationId, String(row.company_id), file.name, file.type, content]);
+  return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
+};
+
+const optionIds = (raw: unknown): string[] => {
+  const list = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>).id ?? "") : ""));
+};
+
+export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  const approvalId = requireUuid(approvalRaw, "approvalId");
+  const body = await readObject(ctx.request);
+  forbidExtra(body, ["optionId"]);
+  if (typeof body.optionId !== "string" || !body.optionId) {
+    throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });
+  }
+  const optionId = body.optionId;
+  const row = await one(ctx.deps.query,
+    "SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
+    [approvalId, conversationId, ctx.user.id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!optionIds(row.options).includes(optionId)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
+  }
+  if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+  if (row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime()) {
+    await query(ctx.deps.query, "UPDATE approvals SET status = 'EXPIRED', updated_at = now() WHERE id = $1 AND status = 'PENDING'", [approvalId]);
+    throw new HttpError(410, "APPROVAL_EXPIRED", "approval expired");
+  }
+  const kind = String(row.kind ?? "");
+  const status = kind === "TOOL_ACTION" && optionId === "reject" ? "REJECTED" : "APPROVED";
+  const updated = await one(ctx.deps.query,
+    "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
+    [status, optionId, approvalId]);
+  if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+  const result = { id: approvalId, status, optionId };
+  const resumes = RESUMABLE.has(kind) || row.job_id != null;
+  const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
+  if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
+  try {
+    const jobId = await enqueueResumeJob(ctx, {
+      conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } }, idempotencyKey: `approval:${approvalId}`,
+    });
+    return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
+  } catch (err) {
+    await query(ctx.deps.query,
+      "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",
+      [approvalId, status]);
+    throw err;
+  }
+};
+
+export const postResumeJob = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const conversationId = requireUuid(idRaw, "id");
+  if (!ctx.request.headers.has("x-push-act-as")) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const body = await readObject(ctx.request);
+  forbidExtra(body, ["resume"]);
+  if (!body.resume || typeof body.resume !== "object" || Array.isArray(body.resume)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "resume is required", { field: "resume" });
+  }
+  const key = (ctx.request.headers.get("idempotency-key") || "").trim();
+  const jobId = await enqueueResumeJob(ctx, {
+    conversationId, userId: ctx.user.id, payload: { resume: body.resume }, idempotencyKey: key ? `resume:${key}` : undefined,
+  });
+  return data(202, { jobId }, ctx.rid);
+};
+
+const APPROVAL_PATH = /^\/api\/v1\/conversations\/[^/]+\/approvals\/([^/]+)$/;
+
+export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
+  const approval = path.match(APPROVAL_PATH);
+  if (!approval || ctx.request.headers.has("idempotency-key")) return ctx;
+  let optionId = "";
+  try {
+    const body = JSON.parse(await ctx.request.clone().text()) as Record<string, unknown>;
+    optionId = typeof body.optionId === "string" ? body.optionId : "";
+  } catch {
+    return ctx;
+  }
+  const headers = new Headers(ctx.request.headers);
+  headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${optionId}`));
+  return { ...ctx, request: new Request(ctx.request, { headers }) };
+};

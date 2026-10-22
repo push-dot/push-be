@@ -27,7 +27,8 @@ SUB_ACTIVE = "ACTIVE"
 SUB_CANCELED = "CANCELED"
 LEDGER_PURCHASE = "PURCHASE"
 LEDGER_REFUND = "REFUND"
-PLAN_CREDITS_MICRO = {PLAN_PRO: 30_000_000, PLAN_ULTRA: 100_000_000}
+PLAN_CREDITS_MICRO = {
+    PLAN_FREE: 1_800_000, PLAN_PRO: 30_000_000, PLAN_ULTRA: 100_000_000}
 
 GOOGLE_SCOPE_GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
 GOOGLE_SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.events"
@@ -232,6 +233,7 @@ class GapAnalysis(Model):
     fit_score: Optional[int] = None
     method: str
     stale: bool = False
+    part_scores: dict = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -280,7 +282,8 @@ def stage_after_applied(s: str) -> bool:
     return s in ("SCREENING", "INTERVIEW", "OFFER")
 
 
-class Application(Model):
+class Application(OmitModel):
+    _omit_none: ClassVar[frozenset] = frozenset({"fit_score"})
     id: UUID
     user_id: UUID = Field(exclude=True)
     revision: int = 1
@@ -292,6 +295,7 @@ class Application(Model):
     applied_at: Optional[datetime] = None
     next_action_at: Optional[datetime] = None
     imported: bool = False
+    fit_score: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -334,7 +338,9 @@ class Submission(Model):
 
 
 DOC_KINDS = {"RESUME", "PORTFOLIO", "COVER_LETTER"}
-DOC_TEMPLATES = {"CLASSIC", "MODERN", "COMPACT"}
+DOC_TEMPLATE_ALIASES = {"CLASSIC": "SIMPLE", "COMPACT": "ATS"}
+DOC_TEMPLATES = {"SIMPLE", "MODERN", "CREATIVE", "ATS"} | set(DOC_TEMPLATE_ALIASES)
+DOC_TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT"
 DOC_DRAFT = "DRAFT"
 DOC_FINALIZED = "FINALIZED"
 DOC_ARCHIVED = "ARCHIVED"
@@ -350,6 +356,10 @@ def valid_document_kind(k: str) -> bool:
 
 def valid_document_template(t: str) -> bool:
     return t in DOC_TEMPLATES
+
+
+def stored_document_template(t: str) -> str:
+    return DOC_TEMPLATE_ALIASES.get(t, t)
 
 
 def valid_revision_action(a: str) -> bool:
@@ -669,6 +679,7 @@ class Conversation(Model):
     archived: bool = Field(default=False, exclude=True)
     created_at: datetime
     updated_at: datetime
+    company_id: Optional[UUID] = Field(default=None, exclude=True)
 
 
 class MessageAttachment(OmitModel):
@@ -690,7 +701,7 @@ class Message(Model):
     created_at: datetime
 
 
-ACCESS_MODES = {"SUGGEST", "CONFIRM_ACTIONS"}
+ACCESS_MODES = {"SUGGEST", "CONFIRM_ACTIONS", "ALWAYS_ASK", "AUTO", "BYPASS"}
 
 
 def valid_access_mode(m: str) -> bool:

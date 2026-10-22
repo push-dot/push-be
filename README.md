@@ -32,9 +32,9 @@ Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`
 ## 핵심 설계
 
 - **단계 게이트 워크플로** — `app/graphs/chat.py`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
-- **내구 큐 + 워커** — `chat_jobs` 테이블 + `FOR UPDATE SKIP LOCKED` 워커. 서버가 재시작돼도 잡이 PENDING으로 돌아가 재실행
+- **내구 큐 + 워커** — core가 `ai_jobs`·`outbox`·크레딧 예약을 한 트랜잭션에 쓰고 `202 {jobId}`를 돌려준다. VPS 디스패처가 outbox를 Redis Streams(`q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`)로 넘기고, 종류별 워커가 consumer group으로 처리한다. 원본 기록은 Postgres라서 Redis가 비어도 다시 채운다. 진행 상태는 `GET /api/v1/ai/jobs/{id}`. 운영은 [infra/vps/README.md](infra/vps/README.md)
 - **재연결 가능한 SSE** — `GET /conversations/{id}/messages/stream/active`가 진행 중 잡의 이벤트를 처음부터 재생해 이탈→복귀해도 스트림 복원
-- **근거 RAG** — evidence를 청킹·임베딩해 pgvector로 top-k 검색 후 프롬프트 주입
+- **근거 RAG** — LlamaIndex `SentenceSplitter`(512/64)로 자르고 TEI `bge-m3`(1024차원)로 임베딩해 `rag_nodes`에 둔다. 검색은 pgvector 밀집 검색과 `pg_trgm` 키워드 검색을 합친 뒤 `bge-reranker-v2-m3`로 재정렬한다. 모든 검색은 사용자나 회사 필터가 있어야 한다. `RAG_ENGINE=legacy`면 기존 `rag_chunks` 경로를 쓴다
 - **역할별 모델 라우팅** — `AIGate`가 generate/research/임베딩 역할별로 다른 모델을 호출. 관리형 모델과 BYOK 모두 지원
 - **문서 파이프라인** — 생성 산출물을 `내 서류` 문서 버전으로 동기화하고 PDF(ReportLab)·DOCX(직접 zip+XML)로 렌더링
 - **지원 항목 자동 연결** — 공고 URL 감지 시 JobPosting + Application을 생성(또는 `source_url`로 중복 제거)하고 대화에 링크
@@ -44,16 +44,15 @@ Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`
 ## 아키텍처
 
 ```
-POST /messages/stream ──► chat_jobs INSERT ──► SSE (job_id 구독)
-                                │
-                     워커: FOR UPDATE SKIP LOCKED
-                                │
-                     LangGraph 실행 → chat_events 기록
-                     (토큰/상태/done, interrupt 게이트)
-                                │
-                     PostgreSQL: conversations, messages,
-                     evidence(+pgvector), jobs, applications,
-                     documents, chat_jobs, chat_events
+앱·웹 ─► gateway ─► core ── ai_jobs + outbox + credit_reservations (한 트랜잭션) ─► 202 {jobId}
+                      │                     │
+                      │ POST /internal/kick │ 15분 스윕
+                      ▼                     ▼
+          VPS dispatcher ─► Redis Streams ─► ai-worker (LangGraph + LangChain)
+                                          ├► ingest-worker (LlamaIndex → rag_nodes, TEI)
+                                          └► notify-worker (Expo 푸시)
+                                                │
+                       chat_events · ai_jobs 상태 ─► gateway SSE / GET /api/v1/ai/jobs/{id}
 ```
 
 계층은 `app/api`(라우터·스키마) → Domain(서비스·상태기계) → Infrastructure(DB·외부 API 클라이언트) 방향으로만 의존한다. 파싱은 `app/ingest`, 그래프는 `app/graphs`다.
@@ -178,13 +177,31 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | --- | --- |
 | `DATABASE_URL` | 필수. Direct 호스트, `sslmode=require` |
 | `OPENROUTER_API_KEY` | 관리형 모델. `OPENAI_API_KEY`와 하나 이상 |
+| `MODEL_FREE` | 개인 FREE 모델. 비우면 `deepseek/deepseek-v4.1-flash` |
+| `MODEL_PRO` | 개인 PRO와 기업 BASIC 모델. 비우면 `anthropic/claude-sonnet-5-5` |
+| `MODEL_ULTRA` | 개인 ULTRA와 기업 PRO 모델. 비우면 `anthropic/claude-opus-5-5` |
+| `MODEL_EMPLOYER_ULTRA` | 기업 ULTRA 모델. 비우면 `anthropic/claude-fable-5-1` |
+| `OPENROUTER_DEEPSEEK_PROVIDERS` | FREE 모델 OpenRouter `provider.order`. 쉼표로 구분. 비우면 `Together,Fireworks,Novita`. FREE 요청은 `provider.ignore`에 `DeepSeek`을 넣는다 |
 | `OPENAI_API_KEY` | OpenAI 호환 관리형 호출을 쓸 때 |
 | `OPENCODE_GO_API_KEY` | OpenCode Go 모델을 쓸 때 |
 | `BYOK_MASTER_KEY` | 저장된 BYOK를 재시도·크론에서 복호화할 때 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
+| `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
+| `RESEND_API_KEY` | 키가 있으면 운영 메일은 Resend로 보낸다. 키가 없고 EMAIL 바인딩이 있으면 그 바인딩으로 보낸다. 둘 다 없으면 로컬 로거를 쓴다 |
+| `EXPO_ACCESS_TOKEN` | 있으면 알림을 Expo Push로 `user_devices`에 보낸다. 없으면 푸시는 보내지 않는다 |
+| `INTERNAL_JOB_TOKEN` | `POST /api/v1/internal/notifications/run`과 `ai-done`의 Bearer. 없으면 그 경로는 503 |
+| `APP_WEB_ORIGIN` | 인증·재설정 링크 origin. 비우면 `http://localhost:5174` |
+| `OAUTH_REDIRECT_ORIGINS` | 추가 OAuth redirect origin. 쉼표로 구분. 경로는 `/auth/callback` |
+| `NTS_SERVICE_KEY` | 국세청 사업자 진위확인 serviceKey. 비우면 사업자 확인은 503 |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 결제 |
-| `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA` | 개인 Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA` | 기업 Basic/Pro/Ultra 가격 ID |
+| `STRIPE_PRICE_TOPUP` | 크레딧 충전 가격 ID |
+| `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP` | 앱 상품 ID |
+| `IAP_TOPUP_CREDITS` | 인앱 충전 크레딧. 비우면 300 |
+| `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE` | 영수증 검증. Google 웹훅 본문은 `GOOGLE_PLAY_KEY`를 SPKI 공개키(ES256·RS256)로 서명 검증한다. 가져올 수 없으면 503. 비우면 503 |
+| `APPLE_ROOT_PEM`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_KEY` | App Store 웹훅은 인증서 체인이 이 루트까지 이어져야 한다. Google Play 웹훅은 Bearer OIDC의 aud와 고정 공개키가 맞아야 한다. 비우거나 읽을 수 없으면 503 |
 | `DEV_AUTH_TOKEN`, `DEV_USER_ID` | 개발 인증. 프로덕션에서는 비운다 |
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | Browser Rendering. 없으면 정적 추출만 |
 | `EXPERIMENTS` | JSON. 5 KB를 넘으면 시크릿으로 둔다. 예시 값은 `.env.example`에 있다 |
@@ -199,7 +216,7 @@ asyncpg 경로:
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다. Hostinger KVM에 같은 이미지를 올리는 절차는 `infra/vps/README.md`에 있다. `AI_ORIGIN`을 비워 두면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩을 쓴다.
+compose는 pgvector Postgres(호스트 5434)와 AI 서비스(uvicorn, `RUN_MIGRATIONS=1`, 8080)를 띄운다. 게이트웨이와 코어는 Neon HTTP 드라이버라 이 Postgres에 붙지 않는다. Hostinger KVM에 같은 이미지를 올리는 절차는 `infra/vps/README.md`에 있다. `AI_ORIGIN`을 비워 두면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩을 쓴다. 오리진 예시는 `https://push.devcyjoon.tech`다.
 
 ```bash
 cd services/gateway && npx wrangler dev
@@ -293,7 +310,7 @@ Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 �
 
 속도 제한은 사용자 600회/분, 공개 경로 60회/분이고 Neon `rate_limits` 한 행을 원자적으로 올린다. 이미 한도에 닿은 요청은 `hits < limit` 조건 때문에 카운터를 더 올리지 않는다. 같은 행은 잠기므로 한 버킷이 한도를 넘겨 증가하지 않는다. isolate가 그 분이 가득 찬 것을 본 뒤에는 같은 키를 다시 쓰지 않는다. isolate 메모리만 쓰면 프로세스가 나뉘었을 때 한도가 배로 늘었다. Cloudflare Rate Limiting 바인딩은 colo마다 따로 세고 Workers 무료 플랜 포함 기능이 아니며 Python Worker에서 호출할 수 없다. Durable Objects SQLite는 무료 플랜에 있지만 호출마다 무료 요청 한도를 쓰고 Python 바인딩이 더 필요하다. Neon은 두 Worker가 이미 연결한 저장소라 격리와 지역을 넘어 같은 카운터를 쓴다. 창은 UTC 1분이다. 분 경계에서는 한도가 한 번 더 허용될 수 있다. 프런트 Worker의 인증된 GET은 할당량이 없으면 사용자 조회와 1건부터 커지는 선점을 SQL 한 문으로 보낸다. 선점 상한은 8이고, 읽기 상한 근처에서는 `(상한 - hits) / 16`보다 크게 받지 않는다. 읽기 상한은 공유 한도의 90%다. 쓰지 않은 수는 응답 뒤 `waitUntil` 한 번으로 모아 돌려준다. 남은 수가 1이고 카운터가 읽기 상한에서 멀면 그 조회는 생략한다. 그 문은 `hits`를 한도 위로 올리지 않는다. `GET /conversations`, `GET /conversations/:id/messages`, 활성 SSE의 첫 조회, 모델 카탈로그 캐시 미스는 그 문에 목록까지 붙일 수 있다. 할당량이 남아 있으면 목록과 메시지는 데이터만 Neon에서 읽고, `/auth/me`와 캐시에 있는 카탈로그는 Neon을 건너뛴다. 모델과 채용 사이트의 Cache API가 맞고 인증 캐시와 할당량도 있으면 Neon은 0번이다. `GET /healthz`는 DB를 타지 않는다. `GET /api/v1/healthz`는 공개 카운터만 Neon에 기록한다. 테이블이 아직 없으면 그 요청만 isolate 메모리로 세고, 다음 요청에서 Neon을 다시 시도한다. 스키마는 `db/migrations/0015_rate_limits.sql`이고 배포가 적용하지 않는다. 수동 마이그레이션을 한 번 돌린 뒤부터 공유 한도가 켜진다. 만료된 분은 Python Worker의 크론이 지운다.
 
-게이트웨이 Worker `services/gateway/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다.
+게이트웨이 Worker `services/gateway/wrangler.jsonc`는 `"triggers": {"crons": []}`를 둔다. 이 이름(`push-be`)에 남아 있던 분당 크론은 배포만으로는 지워지지 않고, 스케줄 함수가 없는 Worker를 매일 약 1,440번 호출했다. 빈 목록이 그 트리거를 지운다. Python Worker `push-be-python`의 `* * * * *`는 그대로다. 코어 Worker는 `15 * * * *`에 북마크 공고 마감 3일 전 알림과 `remind_at`이 지난 일정 알림을 만든다. `INTERNAL_JOB_TOKEN`이 없으면 그 호출은 503이다.
 
 ### 6. GitHub Actions
 
@@ -311,7 +328,7 @@ printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-b
 printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY --name push-be-core
 ```
 
-OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
+OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_TOPUP`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP`, `IAP_TOPUP_CREDITS`, `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
 
 Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
 

@@ -6,6 +6,26 @@
 import { createIsolateCache } from "./cache.ts";
 import type { Deps } from "../types.ts";
 
+const missingCompanyTable = (err: unknown): boolean => {
+  const e = err as { code?: string; message?: string };
+  const text = `${e?.code || ""} ${e?.message || ""} ${String(err)}`;
+  return e?.code === "42P01" || e?.code === "42703" || /42P01|42703|relation .* does not exist|column .* does not exist/i.test(text);
+};
+
+export const queryToleratingCompany = async (run: Deps["query"], sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
+  try {
+    return await run(sql, params);
+  } catch (err) {
+    if (!sql.includes("company_members") || !missingCompanyTable(err)) throw err;
+    const fallback = sql
+      .replaceAll("m.company_id, m.role AS company_role", "NULL::uuid AS company_id, NULL::text AS company_role")
+      .replaceAll(" LEFT JOIN company_members m ON m.user_id = u.id", "")
+      .replaceAll("LEFT JOIN company_members m ON m.user_id = u.id", "");
+    if (fallback === sql || fallback.includes("company_members")) throw err;
+    return run(fallback, params);
+  }
+};
+
 const hits = new Map<string, number[]>();
 // Buckets this isolate has seen filled. Further requests are rejected
 // here and do not write Neon.
@@ -66,8 +86,10 @@ export function tsText(expr: string): string {
 // token is selected but not counted. A full bucket returns hits NULL.
 export const AUTH_SQL = "SELECT u.id, u.display_name, u.locale, "
   + tsText("u.created_at") + " AS created_at, "
-  + tsText("t.expires_at") + " AS expires_at "
-  + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
+  + tsText("t.expires_at") + " AS expires_at, "
+  + "u.is_employer, u.email, u.provider, u.plan, m.company_id, m.role AS company_role "
+  + "FROM access_tokens t JOIN users u ON u.id = t.user_id "
+  + "LEFT JOIN company_members m ON m.user_id = u.id WHERE t.token_hash = $1";
 
 // Auth and a quota lease are one Neon HTTP call. $4 is the read cap (the
 // shared limit minus write headroom). $6 is the batch, $7 is unused hits
@@ -86,8 +108,10 @@ const LEASE_INSERT = "LEAST($6::int, $4::int, CASE WHEN $4::int = 0 THEN 0 ELSE 
 const AUTH_RATE_PREFIX = "WITH auth AS ("
   + "SELECT u.id, u.display_name, u.locale, "
   + tsText("u.created_at") + " AS created_at, "
-  + tsText("t.expires_at") + " AS expires_at, t.expires_at AS token_expires "
-  + "FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1"
+  + tsText("t.expires_at") + " AS expires_at, t.expires_at AS token_expires, "
+  + "u.is_employer, u.email, u.provider, u.plan, m.company_id, m.role AS company_role "
+  + "FROM access_tokens t JOIN users u ON u.id = t.user_id "
+  + "LEFT JOIN company_members m ON m.user_id = u.id WHERE t.token_hash = $1"
   + "), live AS ("
   + "SELECT id FROM auth WHERE token_expires >= to_timestamp($5::double precision)"
   + "), bumped AS ("
@@ -104,6 +128,7 @@ const AUTH_RATE_PREFIX = "WITH auth AS ("
   + ") ";
 
 const AUTH_COLUMNS = "auth.id, auth.display_name, auth.locale, auth.created_at, auth.expires_at, "
+  + "auth.is_employer, auth.email, auth.provider, auth.plan, auth.company_id, auth.company_role, "
   + "(SELECT hits FROM bumped) AS hits, "
   + "(SELECT granted FROM bumped) AS granted";
 
@@ -112,25 +137,38 @@ export const AUTH_RATE_SQL = AUTH_RATE_PREFIX
 
 export const LIST_SQL = AUTH_RATE_PREFIX
   + ", page AS ("
-  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at "
+  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at, "
+  + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
+  + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
+  + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
+  + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
+  + "ELSE 'DONE' END AS status "
   + "FROM conversations c JOIN live ON live.id = c.user_id "
+  + "LEFT JOIN users cu ON cu.id = c.user_id "
+  + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
+  + "AND c.company_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
-  + "AND ($9::timestamptz IS NULL OR (c.created_at, c.id) < ($9::timestamptz, $10::uuid)) "
-  + "ORDER BY c.created_at DESC, c.id DESC LIMIT $11"
+  + "AND ($9::timestamptz IS NULL OR (c.updated_at, c.id) < ($9::timestamptz, $10::uuid)) "
+  + "AND ($12::text IS NULL OR c.title ILIKE $12 ESCAPE '\\' OR COALESCE(last_msg.text, '') ILIKE $12 ESCAPE '\\') "
+  + "ORDER BY c.updated_at DESC, c.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", COALESCE((SELECT json_agg(json_build_object("
   + "'id', page.id, 'revision', page.revision, 'application_id', page.application_id, "
   + "'title', page.title, 'pinned', page.pinned, 'created_at', " + tsText("page.created_at") + ", "
-  + "'updated_at', " + tsText("page.updated_at")
-  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
+  + "'updated_at', " + tsText("page.updated_at") + ", "
+  + "'posting_id', page.posting_id, 'display_name', page.display_name, "
+  + "'last_message_preview', page.last_message_preview, 'status', page.status"
+  + ") ORDER BY page.updated_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
-  + "), page AS ("
+  + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
+  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + ")), page AS ("
   + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
   + "FROM messages m JOIN found ON found.id = m.conversation_id "
-  + "WHERE EXISTS (SELECT 1 FROM bumped) AND m.user_id = (SELECT id FROM live) "
+  + "WHERE EXISTS (SELECT 1 FROM bumped) AND (m.user_id = (SELECT id FROM live) OR found.company_id IS NOT NULL) "
   + "AND ($9::timestamptz IS NULL OR (m.created_at, m.id) < ($9::timestamptz, $10::uuid)) "
   + "ORDER BY m.created_at DESC, m.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
@@ -142,11 +180,12 @@ export const MESSAGES_SQL = AUTH_RATE_PREFIX
 
 export const STREAM_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
-  + "SELECT id FROM conversations WHERE id = $8::uuid AND user_id = (SELECT id FROM live)"
-  + "), job AS ("
-  + "SELECT id FROM chat_jobs WHERE user_id = (SELECT id FROM live) "
-  + "AND conversation_id = (SELECT id FROM found) "
+  + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
+  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + ")), job AS ("
+  + "SELECT id FROM chat_jobs WHERE conversation_id = (SELECT id FROM found) "
   + "AND status IN ('PENDING', 'RUNNING') AND EXISTS (SELECT 1 FROM bumped) "
+  + "AND (user_id = (SELECT id FROM live) OR (SELECT company_id FROM found) IS NOT NULL) "
   + "ORDER BY created_at DESC LIMIT 1"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
   + "(SELECT id FROM job) AS job_id FROM auth";

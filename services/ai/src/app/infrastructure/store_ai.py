@@ -54,9 +54,25 @@ _USAGE_UPSERT = (
     "status = EXCLUDED.status "
     "WHERE (ai_usage.status <> 'SETTLED' OR EXCLUDED.status = 'SETTLED')"
 )
+_USAGE_JOB_SQL = (
+    f"INSERT INTO ai_usage ({_USAGE_COLS}, job_id) "
+    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+    + _USAGE_UPSERT.replace(
+        "status = EXCLUDED.status WHERE",
+        "status = EXCLUDED.status, "
+        "job_id = COALESCE(ai_usage.job_id, EXCLUDED.job_id) WHERE",
+        1)
+)
 
 
 class AiUsageStore(Store):
+    async def create_for_job(self, u: AiUsage, job_id) -> None:
+        await self.q().execute(
+            _USAGE_JOB_SQL,
+            u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
+            u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
+            u.created_at, job_id)
+
     async def create(self, u: AiUsage) -> None:
         from uuid import UUID
         from app.claimctx import LostClaim, claim_job, claim_token

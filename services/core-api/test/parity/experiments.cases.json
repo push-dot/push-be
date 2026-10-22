@@ -1,0 +1,154 @@
+[
+ {
+  "name": "assignment new",
+  "method": "GET",
+  "path": "/api/v1/experiments/onboarding/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment again",
+  "method": "GET",
+  "path": "/api/v1/experiments/onboarding/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment ended",
+  "method": "GET",
+  "path": "/api/v1/experiments/retired/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment group a",
+  "method": "GET",
+  "path": "/api/v1/experiments/group-a/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment group b",
+  "method": "GET",
+  "path": "/api/v1/experiments/group-b/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment missing",
+  "method": "GET",
+  "path": "/api/v1/experiments/nope/assignment",
+  "body": null
+ },
+ {
+  "name": "assignment empty variants",
+  "method": "GET",
+  "path": "/api/v1/experiments/empty/assignment",
+  "body": null
+ },
+ {
+  "name": "event",
+  "method": "POST",
+  "path": "/api/v1/experiments/onboarding/events",
+  "body": {
+   "event": "exposure"
+  }
+ },
+ {
+  "name": "event conversion",
+  "method": "POST",
+  "path": "/api/v1/experiments/onboarding/events",
+  "body": {
+   "event": "conversion"
+  }
+ },
+ {
+  "name": "event too long",
+  "method": "POST",
+  "path": "/api/v1/experiments/onboarding/events",
+  "body": {
+   "event": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ },
+ {
+  "name": "event empty",
+  "method": "POST",
+  "path": "/api/v1/experiments/onboarding/events",
+  "body": {
+   "event": ""
+  }
+ },
+ {
+  "name": "event missing experiment",
+  "method": "POST",
+  "path": "/api/v1/experiments/nope/events",
+  "body": {
+   "event": "exposure"
+  }
+ },
+ {
+  "name": "event ended",
+  "method": "POST",
+  "path": "/api/v1/experiments/retired/events",
+  "body": {
+   "event": "exposure"
+  }
+ },
+ {
+  "name": "event group a",
+  "method": "POST",
+  "path": "/api/v1/experiments/group-a/events",
+  "body": {
+   "event": "exposure"
+  }
+ },
+ {
+  "name": "event group b",
+  "method": "POST",
+  "path": "/api/v1/experiments/group-b/events",
+  "body": {
+   "event": "exposure"
+  }
+ },
+ {
+  "name": "event bad body",
+  "method": "POST",
+  "path": "/api/v1/experiments/onboarding/events",
+  "body": {
+   "name": "x"
+  }
+ },
+ {
+  "name": "stats",
+  "method": "GET",
+  "path": "/api/v1/experiments/onboarding/stats",
+  "body": null,
+  "sortKeys": true
+ },
+ {
+  "name": "stats ended",
+  "method": "GET",
+  "path": "/api/v1/experiments/retired/stats",
+  "body": null,
+  "sortKeys": true
+ },
+ {
+  "name": "stats missing",
+  "method": "GET",
+  "path": "/api/v1/experiments/nope/stats",
+  "body": null
+ },
+ {
+  "name": "results",
+  "method": "GET",
+  "path": "/api/v1/experiments/onboarding/results",
+  "body": null
+ },
+ {
+  "name": "results group a",
+  "method": "GET",
+  "path": "/api/v1/experiments/group-a/results",
+  "body": null
+ },
+ {
+  "name": "results missing",
+  "method": "GET",
+  "path": "/api/v1/experiments/nope/results",
+  "body": null
+ }
+]

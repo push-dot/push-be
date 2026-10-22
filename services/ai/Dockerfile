@@ -6,7 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_NO_SANDBOX=1 \
     CHAT_EXECUTOR=local \
-    AI_FRAMEWORK=legacy \
     DB_DRIVER=asyncpg \
     PG_TRANSPORT=tcp \
     PORT=8080
@@ -15,6 +14,8 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
+COPY scripts ./scripts
+COPY eval ./eval
 
 RUN pip install --no-cache-dir ".[local]" \
     && playwright install --with-deps chromium \

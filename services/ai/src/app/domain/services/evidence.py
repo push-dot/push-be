@@ -1,6 +1,5 @@
 from __future__ import annotations
 from app.clock import utcnow
-import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -11,7 +10,6 @@ from app.domain.errors import (
     internal, map_revision_err, not_found, validation_field, integration_required,
 )
 from app.domain.validators import code_point_len, hash_bytes, validate_https_url
-from app.ingest.pdf_text import extract_pdf_text
 from app.infrastructure.store_evidence import EvidenceStore, SourceStore
 from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
@@ -22,11 +20,6 @@ def _now() -> datetime:
 
 
 IMPORT_FORMATS = {"TEXT", "MARKDOWN", "PDF", "DOCX", "GITHUB"}
-
-
-def _read_text(path: str) -> str:
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.read()
 
 
 def validate_evidence_input(kind: str, title: str, source_text: str,
@@ -154,17 +147,13 @@ class EvidenceService:
         except Exception:
             raise internal()
         try:
-            if src.path.startswith("db://"):
-                data = await self.sources.content(user_id, source_id)
-                if src.mime_type == "application/pdf":
-                    from app.ingest.pdf_text import extract_pdf_bytes
-                    return extract_pdf_bytes(data)
-                return data.decode("utf-8", errors="replace")
+            data = await self.sources.content(user_id, source_id)
             if src.mime_type == "application/pdf":
-                return await extract_pdf_text(src.path)
+                from app.ingest.pdf_text import extract_pdf_bytes
+                return extract_pdf_bytes(data)
             if src.mime_type.startswith("text/") or src.file_name.lower().endswith(
                     (".txt", ".md", ".markdown")):
-                return await asyncio.to_thread(_read_text, src.path)
+                return data.decode("utf-8", errors="replace")
         except Exception:
             raise internal()
         raise validation_field(

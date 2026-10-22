@@ -15,11 +15,9 @@ export function ownerOf(method: string, path: string): Owner {
 
 function isAi(method: string, path: string): boolean {
   if (method === "POST" && path === "/api/v1/ai/generate") return true;
-  if (method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/messages\/stream$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/applications\/[^/]+\/resume-run$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/jobs\/[^/]+\/analyze$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
-  if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;
@@ -33,31 +31,89 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/auth/exchange" || path === "/api/v1/auth/refresh" || path === "/api/v1/auth/logout") {
     return method === "POST";
   }
+  if (method === "POST" && (
+    path === "/api/v1/auth/email/signup"
+    || path === "/api/v1/auth/email/verify"
+    || path === "/api/v1/auth/email/login"
+    || path === "/api/v1/auth/email/password-reset"
+    || path === "/api/v1/auth/email/password-reset/confirm"
+  )) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH";
   if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
-  if (/^\/api\/v1\/conversations\/[^/]+\/messages$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/messages(\/stream)?$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/attachments$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/approvals\/[^/]+$/.test(path)) return method === "POST";
   if (path === "/api/v1/billing" || path === "/api/v1/billing/ledger") return method === "GET";
-  if (path === "/api/v1/billing/checkout" || path === "/api/v1/billing/portal" || path === "/api/v1/billing/webhook") {
+  if (
+    path === "/api/v1/billing/checkout"
+    || path === "/api/v1/billing/portal"
+    || path === "/api/v1/billing/webhook"
+    || path === "/api/v1/billing/topup"
+    || path === "/api/v1/billing/iap/verify"
+    || path === "/api/v1/billing/webhook/app-store"
+    || path === "/api/v1/billing/webhook/google-play"
+  ) {
     return method === "POST";
   }
   if (path === "/api/v1/ai/keys") return method === "GET";
   if (/^\/api\/v1\/ai\/keys\/[^/]+$/.test(path)) return method === "PUT" || method === "DELETE";
   if (/^\/api\/v1\/ai\/keys\/[^/]+\/test$/.test(path)) return method === "POST";
   if (path === "/api/v1/ai/usage") return method === "GET";
+  if (/^\/api\/v1\/ai\/jobs\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return method === "POST";
+  // AI worker act-as routes; core checks document ownership and rejects resume-jobs without act-as.
+  if (/^\/api\/v1\/documents\/[^/]+\/edits$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+\/resume-jobs$/.test(path)) return method === "POST";
+  if (path === "/api/v1/documents") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
+  if (/^\/api\/v1\/documents\/[^/]+\/(versions|exports)$/.test(path)) return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/exports\/[^/]+\/result$/.test(path)) return method === "POST";
+  if (path === "/api/v1/sources") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/sources\/[^/]+\/content$/.test(path)) return method === "GET";
+  if (path === "/api/v1/uploads/images") return method === "POST";
+  if (/^\/api\/v1\/uploads\/images\/[^/]+$/.test(path)) return method === "GET";
+  if (path === "/api/v1/career-evidence") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/career-evidence\/[^/]+$/.test(path)) return method === "GET" && path !== "/api/v1/career-evidence/import";
+  if (/^\/api\/v1\/career-evidence\/[^/]+\/archive$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/experiments\/[^/]+\/(assignment|stats|results)$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/experiments\/[^/]+\/events$/.test(path)) return method === "POST";
+  if (path === "/api/v1/interviews") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/interviews\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
+  if (path === "/api/v1/projects") return method === "GET";
+  if (/^\/api\/v1\/projects\/[^/]+$/.test(path)) return method === "GET" && path !== "/api/v1/projects/blueprints";
+  if (/^\/api\/v1\/projects\/[^/]+\/select$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/projects\/[^/]+\/(runs|evidence)$/.test(path)) return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/projects\/[^/]+\/runs\/[^/]+\/(start|launch|recover|result)$/.test(path)) return method === "POST";
+  if (path === "/api/v1/integrations/google") return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/integrations\/google\/(connect|complete|sync)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/integrations\/google\/(callback|messages|events)$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/integrations\/google\/messages\/[^/]+\/link$/.test(path)) return method === "POST";
+  if (path === "/api/v1/applications") return method === "GET" || method === "POST";
+  if (path === "/api/v1/applications/import") return method === "POST";
+  if (/^\/api\/v1\/applications\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
+  if (/^\/api\/v1\/applications\/[^/]+\/(timeline|checklist)$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/applications\/[^/]+\/submission-drafts$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/applications\/[^/]+\/submissions$/.test(path)) return method === "GET" || method === "POST";
   if (path === "/api/v1/jobs") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/jobs\/[^/]+\/analyses$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/jobs\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
   if (path === "/api/v1/calendar/events") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/calendar\/events\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (method === "POST" && (path === "/api/v1/internal/notifications/ai-done" || path === "/api/v1/internal/notifications/run")) return true;
+  if (path === "/api/v1/companies" || path.startsWith("/api/v1/companies/")) return true;
   if (isRecruiting(path)) return true;
   return false;
 }
 
 function isRecruiting(path: string): boolean {
   if (path === "/api/v1/postings" || path.startsWith("/api/v1/postings/")) return true;
-  if (path === "/api/v1/search") return true;
+  if (path === "/api/v1/search" || path === "/api/v1/search/counts" || path === "/api/v1/search/trending") return true;
   if (path === "/api/v1/profiles" || path.startsWith("/api/v1/profiles/")) return true;
   if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
   if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;

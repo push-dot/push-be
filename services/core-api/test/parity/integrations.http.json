@@ -1,0 +1,122 @@
+[
+ {
+  "method": "POST",
+  "url": "https://oauth2.googleapis.com/token",
+  "status": 200,
+  "body": {
+   "access_token": "at-1",
+   "refresh_token": "rt-1",
+   "expires_in": 3600,
+   "scope": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events"
+  }
+ },
+ {
+  "method": "POST",
+  "url": "https://oauth2.googleapis.com/revoke",
+  "status": 200,
+  "body": {}
+ },
+ {
+  "method": "GET",
+  "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1?",
+  "status": 200,
+  "body": {
+   "id": "m1",
+   "threadId": "th-1",
+   "snippet": "서류 합격 안내",
+   "internalDate": "1792660000000",
+   "payload": {
+    "headers": [
+     {
+      "name": "From",
+      "value": "hr@acme.example"
+     },
+     {
+      "name": "Subject",
+      "value": "서류 결과"
+     },
+     {
+      "name": "Date",
+      "value": "x"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/old-1?",
+  "status": 200,
+  "body": {
+   "id": "old-1",
+   "threadId": "t-1",
+   "snippet": "updated",
+   "internalDate": "1792660000123",
+   "payload": {
+    "headers": [
+     {
+      "name": "from",
+      "value": "recruiter@acme.example"
+     },
+     {
+      "name": "subject",
+      "value": "면접 안내 (수정)"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages?",
+  "status": 200,
+  "body": {
+   "messages": [
+    {
+     "id": "m1"
+    },
+    {
+     "id": "old-1"
+    }
+   ],
+   "historyId": "777"
+  }
+ },
+ {
+  "method": "GET",
+  "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?",
+  "status": 200,
+  "body": {
+   "nextSyncToken": "sync-2",
+   "items": [
+    {
+     "id": "gev-1",
+     "status": "confirmed",
+     "summary": "Synced call (moved)",
+     "start": {
+      "dateTime": "2026-11-05T11:00:00+09:00",
+      "timeZone": "Asia/Seoul"
+     },
+     "end": {
+      "dateTime": "2026-11-05T12:30:00+09:00"
+     }
+    },
+    {
+     "id": "gev-2",
+     "status": "confirmed",
+     "summary": "All day",
+     "start": {
+      "date": "2026-11-10"
+     },
+     "end": {
+      "date": "2026-11-10"
+     }
+    },
+    {
+     "id": "gev-gone",
+     "status": "cancelled"
+    }
+   ]
+  }
+ }
+]

@@ -88,6 +88,12 @@ export interface CachedUser {
   displayName: string;
   locale: string;
   createdAt: string;
+  accountType: "PERSONAL" | "EMPLOYER";
+  companyId: string | null;
+  companyRole: string | null;
+  email: string;
+  provider: string;
+  plan: string;
   expiresAtMs: number;
 }
 

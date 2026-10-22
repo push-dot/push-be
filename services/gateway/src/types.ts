@@ -30,6 +30,8 @@ export interface FrontEnv {
   AI_ORIGIN?: string;
   /** Shared secret sent as x-push-ai-secret when AI_ORIGIN is set. */
   AI_SHARED_SECRET?: string;
+  /** AI worker act-as secret (same value as core). Requests that carry it keep their act-as headers to core. */
+  INTERNAL_API_SECRET?: string;
 }
 
 export interface Deps {
@@ -47,4 +49,10 @@ export interface User {
   displayName: string;
   locale: string;
   createdAt: string;
+  accountType: "PERSONAL" | "EMPLOYER";
+  companyId: string | null;
+  companyRole: string | null;
+  email: string;
+  provider: string;
+  plan: string;
 }

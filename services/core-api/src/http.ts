@@ -60,7 +60,12 @@ export function errorResponse(status: number, code: string, message: string, rid
 }
 
 export function errorOf(err: HttpError, rid: string): Response {
-  return errorResponse(err.status, err.code, err.message, rid, err.details);
+  const res = errorResponse(err.status, err.code, err.message, rid, err.details);
+  const details = err.details as { retryAfterSec?: number } | null;
+  if (err.status === 429 && details && typeof details.retryAfterSec === "number") {
+    res.headers.set("retry-after", String(details.retryAfterSec));
+  }
+  return res;
 }
 
 export function fieldError(field: string, message: string): HttpError {
@@ -106,6 +111,21 @@ export function codePoints(value: string): number {
 export async function sha256Hex(value: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const sortDeep = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(obj).sort().map((key) => [key, sortDeep(obj[key])]));
+  }
+  return value;
+};
+
+/** Python `hash_json`: sha256 of `json.dumps(v, sort_keys=True, separators=(",", ":"))` (ASCII escapes). */
+export async function hashJson(value: unknown): Promise<string> {
+  const text = JSON.stringify(sortDeep(value)).replace(/[\u0080-\uffff]/g, (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"));
+  return sha256Hex(text);
 }
 
 export function randomToken(): string {

@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
+from app.domain.access_mode import normalize_access_mode, resolve_access_mode
+from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import (
     DomainError, internal, map_revision_err, not_found, revision_conflict,
     validation_field,
@@ -17,7 +19,10 @@ from app.domain.validators import code_point_len
 from app.graphs.chat import build_chat_graph, byok_key_var as _BYOK_KEY
 from app.graphs.chat import event_sink
 from app.graphs.freeze import freeze_state, thaw_state
-from app.jobs import external_jobs, schedule_chat_job, sse_max_polls
+from app.jobs import (
+    external_jobs, get_job_scheduler, schedule_chat_job, set_job_scheduler,
+    sse_max_polls,
+)
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
@@ -56,6 +61,42 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
+_LIVE_EVENT_TYPES = frozenset({
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
+
+
+def _live_event(chunk: dict):
+    kind = chunk.get("type")
+    if kind not in _LIVE_EVENT_TYPES:
+        return None
+    return kind, {key: value for key, value in chunk.items() if key != "type"}
+
+IDLE_MIN_S = 1.0
+IDLE_MAX_S = 60.0
+# shortcut: 60s claim keeps Neon compute warm (suspend needs 5 min quiet), raise IDLE_MAX_S past 300 when a lost wake may wait that long
+STALE_SWEEP_S = 15 * 60
+
+
+def next_idle_delay(current: float, *, reset: bool) -> float:
+    if reset:
+        return IDLE_MIN_S
+    doubled = current * 2
+    if doubled > IDLE_MAX_S:
+        return IDLE_MAX_S
+    return doubled
+
+
+def _loop_time() -> float:
+    return asyncio.get_running_loop().time()
+
+
+async def _wait(event: asyncio.Event, delay: float) -> bool:
+    try:
+        await asyncio.wait_for(event.wait(), delay)
+    except TimeoutError:
+        return False
+    event.clear()
+    return True
 
 
 async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
@@ -95,6 +136,11 @@ async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
         if "status" in item:
             await flush()
             await emit_many(job_id, [("status", {"text": item["status"]})])
+            continue
+        live = _live_event(item)
+        if live is not None:
+            await flush()
+            await emit_many(job_id, [live])
             continue
         if "token" not in item:
             continue
@@ -143,6 +189,9 @@ class ConversationService:
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
+        self._wake = asyncio.Event()
+        self._scheduler_installed = False
+        self._prev_scheduler = None
         self._checkpointer = checkpointer
         self._compiled = None
 
@@ -150,6 +199,14 @@ class ConversationService:
     def graph(self):
         # LangGraph compile is the heavy import. Health and auth requests
         # never touch it; the first local chat message in an isolate does.
+        from app.config import harness_enabled
+        if harness_enabled():
+            from app.harness.runtime import HarnessRuntime
+            runtime = getattr(self, "_harness_runtime", None)
+            if runtime is None:
+                runtime = HarnessRuntime(self)
+                self._harness_runtime = runtime
+            return runtime
         if self._compiled is None:
             self._compiled = build_chat_graph(self, self._checkpointer)
         return self._compiled
@@ -161,42 +218,91 @@ class ConversationService:
         from app.graphs.chat import bind_chat_nodes
         bind_chat_nodes(self)
 
+    def wake(self) -> None:
+        event = getattr(self, "_wake", None)
+        if event is not None:
+            event.set()
+
+    async def _idle_pause(self, delay: float) -> float:
+        woke = await _wait(self._wake, delay)
+        return next_idle_delay(delay, reset=woke)
+
     async def start_worker(self) -> None:
         # A restarted process has no live Workflow. Age 0 recovers immediately.
         # The cron path keeps the long threshold so it cannot steal a run
         # that is still inside its step timeout.
-        recovered = await self.jobs.reset_stale(0)
-        if recovered:
-            logging.getLogger(__name__).info(
-                "requeued %d stale chat jobs", recovered)
-        self._worker_task = asyncio.create_task(self._worker_loop())
+        if getattr(self, "_wake", None) is None:
+            self._wake = asyncio.Event()
+        self._prev_scheduler = get_job_scheduler()
+
+        async def _schedule(job_id, byok="", claim="") -> None:
+            self.wake()
+
+        set_job_scheduler(_schedule)
+        self._scheduler_installed = True
+        try:
+            recovered = await self.jobs.reset_stale(0)
+            if recovered:
+                logging.getLogger(__name__).info(
+                    "requeued %d stale chat jobs", recovered)
+            self._worker_task = asyncio.create_task(self._worker_loop())
+        except Exception:
+            set_job_scheduler(self._prev_scheduler)
+            self._scheduler_installed = False
+            raise
 
     async def stop_worker(self) -> None:
-        if self._worker_task:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-            self._worker_task = None
-        if self._inflight:
-            await asyncio.gather(*self._inflight, return_exceptions=True)
+        try:
+            if self._worker_task:
+                self._worker_task.cancel()
+                try:
+                    await self._worker_task
+                except asyncio.CancelledError:
+                    pass
+                self._worker_task = None
+            if self._inflight:
+                await asyncio.gather(*self._inflight, return_exceptions=True)
+        finally:
+            if getattr(self, "_scheduler_installed", False):
+                set_job_scheduler(getattr(self, "_prev_scheduler", None))
+                self._scheduler_installed = False
 
     async def _worker_loop(self) -> None:
         log = logging.getLogger(__name__)
+        delay = IDLE_MIN_S
+        last_stale = _loop_time()
         while True:
+            if _loop_time() - last_stale >= STALE_SWEEP_S:
+                try:
+                    await self.jobs.reset_stale()
+                except Exception:
+                    log.exception("chat job stale sweep failed")
+                try:
+                    from app.queue.admin import AdminJobs
+                    await AdminJobs(self.db.q()).expire_approvals(_now())
+                except Exception:
+                    log.exception("approval expiry sweep failed")
+                last_stale = _loop_time()
             try:
                 job = await self.jobs.claim()
             except Exception:
                 log.exception("chat job claim failed")
-                await asyncio.sleep(1)
+                delay = await self._idle_pause(delay)
                 continue
             if job is None:
-                await asyncio.sleep(0.3)
+                delay = await self._idle_pause(delay)
                 continue
+            delay = IDLE_MIN_S
             t = asyncio.create_task(self._run_job(job))
             self._inflight.add(t)
             t.add_done_callback(self._inflight.discard)
+
+    async def _notify_ai_done(self, user_id, conversation_id) -> None:
+        try:
+            from app.domain.chat_settings import insert_ai_done
+            await insert_ai_done(self.db.q(), user_id, conversation_id)
+        except Exception:
+            logging.getLogger(__name__).exception("AI_DONE insert failed")
 
     async def _run_job(self, job: dict) -> None:
         log = logging.getLogger(__name__)
@@ -206,34 +312,56 @@ class ConversationService:
             token = _BYOK_KEY.set(self._byok_keys.get(job_id, ""))
             terminal = False
             try:
-                async for mode, chunk in self.graph.astream(
+                source = self.graph
+                if p.get("resume"):
+                    from app.harness.jobs import approved_edit
+                    source = await approved_edit(self, p, job["user_id"]) or source
+                async for mode, chunk in source.astream(
                         {
                             "user_id": job["user_id"],
                             "conversation_id": job["conversation_id"],
-                            "text": p["text"],
+                            "text": p.get("text") or "",
                             "context": p.get("context") or {},
                             "ai": p.get("ai"),
                             "access_mode": p.get("access_mode") or "SUGGEST",
                             "operation": None,
                             "job_id": str(job_id),
+                            **turn_from_payload(p),
+                            **({"resume": p["resume"]} if p.get("resume") else {}),
                         },
                         config={"configurable": {
                             "thread_id": str(job["conversation_id"])}},
                         stream_mode=["custom", "values"]):
                     if mode == "custom" and isinstance(chunk, dict):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         if "token" in chunk:
                             await self.jobs.emit(
                                 job_id, "token", {"text": chunk["token"]})
                         elif "status" in chunk:
                             await self.jobs.emit(
                                 job_id, "status", {"text": chunk["status"]})
+                        else:
+                            live = _live_event(chunk)
+                            if live is not None:
+                                await self.jobs.emit(job_id, live[0], live[1])
                     elif mode == "values" and chunk.get("operation"):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         from app.jsonutil import to_jsonable
                         await self.jobs.emit(
                             job_id, "done",
                             {"operation": to_jsonable(chunk["operation"])})
-                await self.jobs.finish(job_id, "DONE")
-                terminal = True
+                if not terminal:
+                    if await self.jobs.status(job_id) == "CANCELLED":
+                        terminal = True
+                    else:
+                        await self.jobs.finish(job_id, "DONE")
+                        await self._notify_ai_done(
+                            job["user_id"], job["conversation_id"])
+                        terminal = True
             except DomainError as e:
                 await self._drop_enqueued_user_message(job_id)
                 await self.jobs.emit(
@@ -374,10 +502,8 @@ class ConversationService:
                            context: dict, ai: Optional[ent.AiOptions],
                            access_mode: str,
                            byok_key: str = "") -> ent.Operation:
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        if external_jobs():
-            return await self._enqueue(
-                user_id, conversation_id, text, context, ai, access_mode, byok_key)
         token = _BYOK_KEY.set(byok_key)
         try:
             result = await self.graph.ainvoke(
@@ -389,16 +515,40 @@ class ConversationService:
             _BYOK_KEY.reset(token)
         return result["operation"]
 
+    async def _canonical_access(self, user_id, raw: str) -> str:
+        try:
+            requested = normalize_access_mode(raw if raw else None)
+        except ValueError:
+            raise validation_field(
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
+        if requested is not None:
+            return requested.value
+        saved = None
+        try:
+            row = await self.db.q().fetchrow(
+                "SELECT to_jsonb(user_settings)->>'ai_access_mode' AS ai_access_mode "
+                "FROM user_settings WHERE user_id = $1",
+                user_id,
+            )
+            if row is not None:
+                saved = row["ai_access_mode"]
+        except Exception:
+            saved = None
+        return resolve_access_mode(None, saved).value
+
     def _validate_message(self, text: str, access_mode: str) -> None:
         if not text or code_point_len(text) > 20000:
             raise validation_field("text", "text must be 1-20000 characters")
         if not ent.valid_access_mode(access_mode):
             raise validation_field(
-                "accessMode", "must be SUGGEST or CONFIRM_ACTIONS")
+                "accessMode",
+                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
 
     def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
                     context: dict, ai: Optional[ent.AiOptions],
-                    access_mode: str) -> dict:
+                    access_mode: str, intent: str | None = None,
+                    application_id=None) -> dict:
         return {
             "user_id": user_id,
             "conversation_id": conversation_id,
@@ -407,63 +557,35 @@ class ConversationService:
             "ai": ai.model_dump(by_alias=True) if ai else None,
             "access_mode": access_mode,
             "operation": None,
+            **turn_from_payload({"intent": intent, "application_id": application_id}),
         }
 
     async def stream_message(self, user_id: UUID, conversation_id: UUID,
                              text: str, context: dict,
                              ai: Optional[ent.AiOptions], access_mode: str,
-                             byok_key: str = ""):
+                             byok_key: str = "", intent: str | None = None,
+                             application_id=None):
+        access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        if self._worker_task is not None or external_jobs():
-            async for ev in self._stream_via_queue(
-                    user_id, conversation_id, text, context, ai, access_mode,
-                    byok_key):
-                yield ev
-            return
         token = _BYOK_KEY.set(byok_key)
         try:
             async for mode, chunk in self.graph.astream(
                     self._chat_input(user_id, conversation_id, text, context,
-                                     ai, access_mode),
+                                     ai, access_mode, intent, application_id),
                     config={"configurable": {"thread_id": str(conversation_id)}},
                     stream_mode=["custom", "values"]):
                 if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
                     yield ("token", chunk["token"], None)
                 elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
                     yield ("status", chunk["status"], None)
+                elif mode == "custom" and isinstance(chunk, dict):
+                    live = _live_event(chunk)
+                    if live is not None:
+                        yield (live[0], live[1], None)
                 elif mode == "values" and chunk.get("operation") is not None:
                     yield ("done", chunk["operation"], None)
         finally:
             _BYOK_KEY.reset(token)
-
-    async def _allow_chat(self, user_id, ai, byok_key: str = "") -> None:
-        # The Workflow still checks inside the model call. This one runs
-        # first so a rejected chat never enqueues, never embeds, and returns
-        # the same 403 the synchronous path returned.
-        if ai is None or self.ai is None:
-            return
-        await self.ai.check(user_id, ai, byok_key)
-
-    async def _stream_via_queue(self, user_id, conversation_id, text, context,
-                                ai, access_mode, byok_key):
-        await self._allow_chat(user_id, ai, byok_key)
-        payload = {
-            "text": text,
-            "context": context or {},
-            "ai": ai.model_dump(by_alias=True) if ai else None,
-            "access_mode": access_mode,
-        }
-        payload = self._stash_byok(user_id, payload, byok_key)
-        job_id = await self.jobs.enqueue_started(
-            user_id, conversation_id, payload, "대기 중")
-        if job_id is None:
-            raise not_found()
-        if byok_key:
-            self._byok_keys[job_id] = byok_key
-        if external_jobs():
-            await schedule_chat_job(job_id, byok_key)
-        async for ev in self._pump_job_events(job_id):
-            yield ev
 
     async def active_job_id(self, user_id: UUID,
                             conversation_id: UUID) -> Optional[UUID]:
@@ -503,11 +625,15 @@ class ConversationService:
                 elif t == "status":
                     yield ("status", p.get("text", ""), r["id"])
                 elif t == "done":
-                    yield ("done", p.get("operation"), r["id"])
+                    yield ("done", p if p.get("awaiting") else p.get("operation"), r["id"])
                     return
                 elif t == "error":
                     yield ("error", p.get("error") or {}, r["id"])
                     return
+                elif t in _LIVE_EVENT_TYPES:
+                    yield (t, p if isinstance(p, dict) else {}, r["id"])
+                    if t == "cancelled":
+                        return
             if rows:
                 idle = 0
             else:
@@ -523,19 +649,6 @@ class ConversationService:
                     idle = 0
             await asyncio.sleep(0.25 if external_jobs() else 0.2)
 
-    def _stash_byok(self, user_id: UUID, payload: dict, byok_key: str) -> dict:
-        cipher = getattr(self.ai, "cipher", None)
-        if not byok_key or cipher is None:
-            return payload
-        import base64
-        ct, nonce = cipher.encrypt(byok_key, user_id, "chat-job")
-        stored = dict(payload)
-        stored["_byok"] = {
-            "ct": base64.b64encode(ct).decode(),
-            "nonce": base64.b64encode(nonce).decode(),
-        }
-        return stored
-
     def _byok_from_payload(self, user_id, payload) -> str:
         cipher = getattr(self.ai, "cipher", None)
         blob = (payload or {}).get("_byok") if isinstance(payload, dict) else None
@@ -550,36 +663,6 @@ class ConversationService:
                 uid, "chat-job")
         except Exception:
             return ""
-
-    async def _enqueue(self, user_id, conversation_id, text, context,
-                                ai, access_mode, byok_key) -> ent.Operation:
-        await self._allow_chat(user_id, ai, byok_key)
-        payload = self._stash_byok(user_id, {
-            "text": text,
-            "context": context or {},
-            "ai": ai.model_dump(by_alias=True) if ai else None,
-            "access_mode": access_mode,
-        }, byok_key)
-        # One statement checks the conversation, inserts the job, and writes
-        # the first status so SSE shows progress before the Workflow starts.
-        job_id = await self.jobs.enqueue_started(
-            user_id, conversation_id, payload, "대기 중")
-        if job_id is None:
-            raise not_found()
-        if byok_key:
-            self._byok_keys[job_id] = byok_key
-        await schedule_chat_job(job_id, byok_key)
-        # The Workflow emits tokens and the finished operation. Waiting here
-        # held the HTTP request for the whole model call (~10s plus a Neon
-        # poll per tick). Clients already treat QUEUED as a 202 body and
-        # follow the stream or the active SSE replay.
-        now = _now()
-        return ent.Operation(
-            id=job_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
-            status=ent.OP_QUEUED,
-            result=ent.OperationResult(
-                kind=ent.OP_CHAT_MESSAGE, value={"jobId": str(job_id)}),
-            created_at=now, updated_at=now)
 
     async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
         jid = UUID(str(job_id))
@@ -635,6 +718,8 @@ class ConversationService:
             if name == "persist" and status == "RUNNING":
                 try:
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                 except LostClaim:
                     return "skip"
             return "ok"
@@ -686,6 +771,7 @@ class ConversationService:
                     "access_mode": payload.get("access_mode") or "SUGGEST",
                     "operation": None,
                     "job_id": str(jid),
+                    **turn_from_payload(payload),
                 }
             self.ensure_chat_nodes()
             try:
@@ -699,6 +785,8 @@ class ConversationService:
                         jid, "done",
                         {"operation": to_jsonable(state["operation"])})
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                     self._byok_keys.pop(jid, None)
                 event_id = await self.jobs.max_event_id(jid)
                 await self.jobs.save_checkpoint(

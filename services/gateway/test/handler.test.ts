@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { ownerOf } from "../src/routes/owner.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -107,7 +108,32 @@ test("auth/me preserves unauthenticated, expired, and success bodies", async () 
   }), env(), deps(okQuery));
   assert.equal(ok.status, 200);
   assert.equal(await ok.text(),
-    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z"}}');
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null, "email": "", "provider": "", "plan": "FREE"}}');
+});
+
+test("auth/me still works when company_members is missing", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const query: Query = async (sql) => {
+    seen.push(sql);
+    if (sql.includes("company_members")) {
+      throw Object.assign(new Error('relation "company_members" does not exist'), { code: "42P01" });
+    }
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05.000001Z",
+        expires_at: "2099-01-01T00:00:00Z",
+      }];
+    }
+    return [];
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.equal(seen.some((sql) => sql.includes("company_members")), true);
+  assert.equal(seen.some((sql) => sql.includes("access_tokens") && !sql.includes("company_members")), true);
 });
 
 test("conversation list pages with a Python-compatible cursor", async () => {
@@ -140,14 +166,14 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.equal(body.data.length, 1);
   assert.equal(body.data[0].title, "채팅");
   assert.equal(body.page.hasMore, true);
-  assert.equal(body.page.nextCursor, encodeCursor("2026-10-17T21:57:28.172000Z", USER));
+  assert.equal(body.page.nextCursor, encodeCursor("2026-10-17T21:57:28Z", USER));
   assert.equal(seen.length, 1);
   const listSql = String(seen[0][0]);
   assert.match(listSql, /access_tokens/);
   assert.match(listSql, /FROM conversations/);
   assert.match(listSql, /archived = false/);
-  assert.match(listSql, /ORDER BY c\.created_at DESC, c\.id DESC/);
-  assert.match(listSql, /ORDER BY page\.created_at DESC, page\.id DESC/);
+  assert.match(listSql, /ORDER BY c\.updated_at DESC, c\.id DESC/);
+  assert.match(listSql, /ORDER BY page\.updated_at DESC, page\.id DESC/);
   assert.match(listSql, /to_char\(page\.created_at AT TIME ZONE 'UTC'/);
 });
 
@@ -1079,7 +1105,7 @@ test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async (
   assert.equal(postings.status, 200);
   const upload = await handle(new Request("https://push-be.example/api/v1/uploads/images", { method: "POST" }), env(python, core), deps(async () => []));
   assert.equal(upload.status, 200);
-  assert.deepEqual(forwarded, ["core /api/v1/postings", "python /api/v1/uploads/images"]);
+  assert.deepEqual(forwarded, ["core /api/v1/postings", "core /api/v1/uploads/images"]);
 
   let target = "";
   let secret = "";
@@ -1101,4 +1127,186 @@ test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async (
   assert.equal(target, "https://ai.example.test/api/v1/ai/generate");
   assert.equal(secret, "test-secret");
   assert.equal(forwarded.length, 2);
+});
+
+test("auth/me returns employer membership from the joined row", async () => {
+  resetLimits();
+  let sql = "";
+  const query: Query = async (text) => {
+    sql = text;
+    if (text.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05.000001Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true,
+        company_id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        company_role: "ADMIN",
+      }];
+    }
+    return [];
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(query));
+  assert.equal(res.status, 200);
+  assert.match(sql, /company_members/);
+  assert.match(sql, /is_employer/);
+  assert.equal(await res.text(),
+    '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN", "email": "", "provider": "", "plan": "FREE"}}');
+});
+
+test("email auth posts are owned by core", () => {
+  for (const path of [
+    "/api/v1/auth/email/signup",
+    "/api/v1/auth/email/verify",
+    "/api/v1/auth/email/login",
+    "/api/v1/auth/email/password-reset",
+    "/api/v1/auth/email/password-reset/confirm",
+  ]) {
+    assert.equal(ownerOf("POST", path), "core");
+  }
+});
+
+test("company routes are owned by core", () => {
+  for (const path of [
+    "/api/v1/companies",
+    "/api/v1/companies/verify",
+    "/api/v1/companies/me",
+    "/api/v1/companies/me/members",
+    "/api/v1/companies/me/invites",
+    "/api/v1/companies/invites/tok/accept",
+    "/api/v1/companies/me/members/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  ]) {
+    assert.equal(ownerOf("GET", path), "core");
+    assert.equal(ownerOf("POST", path), "core");
+    assert.equal(ownerOf("PATCH", path), "core");
+    assert.equal(ownerOf("DELETE", path), "core");
+  }
+  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
+});
+
+test("billing top-up, iap, and store webhooks are owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/billing/topup"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/iap/verify"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/webhook/app-store"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/internal/notifications/ai-done"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/internal/notifications/run"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
+});
+
+const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+test("personal conversation list sql excludes company rows", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const listSql = seen.find((sql) => sql.includes("FROM conversations")) ?? "";
+  assert.match(listSql, /company_id IS NULL/);
+});
+
+test("employer conversation list sql filters by the caller company", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations?audience=EMPLOYER", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql, params) => {
+    seen.push([sql, params]);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const list = seen.find(([sql]) => sql.includes("FROM conversations") && !sql.includes("access_tokens"));
+  assert.ok(list);
+  assert.match(list[0], /company_id = \$1::uuid/);
+  assert.equal(list[1][0], COMPANY);
+  assert.doesNotMatch(list[0], /user_id = \$1/);
+});
+
+test("conversation pdf upload is owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
+});
+
+const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+test("company message reads include a teammate and ignore the author filter", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const message = {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    conversation_id: SHARED_CONV,
+    role: "USER",
+    text: "팀 메시지",
+    attachments: [],
+    operation_id: null,
+    created_at: "2026-10-17T21:57:28Z",
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations/" + SHARED_CONV + "/messages", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("json_agg")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, conversation_id: SHARED_CONV, rows: [message],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const sql = seen.find((item) => item.includes("FROM messages")) ?? "";
+  assert.match(sql, /company_id = \(SELECT company_id FROM auth\)/);
+  assert.match(sql, /found\.company_id IS NOT NULL/);
+  const body = await res.json() as { data: { text: string }[] };
+  assert.equal(body.data[0].text, "팀 메시지");
+});
+
+test("an active company job is visible to a teammate", async () => {
+  resetLimits();
+  const seen: string[] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations/" + SHARED_CONV + "/messages/stream/active", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql) => {
+    seen.push(sql);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        is_employer: true, company_id: COMPANY, company_role: "MEMBER",
+        hits: 1, conversation_id: SHARED_CONV, job_id: null,
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 204);
+  const sql = seen.find((item) => item.includes("chat_jobs")) ?? "";
+  assert.match(sql, /company_id = \(SELECT company_id FROM auth\)/);
+  assert.match(sql, /company_id FROM found\) IS NOT NULL/);
 });

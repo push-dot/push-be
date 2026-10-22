@@ -220,7 +220,6 @@ class ChatWorkflow(WorkflowEntrypoint):
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         apply_env(self.env)
-        _install_scheduler(self.env)
         if asgi is None:
             raise RuntimeError("workers package is not installed")
         scope = _begin_db_scope()
@@ -234,7 +233,6 @@ class Default(WorkerEntrypoint):
         # env argument is empty on this runtime.
         env = getattr(self, "env", None) or env
         apply_env(env)
-        _install_scheduler(env)
         scope = _begin_db_scope()
         try:
             await ensure_ready(app)

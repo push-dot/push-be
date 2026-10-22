@@ -1,0 +1,315 @@
+[
+ {
+  "name": "status",
+  "method": "GET",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "messages",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/messages",
+  "body": null
+ },
+ {
+  "name": "messages by app",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/messages?applicationId=c0000000-0000-4000-8000-000000000001",
+  "body": null
+ },
+ {
+  "name": "messages bad app",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/messages?applicationId=x",
+  "body": null
+ },
+ {
+  "name": "events",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/events",
+  "body": null
+ },
+ {
+  "name": "events range",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/events?from=2026-11-06T00:00:00Z",
+  "body": null
+ },
+ {
+  "name": "events bad range",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/events?to=nope",
+  "body": null
+ },
+ {
+  "name": "link",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/messages/f8000000-0000-4000-8000-000000000001/link",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "link other message",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/messages/f8000000-0000-4000-8000-000000000003/link",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000001"
+  }
+ },
+ {
+  "name": "link other app",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/messages/f8000000-0000-4000-8000-000000000001/link",
+  "body": {
+   "applicationId": "c0000000-0000-4000-8000-000000000003"
+  }
+ },
+ {
+  "name": "link bad body",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/messages/f8000000-0000-4000-8000-000000000001/link",
+  "body": {}
+ },
+ {
+  "name": "connect bad method",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/connect",
+  "body": {
+   "codeChallenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+   "codeChallengeMethod": "plain",
+   "redirectUri": "push://integrations/google/callback"
+  }
+ },
+ {
+  "name": "connect no challenge",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/connect",
+  "body": {
+   "codeChallenge": "",
+   "codeChallengeMethod": "S256",
+   "redirectUri": "push://integrations/google/callback"
+  }
+ },
+ {
+  "name": "connect bad redirect",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/connect",
+  "body": {
+   "codeChallenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+   "codeChallengeMethod": "S256",
+   "redirectUri": "https://evil.example/cb"
+  }
+ },
+ {
+  "name": "connect app",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/connect",
+  "body": {
+   "codeChallenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+   "codeChallengeMethod": "S256",
+   "redirectUri": "push://integrations/google/callback"
+  }
+ },
+ {
+  "name": "connect web",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/connect",
+  "body": {
+   "codeChallenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+   "codeChallengeMethod": "S256",
+   "redirectUri": "http://localhost:5174/integrations/google/callback"
+  }
+ },
+ {
+  "name": "callback unknown state",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=nope",
+  "body": null
+ },
+ {
+  "name": "callback expired",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=state-old",
+  "body": null
+ },
+ {
+  "name": "callback login state",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=state-login",
+  "body": null
+ },
+ {
+  "name": "callback web",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=state-ok",
+  "body": null
+ },
+ {
+  "name": "callback default",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=state-default",
+  "body": null
+ },
+ {
+  "name": "callback reused",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/callback?code=c&state=state-ok",
+  "body": null
+ },
+ {
+  "name": "complete unknown",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "nope",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "complete used",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-used",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "complete expired",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-expired",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "complete other user",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-other",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "complete bad verifier",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-valid",
+   "codeVerifier": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+ },
+ {
+  "name": "complete",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-valid",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "complete again",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/complete",
+  "body": {
+   "integrationCode": "code-valid",
+   "codeVerifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ {
+  "name": "status after complete",
+  "method": "GET",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "integration after complete",
+  "sql": "SELECT scopes::text AS scopes, token_expires_at::text AS token_expires_at, (refresh_ciphertext IS NOT NULL)::text AS has_refresh, gmail_history_id, calendar_sync_token, last_synced_at::text AS last_synced_at FROM google_integrations"
+ },
+ {
+  "name": "sync",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/sync",
+  "body": null
+ },
+ {
+  "name": "messages rows after sync",
+  "sql": "SELECT external_id, thread_id, application_id::text AS application_id, sender, subject, snippet, received_at::text AS received_at, created_at::text AS created_at FROM google_messages ORDER BY external_id"
+ },
+ {
+  "name": "events rows after sync",
+  "sql": "SELECT external_id, type, title, starts_at::text AS starts_at, ends_at::text AS ends_at, time_zone, source, revision::text AS revision FROM calendar_events WHERE source = 'GOOGLE' ORDER BY external_id"
+ },
+ {
+  "name": "integration after sync",
+  "sql": "SELECT gmail_history_id, calendar_sync_token, last_synced_at::text AS last_synced_at FROM google_integrations"
+ },
+ {
+  "name": "operations after sync",
+  "sql": "SELECT type, status, result::text AS result, error::text AS error FROM operations"
+ },
+ {
+  "name": "messages after sync",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/messages",
+  "body": null
+ },
+ {
+  "name": "events after sync",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/events",
+  "body": null
+ },
+ {
+  "name": "status after sync",
+  "method": "GET",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "disconnect",
+  "method": "DELETE",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "disconnect again",
+  "method": "DELETE",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "status after disconnect",
+  "method": "GET",
+  "path": "/api/v1/integrations/google",
+  "body": null
+ },
+ {
+  "name": "messages after disconnect",
+  "method": "GET",
+  "path": "/api/v1/integrations/google/messages",
+  "body": null
+ },
+ {
+  "name": "sync after disconnect",
+  "method": "POST",
+  "path": "/api/v1/integrations/google/sync",
+  "body": null
+ },
+ {
+  "name": "integration codes after",
+  "sql": "SELECT code, (used_at IS NOT NULL)::text AS used FROM integration_codes WHERE code LIKE 'code-%' UNION ALL SELECT 'new codes', count(*)::text FROM integration_codes WHERE code NOT LIKE 'code-%' ORDER BY 1"
+ },
+ {
+  "name": "oauth states after",
+  "sql": "SELECT provider, purpose, final_uri, redirect_uri, code_challenge, expires_at::text AS expires_at, (user_id IS NOT NULL)::text AS has_user FROM oauth_states ORDER BY expires_at, final_uri"
+ },
+ {
+  "name": "google rows after",
+  "sql": "SELECT (SELECT count(*) FROM google_integrations)::text AS integrations, (SELECT count(*) FROM google_messages WHERE user_id = '11111111-1111-4111-8111-111111111111')::text AS messages, (SELECT count(*) FROM calendar_events WHERE source = 'GOOGLE')::text AS events"
+ }
+]

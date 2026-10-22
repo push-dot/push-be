@@ -1,0 +1,1134 @@
+[
+ {
+  "name": "sources list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f1000000-0000-4000-8000-000000000001",
+     "fileName": "notes.txt",
+     "mimeType": "text/plain",
+     "size": 12,
+     "pageCount": null,
+     "createdAt": "2026-10-03T00:00:00.500000Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000002",
+     "fileName": "resume.pdf",
+     "mimeType": "application/pdf",
+     "size": 9,
+     "pageCount": 2,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "fileName": "Other app resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "fileName": "Resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000003",
+     "fileName": "old.md",
+     "mimeType": "text/markdown",
+     "size": 3,
+     "pageCount": null,
+     "createdAt": "2026-09-30T00:00:00Z",
+     "origin": "AI"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "sources upload kind",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f1000000-0000-4000-8000-000000000001",
+     "fileName": "notes.txt",
+     "mimeType": "text/plain",
+     "size": 12,
+     "pageCount": null,
+     "createdAt": "2026-10-03T00:00:00.500000Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000002",
+     "fileName": "resume.pdf",
+     "mimeType": "application/pdf",
+     "size": 9,
+     "pageCount": 2,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000003",
+     "fileName": "old.md",
+     "mimeType": "text/markdown",
+     "size": 3,
+     "pageCount": null,
+     "createdAt": "2026-09-30T00:00:00Z",
+     "origin": "AI"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "sources ai kind",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "fileName": "Other app resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "fileName": "Resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "sources bad kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported kind",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "sources page 1",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f1000000-0000-4000-8000-000000000001",
+     "fileName": "notes.txt",
+     "mimeType": "text/plain",
+     "size": 12,
+     "pageCount": null,
+     "createdAt": "2026-10-03T00:00:00.500000Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000002",
+     "fileName": "resume.pdf",
+     "mimeType": "application/pdf",
+     "size": 9,
+     "pageCount": 2,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "origin": "UPLOAD"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wM1QwMDowMDowMFp8ZjEwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "sources page 2",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "fileName": "Other app resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "fileName": "Resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wMlQwMDowMDowMFp8ZDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "sources bad cursor",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid cursor",
+    "requestId": "parity",
+    "details": {
+     "field": "cursor"
+    }
+   }
+  }
+ },
+ {
+  "name": "source get",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f1000000-0000-4000-8000-000000000001",
+    "fileName": "notes.txt",
+    "mimeType": "text/plain",
+    "size": 12,
+    "sha256": "sha-notes",
+    "status": "STORED",
+    "createdAt": "2026-10-03T00:00:00.500000Z"
+   }
+  }
+ },
+ {
+  "name": "source get other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "source get bad id",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "id"
+    }
+   }
+  }
+ },
+ {
+  "name": "source content text",
+  "status": 200,
+  "contentType": "text/plain; charset=utf-8",
+  "base64": "aGVsbG8g7J2066Cl7ISc"
+ },
+ {
+  "name": "source content pdf",
+  "status": 200,
+  "contentType": "application/pdf",
+  "base64": "JVBERi0xLjQK"
+ },
+ {
+  "name": "source content other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "source delete referenced",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "source is referenced by evidence",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "source delete",
+  "status": 204,
+  "body": null
+ },
+ {
+  "name": "source delete again",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "source delete other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "source upload",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "584e15b0-2d82-4cb7-a26b-3ae6663141eb",
+    "fileName": "new.txt",
+    "mimeType": "text/plain",
+    "size": 20,
+    "sha256": "023874a4991eb404b2ec6c43d136999f73c24b88f6fab29aaba3adcc1f70d740",
+    "status": "STORED"
+   }
+  }
+ },
+ {
+  "name": "source upload no kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "source upload bad type",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported file type image/png",
+    "requestId": "parity",
+    "details": {
+     "field": "file"
+    }
+   }
+  }
+ },
+ {
+  "name": "image upload",
+  "status": 201,
+  "body": {
+   "data": {
+    "key": "a1658fbea2a940138d982082d9388523.png",
+    "url": "/api/v1/uploads/images/a1658fbea2a940138d982082d9388523.png"
+   }
+  }
+ },
+ {
+  "name": "image upload mismatch",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported image type",
+    "requestId": "parity",
+    "details": {
+     "field": "file"
+    }
+   }
+  }
+ },
+ {
+  "name": "image upload no file",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "file"
+    }
+   }
+  }
+ },
+ {
+  "name": "image get public",
+  "status": 200,
+  "contentType": "image/png",
+  "base64": "iVBORw0KGgoAAAANSUhEUg=="
+ },
+ {
+  "name": "image get missing",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "image get bad key",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid image key",
+    "requestId": "parity",
+    "details": {
+     "field": "key"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence list",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f0000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "kind": "RESUME",
+     "title": "From resume",
+     "sourceText": "Payments lead",
+     "sourceUrl": "https://example.com/cv",
+     "skills": [
+      "Go",
+      "SQL"
+     ],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": "f1000000-0000-4000-8000-000000000002",
+      "projectEvidenceId": null,
+      "contentHash": "abc",
+      "sourceLocation": {
+       "start": 0,
+       "end": 5,
+       "unit": "CODE_POINT"
+      }
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    },
+    {
+     "id": "f0000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "kind": "PROJECT",
+     "title": "Payments",
+     "sourceText": "Built payments",
+     "sourceUrl": null,
+     "skills": [],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "",
+      "sourceLocation": null
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-01T00:00:00Z",
+     "updatedAt": "2026-10-01T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "evidence list kind",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f0000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "kind": "RESUME",
+     "title": "From resume",
+     "sourceText": "Payments lead",
+     "sourceUrl": "https://example.com/cv",
+     "skills": [
+      "Go",
+      "SQL"
+     ],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": "f1000000-0000-4000-8000-000000000002",
+      "projectEvidenceId": null,
+      "contentHash": "abc",
+      "sourceLocation": {
+       "start": 0,
+       "end": 5,
+       "unit": "CODE_POINT"
+      }
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "evidence list bad kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported kind",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence list query",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f0000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "kind": "RESUME",
+     "title": "From resume",
+     "sourceText": "Payments lead",
+     "sourceUrl": "https://example.com/cv",
+     "skills": [
+      "Go",
+      "SQL"
+     ],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": "f1000000-0000-4000-8000-000000000002",
+      "projectEvidenceId": null,
+      "contentHash": "abc",
+      "sourceLocation": {
+       "start": 0,
+       "end": 5,
+       "unit": "CODE_POINT"
+      }
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    },
+    {
+     "id": "f0000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "kind": "PROJECT",
+     "title": "Payments",
+     "sourceText": "Built payments",
+     "sourceUrl": null,
+     "skills": [],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "",
+      "sourceLocation": null
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-01T00:00:00Z",
+     "updatedAt": "2026-10-01T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "evidence list page",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f0000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "kind": "RESUME",
+     "title": "From resume",
+     "sourceText": "Payments lead",
+     "sourceUrl": "https://example.com/cv",
+     "skills": [
+      "Go",
+      "SQL"
+     ],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": "f1000000-0000-4000-8000-000000000002",
+      "projectEvidenceId": null,
+      "contentHash": "abc",
+      "sourceLocation": {
+       "start": 0,
+       "end": 5,
+       "unit": "CODE_POINT"
+      }
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "updatedAt": "2026-10-02T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": "MjAyNi0xMC0wMlQwMDowMDowMFp8ZjAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+    "hasMore": true
+   }
+  }
+ },
+ {
+  "name": "evidence get",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f0000000-0000-4000-8000-000000000002",
+    "revision": 2,
+    "kind": "RESUME",
+    "title": "From resume",
+    "sourceText": "Payments lead",
+    "sourceUrl": "https://example.com/cv",
+    "skills": [
+     "Go",
+     "SQL"
+    ],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": "f1000000-0000-4000-8000-000000000002",
+     "projectEvidenceId": null,
+     "contentHash": "abc",
+     "sourceLocation": {
+      "start": 0,
+      "end": 5,
+      "unit": "CODE_POINT"
+     }
+    },
+    "supersedesId": null,
+    "archived": false,
+    "createdAt": "2026-10-02T00:00:00Z",
+    "updatedAt": "2026-10-02T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence get empty provenance",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f0000000-0000-4000-8000-000000000003",
+    "revision": 1,
+    "kind": "SKILL",
+    "title": "Old skill",
+    "sourceText": "Perl",
+    "sourceUrl": null,
+    "skills": [],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": null,
+     "projectEvidenceId": null,
+     "contentHash": "",
+     "sourceLocation": null
+    },
+    "supersedesId": null,
+    "archived": true,
+    "createdAt": "2026-09-01T00:00:00Z",
+    "updatedAt": "2026-09-01T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence get other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence create",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "2b5479ea-1354-456e-ad90-1bbe51fdf81e",
+    "revision": 1,
+    "kind": "PROJECT",
+    "title": "Search",
+    "sourceText": "Built search",
+    "sourceUrl": "https://example.com/p",
+    "skills": [
+     "Go"
+    ],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": null,
+     "projectEvidenceId": null,
+     "contentHash": "efa7b6e0d0b4a6b5331a09a49cbc2d6af4ee5acde0b3bdb017ccbea6ed4f33f2",
+     "sourceLocation": null
+    },
+    "supersedesId": null,
+    "archived": false,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence create minimal",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "35f24bdc-656f-4793-9d24-666482642435",
+    "revision": 1,
+    "kind": "SKILL",
+    "title": "Rust",
+    "sourceText": "Rust",
+    "sourceUrl": null,
+    "skills": [],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": null,
+     "projectEvidenceId": null,
+     "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
+     "sourceLocation": null
+    },
+    "supersedesId": null,
+    "archived": false,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence create supersedes",
+  "status": 201,
+  "body": {
+   "data": {
+    "id": "b387d5a2-7054-4c0e-8b53-d4230033eeb5",
+    "revision": 1,
+    "kind": "SKILL",
+    "title": "Rust 2",
+    "sourceText": "Rust",
+    "sourceUrl": null,
+    "skills": [],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": null,
+     "projectEvidenceId": null,
+     "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
+     "sourceLocation": null
+    },
+    "supersedesId": "f0000000-0000-4000-8000-000000000001",
+    "archived": false,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence create supersedes missing",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "referenced evidence not found",
+    "requestId": "parity",
+    "details": {
+     "field": "supersedesId"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create bad kind",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "unsupported kind",
+    "requestId": "parity",
+    "details": {
+     "field": "kind"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create long title",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "title must be 1-200 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "title"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create empty text",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "sourceText must be 1-100000 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "sourceText"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create bad url",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be an http(s) URL without credentials",
+    "requestId": "parity",
+    "details": {
+     "field": "sourceUrl"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create bad skill",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "each skill must be 1-100 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "skills"
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence create extra",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for CreateEvidenceReq\nx\n  Extra inputs are not permitted [type=extra_forbidden, input_value=1, input_type=int]\n    For further information visit https://errors.pydantic.dev/2.10/v/extra_forbidden",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence archive stale",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "resource was modified",
+    "requestId": "parity",
+    "details": {
+     "currentRevision": 2
+    }
+   }
+  }
+ },
+ {
+  "name": "evidence archive",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f0000000-0000-4000-8000-000000000002",
+    "revision": 3,
+    "kind": "RESUME",
+    "title": "From resume",
+    "sourceText": "Payments lead",
+    "sourceUrl": "https://example.com/cv",
+    "skills": [
+     "Go",
+     "SQL"
+    ],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": "f1000000-0000-4000-8000-000000000002",
+     "projectEvidenceId": null,
+     "contentHash": "abc",
+     "sourceLocation": {
+      "start": 0,
+      "end": 5,
+      "unit": "CODE_POINT"
+     }
+    },
+    "supersedesId": null,
+    "archived": true,
+    "createdAt": "2026-10-02T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence archive again",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f0000000-0000-4000-8000-000000000002",
+    "revision": 3,
+    "kind": "RESUME",
+    "title": "From resume",
+    "sourceText": "Payments lead",
+    "sourceUrl": "https://example.com/cv",
+    "skills": [
+     "Go",
+     "SQL"
+    ],
+    "verificationStatus": "USER_PROVIDED",
+    "provenance": {
+     "sourceId": "f1000000-0000-4000-8000-000000000002",
+     "projectEvidenceId": null,
+     "contentHash": "abc",
+     "sourceLocation": {
+      "start": 0,
+      "end": 5,
+      "unit": "CODE_POINT"
+     }
+    },
+    "supersedesId": null,
+    "archived": true,
+    "createdAt": "2026-10-02T00:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "evidence archive other",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "evidence list after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "b387d5a2-7054-4c0e-8b53-d4230033eeb5",
+     "revision": 1,
+     "kind": "SKILL",
+     "title": "Rust 2",
+     "sourceText": "Rust",
+     "sourceUrl": null,
+     "skills": [],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
+      "sourceLocation": null
+     },
+     "supersedesId": "f0000000-0000-4000-8000-000000000001",
+     "archived": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "35f24bdc-656f-4793-9d24-666482642435",
+     "revision": 1,
+     "kind": "SKILL",
+     "title": "Rust",
+     "sourceText": "Rust",
+     "sourceUrl": null,
+     "skills": [],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "d9aa89fdd15ad5c41d9c128feffe9e07dc828b83f85296f7f42bda506821300e",
+      "sourceLocation": null
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "2b5479ea-1354-456e-ad90-1bbe51fdf81e",
+     "revision": 1,
+     "kind": "PROJECT",
+     "title": "Search",
+     "sourceText": "Built search",
+     "sourceUrl": "https://example.com/p",
+     "skills": [
+      "Go"
+     ],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "efa7b6e0d0b4a6b5331a09a49cbc2d6af4ee5acde0b3bdb017ccbea6ed4f33f2",
+      "sourceLocation": null
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f0000000-0000-4000-8000-000000000001",
+     "revision": 1,
+     "kind": "PROJECT",
+     "title": "Payments",
+     "sourceText": "Built payments",
+     "sourceUrl": null,
+     "skills": [],
+     "verificationStatus": "USER_PROVIDED",
+     "provenance": {
+      "sourceId": null,
+      "projectEvidenceId": null,
+      "contentHash": "",
+      "sourceLocation": null
+     },
+     "supersedesId": null,
+     "archived": false,
+     "createdAt": "2026-10-01T00:00:00Z",
+     "updatedAt": "2026-10-01T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "sources list after",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "584e15b0-2d82-4cb7-a26b-3ae6663141eb",
+     "fileName": "new.txt",
+     "mimeType": "text/plain",
+     "size": 20,
+     "pageCount": null,
+     "createdAt": "2026-10-22T12:00:00Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000001",
+     "fileName": "notes.txt",
+     "mimeType": "text/plain",
+     "size": 12,
+     "pageCount": null,
+     "createdAt": "2026-10-03T00:00:00.500000Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "f1000000-0000-4000-8000-000000000002",
+     "fileName": "resume.pdf",
+     "mimeType": "application/pdf",
+     "size": 9,
+     "pageCount": 2,
+     "createdAt": "2026-10-03T00:00:00Z",
+     "origin": "UPLOAD"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000002",
+     "fileName": "Other app resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    },
+    {
+     "id": "d0000000-0000-4000-8000-000000000001",
+     "fileName": "Resume",
+     "mimeType": "application/json",
+     "size": 0,
+     "pageCount": null,
+     "createdAt": "2026-10-02T00:00:00Z",
+     "origin": "AI"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ }
+]

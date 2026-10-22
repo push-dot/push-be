@@ -3,8 +3,8 @@
   "name": "push-be-python",
   // src/ is the upload root, so a repo-level .venv is not part of the bundle.
   // The public workers.dev name is the TypeScript gateway (services/gateway).
-  // This worker is only reached through the front worker's service binding,
-  // plus its own cron and Workflow triggers.
+  // This worker is only reached through the front worker's service binding.
+  // Chat jobs run on the redis ai-worker, not a Workflow.
   "main": "src/worker.py",
   "compatibility_date": "2026-10-17",
   "compatibility_flags": ["python_workers"],
@@ -13,19 +13,10 @@
   "observability": {
     "enabled": true
   },
-  // Keep this cron. The public `push-be` worker deploys `"crons": []`
-  // only to delete the schedule left on that name; this worker still
-  // nudges pending chats and sweeps rate-limit rows.
+  // Empty crons delete the old minute nudge. Chat runs on the redis worker.
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": []
   },
-  "workflows": [
-    {
-      "name": "push-chat",
-      "binding": "CHAT_WORKFLOW",
-      "class_name": "ChatWorkflow"
-    }
-  ],
   "vars": {
     "APP_ENV": "production",
     "DB_DRIVER": "neon",

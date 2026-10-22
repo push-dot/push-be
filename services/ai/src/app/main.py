@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException
 
 from app.config import Config, load_config
 from app.db import create_pool, run_migrations, DB, migrations_dir
-from app.jobs import external_jobs
+from app.jobs import external_jobs, runs_local_chat_worker
 from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
@@ -47,8 +47,8 @@ from app.api.gateway_secret import SharedSecretMiddleware
 from app.api.middleware import ApiMiddleware
 from app.api.routers import (
     ai, applications, approvals, conversations, documents, evidence,
-    experiments, integrations, internal, interviews, jobs, operations,
-    projects, uploads,
+    internal, interviews, jobs, operations,
+    projects,
 )
 
 
@@ -123,7 +123,7 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
     if cfg.byok_master_key:
         cipher = new_key_cipher(cfg.byok_master_key)
     oauth = OAuthClient()
-    openai = OpenAIClient(base_url=cfg.ai_base_url)
+    openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)
     openai_byok = OpenAIClient()
     openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
     grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
@@ -137,7 +137,8 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
     gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
                   go_chat=openai_go, go_key=cfg.opencode_go_key,
                   openrouter_chat=openrouter_byok,
-                  grok_chat=grok_byok, claude_chat=claude_byok)
+                  grok_chat=grok_byok, claude_chat=claude_byok,
+                  config=cfg)
     auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                         cfg.dev_auth_token, cfg.dev_user_id)
     approvals = ApprovalService(db)
@@ -174,13 +175,11 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         from langgraph.checkpoint.memory import MemorySaver
         saver = MemorySaver()
     else:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        saver_ctx = AsyncPostgresSaver.from_conn_string(cfg.database_url)
-        saver = await saver_ctx.__aenter__()
-        await saver.setup()
+        from app.db import open_chat_checkpointer
+        saver, saver_ctx = await open_chat_checkpointer(cfg.database_url)
     conversations = ConversationService(
         db, gate, saver, documents, jobs_svc, applications)
-    if not external_jobs():
+    if runs_local_chat_worker():
         await conversations.start_worker()
     resume_workflow = ResumeWorkflowService(
         db, applications, jobs_svc, documents, evidence_svc, approvals)
@@ -216,10 +215,14 @@ async def _shutdown(app: FastAPI) -> None:
         return
     (conversations, saver_ctx, oauth, openai, openai_byok,
      openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool) = closers
-    if conversations is not None and not external_jobs():
+    if conversations is not None and runs_local_chat_worker():
         await conversations.stop_worker()
     if saver_ctx is not None:
-        await saver_ctx.__aexit__(None, None, None)
+        close = getattr(saver_ctx, "close", None)
+        if close is not None:
+            await close()
+        else:
+            await saver_ctx.__aexit__(None, None, None)
     await oauth.aclose()
     await openai.aclose()
     await openai_byok.aclose()
@@ -272,8 +275,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     for r in (evidence.router, jobs.router, applications.router,
               documents.router, projects.router, interviews.router,
               conversations.router, approvals.router,
-              operations.router, integrations.router, ai.router,
-              experiments.router, uploads.router):
+              operations.router, ai.router):
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

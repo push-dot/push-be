@@ -97,6 +97,10 @@ class AnalyzeReq(Req):
     ai: Optional[AiOptionsReq] = None
 
 
+class PostingFitReq(Req):
+    document_id: UUIDT
+
+
 class CreateApplicationReq(Req):
     job_id: UUIDT
     notes: str = ""
@@ -404,6 +408,8 @@ class PostMessageReq(Req):
     context: Optional[MessageContextReq] = None
     ai: Optional[AiOptionsReq] = None
     access_mode: str = ""
+    intent: Optional[str] = None
+    application_id: Optional[UUIDT] = None
 
 
 class ExperimentEventReq(Req):

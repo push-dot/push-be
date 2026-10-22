@@ -47,11 +47,48 @@ def _node_lines(node: dict, out: list[str], prefix: str = "") -> None:
             out.append(prefix + text)
 
 
-def render_pdf(md_lines: list[str]) -> bytes:
+def render_pdf(md_lines: list[str], template: str | None = None,
+               photo_bytes: bytes | None = None) -> bytes:
+    from app.domain.entities import stored_document_template
     from app.infrastructure.resume_workspace import md_to_pdf
+
+    lines = list(md_lines)
+    if template:
+        lines.append(stored_document_template(template))
     buf = io.BytesIO()
-    md_to_pdf("\n".join(md_lines), buf)
-    return buf.getvalue()
+    md_to_pdf("\n".join(lines), buf)
+    data = buf.getvalue()
+    if not photo_bytes:
+        return data
+    try:
+        stamped = _stamp_photo(data, photo_bytes)
+    except Exception:
+        return data
+    return stamped if stamped is not None else data
+
+
+def _stamp_photo(pdf: bytes, photo: bytes) -> bytes | None:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+    from pypdf import PdfReader, PdfWriter
+
+    overlay = io.BytesIO()
+    sheet = canvas.Canvas(overlay, pagesize=A4)
+    sheet.drawImage(ImageReader(io.BytesIO(photo)), 500, 760, 40, 40,
+                    mask="auto", preserveAspectRatio=True)
+    sheet.save()
+    overlay.seek(0)
+    base = PdfReader(io.BytesIO(pdf))
+    stamp = PdfReader(overlay)
+    if not base.pages:
+        return None
+    writer = PdfWriter()
+    writer.append(base)
+    writer.pages[0].merge_page(stamp.pages[0])
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def render_docx(md_lines: list[str]) -> bytes:

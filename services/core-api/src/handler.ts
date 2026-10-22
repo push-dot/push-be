@@ -1,12 +1,27 @@
 import { isUnique, one, query } from "./db.ts";
+import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
-import { billingStatus, checkout, ledger, portal, webhook } from "./routes/billing.ts";
+import { dispatchEmailAuth } from "./routes/email-auth.ts";
+import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, patchConversation, postMessage } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
+import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
+import { dispatchSources } from "./routes/sources.ts";
+import { dispatchImages, isImageRead } from "./routes/images.ts";
+import { dispatchEvidence } from "./routes/evidence.ts";
+import { dispatchExperiments } from "./routes/experiments.ts";
+import { dispatchInterviews } from "./routes/interviews.ts";
+import { dispatchProjects } from "./routes/projects.ts";
+import { dispatchIntegrations, isGoogleCallback } from "./routes/integrations.ts";
+import { dispatchDocuments } from "./routes/documents.ts";
+import { dispatchApplications } from "./routes/applications.ts";
+import { dispatchCompanies } from "./routes/companies.ts";
+import { dispatchConsents } from "./routes/consents.ts";
+import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
 import { dispatchRecruiting } from "./routes/recruiting.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
@@ -15,8 +30,34 @@ const PUBLIC = new Set([
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
   "/api/v1/billing/webhook",
+  "/api/v1/billing/webhook/app-store",
+  "/api/v1/billing/webhook/google-play",
+]);
+const EMAIL_PUBLIC = new Set([
+  "/api/v1/auth/email/signup",
+  "/api/v1/auth/email/verify",
+  "/api/v1/auth/email/login",
+  "/api/v1/auth/email/password-reset",
+  "/api/v1/auth/email/password-reset/confirm",
 ]);
 const PENDING_MS = 5 * 60 * 1000;
+const GUEST_ID = "00000000-0000-0000-0000-000000000000";
+const POSTING_UUID = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const APPLICANT_COUNTS = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/applicant-counts$/i;
+
+const isGuestRead = (method: string, path: string): boolean => {
+  if (method !== "GET") return false;
+  return path === "/api/v1/postings"
+    || path === "/api/v1/postings/locations"
+    || path === "/api/v1/postings/facets"
+    || path === "/api/v1/search"
+    || path === "/api/v1/search/counts"
+    || path === "/api/v1/search/trending"
+    || POSTING_UUID.test(path)
+    || APPLICANT_COUNTS.test(path);
+};
+
+const guestUser = (): UserRow => ({ ...anonymous(), id: GUEST_ID });
 
 export type { CoreEnv, Deps };
 
@@ -29,14 +70,30 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
   const path = url.pathname;
   const now = (deps.now ?? (() => new Date()))();
   try {
-    if (isPublic(request.method, path)) {
+    const authz = request.headers.get("authorization") || "";
+    if (request.method === "POST" && path.startsWith("/api/v1/internal/notifications/")) {
+      const ctx = base(request, env, deps, rid, url, now, anonymous());
+      const job = await dispatchNotificationJobs(ctx, path);
+      if (job) return job;
+    }
+    const acted = await actAs(request, env, deps.query);
+    if (acted) {
+      const user = await userForActAs(deps.query, acted);
+      if (!(await allow(deps.query, "user", user.id, 600, now.getTime()))) {
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      const ctx = base(request, env, deps, rid, url, now, user);
+      if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
+      return await idempotent(ctx, path);
+    }
+    if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
-      const ctx = base(request, env, deps, rid, url, now, anonymous());
+      const user = isGuestRead(request.method, path) ? guestUser() : anonymous();
+      const ctx = base(request, env, deps, rid, url, now, user);
       return await dispatch(ctx, path);
     }
-    const authz = request.headers.get("authorization") || "";
     if (!authz.startsWith("Bearer ")) {
       return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
     }
@@ -46,7 +103,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
     }
     const ctx = base(request, env, deps, rid, url, now, user);
     if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
-    return await idempotent(ctx, path);
+    return await idempotent(await withApprovalAnswerKey(ctx, path), path);
   } catch (err) {
     if (err instanceof HttpError) return errorOf(err, rid);
     return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -55,8 +112,9 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
 
 function anonymous(): UserRow {
   return {
-    id: "", displayName: "", locale: "ko", plan: "FREE", subscriptionStatus: "NONE",
+    id: "", displayName: "", locale: "ko", email: "", provider: "", plan: "FREE", subscriptionStatus: "NONE",
     stripeCustomerId: null, periodEndsAt: null, createdAt: "",
+    accountType: "PERSONAL", companyId: null, companyRole: null,
   };
 }
 
@@ -64,9 +122,14 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
   return { request, env, deps, rid, url, now, user };
 }
 
-function isPublic(method: string, path: string): boolean {
+function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
-  return method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path);
+  if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
+  if (isImageRead(method, path)) return true;
+  if (isGoogleCallback(method, path)) return true;
+  return authorization === "" && isGuestRead(method, path);
 }
 
 async function dispatch(ctx: Ctx, path: string): Promise<Response> {
@@ -79,20 +142,32 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
   if (method === "GET" && path === "/api/v1/auth/me") return me(ctx);
   if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
+  const emailed = await dispatchEmailAuth(ctx, path);
+  if (emailed) return emailed;
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
   if (method === "PATCH" && conv) return patchConversation(ctx, conv[1]);
   const archive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/archive$/);
   if (method === "POST" && archive) return archiveConversation(ctx, archive[1]);
-  const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
+  const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages(?:\/stream)?$/);
   if (method === "POST" && message) return postMessage(ctx, message[1]);
+  const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);
+  if (method === "POST" && attachment) return postAttachment(ctx, attachment[1]);
+  const approval = path.match(/^\/api\/v1\/conversations\/([^/]+)\/approvals\/([^/]+)$/);
+  if (method === "POST" && approval) return resolveApproval(ctx, approval[1], approval[2]);
+  const resumeJob = path.match(/^\/api\/v1\/conversations\/([^/]+)\/resume-jobs$/);
+  if (method === "POST" && resumeJob) return postResumeJob(ctx, resumeJob[1]);
 
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
+  if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
   if (method === "POST" && path === "/api/v1/billing/portal") return portal(ctx);
+  if (method === "POST" && path === "/api/v1/billing/iap/verify") return verifyIap(ctx);
   if (method === "GET" && path === "/api/v1/billing/ledger") return ledger(ctx);
   if (method === "POST" && path === "/api/v1/billing/webhook") return webhook(ctx);
+  if (method === "POST" && path === "/api/v1/billing/webhook/app-store") return appleWebhook(ctx);
+  if (method === "POST" && path === "/api/v1/billing/webhook/google-play") return googleWebhook(ctx);
 
   if (method === "GET" && path === "/api/v1/ai/keys") return listKeys(ctx);
   const key = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)$/);
@@ -101,6 +176,12 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const test = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)\/test$/);
   if (method === "POST" && test) return testKey(ctx, decodeURIComponent(test[1]));
   if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
+  const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
+  if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);
+  const generate = path.match(/^\/api\/v1\/documents\/([^/]+)\/generate$/);
+  if (method === "POST" && generate) return enqueueDocumentGenerate(ctx, generate[1]);
+  const fit = path.match(/^\/api\/v1\/postings\/([^/]+)\/fit$/);
+  if (method === "POST" && fit) return enqueueFit(ctx, fit[1]);
 
   if (method === "GET" && path === "/api/v1/jobs") return listJobs(ctx);
   if (method === "POST" && path === "/api/v1/jobs") return createJob(ctx);
@@ -112,12 +193,36 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
 
   const recruited = await dispatchRecruiting(ctx, path);
   if (recruited) return recruited;
+  const companies = await dispatchCompanies(ctx, path);
+  if (companies) return companies;
 
   if (method === "GET" && path === "/api/v1/calendar/events") return listEvents(ctx);
   if (method === "POST" && path === "/api/v1/calendar/events") return createEvent(ctx);
   const event = path.match(/^\/api\/v1\/calendar\/events\/([^/]+)$/);
   if (method === "PATCH" && event) return patchEvent(ctx, event[1]);
   if (method === "DELETE" && event) return deleteEvent(ctx, event[1]);
+
+  const consents = await dispatchConsents(ctx, path);
+  if (consents) return consents;
+
+  const applications = await dispatchApplications(ctx, path);
+  if (applications) return applications;
+  const sources = await dispatchSources(ctx, path);
+  if (sources) return sources;
+  const images = await dispatchImages(ctx, path);
+  if (images) return images;
+  const evidence = await dispatchEvidence(ctx, path);
+  if (evidence) return evidence;
+  const experiments = await dispatchExperiments(ctx, path);
+  if (experiments) return experiments;
+  const interviews = await dispatchInterviews(ctx, path);
+  if (interviews) return interviews;
+  const projects = await dispatchProjects(ctx, path);
+  if (projects) return projects;
+  const integrations = await dispatchIntegrations(ctx, path);
+  if (integrations) return integrations;
+  const documents = await dispatchDocuments(ctx, path);
+  if (documents) return documents;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }
@@ -127,8 +232,17 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   if (!key) {
     return errorResponse(400, "VALIDATION_ERROR", "must be a UUID", ctx.rid, { field: "Idempotency-Key" });
   }
-  const body = new Uint8Array(await ctx.request.clone().arrayBuffer());
-  const requestHash = await sha256Bytes(body);
+  const requestBytes = new Uint8Array(await ctx.request.arrayBuffer());
+  const requestHash = await sha256Bytes(requestBytes);
+  const live: Ctx = {
+    ...ctx,
+    request: new Request(ctx.request.url, {
+      method: ctx.request.method,
+      headers: ctx.request.headers,
+      body: requestBytes.slice(),
+      signal: ctx.request.signal,
+    }),
+  };
   const id = crypto.randomUUID();
   let inserted = false;
   try {
@@ -137,18 +251,22 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
       [id, ctx.user.id, path, key, requestHash, ctx.now.toISOString()]);
     inserted = Boolean(row);
   } catch (err) {
-    if (!isUnique(err)) return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    if (!isUnique(err)) {
+      return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    }
   }
   if (!inserted) {
     const existing = await one(ctx.deps.query,
       "SELECT id, request_hash, response_status, response_body, response_headers, created_at FROM idempotency_keys WHERE user_id = $1 AND method = 'POST' AND path = $2 AND key = $3",
       [ctx.user.id, path, key]);
-    if (!existing) return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    if (!existing) {
+      return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
+    }
     const pending = existing.response_status == null;
     const stale = pending && ctx.now.getTime() - Date.parse(String(existing.created_at)) > PENDING_MS;
     if (stale) {
       await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [String(existing.id)]);
-      return idempotent(ctx, path);
+      return idempotent(live, path);
     }
     if (String(existing.request_hash) !== requestHash || pending) {
       return errorResponse(409, "IDEMPOTENCY_CONFLICT", "idempotency key conflict", ctx.rid);
@@ -169,7 +287,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   }
   let response: Response;
   try {
-    response = await dispatch(ctx, path);
+    response = await dispatch(live, path);
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [id]);
     if (err instanceof HttpError) return errorOf(err, ctx.rid);

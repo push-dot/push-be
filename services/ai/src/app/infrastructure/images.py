@@ -1,68 +1,15 @@
-"""Local image files for recruiting uploads.
-
-shortcut: local disk, swap to R2 at deploy
-"""
+"""Uploaded images. New uploads live in Postgres (`upload_images`, written by
+push-be-core); files under STORAGE_DIR/images are the pre-migration copies."""
 
 from __future__ import annotations
 
 import os
-from uuid import uuid4
 
-from app.domain.errors import DomainError, payload_too_large, validation_field
-
-MAX_IMAGE_BYTES = 10 << 20
-
-_ALIASES = {
-    "image/jpg": "image/jpeg",
-    "image/pjpeg": "image/jpeg",
-    "image/heif": "image/heic",
-}
-_EXT = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/heic": ".heic",
-}
+from app.domain.errors import DomainError, validation_field
 
 
 def image_dir(storage_dir: str) -> str:
-    # shortcut: local disk, swap to R2 at deploy
     return os.path.join(storage_dir, "images")
-
-
-def sniff_image(data: bytes) -> str | None:
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in {
-            b"heic", b"heix", b"heif", b"mif1", b"msf1"}:
-        return "image/heic"
-    return None
-
-
-def normalize_type(content_type: str) -> str:
-    base = (content_type or "").split(";", 1)[0].strip().lower()
-    return _ALIASES.get(base, base)
-
-
-def save_image(storage_dir: str, data: bytes, content_type: str) -> tuple[str, str]:
-    if len(data) > MAX_IMAGE_BYTES:
-        raise payload_too_large()
-    declared = normalize_type(content_type)
-    sniffed = sniff_image(data)
-    if sniffed is None or declared not in _EXT or declared != sniffed:
-        raise validation_field("file", "unsupported image type")
-    key = uuid4().hex + _EXT[sniffed]
-    directory = image_dir(storage_dir)
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    path = os.path.join(directory, key)
-    with open(path, "wb") as handle:
-        handle.write(data)
-    os.chmod(path, 0o600)
-    return key, "/api/v1/uploads/images/" + key
 
 
 def image_path(storage_dir: str, key: str) -> str:
@@ -72,6 +19,13 @@ def image_path(storage_dir: str, key: str) -> str:
     if not os.path.isfile(path):
         raise DomainError(404, "NOT_FOUND", "resource not found")
     return path
+
+
+async def image_bytes(db, key: str) -> bytes | None:
+    if not _safe_key(key):
+        return None
+    content = await db.q().fetchval("SELECT content FROM upload_images WHERE key = $1", key)
+    return None if content is None else bytes(content)
 
 
 def media_type(key: str) -> str:
