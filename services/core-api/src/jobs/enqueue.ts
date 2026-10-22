@@ -14,6 +14,8 @@ import {
   type QueueName,
 } from "./config.ts";
 
+import { ensureMonthlyGrant } from "../billing/credits.ts";
+
 export { availableMicro } from "./credits.ts";
 
 export type EnqueueInput = {
@@ -25,6 +27,7 @@ export type EnqueueInput = {
   idempotencyKey?: string;
   conversationId?: string;
   byok: boolean;
+  now?: Date;
 };
 
 const EXISTING = "SELECT id, queue FROM ai_jobs WHERE user_id = $1 AND idempotency_key = $2";
@@ -112,6 +115,14 @@ export const enqueueJob = async (tx: Query, input: EnqueueInput): Promise<{ jobI
   const audience: Audience = input.companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(input.type, input.plan, audience);
   const amount = estimateMicro(input.type, input.plan);
+  if (!input.byok && amount > 0n) {
+    await ensureMonthlyGrant(tx, {
+      audience,
+      plan: input.plan,
+      ownerId: input.companyId ?? input.userId,
+      now: input.now ?? new Date(),
+    });
+  }
   await reserveCredits(tx, {
     userId: input.userId,
     companyId: input.companyId,
