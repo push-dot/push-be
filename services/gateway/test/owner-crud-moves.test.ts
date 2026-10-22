@@ -34,3 +34,10 @@ test("source, image and career evidence routes go to core except file parsing", 
   assert.equal(ownerOf("POST", `/api/v1/career-evidence/${ID}/archive`), "core");
   assert.equal(ownerOf("POST", "/api/v1/career-evidence/import"), "python");
 });
+
+test("experiment routes go to core", () => {
+  assert.equal(ownerOf("GET", "/api/v1/experiments/onboarding/assignment"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/experiments/onboarding/events"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/experiments/onboarding/stats"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/experiments/onboarding/results"), "core");
+});

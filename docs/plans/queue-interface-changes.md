@@ -59,3 +59,9 @@ Parity gaps:
 - Schema-level body errors (missing field, extra field, wrong JSON type, bad UUID) return the same 400 `VALIDATION_ERROR` with `details: null`, but the message is `invalid request body` instead of `invalid request body: <pydantic error text>`.
 - `appliedAt` and `nextActionAt` accept the usual RFC3339 forms (date, date-time, fraction up to 6 digits, `Z` or offset). Python `datetime.fromisoformat` also accepts rarer ISO forms (basic format, week dates); core answers 400 for those.
 - Submit: Python runs the checks and writes in one transaction. Core runs the checks, then one statement that consumes the approval only while the application revision is unchanged, and writes the submission, stage change and events with it. A concurrent edit between the checks and that statement gives 409 `REVISION_CONFLICT`, as in Python.
+
+## Task 10d: experiments
+
+Moved to core: `GET /experiments/{key}/assignment`, `POST /experiments/{key}/events`, `GET /experiments/{key}/stats`, `GET /experiments/{key}/results`. 22 parity cases, all equal. Seeding from `EXPERIMENTS` still runs in the Python bootstrap (ai-worker), which writes the same `experiments` table.
+
+Parity gaps: schema-level body errors (message text only, as in 10b). `rate` of `0.0`/`1.0` is written as `0`/`1`; JSON readers see the same number.

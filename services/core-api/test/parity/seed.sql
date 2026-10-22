@@ -79,3 +79,19 @@ INSERT INTO career_evidence (id, user_id, revision, kind, title, source_text, so
 
 INSERT INTO upload_images (key, user_id, mime_type, content, created_at) VALUES
     ('0123456789abcdef0123456789abcdef.png', '11111111-1111-4111-8111-111111111111', 'image/png', decode('89504e470d0a1a0a0000000d49484452', 'hex'), '2026-10-01T00:00:00Z');
+
+-- experiments group
+INSERT INTO experiments (key, variants, status, exclusion_group, created_at, updated_at) VALUES
+    ('onboarding', '["control", "short"]', 'active', '', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'),
+    ('retired', '["old", "new"]', 'ended', '', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'),
+    ('group-a', '["a1", "a2"]', 'active', 'grp', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'),
+    ('group-b', '["b1", "b2"]', 'active', 'grp', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'),
+    ('empty', '[]', 'active', '', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
+
+INSERT INTO experiment_assignments (experiment_key, user_id, variant, created_at) VALUES
+    ('onboarding', '22222222-2222-4222-8222-222222222222', 'short', '2026-10-02T00:00:00Z');
+
+INSERT INTO experiment_events (id, experiment_key, user_id, variant, event, created_at) VALUES
+    ('f2000000-0000-4000-8000-000000000001', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'exposure', '2026-10-02T00:00:00Z'),
+    ('f2000000-0000-4000-8000-000000000002', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'exposure', '2026-10-02T00:00:01Z'),
+    ('f2000000-0000-4000-8000-000000000003', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'conversion', '2026-10-02T00:00:02Z');

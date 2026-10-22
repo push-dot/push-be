@@ -12,6 +12,7 @@ import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-s
 import { dispatchSources } from "./routes/sources.ts";
 import { dispatchImages, isImageRead } from "./routes/images.ts";
 import { dispatchEvidence } from "./routes/evidence.ts";
+import { dispatchExperiments } from "./routes/experiments.ts";
 import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
@@ -192,6 +193,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (images) return images;
   const evidence = await dispatchEvidence(ctx, path);
   if (evidence) return evidence;
+  const experiments = await dispatchExperiments(ctx, path);
+  if (experiments) return experiments;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

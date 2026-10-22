@@ -1,0 +1,290 @@
+[
+ {
+  "name": "assignment new",
+  "status": 200,
+  "body": {
+   "data": {
+    "experimentKey": "onboarding",
+    "variant": "short",
+    "enrolled": true,
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "assignment again",
+  "status": 200,
+  "body": {
+   "data": {
+    "experimentKey": "onboarding",
+    "variant": "short",
+    "enrolled": true,
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "assignment ended",
+  "status": 200,
+  "body": {
+   "data": {
+    "experimentKey": "retired",
+    "variant": "old",
+    "enrolled": true,
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "assignment group a",
+  "status": 200,
+  "body": {
+   "data": {
+    "experimentKey": "group-a",
+    "variant": "a2",
+    "enrolled": true,
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "assignment group b",
+  "status": 200,
+  "body": {
+   "data": {
+    "experimentKey": "group-b",
+    "variant": "b1",
+    "enrolled": false,
+    "createdAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "assignment missing",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "assignment empty variants",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be non-empty",
+    "requestId": "parity",
+    "details": {
+     "field": "variants"
+    }
+   }
+  }
+ },
+ {
+  "name": "event",
+  "status": 201,
+  "body": {
+   "data": {
+    "recorded": true
+   }
+  }
+ },
+ {
+  "name": "event conversion",
+  "status": 201,
+  "body": {
+   "data": {
+    "recorded": true
+   }
+  }
+ },
+ {
+  "name": "event too long",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be 1-100 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "event"
+    }
+   }
+  }
+ },
+ {
+  "name": "event empty",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be 1-100 characters",
+    "requestId": "parity",
+    "details": {
+     "field": "event"
+    }
+   }
+  }
+ },
+ {
+  "name": "event missing experiment",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "event ended",
+  "status": 201,
+  "body": {
+   "data": {
+    "recorded": true
+   }
+  }
+ },
+ {
+  "name": "event group a",
+  "status": 201,
+  "body": {
+   "data": {
+    "recorded": true
+   }
+  }
+ },
+ {
+  "name": "event group b",
+  "status": 201,
+  "body": {
+   "data": {
+    "recorded": true
+   }
+  }
+ },
+ {
+  "name": "event bad body",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 2 validation errors for ExperimentEventReq\nevent\n  Field required [type=missing, input_value={'name': 'x'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing\nname\n  Extra inputs are not permitted [type=extra_forbidden, input_value='x', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.10/v/extra_forbidden",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "stats",
+  "status": 200,
+  "body": {
+   "data": {
+    "key": "onboarding",
+    "status": "active",
+    "variants": {
+     "control": {},
+     "short": {
+      "conversion": 2,
+      "exposure": 3
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "stats ended",
+  "status": 200,
+  "body": {
+   "data": {
+    "key": "retired",
+    "status": "ended",
+    "variants": {
+     "old": {
+      "exposure": 1
+     },
+     "new": {}
+    }
+   }
+  }
+ },
+ {
+  "name": "stats missing",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "results",
+  "status": 200,
+  "body": {
+   "data": {
+    "key": "onboarding",
+    "status": "active",
+    "variants": [
+     {
+      "variant": "control",
+      "exposed": 0,
+      "converted": 0,
+      "rate": 0.0
+     },
+     {
+      "variant": "short",
+      "exposed": 2,
+      "converted": 2,
+      "rate": 1.0
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "results group a",
+  "status": 200,
+  "body": {
+   "data": {
+    "key": "group-a",
+    "status": "active",
+    "variants": [
+     {
+      "variant": "a1",
+      "exposed": 0,
+      "converted": 0,
+      "rate": 0.0
+     },
+     {
+      "variant": "a2",
+      "exposed": 1,
+      "converted": 0,
+      "rate": 0.0
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "results missing",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ }
+]
