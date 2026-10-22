@@ -90,3 +90,13 @@ async def test_final_resume_is_stored_in_the_database(tmp_path, monkeypatch):
         f"/conversations/{conversation_id}/artifacts/05_final_resume.md"
     )
     UUID(file_id)
+
+
+def test_resume_get_posting_rejects_path_ids():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.harness.resume.tools import RESUME_TOOLS
+    tool = next(tool for tool in RESUME_TOOLS if tool.name == "get_posting")
+    with pytest.raises(ValidationError):
+        tool.args_model.model_validate({"posting_id": "../../me/profile"})

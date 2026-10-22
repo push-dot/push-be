@@ -28,7 +28,7 @@ class GithubArgs(BaseModel):
 
 
 class PostingArgs(BaseModel):
-    posting_id: str = ""
+    posting_id: UUID | None = None
 
 
 class FitArgs(BaseModel):
