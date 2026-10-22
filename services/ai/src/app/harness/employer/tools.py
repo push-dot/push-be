@@ -4,7 +4,8 @@ from typing import Literal
 from urllib.parse import urlencode
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 from app.domain.posting_fit import compute_fit
 from app.harness.core_client import idempotency_key
@@ -53,8 +54,16 @@ class OfferArgs(BaseModel):
 
 
 class DraftArgs(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     title: str = ""
     description: str = ""
+    job_category: Literal["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]
+    career_min: int = 0
+    career_max: int | None = None
+    location: str
+    employment_type: Literal["full_time", "contract", "intern", "freelance", "dispatch"]
+    skills: list[str] = []
     requirements: list[str] = []
     preferred: list[str] = []
 
@@ -95,8 +104,26 @@ def _http(name, tier, model, summary, method, path_of, *, write=False, body_of=N
     return ToolSpec(name, tier, model, run, lambda _args: summary)
 
 
+def _patch_posting(name, tier, model, summary, body_of, *, draft_only=False):
+    async def run(ctx: ToolContext, args):
+        path = f"/api/v1/postings/{args.posting_id}"
+        current = await ctx.core.call("GET", path, user_id=ctx.user_id, company_id=ctx.company_id)
+        if draft_only and current.get("status") != "DRAFT":
+            return {"error": "NOT_DRAFT"}
+        return await ctx.core.call(
+            "PATCH",
+            path,
+            user_id=ctx.user_id,
+            company_id=ctx.company_id,
+            json={**body_of(args), "expectedRevision": current.get("revision")},
+            idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id),
+        )
+
+    return ToolSpec(name, tier, model, run, lambda _args: summary)
+
+
 def _kept(args, drop: set[str]) -> dict:
-    body = args.model_dump(mode="json", exclude=drop)
+    body = args.model_dump(mode="json", exclude=drop, by_alias=True)
     return {key: value for key, value in body.items() if value not in ("", None, [])}
 
 
@@ -128,16 +155,13 @@ EMPLOYER_TOOLS = [
     ToolSpec("get_fit_score", Tier.READ, FitArgs, _fit, lambda _args: "공고와 얼마나 맞는지 봐요"),
     _http("draft_posting", Tier.SAFE_WRITE, DraftArgs, "공고 초안을 저장해요", "POST",
           lambda _args: "/api/v1/postings", write=True, wrap="draft",
-          body_of=lambda args: {**args.model_dump(), "status": "DRAFT"}),
-    _http("update_posting_draft", Tier.SAFE_WRITE, PostingPatch, "공고 초안을 수정해요", "PATCH",
-          lambda args: f"/api/v1/postings/{args.posting_id}", write=True,
-          body_of=lambda args: {**_kept(args, {"posting_id"}), "status": "DRAFT"}),
-    _http("publish_posting", Tier.RISKY_WRITE, PostingId, "공고를 게시해요", "PATCH",
-          lambda args: f"/api/v1/postings/{args.posting_id}", write=True,
-          body_of=lambda _args: {"status": "OPEN"}),
-    _http("update_published_posting", Tier.RISKY_WRITE, PostingPatch, "게시한 공고를 수정해요", "PATCH",
-          lambda args: f"/api/v1/postings/{args.posting_id}", write=True,
-          body_of=lambda args: _kept(args, {"posting_id"})),
+          body_of=lambda args: {**_kept(args, set()), "status": "DRAFT"}),
+    _patch_posting("update_posting_draft", Tier.SAFE_WRITE, PostingPatch, "공고 초안을 수정해요",
+                   lambda args: _kept(args, {"posting_id"}), draft_only=True),
+    _patch_posting("publish_posting", Tier.RISKY_WRITE, PostingId, "공고를 게시해요",
+                   lambda _args: {"status": "OPEN"}),
+    _patch_posting("update_published_posting", Tier.RISKY_WRITE, PostingPatch, "게시한 공고를 수정해요",
+                   lambda args: _kept(args, {"posting_id"})),
     _http("close_posting", Tier.RISKY_WRITE, PostingId, "공고를 마감해요", "POST",
           lambda args: f"/api/v1/postings/{args.posting_id}/close", write=True),
     _http("change_applicant_stage", Tier.RISKY_WRITE, StageArgs, "지원자 단계를 바꿔요", "PATCH",

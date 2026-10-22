@@ -57,7 +57,10 @@ _CORE = {
     "search_profiles": ({"q": "backend"}, ("GET", "/api/v1/profiles")),
     "get_profile": ({"profile_id": U}, ("GET", f"/api/v1/profiles/{U}")),
     "get_company": ({}, ("GET", "/api/v1/companies/me")),
-    "draft_posting": ({"title": "백엔드"}, ("POST", "/api/v1/postings")),
+    "draft_posting": (
+        {"title": "백엔드", "job_category": "dev", "location": "서울", "employment_type": "full_time"},
+        ("POST", "/api/v1/postings"),
+    ),
     "update_posting_draft": ({"posting_id": P, "title": "백엔드"}, ("PATCH", f"/api/v1/postings/{P}")),
     "publish_posting": ({"posting_id": P}, ("PATCH", f"/api/v1/postings/{P}")),
     "update_published_posting": ({"posting_id": P, "title": "시니어"}, ("PATCH", f"/api/v1/postings/{P}")),
@@ -104,7 +107,7 @@ async def test_employer_core_tool_paths(name):
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"data": {"id": "p1", "title": "백엔드"}})
+        return httpx.Response(200, json={"data": {"id": "p1", "title": "백엔드", "status": "DRAFT", "revision": 3}})
 
     core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
     tool = _tool(name)
@@ -118,13 +121,16 @@ async def test_employer_core_tool_paths(name):
         core=core,
     )
     result = await tool.run(ctx, tool.args_model.model_validate(args))
-    request = seen[0]
+    request = seen[-1]
     assert (request.method, request.url.path) == expected
     assert request.headers["x-push-company"] == "co-1"
     if expected[0] in _WRITES:
         assert request.headers["idempotency-key"]
     if name == "draft_posting":
-        assert json.loads(request.content)["status"] == "DRAFT"
+        sent = json.loads(request.content)
+        assert sent["status"] == "DRAFT"
+        assert sent["jobCategory"] == "dev"
+        assert sent["employmentType"] == "full_time"
         assert result["draft"]["id"] == "p1"
     if name == "list_applicants":
         assert request.url.params["stage"] == "SCREENING"
@@ -132,8 +138,26 @@ async def test_employer_core_tool_paths(name):
         assert json.loads(request.content)["stage"] == "INTERVIEW"
     if name == "publish_posting":
         assert json.loads(request.content)["status"] == "OPEN"
-    if name == "update_posting_draft":
-        assert json.loads(request.content)["status"] == "DRAFT"
+    if request.method == "PATCH" and "/applicants/" not in request.url.path:
+        assert json.loads(request.content)["expectedRevision"] == 3
+
+
+async def test_update_posting_draft_leaves_open_postings_alone():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(200, json={"data": {"id": P, "status": "OPEN", "revision": 2}})
+
+    tool = _tool("update_posting_draft")
+    ctx = ToolContext(
+        user_id="user-1", company_id="co-1", conversation_id="conv-1", job_id="job-1",
+        tool_call_id="call-1", db=None,
+        core=CoreClient("http://core.test", "secret", httpx.MockTransport(handler)),
+    )
+    result = await tool.run(ctx, tool.args_model.model_validate({"posting_id": P, "title": "x"}))
+    assert result == {"error": "NOT_DRAFT"}
+    assert seen == ["GET"]
 
 
 def test_core_paths_cover_employer_http_tools():
@@ -161,7 +185,7 @@ async def test_draft_posting_tool_event_has_draft():
                 "name": "draft_posting",
                 "id": "c1",
                 "type": "tool_call",
-                "args": {"title": "백엔드"},
+                "args": {"title": "백엔드", "job_category": "dev", "location": "서울", "employment_type": "full_time"},
             }],
         }, {"content": "done"}]),
         db=None,
