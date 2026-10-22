@@ -129,3 +129,30 @@ INSERT INTO approvals (id, user_id, revision, kind, application_id, target_id, t
 
 INSERT INTO project_evidence (id, user_id, revision, project_id, run_id, commit_url, commit_sha, test_results, metrics, summary, status, verification_method, verified_at, career_evidence_id, created_at, updated_at) VALUES
     ('f7000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 1, 'f5000000-0000-4000-8000-000000000002', 'f6000000-0000-4000-8000-000000000003', 'https://github.com/me/search/commit/abc123', 'abc123', '{"testCommand": "go test ./...", "testOutput": "ok", "exitCode": 0}', '[{"name": "p95", "value": 12.5, "unit": "ms"}]', 'fast', 'PENDING', NULL, NULL, NULL, '2026-10-10T00:00:00Z', '2026-10-10T00:00:00Z');
+
+
+-- integrations group (AES key: bytes 0..31; fake tokens only)
+INSERT INTO google_integrations (user_id, access_ciphertext, access_nonce, refresh_ciphertext, refresh_nonce, scopes, token_expires_at, gmail_history_id, calendar_sync_token, last_synced_at, created_at, updated_at) VALUES
+    ('11111111-1111-4111-8111-111111111111', decode('16b7c8056ee6e2f6b529e1940473a4f79d4a4f9c', 'hex'), decode('010101010101010101010101', 'hex'), decode('e95c348b723a2738d78589c1dbe9642016a2fffc', 'hex'), decode('020202020202020202020202', 'hex'), '["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"]', '2099-01-01T00:00:00Z', '100', 'sync-1', '2026-10-20T00:00:00Z', '2026-10-01T00:00:00Z', '2026-10-20T00:00:00Z');
+
+INSERT INTO google_messages (id, user_id, external_id, thread_id, application_id, sender, subject, snippet, received_at, created_at) VALUES
+    ('f8000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'old-1', 't-1', NULL, 'recruiter@acme.example', '면접 안내', '안녕하세요', '2026-10-18T00:00:00Z', '2026-10-18T00:00:00Z'),
+    ('f8000000-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 'old-2', 't-2', 'c0000000-0000-4000-8000-000000000001', 'hr@acme.example', 'Offer', 'Congrats', NULL, '2026-10-19T00:00:00Z'),
+    ('f8000000-0000-4000-8000-000000000003', '22222222-2222-4222-8222-222222222222', 'other-1', 't-3', NULL, 'x@y', 'Not mine', '', NULL, '2026-10-19T00:00:00Z');
+
+INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES
+    ('f3000000-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 1, NULL, 'CUSTOM', 'Synced call', '2026-11-05T01:00:00Z', '2026-11-05T02:00:00Z', 'Asia/Seoul', 'GOOGLE', 'gev-1', '', '2026-10-20T00:00:00Z', '2026-10-20T00:00:00Z'),
+    ('f3000000-0000-4000-8000-000000000003', '11111111-1111-4111-8111-111111111111', 1, NULL, 'CUSTOM', 'To cancel', '2026-11-06T01:00:00Z', '2026-11-06T02:00:00Z', 'UTC', 'GOOGLE', 'gev-gone', '', '2026-10-20T00:00:01Z', '2026-10-20T00:00:01Z');
+
+INSERT INTO integration_codes (code, user_id, code_challenge, payload, expires_at, used_at, created_at) VALUES
+    ('code-valid', '11111111-1111-4111-8111-111111111111', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', '{"ciphertext": "lWldtWj3IWWKMm0bo4huJzg3gt20nUuTrp1kb2FE2zfoa2ixzuIZx3KLZnwfZlN/hPRbjInRJcVOmG4rp82ULjO695J78VP1J+UjIKc/KAHPpNjzdO8s0CESTQVL4ViL3o7VjNnCpudiLWhStIqx/wOE3hr71veenhpdcJ5LGLajcIXVDi24piMMp7AtCmGRO5vrwWK9vxexKHi7C3MezgO6C+EsonSOWLUfOaNd/JBuvK/5+9UGwH8MxOZsqIqX3g==", "nonce": "AwMDAwMDAwMDAwMD"}', '2026-10-22T12:01:00Z', NULL, '2026-10-22T11:59:30Z'),
+    ('code-used', '11111111-1111-4111-8111-111111111111', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', '{"ciphertext": "lWldtWj3IWWKMm0bo4huJzg3gt20nUuTrp1kb2FE2zfoa2ixzuIZx3KLZnwfZlN/hPRbjInRJcVOmG4rp82ULjO695J78VP1J+UjIKc/KAHPpNjzdO8s0CESTQVL4ViL3o7VjNnCpudiLWhStIqx/wOE3hr71veenhpdcJ5LGLajcIXVDi24piMMp7AtCmGRO5vrwWK9vxexKHi7C3MezgO6C+EsonSOWLUfOaNd/JBuvK/5+9UGwH8MxOZsqIqX3g==", "nonce": "AwMDAwMDAwMDAwMD"}', '2026-10-22T12:01:00Z', '2026-10-22T11:59:40Z', '2026-10-22T11:59:30Z'),
+    ('code-expired', '11111111-1111-4111-8111-111111111111', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', '{"ciphertext": "lWldtWj3IWWKMm0bo4huJzg3gt20nUuTrp1kb2FE2zfoa2ixzuIZx3KLZnwfZlN/hPRbjInRJcVOmG4rp82ULjO695J78VP1J+UjIKc/KAHPpNjzdO8s0CESTQVL4ViL3o7VjNnCpudiLWhStIqx/wOE3hr71veenhpdcJ5LGLajcIXVDi24piMMp7AtCmGRO5vrwWK9vxexKHi7C3MezgO6C+EsonSOWLUfOaNd/JBuvK/5+9UGwH8MxOZsqIqX3g==", "nonce": "AwMDAwMDAwMDAwMD"}', '2026-10-22T11:00:00Z', NULL, '2026-10-22T10:59:00Z'),
+    ('code-other', '22222222-2222-4222-8222-222222222222', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', '{"ciphertext": "lWldtWj3IWWKMm0bo4huJzg3gt20nUuTrp1kb2FE2zfoa2ixzuIZx3KLZnwfZlN/hPRbjInRJcVOmG4rp82ULjO695J78VP1J+UjIKc/KAHPpNjzdO8s0CESTQVL4ViL3o7VjNnCpudiLWhStIqx/wOE3hr71veenhpdcJ5LGLajcIXVDi24piMMp7AtCmGRO5vrwWK9vxexKHi7C3MezgO6C+EsonSOWLUfOaNd/JBuvK/5+9UGwH8MxOZsqIqX3g==", "nonce": "AwMDAwMDAwMDAwMD"}', '2026-10-22T12:01:00Z', NULL, '2026-10-22T11:59:30Z');
+
+INSERT INTO oauth_states (state, provider, code_challenge, redirect_uri, expires_at, created_at, user_id, purpose, final_uri) VALUES
+    ('state-ok', 'google', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', 'http://testserver/api/v1/integrations/google/callback', '2026-10-22T12:05:00Z', '2026-10-22T11:55:00Z', '11111111-1111-4111-8111-111111111111', 'GOOGLE', 'http://localhost:5174/integrations/google/callback'),
+    ('state-default', 'google', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', 'http://testserver/api/v1/integrations/google/callback', '2026-10-22T12:05:00Z', '2026-10-22T11:55:00Z', '11111111-1111-4111-8111-111111111111', 'GOOGLE', ''),
+    ('state-old', 'google', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', 'http://testserver/api/v1/integrations/google/callback', '2026-10-22T11:00:00Z', '2026-10-22T10:50:00Z', '11111111-1111-4111-8111-111111111111', 'GOOGLE', ''),
+    ('state-login', 'google', 'ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA', 'http://testserver/api/v1/auth/google/callback', '2026-10-22T12:05:00Z', '2026-10-22T11:55:00Z', NULL, 'LOGIN', '');
+

@@ -15,6 +15,7 @@ import { dispatchEvidence } from "./routes/evidence.ts";
 import { dispatchExperiments } from "./routes/experiments.ts";
 import { dispatchInterviews } from "./routes/interviews.ts";
 import { dispatchProjects } from "./routes/projects.ts";
+import { dispatchIntegrations, isGoogleCallback } from "./routes/integrations.ts";
 import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
@@ -115,6 +116,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
+  if (isGoogleCallback(method, path)) return true;
   return authorization === "" && isGuestRead(method, path);
 }
 
@@ -201,6 +203,8 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (interviews) return interviews;
   const projects = await dispatchProjects(ctx, path);
   if (projects) return projects;
+  const integrations = await dispatchIntegrations(ctx, path);
+  if (integrations) return integrations;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

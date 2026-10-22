@@ -1,0 +1,798 @@
+[
+ {
+  "name": "status",
+  "status": 200,
+  "body": {
+   "data": {
+    "enabled": true,
+    "connected": true,
+    "scopes": [
+     "https://www.googleapis.com/auth/gmail.readonly",
+     "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "gmailStatus": "CONNECTED",
+    "calendarStatus": "CONNECTED",
+    "lastSyncedAt": "2026-10-20T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "messages",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f8000000-0000-4000-8000-000000000002",
+     "threadId": "t-2",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "sender": "hr@acme.example",
+     "subject": "Offer",
+     "snippet": "Congrats",
+     "receivedAt": null,
+     "createdAt": "2026-10-19T00:00:00Z"
+    },
+    {
+     "id": "f8000000-0000-4000-8000-000000000001",
+     "threadId": "t-1",
+     "applicationId": null,
+     "sender": "recruiter@acme.example",
+     "subject": "면접 안내",
+     "snippet": "안녕하세요",
+     "receivedAt": "2026-10-18T00:00:00Z",
+     "createdAt": "2026-10-18T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "messages by app",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f8000000-0000-4000-8000-000000000002",
+     "threadId": "t-2",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "sender": "hr@acme.example",
+     "subject": "Offer",
+     "snippet": "Congrats",
+     "receivedAt": null,
+     "createdAt": "2026-10-19T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "messages bad app",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be a UUID",
+    "requestId": "parity",
+    "details": {
+     "field": "applicationId"
+    }
+   }
+  }
+ },
+ {
+  "name": "events",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f3000000-0000-4000-8000-000000000003",
+     "revision": 1,
+     "applicationId": null,
+     "type": "CUSTOM",
+     "title": "To cancel",
+     "startsAt": "2026-11-06T01:00:00Z",
+     "endsAt": "2026-11-06T02:00:00Z",
+     "timeZone": "UTC",
+     "source": "GOOGLE",
+     "externalId": "gev-gone",
+     "notes": "",
+     "createdAt": "2026-10-20T00:00:01Z",
+     "updatedAt": "2026-10-20T00:00:01Z"
+    },
+    {
+     "id": "f3000000-0000-4000-8000-000000000002",
+     "revision": 1,
+     "applicationId": null,
+     "type": "CUSTOM",
+     "title": "Synced call",
+     "startsAt": "2026-11-05T01:00:00Z",
+     "endsAt": "2026-11-05T02:00:00Z",
+     "timeZone": "Asia/Seoul",
+     "source": "GOOGLE",
+     "externalId": "gev-1",
+     "notes": "",
+     "createdAt": "2026-10-20T00:00:00Z",
+     "updatedAt": "2026-10-20T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "events range",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f3000000-0000-4000-8000-000000000003",
+     "revision": 1,
+     "applicationId": null,
+     "type": "CUSTOM",
+     "title": "To cancel",
+     "startsAt": "2026-11-06T01:00:00Z",
+     "endsAt": "2026-11-06T02:00:00Z",
+     "timeZone": "UTC",
+     "source": "GOOGLE",
+     "externalId": "gev-gone",
+     "notes": "",
+     "createdAt": "2026-10-20T00:00:01Z",
+     "updatedAt": "2026-10-20T00:00:01Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "events bad range",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be RFC3339",
+    "requestId": "parity",
+    "details": {
+     "field": "to"
+    }
+   }
+  }
+ },
+ {
+  "name": "link",
+  "status": 200,
+  "body": {
+   "data": {
+    "id": "f8000000-0000-4000-8000-000000000001",
+    "threadId": "t-1",
+    "applicationId": "c0000000-0000-4000-8000-000000000001",
+    "sender": "recruiter@acme.example",
+    "subject": "면접 안내",
+    "snippet": "안녕하세요",
+    "receivedAt": "2026-10-18T00:00:00Z",
+    "createdAt": "2026-10-18T00:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "link other message",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "link other app",
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "NOT_FOUND",
+    "message": "resource not found",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "link bad body",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid request body: 1 validation error for LinkMessageReq\napplicationId\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.10/v/missing",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "connect bad method",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "must be S256",
+    "requestId": "parity",
+    "details": {
+     "field": "codeChallengeMethod"
+    }
+   }
+  }
+ },
+ {
+  "name": "connect no challenge",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "required",
+    "requestId": "parity",
+    "details": {
+     "field": "codeChallenge"
+    }
+   }
+  }
+ },
+ {
+  "name": "connect bad redirect",
+  "status": 400,
+  "body": {
+   "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "not allowed",
+    "requestId": "parity",
+    "details": {
+     "field": "redirectUri"
+    }
+   }
+  }
+ },
+ {
+  "name": "connect app",
+  "status": 200,
+  "body": {
+   "data": {
+    "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=gid&redirect_uri=http%3A%2F%2Ftestserver%2Fapi%2Fv1%2Fintegrations%2Fgoogle%2Fcallback&response_type=code&state=2d0AfdElZYN0Rj62M4b4PXBFQw7At9sk5vlsXTVOhwo&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&access_type=offline&prompt=consent",
+    "state": "2d0AfdElZYN0Rj62M4b4PXBFQw7At9sk5vlsXTVOhwo",
+    "expiresAt": "2026-10-22T12:10:00Z"
+   }
+  }
+ },
+ {
+  "name": "connect web",
+  "status": 200,
+  "body": {
+   "data": {
+    "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=gid&redirect_uri=http%3A%2F%2Ftestserver%2Fapi%2Fv1%2Fintegrations%2Fgoogle%2Fcallback&response_type=code&state=OHtgq4WlOpUZQLQbiNASoFYHmilUpD25R3Ct3EDuRFU&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&access_type=offline&prompt=consent",
+    "state": "OHtgq4WlOpUZQLQbiNASoFYHmilUpD25R3Ct3EDuRFU",
+    "expiresAt": "2026-10-22T12:10:00Z"
+   }
+  }
+ },
+ {
+  "name": "callback unknown state",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "invalid state",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "callback expired",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "state expired",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "callback login state",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "state expired",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "callback web",
+  "status": 302,
+  "location": "http://localhost:5174/integrations/google/callback?code=g23FRoGMoHI-n_R0xO2es0m6uQJmIxTVeS5NDO3p2-I"
+ },
+ {
+  "name": "callback default",
+  "status": 302,
+  "location": "push://integrations/google/callback?code=E8164zx-GoRZt3UkDwKWNwjnVm257CDl6FEelO2MK2Q"
+ },
+ {
+  "name": "callback reused",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "invalid state",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete unknown",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "invalid code",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete used",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "code expired or already used",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete expired",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "code expired or already used",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete other user",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "code belongs to a different account",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete bad verifier",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "pkce verification failed",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "complete",
+  "status": 200,
+  "body": {
+   "data": {
+    "enabled": true,
+    "connected": true,
+    "scopes": [
+     "https://www.googleapis.com/auth/gmail.readonly",
+     "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "gmailStatus": "CONNECTED",
+    "calendarStatus": "CONNECTED",
+    "lastSyncedAt": null
+   }
+  }
+ },
+ {
+  "name": "complete again",
+  "status": 401,
+  "body": {
+   "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "code expired or already used",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "status after complete",
+  "status": 200,
+  "body": {
+   "data": {
+    "enabled": true,
+    "connected": true,
+    "scopes": [
+     "https://www.googleapis.com/auth/gmail.readonly",
+     "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "gmailStatus": "CONNECTED",
+    "calendarStatus": "CONNECTED",
+    "lastSyncedAt": null
+   }
+  }
+ },
+ {
+  "name": "integration after complete",
+  "status": 0,
+  "body": [
+   {
+    "scopes": "[\"https://www.googleapis.com/auth/gmail.readonly\", \"https://www.googleapis.com/auth/calendar.events\"]",
+    "token_expires_at": "2026-10-22 13:00:00+00",
+    "has_refresh": "true",
+    "gmail_history_id": null,
+    "calendar_sync_token": null,
+    "last_synced_at": null
+   }
+  ]
+ },
+ {
+  "name": "sync",
+  "status": 202,
+  "body": {
+   "data": {
+    "id": "92d62296-f62d-4000-aba2-0f71d91ca3dc",
+    "type": "GOOGLE_SYNC",
+    "applicationId": null,
+    "status": "SUCCEEDED",
+    "progress": null,
+    "result": {
+     "kind": "GOOGLE_SYNC",
+     "value": {
+      "messages": 2,
+      "events": 3,
+      "lastSyncedAt": "2026-10-22T12:00:00Z"
+     }
+    },
+    "error": null,
+    "inputRequest": null,
+    "createdAt": "2026-10-22T12:00:00Z",
+    "updatedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "messages rows after sync",
+  "status": 0,
+  "body": [
+   {
+    "external_id": "m1",
+    "thread_id": "th-1",
+    "application_id": null,
+    "sender": "hr@acme.example",
+    "subject": "서류 결과",
+    "snippet": "서류 합격 안내",
+    "received_at": "2026-10-22 09:06:40+00",
+    "created_at": "2026-10-22 12:00:00+00"
+   },
+   {
+    "external_id": "old-1",
+    "thread_id": "t-1",
+    "application_id": "c0000000-0000-4000-8000-000000000001",
+    "sender": "recruiter@acme.example",
+    "subject": "면접 안내 (수정)",
+    "snippet": "updated",
+    "received_at": "2026-10-22 09:06:40.123+00",
+    "created_at": "2026-10-18 00:00:00+00"
+   },
+   {
+    "external_id": "old-2",
+    "thread_id": "t-2",
+    "application_id": "c0000000-0000-4000-8000-000000000001",
+    "sender": "hr@acme.example",
+    "subject": "Offer",
+    "snippet": "Congrats",
+    "received_at": null,
+    "created_at": "2026-10-19 00:00:00+00"
+   },
+   {
+    "external_id": "other-1",
+    "thread_id": "t-3",
+    "application_id": null,
+    "sender": "x@y",
+    "subject": "Not mine",
+    "snippet": "",
+    "received_at": null,
+    "created_at": "2026-10-19 00:00:00+00"
+   }
+  ]
+ },
+ {
+  "name": "events rows after sync",
+  "status": 0,
+  "body": [
+   {
+    "external_id": "gev-1",
+    "type": "CUSTOM",
+    "title": "Synced call (moved)",
+    "starts_at": "2026-11-05 02:00:00+00",
+    "ends_at": "2026-11-05 03:30:00+00",
+    "time_zone": "Asia/Seoul",
+    "source": "GOOGLE",
+    "revision": "2"
+   },
+   {
+    "external_id": "gev-2",
+    "type": "CUSTOM",
+    "title": "All day",
+    "starts_at": "2026-11-10 00:00:00+00",
+    "ends_at": "2026-11-10 01:00:00+00",
+    "time_zone": "UTC",
+    "source": "GOOGLE",
+    "revision": "1"
+   }
+  ]
+ },
+ {
+  "name": "integration after sync",
+  "status": 0,
+  "body": [
+   {
+    "gmail_history_id": "777",
+    "calendar_sync_token": "sync-2",
+    "last_synced_at": "2026-10-22 12:00:00+00"
+   }
+  ]
+ },
+ {
+  "name": "operations after sync",
+  "status": 0,
+  "body": [
+   {
+    "type": "GOOGLE_SYNC",
+    "status": "SUCCEEDED",
+    "result": "{\"kind\": \"GOOGLE_SYNC\", \"value\": {\"events\": 3, \"messages\": 2, \"lastSyncedAt\": \"2026-10-22T12:00:00Z\"}}",
+    "error": null
+   }
+  ]
+ },
+ {
+  "name": "messages after sync",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "f6181fba-14cb-41d8-b0c7-c068f6a5d6c2",
+     "threadId": "th-1",
+     "applicationId": null,
+     "sender": "hr@acme.example",
+     "subject": "서류 결과",
+     "snippet": "서류 합격 안내",
+     "receivedAt": "2026-10-22T09:06:40Z",
+     "createdAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f8000000-0000-4000-8000-000000000002",
+     "threadId": "t-2",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "sender": "hr@acme.example",
+     "subject": "Offer",
+     "snippet": "Congrats",
+     "receivedAt": null,
+     "createdAt": "2026-10-19T00:00:00Z"
+    },
+    {
+     "id": "f8000000-0000-4000-8000-000000000001",
+     "threadId": "t-1",
+     "applicationId": "c0000000-0000-4000-8000-000000000001",
+     "sender": "recruiter@acme.example",
+     "subject": "면접 안내 (수정)",
+     "snippet": "updated",
+     "receivedAt": "2026-10-22T09:06:40.123000Z",
+     "createdAt": "2026-10-18T00:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "events after sync",
+  "status": 200,
+  "body": {
+   "data": [
+    {
+     "id": "b86b25f7-80a6-4d3d-826a-598f7376c694",
+     "revision": 1,
+     "applicationId": null,
+     "type": "CUSTOM",
+     "title": "All day",
+     "startsAt": "2026-11-10T00:00:00Z",
+     "endsAt": "2026-11-10T01:00:00Z",
+     "timeZone": "UTC",
+     "source": "GOOGLE",
+     "externalId": "gev-2",
+     "notes": "",
+     "createdAt": "2026-10-22T12:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    },
+    {
+     "id": "f3000000-0000-4000-8000-000000000002",
+     "revision": 2,
+     "applicationId": null,
+     "type": "CUSTOM",
+     "title": "Synced call (moved)",
+     "startsAt": "2026-11-05T02:00:00Z",
+     "endsAt": "2026-11-05T03:30:00Z",
+     "timeZone": "Asia/Seoul",
+     "source": "GOOGLE",
+     "externalId": "gev-1",
+     "notes": "",
+     "createdAt": "2026-10-20T00:00:00Z",
+     "updatedAt": "2026-10-22T12:00:00Z"
+    }
+   ],
+   "page": {
+    "nextCursor": null,
+    "hasMore": false
+   }
+  }
+ },
+ {
+  "name": "status after sync",
+  "status": 200,
+  "body": {
+   "data": {
+    "enabled": true,
+    "connected": true,
+    "scopes": [
+     "https://www.googleapis.com/auth/gmail.readonly",
+     "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "gmailStatus": "CONNECTED",
+    "calendarStatus": "CONNECTED",
+    "lastSyncedAt": "2026-10-22T12:00:00Z"
+   }
+  }
+ },
+ {
+  "name": "disconnect",
+  "status": 204,
+  "body": null
+ },
+ {
+  "name": "disconnect again",
+  "status": 204,
+  "body": null
+ },
+ {
+  "name": "status after disconnect",
+  "status": 200,
+  "body": {
+   "data": {
+    "enabled": true,
+    "connected": false,
+    "scopes": [],
+    "gmailStatus": "DISCONNECTED",
+    "calendarStatus": "DISCONNECTED",
+    "lastSyncedAt": null
+   }
+  }
+ },
+ {
+  "name": "messages after disconnect",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INTEGRATION_REQUIRED",
+    "message": "google account is not connected",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "sync after disconnect",
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INTEGRATION_REQUIRED",
+    "message": "google account is not connected",
+    "requestId": "parity",
+    "details": null
+   }
+  }
+ },
+ {
+  "name": "integration codes after",
+  "status": 0,
+  "body": [
+   {
+    "code": "code-expired",
+    "used": "false"
+   },
+   {
+    "code": "code-other",
+    "used": "false"
+   },
+   {
+    "code": "code-used",
+    "used": "true"
+   },
+   {
+    "code": "code-valid",
+    "used": "true"
+   },
+   {
+    "code": "E8164zx-GoRZt3UkDwKWNwjnVm257CDl6FEelO2MK2Q",
+    "used": "false"
+   },
+   {
+    "code": "g23FRoGMoHI-n_R0xO2es0m6uQJmIxTVeS5NDO3p2-I",
+    "used": "false"
+   }
+  ]
+ },
+ {
+  "name": "oauth states after",
+  "status": 0,
+  "body": [
+   {
+    "provider": "google",
+    "purpose": "GOOGLE",
+    "final_uri": "http://localhost:5174/integrations/google/callback",
+    "redirect_uri": "http://testserver/api/v1/integrations/google/callback",
+    "code_challenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+    "expires_at": "2026-10-22 12:10:00+00",
+    "has_user": "true"
+   },
+   {
+    "provider": "google",
+    "purpose": "GOOGLE",
+    "final_uri": "push://integrations/google/callback",
+    "redirect_uri": "http://testserver/api/v1/integrations/google/callback",
+    "code_challenge": "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA",
+    "expires_at": "2026-10-22 12:10:00+00",
+    "has_user": "true"
+   }
+  ]
+ },
+ {
+  "name": "google rows after",
+  "status": 0,
+  "body": [
+   {
+    "integrations": "0",
+    "messages": "0",
+    "events": "0"
+   }
+  ]
+ }
+]

@@ -70,7 +70,22 @@ def freeze_datetime() -> None:
             return frozen.replace(tzinfo=None)
 
     import app.api.routers.evidence as evidence_routes
+    import app.infrastructure.google_client as google_client
     evidence_routes.datetime = Frozen
+    google_client.datetime = Frozen
+
+
+def mock_http(rules: list[dict]):
+    import httpx
+
+    def handler(request):
+        url = str(request.url)
+        for rule in rules:
+            if rule["method"] == request.method and url.startswith(rule["url"]):
+                return httpx.Response(rule.get("status", 200), json=rule.get("body"))
+        return httpx.Response(599, json={"error": "no parity rule for " + url})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 def request_kwargs(case: dict, headers: dict) -> dict:
@@ -88,6 +103,8 @@ def request_kwargs(case: dict, headers: dict) -> dict:
 
 
 def answer(res) -> dict:
+    if 300 <= res.status_code < 400:
+        return {"location": res.headers.get("location")}
     kind = res.headers.get("content-type", "")
     if not res.content:
         return {"body": None}
@@ -105,6 +122,9 @@ def main() -> None:
         "APP_ENV": "production", "BLOB_STORE": "db", "STORAGE_DIR": tempfile.mkdtemp(),
     })
     os.environ.pop("AI_SHARED_SECRET", None)
+    env_file = PARITY / f"{group}.env.json"
+    if env_file.exists():
+        os.environ.update(json.loads(env_file.read_text()))
     asyncio.run(seed(url, os.environ["STORAGE_DIR"]))
     time.time_ns = lambda: NOW_NS
 
@@ -115,7 +135,10 @@ def main() -> None:
 
     cases = json.loads((PARITY / f"{group}.cases.json").read_text())
     golden = []
-    with TestClient(create_app()) as client:
+    http_file = PARITY / f"{group}.http.json"
+    with TestClient(create_app(), follow_redirects=False) as client:
+        if http_file.exists():
+            client.app.state.deps.google.gapi._client = mock_http(json.loads(http_file.read_text()))
         for index, case in enumerate(cases):
             if case.get("sql"):
                 golden.append({"name": case["name"], "status": 0, "body": asyncio.run(rows(url, case["sql"]))})

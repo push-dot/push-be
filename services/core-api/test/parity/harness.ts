@@ -13,7 +13,8 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 type Multipart = { fields?: Record<string, string>; file?: { name: string; type: string; base64: string } | null };
 type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[]; sql?: string };
-type Golden = { name: string; status: number; body?: unknown; contentType?: string; base64?: string };
+type Golden = { name: string; status: number; body?: unknown; contentType?: string; base64?: string; location?: string };
+type HttpRule = { method: string; url: string; status?: number; body?: unknown };
 type Logged = { sql: string; rows?: Record<string, unknown>[]; rowCount?: number; error?: { code?: string; message: string } };
 
 const read = <T>(file: string): T => JSON.parse(readFileSync(resolve(DIR, file), "utf8")) as T;
@@ -22,17 +23,20 @@ const idempotencyKey = (index: number): string => `00000000-0000-4000-8000-${Str
 
 const knownIds = (group: string): Set<string> => {
   const text = readFileSync(resolve(DIR, "seed.sql"), "utf8") + readFileSync(resolve(DIR, `${group}.cases.json`), "utf8");
-  return new Set([...(text.match(UUID) || []), ...(text.match(HEX_KEY) || [])].map((id) => id.toLowerCase()));
+  return new Set([...(text.match(UUID) || []), ...(text.match(HEX_KEY) || [])].map((id) => id.toLowerCase())
+    .concat(text.match(TOKEN) || []));
 };
 
 const HEX_KEY = /\b[0-9a-f]{32}\b/g;
+const TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
 
 const normalize = (value: unknown, known: Set<string>): unknown => {
   if (typeof value === "string") {
     if (value.startsWith("invalid request body")) return "invalid request body";
     return value
       .replace(UUID, (id) => (known.has(id.toLowerCase()) ? id : "<new-uuid>"))
-      .replace(HEX_KEY, (key) => (known.has(key) ? key : "<new-key>"));
+      .replace(HEX_KEY, (key) => (known.has(key) ? key : "<new-key>"))
+      .replace(TOKEN, (token) => (known.has(token) ? token : "<token>"));
   }
   if (Array.isArray(value)) return sortNewTies(value.map((item) => normalize(item, known)));
   if (value && typeof value === "object") {
@@ -113,20 +117,32 @@ const drop = (value: unknown, keys: string[] = []): unknown => {
   return { ...(value as object), data: Object.fromEntries(Object.entries(inner).filter(([key]) => !keys.includes(key))) };
 };
 
+const fakeFetch = (rules: HttpRule[]): typeof fetch => async (input, init) => {
+  const url = String(input instanceof Request ? input.url : input);
+  const method = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const rule = rules.find((r) => r.method === method && url.startsWith(r.url));
+  if (!rule) return new Response(JSON.stringify({ error: "no parity rule for " + url }), { status: 599 });
+  return new Response(JSON.stringify(rule.body ?? null), { status: rule.status ?? 200, headers: { "content-type": "application/json" } });
+};
+
 const expected = (golden: Golden, known: Set<string>, ignore?: string[]): string => {
+  if (golden.location !== undefined) return JSON.stringify(normalize({ location: golden.location }, known));
   if (golden.base64 !== undefined) return JSON.stringify({ contentType: golden.contentType, base64: golden.base64 });
   return JSON.stringify(normalize(drop(golden.body ?? null, ignore), known));
 };
 
 const actual = async (res: Response, known: Set<string>, ignore?: string[]): Promise<string> => {
+  if (res.status >= 300 && res.status < 400) return JSON.stringify(normalize({ location: res.headers.get("location") }, known));
   const kind = res.headers.get("content-type") || "";
   const bytes = Buffer.from(await res.arrayBuffer());
   if (bytes.length && !kind.startsWith("application/json")) return JSON.stringify({ contentType: kind, base64: bytes.toString("base64") });
   return JSON.stringify(normalize(drop(bytes.length ? JSON.parse(bytes.toString("utf8")) : null, ignore), known));
 };
 
-export const parityGroup = async (group: string, env: CoreEnv = { APP_ENV: "production" }): Promise<{ ran: boolean; mismatches: string[] }> => {
+export const parityGroup = async (group: string, base: CoreEnv = { APP_ENV: "production" }): Promise<{ ran: boolean; mismatches: string[] }> => {
   const cases = read<Case[]>(`${group}.cases.json`);
+  const env: CoreEnv = existsSync(resolve(DIR, `${group}.env.json`)) ? { ...base, ...read<CoreEnv>(`${group}.env.json`) } : base;
+  const fetchImpl = existsSync(resolve(DIR, `${group}.http.json`)) ? fakeFetch(read<HttpRule[]>(`${group}.http.json`)) : undefined;
   const golden = read<Golden[]>(`${group}.golden.json`);
   const queriesFile = `${group}.queries.json`;
   const url = process.env.PARITY_PG_URL;
@@ -166,11 +182,11 @@ export const parityGroup = async (group: string, env: CoreEnv = { APP_ENV: "prod
       const headers: Record<string, string> = { "x-request-id": "parity" };
       if (item.auth !== false) headers.authorization = "Bearer parity-token";
       if (["POST", "PATCH", "PUT"].includes(item.method)) headers["idempotency-key"] = idempotencyKey(index);
-      const res = await handle(new Request("https://core.example" + item.path, {
+      const res = await handle(new Request("http://testserver" + item.path, {
         method: item.method,
         headers,
         body: requestBody(item.body, headers),
-      }), env, { query, now: () => NOW });
+      }), env, { query, now: () => NOW, fetch: fetchImpl });
       const want = expected(golden[index], known, item.ignoreKeys);
       const got = await actual(res, known, item.ignoreKeys);
       if (res.status !== golden[index].status || got !== want) {

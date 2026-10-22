@@ -80,6 +80,10 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/projects\/[^/]+\/select$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/projects\/[^/]+\/(runs|evidence)$/.test(path)) return method === "GET" || method === "POST";
   if (/^\/api\/v1\/projects\/[^/]+\/runs\/[^/]+\/(start|launch|recover|result)$/.test(path)) return method === "POST";
+  if (path === "/api/v1/integrations/google") return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/integrations\/google\/(connect|complete|sync)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/integrations\/google\/(callback|messages|events)$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/integrations\/google\/messages\/[^/]+\/link$/.test(path)) return method === "POST";
   if (path === "/api/v1/applications") return method === "GET" || method === "POST";
   if (path === "/api/v1/applications/import") return method === "POST";
   if (/^\/api\/v1\/applications\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";

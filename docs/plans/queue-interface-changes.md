@@ -80,3 +80,15 @@ Moved to core: `GET /projects`, `GET /projects/{id}`, `POST /projects/{id}/selec
 - Starting a run consumes the `CLI_EXECUTE` approval only while the run revision is unchanged, in the same statement that moves the run to `RUNNING`.
 
 Parity gaps: schema-level body errors (message text only).
+
+## Task 10d: Google integration
+
+Moved to core: `GET/DELETE /integrations/google`, `POST /integrations/google/connect|complete|sync`, `GET /integrations/google/callback` (public, as before), `GET /integrations/google/messages|events`, `POST /integrations/google/messages/{id}/link`. `GET /integrations/job-sites` was already answered by the gateway itself; the dead Python route is gone. 47 parity cases, all equal, with SQL checks of the synced messages, calendar events, integration row, operation row, used codes and OAuth states.
+
+- Parity runs the real Python `GoogleClient` against an `httpx.MockTransport` and core against a fake `fetch`, both serving `test/parity/integrations.http.json`. No test calls Google.
+- Tokens stay encrypted with the same AES-GCM key and AAD (`<userId>|google|v1`), so rows written by Python before the switch keep working.
+- The OAuth callback URL is now built from the request origin core sees, which is the public gateway host. Python on the VPS built it from its own host. Deploy step: add `https://<gateway host>/api/v1/integrations/google/callback` to the Google OAuth client's authorized redirect URIs.
+
+Parity gaps:
+- Sync writes messages, events, the integration row and the operation one statement at a time; Python used one transaction. A failure in the middle can leave some synced rows behind, with the operation marked FAILED.
+- Schema-level body errors (message text only).

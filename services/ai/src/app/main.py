@@ -47,7 +47,7 @@ from app.api.gateway_secret import SharedSecretMiddleware
 from app.api.middleware import ApiMiddleware
 from app.api.routers import (
     ai, applications, approvals, conversations, documents, evidence,
-    integrations, internal, interviews, jobs, operations,
+    internal, interviews, jobs, operations,
     postings, projects,
 )
 
@@ -275,7 +275,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     for r in (evidence.router, jobs.router, postings.router, applications.router,
               documents.router, projects.router, interviews.router,
               conversations.router, approvals.router,
-              operations.router, integrations.router, ai.router):
+              operations.router, ai.router):
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

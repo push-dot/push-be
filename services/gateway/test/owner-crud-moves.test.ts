@@ -64,3 +64,11 @@ test("project routes go to core except AI blueprints and verification", () => {
   assert.equal(ownerOf("POST", "/api/v1/projects/blueprints"), "python");
   assert.equal(ownerOf("POST", `/api/v1/projects/${ID}/evidence/${ID}/verify`), "python");
 });
+
+test("google integration routes go to core", () => {
+  assert.equal(ownerOf("GET", "/api/v1/integrations/google"), "core");
+  assert.equal(ownerOf("DELETE", "/api/v1/integrations/google"), "core");
+  for (const step of ["connect", "complete", "sync"]) assert.equal(ownerOf("POST", `/api/v1/integrations/google/${step}`), "core");
+  for (const read of ["callback", "messages", "events"]) assert.equal(ownerOf("GET", `/api/v1/integrations/google/${read}`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/integrations/google/messages/${ID}/link`), "core");
+});

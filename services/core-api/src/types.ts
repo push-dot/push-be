@@ -25,6 +25,7 @@ export interface CoreEnv {
   BYOK_MASTER_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_GMAIL_BETA_ENABLED?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   STRIPE_SECRET_KEY?: string;
