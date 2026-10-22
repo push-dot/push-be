@@ -3,10 +3,17 @@ import { errorResponse, sha256Hex } from "../http.ts";
 import { cacheOf, modelCacheUrls } from "../middleware/cache.ts";
 import { clearLease, isolate } from "../middleware/ratelimit.ts";
 
+const stripInternal = (headers: Headers): void => {
+  headers.delete("x-push-internal");
+  headers.delete("x-push-internal-secret");
+  headers.delete("x-push-act-as");
+  headers.delete("x-push-company");
+};
+
 export async function proxy(request: Request, binding: FrontEnv["API"] | undefined, rid: string): Promise<Response> {
   if (!binding) return errorResponse(500, "INTERNAL", "internal error", rid);
   const headers = new Headers(request.headers);
-  headers.delete("x-push-internal");
+  stripInternal(headers);
   headers.set("x-request-id", rid);
   const init: RequestInit = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -45,7 +52,7 @@ export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, r
   if (!origin) return proxy(request, env.API, rid);
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
-  headers.delete("x-push-internal");
+  stripInternal(headers);
   headers.delete("host");
   headers.set("x-request-id", rid);
   const secret = (env.AI_SHARED_SECRET || "").trim();

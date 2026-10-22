@@ -38,6 +38,7 @@ export interface CoreEnv {
   RESEND_API_KEY?: string;
   EXPO_ACCESS_TOKEN?: string;
   INTERNAL_JOB_TOKEN?: string;
+  INTERNAL_API_SECRET?: string;
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
   NTS_SERVICE_KEY?: string;

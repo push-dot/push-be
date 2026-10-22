@@ -1,4 +1,5 @@
 import { isUnique, one, query } from "./db.ts";
+import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
@@ -64,6 +65,16 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
       const ctx = base(request, env, deps, rid, url, now, anonymous());
       const job = await dispatchNotificationJobs(ctx, path);
       if (job) return job;
+    }
+    const acted = await actAs(request, env, deps.query);
+    if (acted) {
+      const user = await userForActAs(deps.query, acted);
+      if (!(await allow(deps.query, "user", user.id, 600, now.getTime()))) {
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      const ctx = base(request, env, deps, rid, url, now, user);
+      if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
+      return await idempotent(ctx, path);
     }
     if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
