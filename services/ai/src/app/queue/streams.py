@@ -35,7 +35,8 @@ class StreamQueue:
             consumer,
             {queue: ">" for queue in queues},
             count=count,
-            block=block_ms,
+            # Redis reads BLOCK 0 as "wait forever"; 0 here means a non-blocking poll.
+            block=block_ms if block_ms > 0 else None,
         )
         out: list[Message] = []
         for queue, messages in found or []:
