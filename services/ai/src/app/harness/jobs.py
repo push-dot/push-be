@@ -46,3 +46,57 @@ async def approved_edit(svc, payload: dict, user_id):
 class _Done:
     async def astream(self, *args, **kwargs):
         yield "custom", {"type": "done"}
+
+
+async def run_queue_turn(svc, ctx, cancelled) -> dict | None:
+    from app.config import harness_enabled
+    from app.domain.employer_chat import turn_from_payload
+    from app.domain.services.conversation import _live_event
+    from app.graphs.chat import byok_key_var
+    from app.jsonutil import to_jsonable
+    from app.queue.worker import JobCancelled, JobFailed
+
+    job = ctx.job
+    payload = dict(job.get("payload") or {})
+    source = await approved_edit(svc, payload, job["user_id"]) if payload.get("resume") else None
+    if source is None and not harness_enabled():
+        return None
+    source = source or svc.graph
+    state = {
+        "user_id": job["user_id"],
+        "conversation_id": job["conversation_id"],
+        "text": payload.get("text") or "",
+        "context": payload.get("context") or {},
+        "ai": payload.get("ai"),
+        "access_mode": payload.get("access_mode") or payload.get("accessMode") or "AUTO",
+        "job_id": str(job["id"]),
+        **turn_from_payload(payload),
+        **({"resume": payload["resume"]} if payload.get("resume") else {}),
+    }
+    token = byok_key_var.set(svc._byok_from_payload(job["user_id"], payload))
+    result: dict = {}
+    try:
+        async for mode, chunk in source.astream(
+                state, config={"configurable": {"thread_id": str(job["conversation_id"])}},
+                stream_mode=["custom", "values"]):
+            if await cancelled(job["id"]):
+                await ctx.emit("cancelled", {})
+                raise JobCancelled()
+            if mode == "custom" and isinstance(chunk, dict):
+                if "token" in chunk:
+                    await ctx.emit("token", {"text": chunk["token"]})
+                elif "status" in chunk:
+                    await ctx.emit("status", {"text": chunk["status"]})
+                elif (live := _live_event(chunk)) is not None:
+                    await ctx.emit(*live)
+            elif mode == "values" and isinstance(chunk, dict) and chunk.get("operation"):
+                operation = to_jsonable(chunk["operation"])
+                result = {"operationId": str(operation.get("id") or "")}
+                await ctx.emit("done", {"operation": operation})
+    except DomainError as err:
+        error = {"code": err.code, "message": err.message, "details": err.details}
+        await ctx.emit("error", {"error": error})
+        raise JobFailed(error)
+    finally:
+        byok_key_var.reset(token)
+    return result

@@ -21,7 +21,8 @@ async def build_chat(svc) -> None:
     from uuid import UUID
 
     from app.queue.worker import JobCancelled
-    from app.workers.handlers.chat import configure_chat
+    from app.harness.jobs import run_queue_turn
+    from app.workers.handlers.chat import configure_chat, configure_harness
 
     async def cancelled(job_id):
         return await svc.jobs.worker_status(job_id) == "CANCELLED"
@@ -52,6 +53,7 @@ async def build_chat(svc) -> None:
         }
 
     configure_chat(run_node=run_node, cancelled=cancelled, set_state=set_state)
+    configure_harness(lambda ctx: run_queue_turn(svc, ctx, cancelled))
 
 
 async def serve_api(app, worker) -> None:

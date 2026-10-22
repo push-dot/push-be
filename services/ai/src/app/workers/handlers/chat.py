@@ -9,6 +9,14 @@ _cancelled = None
 _set_state = None
 
 
+_harness = None
+
+
+def configure_harness(run) -> None:
+    global _harness
+    _harness = run
+
+
 def configure_chat(*, run_node, cancelled, set_state) -> None:
     global _run_node, _cancelled, _set_state
     _run_node = run_node
@@ -36,6 +44,10 @@ def approval_followup(job: dict) -> dict:
 async def chat(ctx) -> dict:
     if _run_node is None or _cancelled is None or _set_state is None:
         raise RuntimeError("chat handler is not configured")
+    if _harness is not None:
+        handled = await _harness(ctx)
+        if handled is not None:
+            return handled
     message_id = ""
     for name in NODES:
         if await _cancelled(ctx.job["id"]):

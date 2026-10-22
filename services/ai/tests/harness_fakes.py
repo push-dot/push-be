@@ -46,6 +46,7 @@ class Gate:
     def __init__(self):
         self.settled: list = []
         self.released: list = []
+        self.reserved: list = []
 
     async def check(self, user_id, ai, byok_key=""):
         ai.model = "gate-model"
@@ -54,6 +55,7 @@ class Gate:
         return SimpleNamespace(base_url="http://llm.test"), "key", ai.model, None
 
     async def _reserve(self, user_id, ai, system, user, job_id=None):
+        self.reserved.append(job_id)
         return uuid4()
 
     async def _settle(self, usage_id, model, input_tokens, output_tokens):
