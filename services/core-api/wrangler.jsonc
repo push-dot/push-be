@@ -18,6 +18,8 @@
     "MANAGED_GO": "0",
     "STRIPE_SUCCESS_URL": "push://billing/success",
     "STRIPE_CANCEL_URL": "push://billing/cancel",
-    "STRIPE_PORTAL_RETURN_URL": "push://billing/portal"
+    "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
+    "QUEUE_BACKEND": "redis",
+    "DISPATCH_ORIGIN": "https://dispatch.187-127-112-169.sslip.io"
   }
 }
