@@ -73,3 +73,9 @@ Only part of 10c is done in this branch.
 - `ai_jobs.started_at` was added to 0023 for wait and run percentiles. Retention runs on each sweep and relies on the cascades fixed in 747d56a.
 - Workers skip a stream while `pause:<stream>` exists in Redis.
 - `ragNodes` in the stats comes from `pg_class.reltuples`, an estimate that is 0 before the first `ANALYZE`.
+
+## VPS memory (follow-up to Task 16)
+
+- The spec §6 budget (7.3 GB) did not subtract the 1.6–2.0 GB Dokploy, Traefik and other apps already use. Compose limits now sum to 5,056 MB, which leaves at least 1 GB free.
+- The temporary `ai` container is gone. `ai-worker` serves the remaining Python HTTP routes in the same process when `SERVE_API=1`.
+- `RERANK_PROVIDER` (new): `similarity` (default) reranks with embedding cosine similarity; `tei` uses the `rerank` container, which is now behind the `rerank` compose profile. bge-reranker-v2-m3 needs about 2.5 GB, which does not fit next to `embed`.

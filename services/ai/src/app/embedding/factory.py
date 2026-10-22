@@ -32,7 +32,7 @@ def get_embedder(client: httpx.AsyncClient, redis=None):
     return CachedEmbedder(inner, redis) if redis is not None else inner
 
 
-def get_reranker(client: httpx.AsyncClient):
-    if _provider() == "api":
-        return SimilarityReranker(_api(client))
-    return TeiReranker(_env("TEI_RERANK_URL", "http://rerank:80"), client)
+def get_reranker(client: httpx.AsyncClient, redis=None):
+    if _env("RERANK_PROVIDER", "similarity").lower() == "tei":
+        return TeiReranker(_env("TEI_RERANK_URL", "http://rerank:80"), client)
+    return SimilarityReranker(get_embedder(client, redis))

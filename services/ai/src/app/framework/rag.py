@@ -163,7 +163,7 @@ def _retriever(svc):
         if os.environ.get("REDIS_URL"):
             from redis.asyncio import Redis
             redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
-        _shared["retriever"] = Retriever(svc.db, get_embedder(client, redis), get_reranker(client))
+        _shared["retriever"] = Retriever(svc.db, get_embedder(client, redis), get_reranker(client, redis))
     return _shared["retriever"]
 
 

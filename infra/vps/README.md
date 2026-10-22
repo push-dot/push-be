@@ -20,27 +20,35 @@
    - `https://<AI_HOST>/healthz` → `{"data":{"status":"ok"}}`
    - `https://<DISPATCH_HOST>/healthz` → `{"ok":true}`
 
-## 컨테이너
+## 컨테이너와 메모리
 
-| 서비스 | 하는 일 | 메모리 |
+KVM 2는 8,192 MB다. Dokploy, Traefik, 다른 앱이 이미 1.6–2.0 GB를 쓴다. 그래서 이 compose의 한도 합계를 5,056 MB로 맞췄다. 2.0 GB를 빼도 1 GB 이상이 남는다.
+
+| 서비스 | 하는 일 | 한도 |
 | --- | --- | --- |
-| `ai` | 임시 `ai-api`. core로 아직 옮기지 않은 Python 경로를 받는다. LLM은 부르지 않는다 | 512 MB |
+| `ai-worker` | `q:chat:priority` → `q:chat` → `q:document` 순서로 읽는다. 채팅, 기업 AI, 서류 생성, 공고 적합도를 처리한다. `SERVE_API=1`이라 core로 아직 옮기지 않은 Python 경로(임시 `ai-api`)도 같은 프로세스에서 받는다 | 1,280 MB |
+| `ingest-worker` | `q:ingest`. 업로드, 링크, GitHub, 공고를 잘라 `rag_nodes`에 색인한다 | 512 MB |
 | `dispatcher` | outbox를 Redis Streams로 넘기고, 지연 큐를 승격하고, 멈춘 작업을 되돌린다. `/internal/kick`, `/admin/*`, 경보, 30일 보관 정리를 맡는다 | 128 MB |
-| `ai-worker` | `q:chat:priority` → `q:chat` → `q:document` 순서로 읽는다. 채팅, 기업 AI, 서류 생성, 공고 적합도를 처리한다 | 1.5 GB |
-| `ingest-worker` | `q:ingest`. 업로드, 링크, GitHub, 공고를 잘라 `rag_nodes`에 색인한다 | 768 MB |
 | `notify-worker` | `q:notify`. 알림 행을 쓰고 Expo 푸시를 보낸다 | 128 MB |
-| `redis` | 큐, 속도 제한, 락, 임베딩 캐시. 외부 포트가 없고 `push-internal` 네트워크에서만 열린다. AOF `everysec`과 RDB 스냅샷을 쓴다 | 512 MB |
-| `embed` | TEI `BAAI/bge-m3` (1024차원) | 2.5 GB |
-| `rerank` | TEI `BAAI/bge-reranker-v2-m3` | 1.25 GB |
+| `redis` | 큐, 속도 제한, 락, 임베딩 캐시. 외부 포트가 없고 `push-internal` 네트워크에서만 열린다. AOF `everysec`과 RDB 스냅샷을 쓴다. `maxmemory 128mb`, `volatile-lru`라서 TTL이 있는 임베딩 캐시만 밀려나고 큐 데이터는 남는다 | 192 MB |
+| `embed` | TEI `BAAI/bge-m3` (1024차원). 가중치만 약 2.3 GB라서 `--max-batch-tokens 2048`, `--max-concurrent-requests 8`로 활성 메모리를 줄였다 | 2,816 MB |
+| 합계 | | 5,056 MB |
 
-합계는 약 7.3 GB다. 배포한 뒤 `docker stats`로 실제 사용량을 재고 한도를 조정한다. 모자라면 VPS를 KVM 4로 올리거나 `EMBEDDING_PROVIDER=api`로 바꿔 `embed`·`rerank`를 끈다.
+스펙 6장의 예산(합계 7.3 GB)은 Dokploy가 쓰는 메모리를 빼지 않은 값이라 이렇게 바꿨다.
+
+- 임시 `ai` 컨테이너(512 MB)를 없앴다. `ai-worker`가 같은 앱을 함께 띄운다.
+- `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB라 5 GB 안에 들어가지 않는다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔 `embed`를 멈추거나 VPS를 올린 뒤 `docker compose --profile rerank up -d rerank`를 실행하고 `RERANK_PROVIDER=tei`를 넣는다.
+- `embed`가 메모리 부족으로 재시작되면 `EMBEDDING_PROVIDER=api`로 바꾸고 `embed`를 멈춘다. 그러면 합계가 2,240 MB로 줄어든다.
+
+배포한 뒤 `docker stats`로 실제 사용량을 확인한다.
 
 ## 전환과 되돌리기
 
 | 변수 | 값 | 되돌리기 |
 | --- | --- | --- |
-| `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai`가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
+| `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
 | `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다 |
+| `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
 | `RAG_ENGINE` | `legacy` | `run_eval.py` 결과가 기준선보다 낮지 않을 때만 `llamaindex`로 바꾼다 |
 
 `RAG_ENGINE=llamaindex`로 바꾸기 전에 `q:ingest`에 `{"reindex": true}` 작업을 넣어 기존 업로드를 `rag_nodes`에 색인한다.

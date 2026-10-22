@@ -1,11 +1,11 @@
 # Hostinger KVM 2 (2 vCPU / 8 GB) via Dokploy.
 # Dokploy supplies Docker and Traefik. This file does not run Postgres:
 # DATABASE_URL points at Neon. Migrations stay manual (RUN_MIGRATIONS=0).
-# QUEUE_BACKEND=redis runs chat and other AI jobs in ai-worker from Redis Streams.
-# QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller in ai.
+# QUEUE_BACKEND=redis runs AI jobs in ai-worker from Redis Streams.
+# QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller (also in ai-worker).
 # Do not set CF_WORKER or CHAT_EXECUTOR=workflow on this host.
-# Memory: redis 512m, embed 2.5g, rerank 1.25g, ai-worker 1.5g, ingest 768m,
-# ai + dispatcher + notify 768m. Measure and adjust before raising the VPS plan.
+# Memory: limits sum to 5,056 MB. Dokploy, Traefik and other apps use up to 2 GB,
+# which leaves at least 1 GB free on 8 GB. The table is in README.md.
 
 x-ai-image: &ai-image
   build:
@@ -48,42 +48,10 @@ x-ai-env: &ai-env
   EMBEDDING_API_MODEL: ${EMBEDDING_API_MODEL:-openai/text-embedding-3-small}
   TEI_EMBED_URL: http://embed:80
   TEI_RERANK_URL: http://rerank:80
+  RERANK_PROVIDER: ${RERANK_PROVIDER:-similarity}
   RAG_ENGINE: ${RAG_ENGINE:-legacy}
 
 services:
-  # ai-api: temporary. Serves the Python routes core has not taken over yet.
-  ai:
-    <<: *ai-image
-    mem_limit: 512m
-    shm_size: 256m
-    environment:
-      <<: *ai-env
-    volumes:
-      - ai-data:/data
-    networks:
-      - dokploy-network
-      - push-internal
-    expose:
-      - "8080"
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 40s
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      - traefik.http.routers.push-ai.rule=Host(`${AI_HOST}`)
-      - traefik.http.routers.push-ai.entrypoints=websecure
-      - traefik.http.routers.push-ai.tls=true
-      - traefik.http.routers.push-ai.tls.certresolver=letsencrypt
-      - traefik.http.services.push-ai.loadbalancer.server.port=8080
-
   dispatcher:
     <<: *ai-image
     command: ["python", "-m", "app.workers.dispatcher_main"]
@@ -123,29 +91,41 @@ services:
       - traefik.http.routers.push-dispatch.tls.certresolver=letsencrypt
       - traefik.http.services.push-dispatch.loadbalancer.server.port=8091
 
+  # Runs the queue worker and, with SERVE_API=1, the temporary ai-api routes in one process.
   ai-worker:
     <<: *ai-image
-    healthcheck:
-      disable: true
     command: ["python", "-m", "app.workers.ai_worker_main"]
-    mem_limit: 1536m
+    mem_limit: 1280m
+    shm_size: 128m
     environment:
       <<: *ai-env
+      SERVE_API: "1"
       QUEUE_GROUP: ai
-      QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-4}
+      QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-3}
     volumes:
       - ai-data:/data
     depends_on:
       - redis
     networks:
+      - dokploy-network
       - push-internal
+    expose:
+      - "8080"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.push-ai.rule=Host(`${AI_HOST}`)
+      - traefik.http.routers.push-ai.entrypoints=websecure
+      - traefik.http.routers.push-ai.tls=true
+      - traefik.http.routers.push-ai.tls.certresolver=letsencrypt
+      - traefik.http.services.push-ai.loadbalancer.server.port=8080
 
   ingest-worker:
     <<: *ai-image
     healthcheck:
       disable: true
     command: ["python", "-m", "app.workers.ingest_worker_main"]
-    mem_limit: 768m
+    mem_limit: 512m
     environment:
       <<: *ai-env
       QUEUE_GROUP: ingest
@@ -186,11 +166,11 @@ services:
       - --save
       - "900 1 300 100"
       - --maxmemory
-      - 400mb
+      - 128mb
       - --maxmemory-policy
       - volatile-lru
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 192m
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD}
     volumes:
@@ -205,9 +185,10 @@ services:
 
   embed:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    command: ["--model-id", "BAAI/bge-m3", "--max-client-batch-size", "32"]
+    command: ["--model-id", "BAAI/bge-m3", "--max-client-batch-size", "32",
+              "--max-batch-tokens", "2048", "--max-concurrent-requests", "8"]
     restart: unless-stopped
-    mem_limit: 2560m
+    mem_limit: 2816m
     volumes:
       - tei-models:/data
     networks:
@@ -215,11 +196,15 @@ services:
     expose:
       - "80"
 
+  # Off by default (RERANK_PROVIDER=similarity). Needs about 2.5 GB more than the budget:
+  # start it only with EMBEDDING_PROVIDER=api (embed stopped) or on a larger VPS.
   rerank:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    command: ["--model-id", "BAAI/bge-reranker-v2-m3", "--max-client-batch-size", "32"]
+    profiles: ["rerank"]
+    command: ["--model-id", "BAAI/bge-reranker-v2-m3", "--max-client-batch-size", "32",
+              "--max-batch-tokens", "2048", "--max-concurrent-requests", "8"]
     restart: unless-stopped
-    mem_limit: 1280m
+    mem_limit: 2816m
     volumes:
       - tei-models:/data
     networks:

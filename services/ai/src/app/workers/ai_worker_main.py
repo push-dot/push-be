@@ -54,6 +54,17 @@ async def build_chat(svc) -> None:
     configure_chat(run_node=run_node, cancelled=cancelled, set_state=set_state)
 
 
+async def serve_api(app, worker) -> None:
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), log_level="info"))
+    try:
+        await server.serve()
+    finally:
+        worker.stop()
+
+
 async def main() -> None:
     import logging
 
@@ -90,8 +101,11 @@ async def main() -> None:
         settle=settle,
         release=release,
     )
+    runs = [worker.run_forever()]
+    if os.environ.get("SERVE_API") == "1":
+        runs.append(serve_api(app, worker))
     try:
-        await worker.run_forever()
+        await asyncio.gather(*runs)
     finally:
         await redis.aclose()
 

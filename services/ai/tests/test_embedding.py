@@ -66,6 +66,7 @@ async def test_factory_switches_to_api_provider(monkeypatch):
         assert embedder.dim == 1024
         assert isinstance(reranker, SimilarityReranker)
         monkeypatch.setenv("EMBEDDING_PROVIDER", "tei")
+        monkeypatch.setenv("RERANK_PROVIDER", "tei")
         assert isinstance(get_embedder(client), TeiEmbedder)
         assert isinstance(get_reranker(client), TeiReranker)
         cached = get_embedder(client, FakeRedis(decode_responses=True))
@@ -116,3 +117,13 @@ async def test_similarity_reranker_scores_by_cosine():
 
     scores = await SimilarityReranker(Fixed()).rerank("q", ["other", "same"])
     assert scores == [0.0, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_rerank_defaults_to_similarity_and_tei_is_opt_in(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "tei")
+    monkeypatch.delenv("RERANK_PROVIDER", raising=False)
+    async with client_for(lambda r: httpx.Response(200, json={})) as client:
+        assert isinstance(get_reranker(client), SimilarityReranker)
+        monkeypatch.setenv("RERANK_PROVIDER", "tei")
+        assert isinstance(get_reranker(client), TeiReranker)

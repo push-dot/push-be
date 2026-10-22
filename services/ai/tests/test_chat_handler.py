@@ -159,3 +159,28 @@ def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
     assert runs_local_chat_worker() is False
     main = (Path(__file__).resolve().parents[1] / "src" / "app" / "main.py").read_text()
     assert main.count("runs_local_chat_worker()") == 2
+
+
+@pytest.mark.asyncio
+async def test_api_server_exit_stops_the_worker(monkeypatch):
+    import uvicorn
+
+    from app.workers.ai_worker_main import serve_api
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+
+        async def serve(self):
+            return None
+
+    class Worker:
+        stopped = False
+
+        def stop(self):
+            Worker.stopped = True
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setenv("PORT", "8099")
+    await serve_api(object(), Worker())
+    assert Worker.stopped is True
