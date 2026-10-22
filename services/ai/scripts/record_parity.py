@@ -33,6 +33,15 @@ def idempotency_key(index: int) -> str:
     return f"00000000-0000-4000-8000-{index:012d}"
 
 
+async def rows(url: str, sql: str) -> list[dict]:
+    import asyncpg
+    conn = await asyncpg.connect(url)
+    try:
+        return [{k: (None if v is None else str(v)) for k, v in dict(r).items()} for r in await conn.fetch(sql)]
+    finally:
+        await conn.close()
+
+
 async def seed(url: str, storage: str) -> None:
     import asyncpg
     conn = await asyncpg.connect(url)
@@ -108,6 +117,9 @@ def main() -> None:
     golden = []
     with TestClient(create_app()) as client:
         for index, case in enumerate(cases):
+            if case.get("sql"):
+                golden.append({"name": case["name"], "status": 0, "body": asyncio.run(rows(url, case["sql"]))})
+                continue
             headers = {"x-request-id": "parity"}
             if case.get("auth", True):
                 headers["authorization"] = "Bearer " + TOKEN

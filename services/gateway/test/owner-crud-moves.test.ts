@@ -41,3 +41,11 @@ test("experiment routes go to core", () => {
   assert.equal(ownerOf("GET", "/api/v1/experiments/onboarding/stats"), "core");
   assert.equal(ownerOf("GET", "/api/v1/experiments/onboarding/results"), "core");
 });
+
+test("interview routes go to core except the AI prepare", () => {
+  assert.equal(ownerOf("GET", "/api/v1/interviews"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/interviews"), "core");
+  assert.equal(ownerOf("GET", `/api/v1/interviews/${ID}`), "core");
+  assert.equal(ownerOf("PATCH", `/api/v1/interviews/${ID}`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/interviews/${ID}/prepare`), "python");
+});

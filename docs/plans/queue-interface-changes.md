@@ -65,3 +65,9 @@ Parity gaps:
 Moved to core: `GET /experiments/{key}/assignment`, `POST /experiments/{key}/events`, `GET /experiments/{key}/stats`, `GET /experiments/{key}/results`. 22 parity cases, all equal. Seeding from `EXPERIMENTS` still runs in the Python bootstrap (ai-worker), which writes the same `experiments` table.
 
 Parity gaps: schema-level body errors (message text only, as in 10b). `rate` of `0.0`/`1.0` is written as `0`/`1`; JSON readers see the same number.
+
+## Task 10d: interviews
+
+Moved to core: `GET/POST /interviews`, `GET/PATCH /interviews/{id}`. `POST /interviews/{id}/prepare` stays in Python (gateway treats it as AI). 33 parity cases, all equal, including SQL checks of the calendar event and `INTERVIEW` application event that create and patch write. Core writes the calendar event, interview and application event in one statement (Python used one transaction).
+
+Parity gaps: schema-level body errors (message text only). Time zones are checked with `Intl.DateTimeFormat` (as core's calendar routes already do) instead of `zoneinfo`; `Intl` also accepts different capitalization (`utc`), which Python rejects on Linux.

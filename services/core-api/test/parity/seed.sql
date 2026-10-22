@@ -95,3 +95,12 @@ INSERT INTO experiment_events (id, experiment_key, user_id, variant, event, crea
     ('f2000000-0000-4000-8000-000000000001', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'exposure', '2026-10-02T00:00:00Z'),
     ('f2000000-0000-4000-8000-000000000002', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'exposure', '2026-10-02T00:00:01Z'),
     ('f2000000-0000-4000-8000-000000000003', 'onboarding', '22222222-2222-4222-8222-222222222222', 'short', 'conversion', '2026-10-02T00:00:02Z');
+
+-- interviews group
+INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES
+    ('f3000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 1, 'c0000000-0000-4000-8000-000000000001', 'INTERVIEW', 'Tech interview', '2026-11-03T01:00:00Z', '2026-11-03T02:00:00Z', 'Asia/Seoul', 'LOCAL', NULL, '', '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z');
+
+INSERT INTO interviews (id, user_id, revision, application_id, title, scheduled_at, duration_minutes, event_id, evidence_ids, company_sources, notes, reflection, created_at, updated_at) VALUES
+    ('f4000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 2, 'c0000000-0000-4000-8000-000000000001', 'Tech interview', '2026-11-03T01:00:00Z', 60, 'f3000000-0000-4000-8000-000000000001', '["f0000000-0000-4000-8000-000000000001"]', '[{"sourceUrl": "https://acme.example/blog", "sourceText": "Acme ships weekly", "accessedAt": "2026-10-01T00:00:00Z"}]', 'bring laptop', '', '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z'),
+    ('f4000000-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 1, 'c0000000-0000-4000-8000-000000000002', 'Culture fit', '2026-12-01T05:00:00.250Z', NULL, NULL, '[]', '[]', '', 'went ok', '2026-10-06T00:00:00Z', '2026-10-06T00:00:00Z'),
+    ('f4000000-0000-4000-8000-000000000003', '22222222-2222-4222-8222-222222222222', 1, 'c0000000-0000-4000-8000-000000000003', 'Not mine', '2026-11-03T01:00:00Z', NULL, NULL, '[]', '[]', '', '', '2026-10-06T00:00:00Z', '2026-10-06T00:00:00Z');

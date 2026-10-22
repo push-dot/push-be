@@ -5,7 +5,7 @@ import type { Ctx } from "../types.ts";
 
 const TYPES = new Set(["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT"]);
 
-function validTz(tz: string): boolean {
+export function validTz(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return true;

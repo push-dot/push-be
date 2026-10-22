@@ -12,7 +12,7 @@ const NOW = new Date("2026-10-22T12:00:00Z");
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 type Multipart = { fields?: Record<string, string>; file?: { name: string; type: string; base64: string } | null };
-type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[] };
+type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[]; sql?: string };
 type Golden = { name: string; status: number; body?: unknown; contentType?: string; base64?: string };
 type Logged = { sql: string; rows?: Record<string, unknown>[]; rowCount?: number; error?: { code?: string; message: string } };
 
@@ -155,6 +155,14 @@ export const parityGroup = async (group: string, env: CoreEnv = { APP_ENV: "prod
     for (const [index, item] of cases.entries()) {
       current = index;
       resetLimits();
+      if (item.sql) {
+        const result = await query(item.sql);
+        const rows = result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v == null ? null : String(v)])));
+        const got = JSON.stringify(normalize(rows, known));
+        const want = JSON.stringify(normalize(golden[index].body, known));
+        if (got !== want) mismatches.push(`${item.name}: rows differ\n  core:   ${got}\n  python: ${want}`);
+        continue;
+      }
       const headers: Record<string, string> = { "x-request-id": "parity" };
       if (item.auth !== false) headers.authorization = "Bearer parity-token";
       if (["POST", "PATCH", "PUT"].includes(item.method)) headers["idempotency-key"] = idempotencyKey(index);
