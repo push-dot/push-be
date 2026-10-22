@@ -3,14 +3,19 @@ from __future__ import annotations
 import json
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
+from app.framework.models import _content
 from app.graphs.chat_surface import insert_chat_approval
+from app.harness.graph import turn_model
 from app.harness.resume.prompts import phase_prompt_for_harness
 from app.harness.resume.state import ResumeState
+from app.harness.resume.tools import save_artifact
+from app.harness.tools import ToolContext
 
 # shortcut: resume thread_id is conversation_id + ":resume" so it does not collide with the chat harness
 
@@ -68,6 +73,7 @@ class ResumeGraphState(TypedDict, total=False):
     conversation_id: str
     user_id: str
     job_id: str
+    retry: bool
 
 
 def _emit(event: dict) -> None:
@@ -143,17 +149,23 @@ async def _save_choice(db, state: dict, event: dict) -> bool:
     return True
 
 
-async def _enqueue(poster, phase: str, option_id: str) -> None:
-    if poster is None:
-        return
-    await poster({"resume": {"gate": phase, "optionId": option_id, "auto": True}})
+def _artifact_body(name: str, output: dict) -> str:
+    if name.endswith(".md"):
+        text = output.get("markdown") or output.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return json.dumps(output, ensure_ascii=False, indent=2)
 
 
-def _store_output(state: dict, phase: str, output: dict) -> dict:
+async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     name = _ARTIFACTS.get(phase)
     if name:
-        artifacts[name] = json.dumps(output, ensure_ascii=False)
+        ctx = ToolContext(
+            user_id=str(state.get("user_id") or ""), company_id=None,
+            conversation_id=str(state.get("conversation_id") or ""),
+            job_id=str(state.get("job_id") or ""), tool_call_id="", db=db, core=None)
+        artifacts[name] = await save_artifact(ctx, name, _artifact_body(name, output))
     bucket = {
         "analyze": "analysis",
         "strategy": "strategy",
@@ -183,68 +195,83 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
     return update
 
 
+def _parsed(reply) -> dict:
+    if isinstance(reply, dict):
+        return reply
+    text = _content(reply).strip()
+    if text.startswith("```"):
+        text = text.strip("`").removeprefix("json").strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {"text": text}
+    return parsed if isinstance(parsed, dict) else {"text": text}
+
+
 async def _output(model, phase: str, state: dict) -> dict:
     if model is None:
         return {"summary": phase}
-    prompt = phase_prompt_for_harness(phase)
-    if hasattr(model, "with_structured_output"):
-        runnable = model.with_structured_output(dict)
-        result = await runnable.ainvoke([{"role": "system", "content": prompt}, {"phase": phase}])
-        return result if isinstance(result, dict) else {"summary": phase}
-    return {"summary": phase}
+    context = {key: state.get(key) for key in (
+        "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review")}
+    messages = [
+        SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답한다."),
+        HumanMessage(content=json.dumps(context, ensure_ascii=False)),
+    ]
+    return _parsed(await model.ainvoke(messages))
 
 
-def build_resume_graph(checkpointer, *, model=None, db=None, poster=None):
-    async def phase_node(state: ResumeGraphState) -> dict:
+def _finish(merged: dict, name: str, option_id: str) -> dict:
+    update = _apply_answer(merged, name, {"option_id": option_id})
+    nxt = _next_phase({**merged, **update}, name)
+    if nxt is None:
+        return {**update, "status": "done", "phase": "present"}
+    return {**update, "status": "active", "phase": nxt}
+
+
+def build_resume_graph(checkpointer, *, model=None, db=None):
+    async def work(state: ResumeGraphState) -> dict:
         current = ResumeState.model_validate(state).model_dump()
         name = current["phase"]
-        output = await _output(model, name, current)
-        stored = _store_output(current, name, output)
+        output = await _output(turn_model.get() or model, name, current)
+        stored = await _store_output(db, current, name, output)
         if name == "strategy" and output.get("valid") is False:
-            return {**stored, "phase": "strategy", "status": "active"}
+            return {**stored, "phase": "strategy", "status": "active", "retry": True}
+        return {**stored, "retry": False}
+
+    async def gate(state: ResumeGraphState) -> dict:
+        current = ResumeState.model_validate(state).model_dump()
+        name = current["phase"]
         if not _must_stop(current, name):
             recommended = _GATES[name][0]
-            answer = {"option_id": recommended}
             _emit(_choice(current, name, auto=True))
-            merged = {**current, **stored, **_apply_answer(current, name, answer)}
-            return await _finish(merged, name, recommended, stored)
+            return _finish({**current, **_apply_answer(current, name, {"option_id": recommended})},
+                           name, recommended)
         event = _choice(current, name, auto=False)
         if await _save_choice(db, current, event):
             _emit(event)
         answer = interrupt({
             "approval_id": event["id"],
-            "awaiting": "approval",
+            "awaiting": "choice",
             "kind": "RESUME_GATE",
             "gate": name,
         }) or {}
         if _cancelled(answer):
-            return {**stored, "status": "cancelled", "phase": name}
+            return {"status": "cancelled", "phase": name}
         if answer.get("text") and not answer.get("option_id"):
             stayed = _apply_answer(current, name, answer)
-            if str(answer.get("text") or "").startswith("피드백만"):
-                stayed["phase"] = "strategy"
-            else:
-                stayed["phase"] = name
+            stayed["phase"] = "strategy" if str(answer["text"]).startswith("피드백만") else name
             stayed["status"] = "active"
-            return {**stored, **stayed}
+            return stayed
         option_id = str(answer.get("option_id") or _GATES[name][0])
-        merged = {**current, **stored, **_apply_answer(current, name, answer)}
-        return await _finish(merged, name, option_id, stored)
+        return _finish({**current, **_apply_answer(current, name, answer)}, name, option_id)
 
-    async def _finish(merged: dict, name: str, option_id: str, stored: dict) -> dict:
-        nxt = _next_phase(merged, name)
-        await _enqueue(poster, name, option_id)
-        if nxt is None:
-            return {**stored, **_apply_answer(merged, name, {"option_id": option_id}), "status": "done", "phase": "present"}
-        return {
-            **stored,
-            **_apply_answer(merged, name, {"option_id": option_id}),
-            "status": "active",
-            "phase": nxt,
-        }
+    def after_work(state: ResumeGraphState) -> str:
+        return "end" if state.get("retry") else "gate"
 
     graph = StateGraph(ResumeGraphState)
-    graph.add_node("phase", phase_node)
-    graph.add_edge(START, "phase")
-    graph.add_edge("phase", END)
+    graph.add_node("work", work)
+    graph.add_node("gate", gate)
+    graph.add_edge(START, "work")
+    graph.add_conditional_edges("work", after_work, {"gate": "gate", "end": END})
+    graph.add_edge("gate", END)
     return graph.compile(checkpointer=checkpointer)

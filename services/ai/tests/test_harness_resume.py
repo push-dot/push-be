@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -18,6 +21,7 @@ _ORDER = (
 class _Approvals:
     def __init__(self):
         self.rows = {}
+        self.files = {}
 
     def q(self):
         return self
@@ -26,6 +30,9 @@ class _Approvals:
         return self.rows.get(str(args[0]))
 
     async def execute(self, sql, *args):
+        if "workspace_files" in sql:
+            self.files[args[1]] = args[2]
+            return "INSERT 1"
         self.rows[str(args[0])] = {"id": args[0]}
         return "INSERT 1"
 
@@ -33,20 +40,16 @@ class _Approvals:
 class _PhaseModel:
     def __init__(self, outputs=None):
         self.outputs = outputs or {}
-
-    def with_structured_output(self, _schema):
-        return self
+        self.calls = []
 
     async def ainvoke(self, messages, **kwargs):
-        phase = "mode_select"
-        for message in messages:
-            if isinstance(message, dict) and message.get("phase"):
-                phase = message["phase"]
-        return dict(self.outputs.get(phase) or {"summary": phase})
+        phase = json.loads(messages[-1].content)["phase"]
+        self.calls.append(phase)
+        return AIMessage(content=json.dumps(self.outputs.get(phase) or {"summary": phase}))
 
 
-def _graph(db, poster, model=None):
-    return build_resume_graph(MemorySaver(), model=model or _PhaseModel(), db=db, poster=poster)
+def _graph(db, poster=None, model=None):
+    return build_resume_graph(MemorySaver(), model=model or _PhaseModel(), db=db)
 
 
 def _config():
@@ -122,7 +125,28 @@ async def test_stops_at_every_gate_in_auto():
     ]
     assert gates == list(_ORDER)
     assert seen[-1][1].values["status"] == "done"
-    assert posted[-1]["resume"]["auto"] is True
+
+
+async def test_resuming_a_gate_does_not_rerun_the_phase_model():
+    model = _PhaseModel()
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    await _run(graph, _base(), config)
+    await _run(graph, Command(resume={"option_id": "resume_based"}), config)
+    snap = await graph.aget_state(config)
+    assert model.calls == ["mode_select"]
+    assert snap.values["phase"] == "intake"
+
+
+async def test_phase_output_is_saved_to_workspace_files():
+    db = _Approvals()
+    graph = _graph(db, model=_PhaseModel({"analyze": {"name": "김"}}))
+    config = _config()
+    await _run(graph, _base(phase="analyze"), config)
+    snap = await graph.aget_state(config)
+    file_id = snap.values["artifacts"]["01_parsed_resume.json"]
+    assert db.files["01_parsed_resume.json"]
+    assert len(file_id) == 36
 
 
 async def test_bypass_auto_picks_recommended():
