@@ -56,6 +56,8 @@ class Config:
     model_ultra: str = "anthropic/claude-opus-5-5"
     model_employer_ultra: str = "anthropic/claude-fable-5-1"
     openrouter_deepseek_providers: str = "Together,Fireworks,Novita"
+    core_origin: str = ""
+    internal_api_secret: str = ""
 
 
 def load_config() -> Config:
@@ -101,4 +103,10 @@ def load_config() -> Config:
         model_employer_ultra=env("MODEL_EMPLOYER_ULTRA", "anthropic/claude-fable-5-1"),
         openrouter_deepseek_providers=env(
             "OPENROUTER_DEEPSEEK_PROVIDERS", "Together,Fireworks,Novita"),
+        core_origin=env("CORE_ORIGIN"),
+        internal_api_secret=env("INTERNAL_API_SECRET"),
     )
+
+
+def harness_enabled() -> bool:
+    return os.environ.get("AI_HARNESS", "").strip().lower() in {"1", "true", "yes"}
