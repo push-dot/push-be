@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+from app.domain.errors import DomainError
 
 _TOOL_STATES = {"run", "ok", "err", "wait"}
 _TODO_STATES = {"todo", "now", "done"}
@@ -163,7 +166,10 @@ async def publish_persisted_surface(state, db, emit, apply) -> bool:
     if approval is None:
         diff_event = next((event for event in events if event["type"] == "diff"), None)
         if diff_event is not None and apply is not None:
-            await apply(diff_event)
+            try:
+                await apply(diff_event)
+            except DomainError:
+                logging.getLogger(__name__).warning("chat edit not applied", exc_info=True)
         return False
     conv = state.get("conversation")
     user_id = state.get("user_id")
@@ -172,6 +178,13 @@ async def publish_persisted_surface(state, db, emit, apply) -> bool:
     diff = state.get("diff") or {}
     await insert_chat_approval(
         db, user_id, conv.id, approval, diff.get("documentId"))
+    if diff:
+        try:
+            await db.q().execute(
+                "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
+                UUID(str(approval["id"])), json.dumps(diff, ensure_ascii=False))
+        except Exception:
+            logging.getLogger(__name__).warning("chat edit diff not stored", exc_info=True)
     emit(approval)
     return True
 

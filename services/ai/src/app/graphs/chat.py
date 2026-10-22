@@ -630,7 +630,11 @@ def bind_chat_nodes(svc):
 
     async def _emit_persisted(state: dict) -> bool:
         from app.graphs.chat_surface import publish_persisted_surface
-        apply = getattr(getattr(svc, "documents", None), "apply_hunks", None)
+        document_svc = getattr(svc, "document_svc", None)
+        apply = None
+        if document_svc is not None:
+            async def apply(diff):
+                await document_svc.apply_hunks(state["user_id"], diff)
         return await publish_persisted_surface(state, svc.db, _emit, apply)
 
     async def persist(state: ChatState) -> dict:

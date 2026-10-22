@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 from app.domain.services.conversation import ConversationService
 from app.harness.core_client import CoreClient
@@ -13,6 +16,8 @@ from app.harness.policy import Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
 from app.harness.tools import HarnessSpec, ToolContext
+from app.harness.personal.tools import bound_services
+from app.domain.errors import revision_conflict
 from tests.fakes import ScriptedChat
 from tests.stubs import FakeDB
 
@@ -235,7 +240,7 @@ def _edit_graph(mode: str, db):
             "name": "edit_document",
             "id": "c1",
             "type": "tool_call",
-            "args": {"document_id": "doc-1", "before": "이전", "after": "이후"},
+            "args": {"document_id": DOC_ID, "before": "이전", "after": "이후"},
         }],
     }, {"content": "done"}])
     return build_harness_graph(
@@ -258,7 +263,7 @@ async def _events(graph, mode: str):
         graph,
         {
             "messages": [{"role": "user", "content": "고쳐줘"}],
-            "user_id": "user-1",
+            "user_id": EDIT_USER,
             "conversation_id": "conv-1",
             "job_id": "job-1",
             "access_mode": mode,
@@ -282,13 +287,62 @@ async def test_edit_document_always_ask_is_document_edit():
     assert events[-1] == {"type": "done", "awaiting": "approval"}
 
 
-async def test_edit_document_auto_emits_diff():
-    events = await _events(_edit_graph("AUTO", _Approvals()), "AUTO")
+EDIT_USER = "99999999-9999-4999-8999-999999999999"
+DOC_ID = "12121212-1212-4212-8212-121212121212"
+
+
+class _Docs:
+    def __init__(self, error=None):
+        self.applied = []
+        self.error = error
+
+    async def apply_hunks(self, user_id, diff):
+        if self.error is not None:
+            raise self.error
+        self.applied.append((str(user_id), diff))
+        return None, SimpleNamespace(id="v2")
+
+
+async def _with_docs(docs, run):
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        return await run()
+    finally:
+        bound_services.reset(token)
+
+
+async def test_edit_document_auto_applies_the_edit():
+    docs = _Docs()
+    events = await _with_docs(docs, lambda: _events(_edit_graph("AUTO", _Approvals()), "AUTO"))
     diffs = [event for event in events if event.get("type") == "diff"]
-    assert diffs[0]["documentId"] == "doc-1"
-    assert {"line": None, "sign": "-", "text": "이전"} in diffs[0]["hunks"]
-    assert {"line": None, "sign": "+", "text": "이후"} in diffs[0]["hunks"]
+    assert diffs[0]["documentId"] == DOC_ID
+    assert docs.applied[0][0] == EDIT_USER
+    assert docs.applied[0][1]["hunks"] == [
+        {"line": None, "sign": "-", "text": "이전"}, {"line": None, "sign": "+", "text": "이후"}]
     assert not any(event.get("type") == "approval" for event in events)
+
+
+async def test_edit_document_conflict_is_a_tool_error():
+    docs = _Docs(revision_conflict(3))
+    events = await _with_docs(docs, lambda: _events(_edit_graph("BYPASS", _Approvals()), "BYPASS"))
+    tool = next(event for event in events if event.get("type") == "tool")
+    assert tool["result"] == {"error": "REVISION_CONFLICT"}
+    assert not any(event.get("type") == "diff" for event in events)
+
+
+async def test_edit_document_always_ask_applies_after_approve():
+    docs = _Docs()
+    graph = _edit_graph("ALWAYS_ASK", _Approvals())
+
+    async def both():
+        await _events(graph, "ALWAYS_ASK")
+        assert docs.applied == []
+        async for _event in astream_harness(
+                graph, Command(resume={"option_id": "apply"}), {"configurable": {"thread_id": "conv-1"}}):
+            pass
+
+    await _with_docs(docs, both)
+    assert len(docs.applied) == 1
 
 
 class _ResumeDB:

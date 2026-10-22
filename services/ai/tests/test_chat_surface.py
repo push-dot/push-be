@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from app.api.routers.conversations import _sse_frames
@@ -337,10 +338,10 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
     svc.db = db
     applied = []
 
-    async def apply_hunks(diff):
+    async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.documents.apply_hunks = apply_hunks
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
     nodes = bind_chat_nodes(svc)
     state = {
         "user_id": user_id,
@@ -366,7 +367,9 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
         event_sink.reset(token)
     assert [event["type"] for event in sink] == ["diff", "fit", "approval"]
     assert applied == []
-    assert len(db.calls) == 1
+    assert len(db.calls) == 2
+    assert "SET tool_args" in db.calls[1][0]
+    assert json.loads(db.calls[1][1][1])["hunks"] == [{"line": 2, "sign": "-", "text": "old"}]
     sql, args = db.calls[0]
     assert "conversation_id" in sql
     assert "PENDING" in sql
@@ -384,10 +387,10 @@ async def test_persist_applies_the_diff_when_confirm_is_false():
     svc.db = db
     applied = []
 
-    async def apply_hunks(diff):
+    async def apply_hunks(user, diff):
         applied.append(diff)
 
-    svc.documents.apply_hunks = apply_hunks
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
     nodes = bind_chat_nodes(svc)
     diff = {
         "documentId": DOC,
@@ -454,3 +457,27 @@ async def test_sse_frames_done_awaiting():
 
     frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
     assert frames[-1] == {"type": "done", "operation": None, "awaiting": "choice", "seq": 8}
+
+
+async def test_persist_survives_a_conflicting_auto_edit():
+    from app.domain.errors import revision_conflict
+    user_id = uuid4()
+    conv = _conv(user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    svc.db = _Rec()
+
+    async def apply_hunks(user, diff):
+        raise revision_conflict(2)
+
+    svc.document_svc = SimpleNamespace(apply_hunks=apply_hunks)
+    nodes = bind_chat_nodes(svc)
+    token = event_sink.set([])
+    try:
+        await nodes["persist"]({
+            "user_id": user_id, "text": "edit", "attachments": [], "conversation": conv,
+            "confirm_before_edit": False,
+            "diff": {"documentId": DOC, "revisionId": REV,
+                     "hunks": [{"line": 2, "sign": "-", "text": "old"}]},
+        })
+    finally:
+        event_sink.reset(token)

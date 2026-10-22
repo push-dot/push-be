@@ -11,6 +11,7 @@ from langgraph.types import interrupt
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.posting_fit import compute_fit
 from app.graphs.chat_surface import insert_chat_approval
@@ -96,6 +97,7 @@ class DocumentId(BaseModel):
 
 class EditDocumentArgs(BaseModel):
     document_id: str
+    version_id: UUID | None = None
     before: str = ""
     after: str = ""
     instruction: str = ""
@@ -171,7 +173,7 @@ def _diff(args: EditDocumentArgs) -> dict:
     return {
         "type": "diff",
         "documentId": args.document_id,
-        "revisionId": "",
+        "revisionId": str(args.version_id or ""),
         "hunks": hunks,
     }
 
@@ -211,8 +213,15 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
         if answer.get("option_id") != "apply":
             return {"skipped": True}
     diff = _diff(args)
+    document_svc = getattr(_svc(), "document_svc", None)
+    if document_svc is None:
+        return {"error": "UNAVAILABLE"}
+    try:
+        _doc, version = await document_svc.apply_hunks(UUID(ctx.user_id), diff)
+    except DomainError as err:
+        return {"error": err.code}
     _emit(diff)
-    return {"diff": diff}
+    return {"diff": diff, "versionId": str(version.id)}
 
 
 async def _resume_row(ctx: ToolContext):

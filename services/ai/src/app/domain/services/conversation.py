@@ -312,7 +312,11 @@ class ConversationService:
             token = _BYOK_KEY.set(self._byok_keys.get(job_id, ""))
             terminal = False
             try:
-                async for mode, chunk in self.graph.astream(
+                source = self.graph
+                if p.get("resume"):
+                    from app.harness.jobs import approved_edit
+                    source = await approved_edit(self, p, job["user_id"]) or source
+                async for mode, chunk in source.astream(
                         {
                             "user_id": job["user_id"],
                             "conversation_id": job["conversation_id"],

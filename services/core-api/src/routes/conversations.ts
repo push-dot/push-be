@@ -458,10 +458,12 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
     [status, optionId, approvalId]);
   if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
   const result = { id: approvalId, status, optionId };
-  if (!RESUMABLE.has(kind) && row.job_id == null) return data(200, result, ctx.rid);
+  const resumes = RESUMABLE.has(kind) || row.job_id != null;
+  const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
+  if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
   try {
     const jobId = await enqueueResumeJob(ctx, { conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } } });
-    return data(202, { ...result, jobId }, ctx.rid);
+    return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
   } catch (err) {
     await query(ctx.deps.query,
       "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",

@@ -112,13 +112,26 @@ test("rejecting a tool card still resumes so the model hears the rejection", asy
   assert.equal(db.state.jobs, 1);
 });
 
-test("a legacy document card resolves without a job and someone else's card is 404", async () => {
+test("a legacy document card keeps 200, applies through a job, and someone else's card is 404", async () => {
+  const legacy = () => pending({
+    kind: "DOCUMENT_EDIT", job_id: null, expires_at: null,
+    options: JSON.stringify([{ id: "apply", label: "적용" }, { id: "skip", label: "그대로 두기" }]),
+  });
   resetLimits();
-  const db = fakeDb(pending({ kind: "DOCUMENT_EDIT", job_id: null, expires_at: null, options: JSON.stringify([{ id: "apply", label: "적용" }]) }));
-  const res = await handle(resolve("apply"), env(), deps(db.query));
-  assert.equal(res.status, 200);
-  assert.deepEqual((await res.json() as { data: unknown }).data, { id: APPROVAL, status: "APPROVED", optionId: "apply" });
-  assert.equal(db.state.jobs, 0);
+  const skipped = fakeDb(legacy());
+  const skip = await handle(resolve("skip"), env(), deps(skipped.query));
+  assert.equal(skip.status, 200);
+  assert.deepEqual((await skip.json() as { data: unknown }).data, { id: APPROVAL, status: "APPROVED", optionId: "skip" });
+  assert.equal(skipped.state.jobs, 0);
+
+  resetLimits();
+  const applied = fakeDb(legacy());
+  const apply = await handle(resolve("apply"), env(), deps(applied.query));
+  assert.equal(apply.status, 200);
+  const body = await apply.json() as { data: { status: string; jobId: string } };
+  assert.equal(body.data.status, "APPROVED");
+  assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
+  assert.equal(applied.state.jobs, 1);
 
   resetLimits();
   const missing = await handle(resolve("approve"), env(), deps(fakeDb(null).query));
