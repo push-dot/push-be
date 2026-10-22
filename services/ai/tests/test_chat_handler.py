@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from fakeredis.aioredis import FakeRedis
 
@@ -134,3 +137,11 @@ async def test_postgres_backend_still_schedules_workflow(monkeypatch):
         assert seen[0][0] == "job-1"
     finally:
         set_job_scheduler(prev)
+
+
+def test_cloudflare_chat_workflow_and_cron_are_retired():
+    text = Path(__file__).resolve().parents[1].joinpath("wrangler.jsonc").read_text()
+    raw = "\n".join(line for line in text.splitlines() if not line.strip().startswith("//"))
+    config = json.loads(raw)
+    assert "workflows" not in config
+    assert config["triggers"]["crons"] == []
