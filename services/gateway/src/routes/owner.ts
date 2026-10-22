@@ -19,9 +19,7 @@ function isAi(method: string, path: string): boolean {
   if (method === "POST" && /^\/api\/v1\/applications\/[^/]+\/resume-run$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/jobs\/[^/]+\/analyze$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
-  if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
-  if (method === "POST" && /^\/api\/v1\/postings\/[^/]+\/fit$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;
   if (method === "POST" && /^\/api\/v1\/projects\/[^/]+\/evidence\/[^/]+\/verify$/.test(path)) return true;
@@ -63,6 +61,8 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/ai\/keys\/[^/]+$/.test(path)) return method === "PUT" || method === "DELETE";
   if (/^\/api\/v1\/ai\/keys\/[^/]+\/test$/.test(path)) return method === "POST";
   if (path === "/api/v1/ai/usage") return method === "GET";
+  if (/^\/api\/v1\/ai\/jobs\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return method === "POST";
   if (path === "/api/v1/jobs") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/jobs\/[^/]+\/analyses$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/jobs\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";

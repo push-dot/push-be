@@ -324,6 +324,12 @@ class ChatJobStore:
             job_id, _dump(error), now)
         return dict(row)
 
+    async def worker_fail_final(self, job_id, error, now) -> None:
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='FAILED', error=$2, updated_at=$3 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, _dump(error), now)
+
     async def worker_release(self, job_id, now) -> None:
         await self.db.q().execute(
             "UPDATE ai_jobs SET status='QUEUED', heartbeat_at=NULL, updated_at=$2 "
@@ -364,6 +370,9 @@ class QueueJobs:
 
     async def fail(self, job_id, error, now):
         return await self.store.worker_fail(job_id, error, now)
+
+    async def fail_final(self, job_id, error, now):
+        await self.store.worker_fail_final(job_id, error, now)
 
     async def release_claim(self, job_id, now):
         await self.store.worker_release(job_id, now)

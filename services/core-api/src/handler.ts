@@ -8,6 +8,7 @@ import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calen
 import { archiveConversation, createConversation, patchConversation, postAttachment, postMessage } from "./routes/conversations.ts";
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
+import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
@@ -149,6 +150,12 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const test = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)\/test$/);
   if (method === "POST" && test) return testKey(ctx, decodeURIComponent(test[1]));
   if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
+  const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
+  if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);
+  const generate = path.match(/^\/api\/v1\/documents\/([^/]+)\/generate$/);
+  if (method === "POST" && generate) return enqueueDocumentGenerate(ctx, generate[1]);
+  const fit = path.match(/^\/api\/v1\/postings\/([^/]+)\/fit$/);
+  if (method === "POST" && fit) return enqueueFit(ctx, fit[1]);
 
   if (method === "GET" && path === "/api/v1/jobs") return listJobs(ctx);
   if (method === "POST" && path === "/api/v1/jobs") return createJob(ctx);

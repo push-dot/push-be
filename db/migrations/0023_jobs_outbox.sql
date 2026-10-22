@@ -111,7 +111,7 @@ SELECT
     updated_at,
     checkpoint
 FROM ai_jobs
-WHERE type = 'chat' AND conversation_id IS NOT NULL;
+WHERE type IN ('chat', 'employer_ai') AND conversation_id IS NOT NULL;
 
 CREATE FUNCTION chat_jobs_view_status(old_status text) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$

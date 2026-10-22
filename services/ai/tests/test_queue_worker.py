@@ -44,6 +44,12 @@ class MemoryJobs:
         job["status"] = "DEAD" if job["attempts"] >= job["max_attempts"] else "RETRY"
         return {"status": job["status"], "attempts": job["attempts"], "max_attempts": job["max_attempts"], "queue": job["queue"]}
 
+    async def fail_final(self, job_id, error, now):
+        job = self.jobs[job_id]
+        job["error"] = error
+        job["updated_at"] = now
+        job["status"] = "FAILED"
+
     async def release_claim(self, job_id, now):
         job = self.jobs[job_id]
         if job["status"] == "RUNNING":

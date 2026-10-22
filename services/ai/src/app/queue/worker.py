@@ -14,6 +14,12 @@ class JobCancelled(Exception):
     pass
 
 
+class JobFailed(Exception):
+    def __init__(self, error: dict):
+        super().__init__(error.get("message", ""))
+        self.error = error
+
+
 class JobContext:
     def __init__(self, job, heartbeat, emit):
         self.job = job
@@ -146,6 +152,11 @@ class Worker:
                 await self.release(self.db, job["id"])
                 await self.queue.ack(msg.queue, self.group, msg.id)
                 return "cancelled"
+            except JobFailed as err:
+                await self.db.fail_final(job["id"], err.error, self.now())
+                await self.release(self.db, job["id"])
+                await self.queue.ack(msg.queue, self.group, msg.id)
+                return "failed"
             await self.db.finish(job["id"], result, self.now())
             await self.settle(self.db, job["id"])
             await self.queue.ack(msg.queue, self.group, msg.id)

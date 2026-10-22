@@ -24,6 +24,7 @@ test("migration 0023 creates jobs, outbox, credit_reservations and keeps chat_jo
   assert.match(sql, /ALTER TABLE ai_usage ADD COLUMN job_id uuid/);
   assert.match(sql, /INSERT INTO ai_jobs \([\s\S]*FROM chat_jobs/);
   assert.match(sql, /CREATE VIEW chat_jobs AS/);
+  assert.match(sql, /WHERE type IN \('chat', 'employer_ai'\) AND conversation_id IS NOT NULL/);
   const jobCheck = sql.match(/jobs[\s\S]*?CHECK \(status IN \(([^)]+)\)\)/);
   assert.ok(jobCheck);
   const jobStatuses = [...jobCheck[1].matchAll(/'([A-Z]+)'/g)].map((hit) => hit[1]);

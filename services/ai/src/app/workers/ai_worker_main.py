@@ -4,6 +4,19 @@ import os
 AI_WORKER_QUEUES = ["q:chat:priority", "q:chat", "q:document"]
 
 
+def ai_handlers(deps, query) -> dict:
+    from app.workers.handlers.chat import chat
+    from app.workers.handlers.document import make_document
+    from app.workers.handlers.fit import make_fit
+
+    return {
+        "chat": chat,
+        "employer_ai": chat,
+        "document": make_document(deps.documents),
+        "fit": make_fit(query),
+    }
+
+
 async def build_chat(svc) -> None:
     from uuid import UUID
 
@@ -50,7 +63,6 @@ async def main() -> None:
     from app.queue.credits import release_job, settle_job
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
-    from app.workers.handlers.chat import chat
 
     await ensure_ready(app)
     svc = app.state.deps.conversations
@@ -70,7 +82,7 @@ async def main() -> None:
         os.environ.get("QUEUE_GROUP", "ai"),
         os.environ.get("QUEUE_CONSUMER", "ai-worker"),
         AI_WORKER_QUEUES,
-        {"chat": chat},
+        ai_handlers(app.state.deps, app.state.db.q),
         int(os.environ.get("QUEUE_CONCURRENCY", "4")),
         settle=settle,
         release=release,
