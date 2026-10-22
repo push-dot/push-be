@@ -36,3 +36,21 @@ async def test_no_ai_options_gives_the_stub_reply():
     items = await run(HarnessRuntime(svc), _payload(ai=None))
     assert svc.messages[-1].text.startswith("(로컬 스텁)")
     assert items[-1][0] == "values"
+
+
+async def test_resume_flow_saves_state_and_text_answers_the_gate():
+    from app.harness.router import select_harness
+    from tests.harness_fakes import Rows
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    svc = service(rows)
+    runtime = HarnessRuntime(svc)
+    items = await run(runtime, _payload("서류 만들어줘", ai=None))
+    assert ("custom", {"type": "done", "awaiting": "choice"}) in items
+    choice = next(chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "choice")
+    assert choice["gate"] == "mode_select"
+    assert select_harness(rows.conversation).id == "resume"
+    await run(runtime, _payload("그만할래", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+    assert select_harness(rows.conversation).id == "personal"
+    assert any("UPDATE approvals SET status = 'APPROVED'" in sql for sql, _ in rows.executed)
+    chat = await runtime._graph(select_harness({})).aget_state({"configurable": {"thread_id": str(CONV)}})
+    assert not chat.values

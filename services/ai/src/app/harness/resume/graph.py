@@ -17,8 +17,6 @@ from app.harness.resume.state import ResumeState
 from app.harness.resume.tools import save_artifact
 from app.harness.tools import ToolContext
 
-# shortcut: resume thread_id is conversation_id + ":resume" so it does not collide with the chat harness
-
 _ORDER = (
     "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
 )

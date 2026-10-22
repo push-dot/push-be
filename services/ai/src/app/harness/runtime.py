@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 
 from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
@@ -66,6 +68,28 @@ def _state(payload: dict, conversation: dict) -> dict:
         "access_mode": mode.value,
         "tool_calls_used": 0,
     }
+
+
+_RESUME_KEYS = (
+    "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
+    "drafts", "review", "artifacts", "warnings",
+)
+
+
+def _thread(config, conversation_id, suffix: str) -> dict:
+    config = dict(config or {})
+    configurable = dict(config.get("configurable") or {})
+    configurable["thread_id"] = str(conversation_id) + suffix
+    config["configurable"] = configurable
+    return config
+
+
+def _pending(snapshot) -> dict | None:
+    for task in getattr(snapshot, "tasks", ()) or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            if isinstance(item.value, dict):
+                return item.value
+    return None
 
 
 def _final_text(values: dict) -> str:
@@ -166,15 +190,6 @@ class HarnessRuntime:
 
     async def astream(self, payload, config=None, stream_mode=None, **kwargs):
         conversation, spec, graph, plan = await self._open(payload)
-        if spec.id == "resume":
-            token = bound_services.set(self.svc)
-            try:
-                async for item in self._stream_graph(
-                        graph, _resume_state(payload, conversation), config, stream_mode):
-                    yield item
-            finally:
-                bound_services.reset(token)
-            return
         from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
         ai = self._ai(payload, spec, plan)
         turn: dict = {}
@@ -183,19 +198,12 @@ class HarnessRuntime:
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
+        run = self._resume_turn if spec.id == "resume" else self._chat_turn
         ok = False
         try:
-            interrupted = False
-            async for item in self._stream_graph(
-                    graph, _state(payload, conversation), config, stream_mode):
-                if item[0] == "custom" and item[1].get("type") == "done":
-                    interrupted = True
+            async for item in run(graph, payload, conversation, config, stream_mode, ai, turn):
                 yield item
             ok = True
-            if not interrupted:
-                values = (await graph.aget_state(config)).values
-                operation = await self._persist(payload, _final_text(values), ai, turn)
-                yield "values", {"operation": operation}
         finally:
             gate = getattr(self.svc, "ai", None)
             if gate is not None:
@@ -205,12 +213,56 @@ class HarnessRuntime:
             for var, token in reversed(tokens):
                 var.reset(token)
 
+    async def _chat_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
+        interrupted = False
+        async for item in self._stream_graph(
+                graph, _state(payload, conversation), config, stream_mode):
+            if item[0] == "custom" and item[1].get("type") == "done":
+                interrupted = True
+            yield item
+        if not interrupted:
+            values = (await graph.aget_state(config)).values
+            operation = await self._persist(payload, _final_text(values), ai, turn)
+            yield "values", {"operation": operation}
+
+    async def _resume_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
+        config = _thread(config, payload["conversation_id"], ":resume")
+        pending = _pending(await graph.aget_state(config))
+        text = payload.get("text") or ""
+        if pending is not None and text:
+            await self._answer_gate(pending.get("approval_id"))
+            state = Command(resume={"text": text})
+        else:
+            state = _resume_state(payload, conversation)
+        async for item in self._stream_graph(graph, state, config, stream_mode):
+            yield item
+        values = (await graph.aget_state(config)).values
+        await self._save_resume_state(payload["conversation_id"], values)
+
+    async def _answer_gate(self, approval_id) -> None:
+        if not approval_id:
+            return
+        await self.svc.db.q().execute(
+            "UPDATE approvals SET status = 'APPROVED', decided_at = now(), updated_at = now(), "
+            "revision = revision + 1 WHERE id = $1 AND status = 'PENDING'",
+            UUID(str(approval_id)),
+        )
+
+    async def _save_resume_state(self, conversation_id, values: dict) -> None:
+        saved = {key: values.get(key) for key in _RESUME_KEYS if key in values}
+        await self.svc.db.q().execute(
+            "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",
+            conversation_id,
+            json.dumps(to_jsonable(saved), ensure_ascii=False),
+        )
+
     async def _stream_graph(self, graph, state, config, stream_mode):
         async for mode, chunk in graph.astream(
                 state, config, stream_mode=stream_mode or ["custom", "values"]):
             yield mode, chunk
             if mode == "values" and isinstance(chunk, dict) and chunk.get("__interrupt__"):
-                yield "custom", {"type": "done", "awaiting": "approval"}
+                value = getattr(chunk["__interrupt__"][0], "value", None) or {}
+                yield "custom", {"type": "done", "awaiting": value.get("awaiting") or "approval"}
 
     async def _persist(self, payload: dict, reply: str, ai, turn: dict) -> ent.Operation:
         from app.domain.services.ai import record_usage
