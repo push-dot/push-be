@@ -10,6 +10,10 @@ from app.queue.ratelimit import acquire_token
 from app.queue.streams import Message, StreamQueue
 
 
+class JobCancelled(Exception):
+    pass
+
+
 class JobContext:
     def __init__(self, job, heartbeat, emit):
         self.job = job
@@ -135,7 +139,13 @@ class Worker:
             async def emit(kind, payload):
                 await self.db.emit(job["id"], kind, payload)
 
-            result = await self.handlers[job["type"]](JobContext(job, heartbeat, emit))
+            try:
+                result = await self.handlers[job["type"]](JobContext(job, heartbeat, emit))
+            except JobCancelled:
+                await self.db.cancel(job["id"], self.now())
+                await self.release(self.db, job["id"])
+                await self.queue.ack(msg.queue, self.group, msg.id)
+                return "cancelled"
             await self.db.finish(job["id"], result, self.now())
             await self.settle(self.db, job["id"])
             await self.queue.ack(msg.queue, self.group, msg.id)

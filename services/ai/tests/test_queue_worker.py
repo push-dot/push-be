@@ -20,6 +20,7 @@ CONV = UUID("44444444-4444-4444-8444-444444444444")
 class MemoryJobs:
     def __init__(self):
         self.jobs = {}
+        self.events = {}
 
     async def claim(self, job_id, now):
         job = self.jobs[job_id]
@@ -51,6 +52,15 @@ class MemoryJobs:
 
     async def touch(self, job_id, now):
         self.jobs[job_id]["heartbeat_at"] = now
+
+    async def emit(self, job_id, kind, payload):
+        self.events.setdefault(job_id, []).append((kind, payload))
+
+    async def cancel(self, job_id, now):
+        job = self.jobs[job_id]
+        if job["status"] in ("QUEUED", "RETRY", "RUNNING"):
+            job["status"] = "CANCELLED"
+            job["updated_at"] = now
 
 
 def queued(id_, queue="q:chat", conversation_id=None, user_id=USER):

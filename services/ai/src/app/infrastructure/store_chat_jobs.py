@@ -300,3 +300,79 @@ class ChatJobStore:
             "AND created_at <= now() - make_interval(secs => $2::double precision) "
             "ORDER BY created_at LIMIT $1", limit, min_age_s)
         return [r["id"] for r in rows]
+
+    async def worker_claim(self, job_id, now) -> Optional[dict]:
+        row = await self.db.q().fetchrow(
+            "UPDATE jobs SET status='RUNNING', heartbeat_at=$2, updated_at=$2 "
+            "WHERE id=$1 AND status IN ('QUEUED','RETRY') "
+            "RETURNING id, type, queue, user_id, company_id, conversation_id, "
+            "payload, attempts, max_attempts, status, checkpoint",
+            job_id, now)
+        return dict(row) if row else None
+
+    async def worker_finish(self, job_id, result, now) -> None:
+        await self.db.q().execute(
+            "UPDATE jobs SET status='DONE', result=$2, updated_at=$3 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, _dump(result), now)
+
+    async def worker_fail(self, job_id, error, now) -> dict:
+        row = await self.db.q().fetchrow(
+            "UPDATE jobs SET attempts=attempts+1, error=$2, updated_at=$3, "
+            "status=CASE WHEN attempts+1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
+            "WHERE id=$1 RETURNING status, attempts, max_attempts, queue",
+            job_id, _dump(error), now)
+        return dict(row)
+
+    async def worker_release(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE jobs SET status='QUEUED', heartbeat_at=NULL, updated_at=$2 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, now)
+
+    async def worker_touch(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE jobs SET heartbeat_at=$2, updated_at=$2 WHERE id=$1",
+            job_id, now)
+
+    async def worker_cancel(self, job_id, now) -> None:
+        await self.db.q().execute(
+            "UPDATE jobs SET status='CANCELLED', updated_at=$2 "
+            "WHERE id=$1 AND status IN ('QUEUED','RETRY','RUNNING')",
+            job_id, now)
+
+    async def worker_status(self, job_id) -> Optional[str]:
+        return await self.db.q().fetchval("SELECT status FROM jobs WHERE id=$1", job_id)
+
+    async def worker_set_state(self, job_id, state: str) -> None:
+        await self.db.q().execute(
+            "UPDATE jobs SET checkpoint = COALESCE(checkpoint, '{}'::jsonb) "
+            "|| jsonb_build_object('conversation_state', $2::text), updated_at=$3 "
+            "WHERE id=$1",
+            job_id, state, _now())
+
+
+class QueueJobs:
+    def __init__(self, store: ChatJobStore):
+        self.store = store
+
+    async def claim(self, job_id, now):
+        return await self.store.worker_claim(job_id, now)
+
+    async def finish(self, job_id, result, now):
+        await self.store.worker_finish(job_id, result, now)
+
+    async def fail(self, job_id, error, now):
+        return await self.store.worker_fail(job_id, error, now)
+
+    async def release_claim(self, job_id, now):
+        await self.store.worker_release(job_id, now)
+
+    async def touch(self, job_id, now):
+        await self.store.worker_touch(job_id, now)
+
+    async def emit(self, job_id, kind, payload):
+        await self.store.emit(job_id, kind, payload)
+
+    async def cancel(self, job_id, now):
+        await self.store.worker_cancel(job_id, now)

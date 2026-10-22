@@ -663,6 +663,7 @@ def bind_chat_nodes(svc):
         else:
             reply = completion.text
         assistant_text = reply
+        needs_approval = False
         doc_attachments: list[ent.MessageAttachment] = []
         if state.get("resume_flow") and completion is not None and not blocked:
             from app.infrastructure.resume_workspace import (
@@ -696,6 +697,7 @@ def bind_chat_nodes(svc):
             gate = gate_for_phase(new_phase - 1) if new_phase > state.get(
                 "phase", 0) else ""
             if gate and needs_gate(reply):
+                needs_approval = True
                 assistant_text = reply + "\n\n---\n\n" + gate
                 _emit({"token": "\n\n---\n\n" + gate})
             if saved:
@@ -749,7 +751,11 @@ def bind_chat_nodes(svc):
                         "auto title failed")
 
         await svc.db.run(work)
-        return {"operation": op}
+        return {
+            "operation": op,
+            "messageId": str(assistant_msg.id),
+            "needs_approval": needs_approval,
+        }
 
     svc.chat_nodes = {
         "resolve_context": resolve_context,

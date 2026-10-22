@@ -42,7 +42,13 @@ def get_job_scheduler() -> Optional[Scheduler]:
     return _scheduler
 
 
+def queue_backend() -> str:
+    return os.environ.get("QUEUE_BACKEND", "postgres").strip().lower() or "postgres"
+
+
 async def schedule_chat_job(job_id, byok: str = "") -> None:
+    if queue_backend() == "redis":
+        return
     if _scheduler is None:
         return
     claim = str(uuid4())
