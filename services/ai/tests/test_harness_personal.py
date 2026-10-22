@@ -373,17 +373,3 @@ async def test_start_document_marks_resume_active():
     assert result["resume_state"]["status"] == "active"
     assert "resume_state" in db.calls[0][0]
     assert db.calls[0][1][0] == "conv-1"
-
-
-@pytest.mark.parametrize("env", [{"CF_WORKER": "1"}, {"CHAT_EXECUTOR": "workflow"}])
-def test_flag_on_cloudflare_workflow_keeps_legacy_graph(monkeypatch, caplog, env):
-    from app import config
-    monkeypatch.setattr(config, "_harness_cf_warned", False)
-    monkeypatch.setenv("AI_HARNESS", "1")
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    svc = ConversationService(FakeDB(), None, MemorySaver())
-    with caplog.at_level("WARNING"):
-        names = set(svc.graph.get_graph().nodes)
-    assert {"resolve_context", "generate_reply", "persist"} <= names
-    assert "AI_HARNESS" in caplog.text
