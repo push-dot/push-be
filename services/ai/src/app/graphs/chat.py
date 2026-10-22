@@ -144,6 +144,7 @@ class ChatState(TypedDict, total=False):
     application_id: Any
     employer_owned: bool
     company_plan: str
+    confirm_before_edit: bool
 
 
 def bind_chat_nodes(svc):
@@ -232,9 +233,46 @@ def bind_chat_nodes(svc):
             kinds.append(e.kind)
             context_parts.append(
                 "[첨부 자료] " + e.title + "\n" + e.source_text[:6000])
+        await _ingest_links(state, conv)
+        from app.domain.chat_settings import (
+            apply_chat_settings, load_chat_settings)
+        row = None
+        try:
+            row = await load_chat_settings(svc.db.q(), user_id)
+        except Exception:
+            row = None
         return {"conversation": conv, "attachments": attachments,
                 "context_text": "\n\n".join(context_parts),
-                "evidence_kinds": kinds}
+                "evidence_kinds": kinds,
+                **apply_chat_settings(state, row)}
+
+    async def _ingest_links(state, conv) -> None:
+        from app.domain.link_ingest import (
+            has_https, ingest_chat_links, older_message_counted)
+        text = state.get("text") or ""
+        context = state.get("context") or {}
+        if not has_https(text) and not context:
+            return
+        try:
+            query = svc.db.q()
+            job_id = state.get("job_id")
+            exclude_id = None
+            if job_id:
+                exclude_id, _, _ = _stable_ids(job_id)
+            counted = await older_message_counted(
+                query, conv.id, exclude_id, text)
+            await ingest_chat_links(
+                query,
+                user_id=state["user_id"],
+                conversation_id=conv.id,
+                text=text,
+                context=context,
+                already_counted=counted,
+                exclude_message_id=exclude_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("link ingest failed")
 
     async def _persist_user_msg(state: ChatState) -> None:
         user_msg_id, _, _ = _stable_ids(state.get("job_id"))
@@ -245,6 +283,12 @@ def bind_chat_nodes(svc):
             attachments=state.get("attachments") or [],
             operation_id=None, created_at=_now())
         await svc.db.run(lambda: svc.conversations.create_message(user_msg))
+
+    def _emit_prepared(state: dict) -> None:
+        from app.graphs.chat_surface import surface_events
+        for event in surface_events(state):
+            if event["type"] in ("tool", "todo", "choice"):
+                _emit(event)
 
     async def prepare_reply(state: ChatState) -> dict:
         # Own workflow step: page fetch, RAG, and prompt assembly.
@@ -342,6 +386,7 @@ def bind_chat_nodes(svc):
         return prompt_lines(picked)
 
     async def _prepare_reply(state: ChatState) -> dict:
+        _emit_prepared(state)
         from app.ingest.web_page import (
             fetch_github_context, fetch_page_text, find_urls, github_usernames)
         conv = state.get("conversation")
@@ -583,6 +628,11 @@ def bind_chat_nodes(svc):
             if token is not None:
                 reset_employer_plan(token)
 
+    async def _emit_persisted(state: dict) -> bool:
+        from app.graphs.chat_surface import publish_persisted_surface
+        apply = getattr(getattr(svc, "documents", None), "apply_hunks", None)
+        return await publish_persisted_surface(state, svc.db, _emit, apply)
+
     async def persist(state: ChatState) -> dict:
         user_id = state["user_id"]
         conv = state["conversation"]
@@ -595,6 +645,7 @@ def bind_chat_nodes(svc):
                 # Storing the local stub there shipped a fake assistant
                 # message. The Workflow retries this step instead.
                 raise RuntimeError("chat completion missing")
+        blocked = await _emit_persisted(state)
         now = _now()
         user_msg_id, assistant_msg_id, op_id = _stable_ids(
             state.get("job_id"))
@@ -613,7 +664,7 @@ def bind_chat_nodes(svc):
             reply = completion.text
         assistant_text = reply
         doc_attachments: list[ent.MessageAttachment] = []
-        if state.get("resume_flow") and completion is not None:
+        if state.get("resume_flow") and completion is not None and not blocked:
             from app.infrastructure.resume_workspace import (
                 save_artifacts, sync_documents)
             try:

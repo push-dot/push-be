@@ -25,6 +25,7 @@ _PUBLIC_EXACT = {
     "/api/v1/billing/webhook",
 }
 _PUBLIC_PATTERN = re.compile(r"^/api/v1/auth/[^/]+/(start|callback)$")
+_PUBLIC_SHARE = re.compile(r"^/api/v1/conversations/shared/[^/]+$")
 _IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
 _PENDING_TTL = timedelta(minutes=5)
 
@@ -44,6 +45,8 @@ def _public_error(exc: BaseException) -> str:
 
 def _is_public(path: str, method: str = "GET") -> bool:
     if path in _PUBLIC_EXACT or _PUBLIC_PATTERN.match(path):
+        return True
+    if method == "GET" and _PUBLIC_SHARE.match(path):
         return True
     # Image bytes are loaded by <img>. POST /uploads/images stays authenticated.
     return (

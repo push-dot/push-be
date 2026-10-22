@@ -20,27 +20,45 @@ function cursorPair(url: URL, rid: string): { at: string | null; id: string | nu
   }
 }
 
-async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL"): Promise<Response> {
-  let cursorSql = "";
+const likePattern = (raw: string | null): string | null => {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  return `%${trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+};
+
+async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null): Promise<Response> {
+  let filterSql = "";
   const params: unknown[] = [ownerId];
   if (appId) {
     params.push(appId);
-    cursorSql += ` AND application_id = $${params.length}::uuid`;
+    filterSql += ` AND c.application_id = $${params.length}::uuid`;
   }
   if (cursor.at && cursor.id) {
     params.push(cursor.at, cursor.id);
-    cursorSql += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+    filterSql += ` AND (c.updated_at, c.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
   }
+  params.push(q);
+  const qRef = `$${params.length}`;
+  filterSql += ` AND (${qRef}::text IS NULL OR c.title ILIKE ${qRef} ESCAPE '\\' OR COALESCE(last_msg.text, '') ILIKE ${qRef} ESCAPE '\\')`;
   params.push(limit + 1);
   const ownerSql = audience === "EMPLOYER"
     ? "company_id = $1::uuid"
     : "user_id = $1::uuid AND company_id IS NULL";
   const rows = await deps.query(
-    "SELECT id, revision, application_id, title, pinned, "
-    + tsText("created_at") + " AS created_at, " + tsText("updated_at") + " AS updated_at "
-    + "FROM conversations WHERE " + ownerSql + " AND archived = false" +
-    cursorSql +
-    ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+    "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
+    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
+    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
+    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
+    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING') THEN 'NEEDS_APPROVAL' "
+    + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
+    + "ELSE 'DONE' END AS status "
+    + "FROM conversations c "
+    + "LEFT JOIN users cu ON cu.id = c.user_id "
+    + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
+    + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
+    + "WHERE " + ownerSql + " AND c.archived = false"
+    + filterSql
+    + ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`,
     params,
   );
   return jsonResponse(200, pageBody(rows, limit, conversationJson), rid);
@@ -57,6 +75,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   }
   const cursor = cursorPair(url, rid);
   if (cursor instanceof Response) return cursor;
+  const q = likePattern(url.searchParams.get("q"));
   if (url.searchParams.get("audience") === "EMPLOYER") {
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
@@ -64,7 +83,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
       return errorResponse(403, "BUSINESS_NOT_VERIFIED", "company is not verified", rid);
     }
     try {
-      return await listConversationsFor(deps, user.companyId, appId, cursor, page.limit, rid, "EMPLOYER");
+      return await listConversationsFor(deps, user.companyId, appId, cursor, page.limit, rid, "EMPLOYER", q);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -76,7 +95,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     if (user instanceof Response) return user;
     try {
       return await freshRead(
-        await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid),
+        await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q),
         request, rid);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -86,7 +105,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid);
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -94,7 +113,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   try {
     const rows = await queryToleratingCompany(deps.query, LIST_SQL, [
       ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
-      appId, cursor.at, cursor.id, page.limit + 1,
+      appId, cursor.at, cursor.id, page.limit + 1, q,
     ]);
     const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
     if (user instanceof Response) return user;
@@ -104,7 +123,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid);
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -120,6 +139,10 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
     pinned: asBool(row.pinned),
     createdAt: formatJsonTimestamp(row.created_at),
     updatedAt: formatJsonTimestamp(row.updated_at),
+    status: row.status == null || row.status === "" ? "DONE" : String(row.status),
+    lastMessagePreview: String(row.last_message_preview ?? "").slice(0, 140),
+    createdBy: { displayName: String(row.display_name ?? "") },
+    postingId: row.posting_id == null || row.posting_id === "" ? null : String(row.posting_id),
   };
 }
 
@@ -235,9 +258,9 @@ function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Rec
   let nextCursor: string | null = null;
   if (more && items.length) {
     const last = items[items.length - 1];
-    const created = String(last.createdAt);
+    const stamp = map === conversationJson ? String(last.updatedAt) : String(last.createdAt);
     const id = String(last.id);
-    nextCursor = encodeCursor(created, id);
+    nextCursor = encodeCursor(stamp, id);
   }
   return { data: items, page: { nextCursor, hasMore: more } };
 }
@@ -257,6 +280,34 @@ async function activeJobFor(deps: Deps, userId: string, id: string, companyId: s
   );
   return jobs.length ? String(jobs[0].id) : null;
 }
+
+export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> => {
+  const id = parseUuid(rawId);
+  if (!id) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  try {
+    const found = await activeJobFor(deps, user.id, id, user.companyId);
+    if (found instanceof Response) {
+      return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
+    }
+    if (!found) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    const updated = await deps.query(
+      "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
+      + "WHERE id = $1::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id",
+      [found],
+    );
+    if (!updated.length) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    await deps.query(
+      "INSERT INTO chat_events (job_id, type, payload) "
+      + "VALUES ($1::uuid, 'cancelled', '{}'::jsonb)",
+      [found],
+    );
+    return jsonResponse(200, { data: { jobId: found, status: "CANCELLED" } }, rid);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+};
 
 export async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
@@ -334,7 +385,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
           for (const row of rows) {
             after = Number(row.id);
             send(sseFrame(row));
-            if (row.type === "done" || row.type === "error") {
+            if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
             }
@@ -375,7 +426,9 @@ function sseFrame(row: Record<string, unknown>): string {
   if (row.type === "token") body = { type: "token", text: String(p.text ?? "") };
   else if (row.type === "status") body = { type: "status", text: String(p.text ?? "") };
   else if (row.type === "error") body = { type: "error", error: p.error ?? {} };
-  else body = { type: "done", operation: p.operation ?? null };
+  else if (row.type === "done") body = { type: "done", operation: p.operation ?? null };
+  else if (row.type === "cancelled") body = { type: "cancelled" };
+  else body = { type: row.type, ...p };
   body.seq = seq;
   return `id: ${seq}\ndata: ${pyJson(body)}\n\n`;
 }

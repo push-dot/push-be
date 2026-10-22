@@ -16,6 +16,9 @@ from app.domain import entities as ent
 from app.domain.errors import (
     internal, invalid_transition, not_found, payload_too_large, validation_field,
 )
+from app.domain.pagination import Cursor, Page
+from app.domain.profile_draft import parse_profile_draft
+from app.domain.source_list import merge_library
 from app.api import schemas as s
 from app.api.deps import (deps,
     bind_json, current_user, data, page_body, page_request, param_id,
@@ -142,6 +145,36 @@ async def create_source(request: Request):
                       "sha256": src.sha256, "status": src.status})
 
 
+@router.get("/sources")
+async def list_sources(request: Request):
+    user_id = current_user(request).id
+    kind = request.query_params.get("kind") or None
+    if kind not in (None, "UPLOAD", "AI"):
+        raise validation_field("kind", "unsupported kind")
+    page = page_request(request)
+    query = request.app.state.db.q()
+    uploads = []
+    documents = []
+    if kind in (None, "UPLOAD"):
+        uploads = [dict(row) for row in await query.fetch(
+            "SELECT id, file_name, mime_type, size, page_count, origin, created_at "
+            "FROM sources WHERE user_id = $1 "
+            "ORDER BY created_at DESC, id DESC",
+            user_id)]
+    if kind in (None, "AI"):
+        documents = [dict(row) for row in await query.fetch(
+            "SELECT id, title, created_at FROM documents WHERE user_id = $1 "
+            "ORDER BY created_at DESC, id DESC",
+            user_id)]
+    items, has_more = merge_library(
+        uploads, documents, kind, page.cursor, page.effective_limit())
+    next_cursor = None
+    if has_more:
+        last = items[-1]
+        next_cursor = Cursor(created_at=last["createdAt"], id=last["id"]).encode()
+    return page_body(Page(items=items, next_cursor=next_cursor, has_more=has_more))
+
+
 @router.get("/sources/{id}")
 async def get_source(id: str, request: Request):
     d = deps(request)
@@ -165,6 +198,19 @@ async def get_source_content(id: str, request: Request):
         body = await d.sources.content(current_user(request).id, src.id)
         return Response(content=body, media_type=src.mime_type)
     return FileResponse(src.path)
+
+
+@router.get("/sources/{id}/profile-draft")
+async def get_source_profile_draft(id: str, request: Request):
+    d = deps(request)
+    user_id = current_user(request).id
+    sid = param_id(id, "id")
+    try:
+        await d.sources.get(user_id, sid)
+    except NotFoundError:
+        raise not_found()
+    text = await d.evidence._source_text(user_id, sid)
+    return data(200, parse_profile_draft(text))
 
 
 @router.delete("/sources/{id}", status_code=204)

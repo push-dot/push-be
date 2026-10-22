@@ -57,6 +57,15 @@ def step_fail_limit_reached(checkpoint: dict | None) -> bool:
 
 _TOKEN_BATCH = 160
 _TOKEN_FLUSH_S = 0.05
+_LIVE_EVENT_TYPES = frozenset({
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled"})
+
+
+def _live_event(chunk: dict):
+    kind = chunk.get("type")
+    if kind not in _LIVE_EVENT_TYPES:
+        return None
+    return kind, {key: value for key, value in chunk.items() if key != "type"}
 
 
 async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
@@ -96,6 +105,11 @@ async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
         if "status" in item:
             await flush()
             await emit_many(job_id, [("status", {"text": item["status"]})])
+            continue
+        live = _live_event(item)
+        if live is not None:
+            await flush()
+            await emit_many(job_id, [live])
             continue
         if "token" not in item:
             continue
@@ -199,6 +213,13 @@ class ConversationService:
             self._inflight.add(t)
             t.add_done_callback(self._inflight.discard)
 
+    async def _notify_ai_done(self, user_id, conversation_id) -> None:
+        try:
+            from app.domain.chat_settings import insert_ai_done
+            await insert_ai_done(self.db.q(), user_id, conversation_id)
+        except Exception:
+            logging.getLogger(__name__).exception("AI_DONE insert failed")
+
     async def _run_job(self, job: dict) -> None:
         log = logging.getLogger(__name__)
         job_id = job["id"]
@@ -223,19 +244,35 @@ class ConversationService:
                             "thread_id": str(job["conversation_id"])}},
                         stream_mode=["custom", "values"]):
                     if mode == "custom" and isinstance(chunk, dict):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         if "token" in chunk:
                             await self.jobs.emit(
                                 job_id, "token", {"text": chunk["token"]})
                         elif "status" in chunk:
                             await self.jobs.emit(
                                 job_id, "status", {"text": chunk["status"]})
+                        else:
+                            live = _live_event(chunk)
+                            if live is not None:
+                                await self.jobs.emit(job_id, live[0], live[1])
                     elif mode == "values" and chunk.get("operation"):
+                        if await self.jobs.status(job_id) == "CANCELLED":
+                            terminal = True
+                            break
                         from app.jsonutil import to_jsonable
                         await self.jobs.emit(
                             job_id, "done",
                             {"operation": to_jsonable(chunk["operation"])})
-                await self.jobs.finish(job_id, "DONE")
-                terminal = True
+                if not terminal:
+                    if await self.jobs.status(job_id) == "CANCELLED":
+                        terminal = True
+                    else:
+                        await self.jobs.finish(job_id, "DONE")
+                        await self._notify_ai_done(
+                            job["user_id"], job["conversation_id"])
+                        terminal = True
             except DomainError as e:
                 await self._drop_enqueued_user_message(job_id)
                 await self.jobs.emit(
@@ -436,6 +473,10 @@ class ConversationService:
                     yield ("token", chunk["token"], None)
                 elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
                     yield ("status", chunk["status"], None)
+                elif mode == "custom" and isinstance(chunk, dict):
+                    live = _live_event(chunk)
+                    if live is not None:
+                        yield (live[0], live[1], None)
                 elif mode == "values" and chunk.get("operation") is not None:
                     yield ("done", chunk["operation"], None)
         finally:
@@ -515,6 +556,10 @@ class ConversationService:
                 elif t == "error":
                     yield ("error", p.get("error") or {}, r["id"])
                     return
+                elif t in _LIVE_EVENT_TYPES:
+                    yield (t, p if isinstance(p, dict) else {}, r["id"])
+                    if t == "cancelled":
+                        return
             if rows:
                 idle = 0
             else:
@@ -642,6 +687,8 @@ class ConversationService:
             if name == "persist" and status == "RUNNING":
                 try:
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                 except LostClaim:
                     return "skip"
             return "ok"
@@ -707,6 +754,8 @@ class ConversationService:
                         jid, "done",
                         {"operation": to_jsonable(state["operation"])})
                     await self.jobs.finish(jid, "DONE")
+                    await self._notify_ai_done(
+                        job["user_id"], job["conversation_id"])
                     self._byok_keys.pop(jid, None)
                 event_id = await self.jobs.max_event_id(jid)
                 await self.jobs.save_checkpoint(

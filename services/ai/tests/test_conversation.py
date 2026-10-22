@@ -326,6 +326,104 @@ async def test_external_paid_plan_still_enqueues(monkeypatch):
     assert gate.usage.items == []
 
 
+class _Chunks:
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    async def astream(self, _state, config=None, stream_mode=None):
+        for chunk in self.chunks:
+            yield chunk
+
+
+async def test_pump_job_events_yields_a_tool_then_done_and_stops():
+    svc = _svc(StubConversationStore())
+    jobs = StubChatJobStore()
+    rows = [
+        {"id": 2, "type": "tool", "payload": {
+            "name": "read", "state": "run", "summary": "file"}},
+        {"id": 3, "type": "done", "payload": {"operation": {"status": "SUCCEEDED"}}},
+        {"id": 4, "type": "token", "payload": {"text": "after-done"}},
+    ]
+
+    async def events_since(job_id, after):
+        return [row for row in rows if row["id"] > after]
+
+    jobs.events_since = events_since
+    svc.jobs = jobs
+    events = [event async for event in svc._pump_job_events(jobs.job_id)]
+    assert events == [
+        ("tool", {"name": "read", "state": "run", "summary": "file"}, 2),
+        ("done", {"status": "SUCCEEDED"}, 3),
+    ]
+
+
+async def test_pump_job_events_returns_on_error():
+    svc = _svc(StubConversationStore())
+    jobs = StubChatJobStore()
+    rows = [
+        {"id": 1, "type": "error", "payload": {"error": {
+            "code": "INTERNAL", "message": "no"}}},
+        {"id": 2, "type": "token", "payload": {"text": "after-error"}},
+    ]
+
+    async def events_since(job_id, after):
+        return [row for row in rows if row["id"] > after]
+
+    jobs.events_since = events_since
+    svc.jobs = jobs
+    events = [event async for event in svc._pump_job_events(jobs.job_id)]
+    assert events == [("error", {"code": "INTERNAL", "message": "no"}, 1)]
+
+
+async def test_pump_job_events_cancelled_returns(monkeypatch):
+    monkeypatch.setenv("SSE_MAX_POLLS", "3")
+
+    async def _asleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.domain.services.conversation.asyncio.sleep", _asleep)
+    svc = _svc(StubConversationStore())
+    jobs = StubChatJobStore()
+    rows = [
+        {"id": 4, "type": "cancelled", "payload": {}},
+        {"id": 5, "type": "token", "payload": {"text": "after-cancel"}},
+    ]
+
+    async def events_since(job_id, after):
+        return [row for row in rows if row["id"] > after]
+
+    jobs.events_since = events_since
+    svc.jobs = jobs
+    events = [event async for event in svc._pump_job_events(jobs.job_id)]
+    assert events == [("cancelled", {}, 4)]
+
+
+async def test_stream_message_yields_a_diff_chunk():
+    user_id = uuid4()
+    conv = _conv(user_id=user_id)
+    svc = _svc(StubConversationStore(conv=conv))
+    hunks = [{"line": 1, "sign": "+", "text": "new"}]
+    svc._compiled = _Chunks([
+        ("custom", {"token": "hi"}),
+        ("custom", {"status": "working"}),
+        ("custom", {
+            "type": "diff", "documentId": "doc-1", "revisionId": "rev-1",
+            "hunks": hunks}),
+        ("custom", {"type": "future", "note": "no"}),
+        ("values", {"operation": {"status": "SUCCEEDED"}}),
+    ])
+    events = [event async for event in svc.stream_message(
+        user_id, conv.id, "hi", {}, None, "SUGGEST")]
+    assert [event[0] for event in events] == ["token", "status", "diff", "done"]
+    assert events[0][1] == "hi"
+    assert events[1][1] == "working"
+    assert events[2][1] == {
+        "documentId": "doc-1", "revisionId": "rev-1", "hunks": hunks}
+    assert events[2][2] is None
+    assert events[3] == ("done", {"status": "SUCCEEDED"}, None)
+
+
 async def test_stream_message_stub_tokens_and_done():
     user_id = uuid4()
     conv = _conv(user_id=user_id)
@@ -507,3 +605,29 @@ async def test_flush_chat_events_publishes_status_and_token_chunks():
     assert calls[1] == [("token", {"text": "a"})]
     assert calls[2] == [("token", {"text": "bb"}), ("token", {"text": "ccc"})]
     assert calls[3] == [("token", {"text": "d"})]
+
+
+async def test_flush_chat_events_forwards_a_tool_and_flushes_the_token_batch():
+    import asyncio
+    from app.domain.services.conversation import flush_chat_events
+
+    calls = []
+
+    async def emit_many(job_id, events):
+        calls.append(list(events))
+
+    queue: asyncio.Queue = asyncio.Queue()
+    task = asyncio.create_task(flush_chat_events(
+        emit_many, uuid4(), queue, batch_chars=100, flush_s=5))
+    queue.put_nowait({"token": "aa"})
+    queue.put_nowait({"token": "bb"})
+    queue.put_nowait({
+        "type": "tool", "name": "read", "state": "run", "summary": "file"})
+    queue.put_nowait(None)
+    await task
+    flat = [event for batch in calls for event in batch]
+    assert flat == [
+        ("token", {"text": "aa"}),
+        ("token", {"text": "bb"}),
+        ("tool", {"name": "read", "state": "run", "summary": "file"}),
+    ]

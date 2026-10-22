@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.domain.errors import DomainError
+from app.db import NotFoundError
+from app.domain.errors import DomainError, not_found
 from app.jsonutil import to_jsonable
 from app.api import schemas as s
-from app.api.deps import deps, ai_options, bind_json, current_user, param_id
+from app.graphs.chat_surface import resolve_chat_approval
+from app.infrastructure.store_conversations import ConversationStore
+from app.api.deps import deps, ai_options, bind_json, current_user, data, param_id
 
 router = APIRouter()
 
@@ -48,8 +53,16 @@ async def _sse_frames(gen, request: Request):
                 body = {"type": "status", "text": payload}
             elif kind == "error":
                 body = {"type": "error", "error": payload}
-            else:
+            elif kind == "done":
                 body = {"type": "done", "operation": to_jsonable(payload)}
+            elif kind == "cancelled":
+                body = {"type": "cancelled"}
+            elif isinstance(payload, dict):
+                body = {"type": kind}
+                body.update({
+                    key: value for key, value in payload.items() if key != "type"})
+            else:
+                body = {"type": kind}
             if seq is not None:
                 body["seq"] = seq
             prefix = f"id: {seq}\n" if seq is not None else ""
@@ -70,3 +83,64 @@ def _sse_response(gen):
     return StreamingResponse(
         gen, media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class _ResolveApprovalReq(s.Req):
+    option_id: str
+
+
+@router.post("/conversations/{id}/approvals/{approval_id}")
+async def resolve_conversation_approval(id: str, approval_id: str, request: Request):
+    req = await bind_json(request, _ResolveApprovalReq)
+    body = await resolve_chat_approval(
+        request.app.state.db, current_user(request).id,
+        param_id(id, "id"), param_id(approval_id, "approvalId"),
+        req.option_id)
+    return data(200, body)
+
+
+def _shares(request: Request) -> ConversationStore:
+    return ConversationStore(request.app.state.db)
+
+
+async def _visible_conversation(request: Request, id_: str):
+    conversation_id = param_id(id_, "id")
+    try:
+        return await _shares(request).get(current_user(request).id, conversation_id)
+    except NotFoundError:
+        raise not_found()
+
+
+@router.post("/conversations/{id}/share")
+async def share_conversation(id: str, request: Request):
+    conversation = await _visible_conversation(request, id)
+    token = secrets.token_urlsafe(32)
+    await _shares(request).put_share(
+        conversation.id, hashlib.sha256(token.encode()).hexdigest())
+    return data(200, {
+        "token": token,
+        "path": "/api/v1/conversations/shared/" + token,
+    })
+
+
+@router.get("/conversations/shared/{token}")
+async def get_shared_conversation(token: str, request: Request):
+    store = _shares(request)
+    row = await store.share_by_hash(hashlib.sha256(token.encode()).hexdigest())
+    if row is None:
+        raise not_found()
+    messages = await store.list_share_messages(row["conversation_id"])
+    return data(200, {
+        "title": row["title"],
+        "messages": [
+            {"role": message["role"], "text": message["text"],
+             "createdAt": message["created_at"]}
+            for message in messages
+        ],
+    })
+
+
+@router.get("/conversations/{id}/artifacts")
+async def list_conversation_artifacts(id: str, request: Request):
+    conversation = await _visible_conversation(request, id)
+    return data(200, await _shares(request).list_artifacts(conversation.id))

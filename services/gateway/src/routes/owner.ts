@@ -21,6 +21,7 @@ function isAi(method: string, path: string): boolean {
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
+  if (method === "POST" && /^\/api\/v1\/postings\/[^/]+\/fit$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;
   if (method === "POST" && /^\/api\/v1\/projects\/[^/]+\/evidence\/[^/]+\/verify$/.test(path)) return true;
