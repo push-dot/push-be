@@ -69,7 +69,7 @@ export const recordEvent = async (ctx: Ctx, key: string): Promise<Response> => {
 export const experimentStats = async (ctx: Ctx, key: string): Promise<Response> => {
   const exp = await loadExperiment(ctx, key);
   const rows = await query(ctx.deps.query,
-    "SELECT variant, event, COUNT(*) AS n FROM experiment_events WHERE experiment_key = $1 GROUP BY variant, event", [key]);
+    "SELECT variant, event, COUNT(*) AS n FROM experiment_events WHERE experiment_key = $1 GROUP BY variant, event ORDER BY variant, event", [key]);
   const counts: Record<string, Record<string, number>> = {};
   for (const row of rows.rows) (counts[String(row.variant)] ||= {})[String(row.event)] = Number(row.n);
   return data(200, {

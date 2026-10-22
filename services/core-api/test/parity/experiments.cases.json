@@ -117,13 +117,15 @@
   "name": "stats",
   "method": "GET",
   "path": "/api/v1/experiments/onboarding/stats",
-  "body": null
+  "body": null,
+  "sortKeys": true
  },
  {
   "name": "stats ended",
   "method": "GET",
   "path": "/api/v1/experiments/retired/stats",
-  "body": null
+  "body": null,
+  "sortKeys": true
  },
  {
   "name": "stats missing",

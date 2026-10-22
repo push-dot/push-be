@@ -12,7 +12,7 @@ const NOW = new Date("2026-10-22T12:00:00Z");
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 type Multipart = { fields?: Record<string, string>; file?: { name: string; type: string; base64: string } | null };
-type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[]; sql?: string };
+type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[]; sql?: string; sortKeys?: boolean };
 type Golden = { name: string; status: number; body?: unknown; contentType?: string; base64?: string; location?: string };
 type HttpRule = { method: string; url: string; status?: number; body?: unknown };
 type Logged = { sql: string; rows?: Record<string, unknown>[]; rowCount?: number; error?: { code?: string; message: string } };
@@ -65,6 +65,15 @@ const sortNewTies = (items: unknown[]): unknown[] => {
     start = end;
   }
   return out;
+};
+
+/** For answers built from an unordered GROUP BY: compare without key order. */
+const sortedKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedKeys((value as Record<string, unknown>)[key])]));
+  }
+  return value;
 };
 
 const replay = (log: Logged[][], caseIndex: () => number): Query => {
@@ -187,8 +196,9 @@ export const parityGroup = async (group: string, base: CoreEnv = { APP_ENV: "pro
         headers,
         body: requestBody(item.body, headers),
       }), env, { query, now: () => NOW, fetch: fetchImpl });
-      const want = expected(golden[index], known, item.ignoreKeys);
-      const got = await actual(res, known, item.ignoreKeys);
+      const order = (text: string): string => (item.sortKeys ? JSON.stringify(sortedKeys(JSON.parse(text))) : text);
+      const want = order(expected(golden[index], known, item.ignoreKeys));
+      const got = order(await actual(res, known, item.ignoreKeys));
       if (res.status !== golden[index].status || got !== want) {
         mismatches.push(`${item.name}: status ${res.status} vs ${golden[index].status}\n  core:   ${got}\n  python: ${want}`);
       }
