@@ -60,7 +60,12 @@ export function errorResponse(status: number, code: string, message: string, rid
 }
 
 export function errorOf(err: HttpError, rid: string): Response {
-  return errorResponse(err.status, err.code, err.message, rid, err.details);
+  const res = errorResponse(err.status, err.code, err.message, rid, err.details);
+  const details = err.details as { retryAfterSec?: number } | null;
+  if (err.status === 429 && details && typeof details.retryAfterSec === "number") {
+    res.headers.set("retry-after", String(details.retryAfterSec));
+  }
+  return res;
 }
 
 export function fieldError(field: string, message: string): HttpError {

@@ -1,4 +1,5 @@
 import { DISPLAY_MICRO, grantMicro, iapTopupMicro } from "../billing/credits.ts";
+import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
 import { isMissingRelation, one, query } from "../db.ts";
@@ -92,17 +93,16 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
     const plan = employerPlanOf(company.plan);
     await grantMonthly(ctx, "EMPLOYER", plan, ctx.user.companyId);
-    const bal = await one(ctx.deps.query,
-      "SELECT balance_after FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1",
-      [ctx.user.companyId]);
     const { monthStart, monthEnd } = utcMonth(ctx.now);
     const spentMicroCredits = await spentInMonth(ctx, EMPLOYER_SPEND, [monthStart, monthEnd, ctx.user.companyId]);
+    const available = await availableMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId);
+    const reserved = await reservedMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId);
     return data(200, {
       subscriptionStatus: plan ? "ACTIVE" : "NONE",
       plan,
       periodEndsAt: null,
-      balanceMicroCredits: Number(bal?.balance_after || 0),
-      reservedMicroCredits: 0,
+      balanceMicroCredits: Number(available),
+      reservedMicroCredits: Number(reserved),
       monthlyMicroCredits: monthlyMicro("EMPLOYER", plan),
       spentMicroCredits,
       audience: "EMPLOYER",
@@ -111,9 +111,11 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   }
   const plan = ctx.user.plan || null;
   await grantMonthly(ctx, "PERSONAL", plan, ctx.user.id);
-  const bal = await one(ctx.deps.query,
-    "SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
-    [ctx.user.id]);
+  const balUser = ctx.user.id;
+  const { monthStart, monthEnd } = utcMonth(ctx.now);
+  const spentMicroCredits = await spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]);
+  const available = await availableMicro(ctx.deps.query, balUser);
+  const reserved = await reservedMicro(ctx.deps.query, balUser);
   const iap = await one(ctx.deps.query,
     "SELECT platform FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1",
     [ctx.user.id]);
@@ -121,14 +123,12 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   const source = platform === "APP_STORE" || platform === "GOOGLE_PLAY"
     ? platform
     : ctx.user.subscriptionStatus === "ACTIVE" ? "STRIPE" : null;
-  const { monthStart, monthEnd } = utcMonth(ctx.now);
-  const spentMicroCredits = await spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]);
   return data(200, {
     subscriptionStatus: ctx.user.subscriptionStatus || "NONE",
     plan,
     periodEndsAt: ts(ctx.user.periodEndsAt),
-    balanceMicroCredits: Number(bal?.balance_after || 0),
-    reservedMicroCredits: 0,
+    balanceMicroCredits: Number(available),
+    reservedMicroCredits: Number(reserved),
     monthlyMicroCredits: monthlyMicro("PERSONAL", plan),
     spentMicroCredits,
     audience: "PERSONAL",

@@ -11,6 +11,10 @@ export interface CoreEnv {
   API?: Fetcher;
   /** When set, the VPS worker consumes chat_jobs and core skips the Workflow. */
   AI_ORIGIN?: string;
+  /** postgres keeps the chat_jobs insert. redis uses enqueueJob. */
+  QUEUE_BACKEND?: string;
+  DISPATCH_ORIGIN?: string;
+  DISPATCH_SECRET?: string;
   /** Same value as the VPS AI_SHARED_SECRET. Sent on the wake request. */
   AI_SHARED_SECRET?: string;
   APP_ENV?: string;

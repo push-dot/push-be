@@ -1,6 +1,9 @@
 import { bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
+import { checkBackpressure } from "../jobs/backpressure.ts";
+import { queueFor, type Plan } from "../jobs/config.ts";
+import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
@@ -235,7 +238,7 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: str
     if (ai.credentialMode === "MANAGED") {
       const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
       const spent = await one(ctx.deps.query,
-        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND (status = 'SETTLED' OR (status = 'RESERVED' AND created_at > now() - interval '10 minutes'))",
+        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
         [ctx.user.id, start]);
       const raw = user.plan == null ? "" : String(user.plan).trim();
       const plan = raw === "" ? "FREE" : raw;
@@ -277,6 +280,64 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
     console.error("vps chat wake failed");
   }
 }
+
+const planTier = (value: unknown): Plan => {
+  const raw = value == null ? "" : String(value).trim().toUpperCase();
+  if (raw === "BASIC" || raw === "PRO" || raw === "ULTRA" || raw === "FREE") return raw;
+  return "FREE";
+};
+
+const enqueueChatMessage = async (
+  ctx: Ctx,
+  conversationId: string,
+  payload: Record<string, unknown>,
+  text: string,
+  byok: string,
+): Promise<Response> => {
+  const owned = await one(ctx.deps.query,
+    "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+    [conversationId, ctx.user.id]);
+  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const companyId = owned.company_id == null ? undefined : String(owned.company_id);
+  const plan = planTier(companyId ? owned.company_plan : owned.user_plan);
+  const type = companyId ? "employer_ai" : "chat";
+  const audience = companyId ? "EMPLOYER" : "PERSONAL";
+  const queue = queueFor(type, plan, audience);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  if (!pressure.ok) {
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+  }
+  const headerKey = (ctx.request.headers.get("idempotency-key") || "").trim();
+  const { jobId } = await enqueueJob(ctx.deps.query, {
+    type,
+    userId: ctx.user.id,
+    companyId,
+    plan,
+    payload,
+    idempotencyKey: headerKey || undefined,
+    conversationId,
+    byok: byok.length > 0,
+  });
+  const messageId = await uuid5Url("push:chat:" + jobId + ":user");
+  const inserted = await one(ctx.deps.query,
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
+    [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
+  if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  const now = ts(ctx.now);
+  return data(202, {
+    id: jobId,
+    type: "CHAT_MESSAGE",
+    applicationId: null,
+    status: "QUEUED",
+    progress: null,
+    result: { kind: "CHAT_MESSAGE", value: { jobId } },
+    error: null,
+    inputRequest: null,
+    createdAt: now,
+    updatedAt: now,
+  }, ctx.rid);
+};
 
 export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const conversationId = requireUuid(idRaw, "id");
@@ -336,6 +397,9 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
     const sealed = await encryptAes(key, byok, ctx.user.id, "chat-job");
     payload._byok = { ct: bytesToBase64(sealed.ciphertext), nonce: bytesToBase64(sealed.nonce) };
+  }
+  if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis") {
+    return enqueueChatMessage(ctx, conversationId, payload, body.text, byok);
   }
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
