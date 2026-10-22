@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.clock import utcnow
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4, uuid5
@@ -39,6 +40,10 @@ def _byok_key_var():
 
 def _now() -> datetime:
     return utcnow()
+
+
+def queue_backend() -> str:
+    return os.environ.get("QUEUE_BACKEND", "postgres").strip().lower() or "postgres"
 
 
 def managed_allowance(plan: str | None) -> int:
@@ -213,6 +218,20 @@ class AIGate:
                        system: str, user: str, job_id=None) -> Optional[UUID]:
         if ai.credential_mode != "MANAGED":
             return None
+        if queue_backend() == "redis":
+            if not job_id:
+                return None
+            now = _now()
+            est_in = code_point_len(system + user) // 4
+            row = ent.AiUsage(
+                id=usage_row_id(job_id, "chat"), user_id=user_id,
+                provider="OPENAI", model=ai.model,
+                managed=True, input_tokens=est_in, output_tokens=2048,
+                cost_micro_credits=ent.ai_cost_micro_credits(
+                    "OPENAI", ai.model, est_in, 2048),
+                status=ent.USAGE_RESERVED, created_at=now)
+            await self.usage.create_for_job(row, job_id)
+            return row.id
         out = None
 
         async def work():
