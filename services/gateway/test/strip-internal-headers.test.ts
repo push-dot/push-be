@@ -97,3 +97,8 @@ test("the gateway forwards act-as headers to core only with the internal secret"
   assert.equal(seen[2].headers.get("x-push-internal-secret"), null);
   assert.equal(seen[2].headers.get("x-push-act-as"), null);
 });
+
+test("act-as-only core routes go to core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/documents/d1/edits"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/conversations/c1/resume-jobs"), "core");
+});
