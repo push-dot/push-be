@@ -14,9 +14,11 @@ database you care about.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,13 +33,58 @@ def idempotency_key(index: int) -> str:
     return f"00000000-0000-4000-8000-{index:012d}"
 
 
-async def seed(url: str) -> None:
+async def seed(url: str, storage: str) -> None:
     import asyncpg
     conn = await asyncpg.connect(url)
     try:
         await conn.execute((PARITY / "seed.sql").read_text())
+        images = Path(storage) / "images"
+        images.mkdir(parents=True, exist_ok=True)
+        for row in await conn.fetch("SELECT key, content FROM upload_images"):
+            (images / row["key"]).write_bytes(bytes(row["content"]))
     finally:
         await conn.close()
+
+
+def freeze_datetime() -> None:
+    from datetime import datetime, timezone
+
+    frozen = datetime.fromtimestamp(NOW_NS // 1_000_000_000, timezone.utc)
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz else frozen.replace(tzinfo=None)
+
+        @classmethod
+        def utcnow(cls):
+            return frozen.replace(tzinfo=None)
+
+    import app.api.routers.evidence as evidence_routes
+    evidence_routes.datetime = Frozen
+
+
+def request_kwargs(case: dict, headers: dict) -> dict:
+    body = case.get("body")
+    if body is None:
+        return {"headers": headers}
+    if "multipart" in body:
+        part = body["multipart"]
+        files = None
+        if part.get("file"):
+            f = part["file"]
+            files = {"file": (f["name"], base64.b64decode(f["base64"]), f["type"])}
+        return {"headers": headers, "data": part.get("fields") or {}, "files": files}
+    return {"headers": headers, "json": body}
+
+
+def answer(res) -> dict:
+    kind = res.headers.get("content-type", "")
+    if not res.content:
+        return {"body": None}
+    if kind.startswith("application/json"):
+        return {"body": res.json()}
+    return {"contentType": kind, "base64": base64.b64encode(res.content).decode()}
 
 
 def main() -> None:
@@ -46,29 +93,28 @@ def main() -> None:
     os.environ.update({
         "DATABASE_URL": url, "DB_DRIVER": "asyncpg", "PG_TRANSPORT": "tcp",
         "RUN_MIGRATIONS": "0", "QUEUE_BACKEND": "redis", "CHECKPOINTER": "memory",
-        "APP_ENV": "production",
+        "APP_ENV": "production", "BLOB_STORE": "db", "STORAGE_DIR": tempfile.mkdtemp(),
     })
     os.environ.pop("AI_SHARED_SECRET", None)
-    asyncio.run(seed(url))
+    asyncio.run(seed(url, os.environ["STORAGE_DIR"]))
     time.time_ns = lambda: NOW_NS
 
     from fastapi.testclient import TestClient
 
     from app.main import create_app
+    freeze_datetime()
 
     cases = json.loads((PARITY / f"{group}.cases.json").read_text())
     golden = []
     with TestClient(create_app()) as client:
         for index, case in enumerate(cases):
-            headers = {"authorization": "Bearer " + TOKEN, "x-request-id": "parity"}
+            headers = {"x-request-id": "parity"}
+            if case.get("auth", True):
+                headers["authorization"] = "Bearer " + TOKEN
             if case["method"] in ("POST", "PATCH", "PUT"):
                 headers["idempotency-key"] = idempotency_key(index)
-            kwargs = {"headers": headers}
-            if case.get("body") is not None:
-                kwargs["json"] = case["body"]
-            res = client.request(case["method"], case["path"], **kwargs)
-            body = res.json() if res.content else None
-            golden.append({"name": case["name"], "status": res.status_code, "body": body})
+            res = client.request(case["method"], case["path"], **request_kwargs(case, headers))
+            golden.append({"name": case["name"], "status": res.status_code, **answer(res)})
     (PARITY / f"{group}.golden.json").write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n")
     print(f"{group}: {len(golden)} cases")
 

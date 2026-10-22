@@ -11,8 +11,9 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 const NOW = new Date("2026-10-22T12:00:00Z");
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
-type Case = { name: string; method: string; path: string; body: unknown };
-type Golden = { name: string; status: number; body: unknown };
+type Multipart = { fields?: Record<string, string>; file?: { name: string; type: string; base64: string } | null };
+type Case = { name: string; method: string; path: string; body: unknown; auth?: boolean; ignoreKeys?: string[] };
+type Golden = { name: string; status: number; body?: unknown; contentType?: string; base64?: string };
 type Logged = { sql: string; rows?: Record<string, unknown>[]; rowCount?: number; error?: { code?: string; message: string } };
 
 const read = <T>(file: string): T => JSON.parse(readFileSync(resolve(DIR, file), "utf8")) as T;
@@ -21,13 +22,17 @@ const idempotencyKey = (index: number): string => `00000000-0000-4000-8000-${Str
 
 const knownIds = (group: string): Set<string> => {
   const text = readFileSync(resolve(DIR, "seed.sql"), "utf8") + readFileSync(resolve(DIR, `${group}.cases.json`), "utf8");
-  return new Set((text.match(UUID) || []).map((id) => id.toLowerCase()));
+  return new Set([...(text.match(UUID) || []), ...(text.match(HEX_KEY) || [])].map((id) => id.toLowerCase()));
 };
+
+const HEX_KEY = /\b[0-9a-f]{32}\b/g;
 
 const normalize = (value: unknown, known: Set<string>): unknown => {
   if (typeof value === "string") {
     if (value.startsWith("invalid request body")) return "invalid request body";
-    return value.replace(UUID, (id) => (known.has(id.toLowerCase()) ? id : "<new-uuid>"));
+    return value
+      .replace(UUID, (id) => (known.has(id.toLowerCase()) ? id : "<new-uuid>"))
+      .replace(HEX_KEY, (key) => (known.has(key) ? key : "<new-key>"));
   }
   if (Array.isArray(value)) return sortNewTies(value.map((item) => normalize(item, known)));
   if (value && typeof value === "object") {
@@ -86,6 +91,40 @@ const recording = (live: Query, log: Logged[][], caseIndex: () => number): Query
   }
 };
 
+const requestBody = (body: unknown, headers: Record<string, string>): BodyInit | undefined => {
+  if (body === null || body === undefined) return undefined;
+  const multipart = (body as { multipart?: Multipart }).multipart;
+  if (!multipart) {
+    headers["content-type"] = "application/json";
+    return JSON.stringify(body);
+  }
+  const form = new FormData();
+  for (const [key, value] of Object.entries(multipart.fields || {})) form.set(key, value);
+  if (multipart.file) {
+    const bytes = Buffer.from(multipart.file.base64, "base64");
+    form.set("file", new File([bytes], multipart.file.name, { type: multipart.file.type }));
+  }
+  return form;
+};
+
+const drop = (value: unknown, keys: string[] = []): unknown => {
+  const inner = (value as { data?: Record<string, unknown> } | null)?.data;
+  if (!keys.length || !inner || typeof inner !== "object") return value;
+  return { ...(value as object), data: Object.fromEntries(Object.entries(inner).filter(([key]) => !keys.includes(key))) };
+};
+
+const expected = (golden: Golden, known: Set<string>, ignore?: string[]): string => {
+  if (golden.base64 !== undefined) return JSON.stringify({ contentType: golden.contentType, base64: golden.base64 });
+  return JSON.stringify(normalize(drop(golden.body ?? null, ignore), known));
+};
+
+const actual = async (res: Response, known: Set<string>, ignore?: string[]): Promise<string> => {
+  const kind = res.headers.get("content-type") || "";
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length && !kind.startsWith("application/json")) return JSON.stringify({ contentType: kind, base64: bytes.toString("base64") });
+  return JSON.stringify(normalize(drop(bytes.length ? JSON.parse(bytes.toString("utf8")) : null, ignore), known));
+};
+
 export const parityGroup = async (group: string, env: CoreEnv = { APP_ENV: "production" }): Promise<{ ran: boolean; mismatches: string[] }> => {
   const cases = read<Case[]>(`${group}.cases.json`);
   const golden = read<Golden[]>(`${group}.golden.json`);
@@ -116,17 +155,16 @@ export const parityGroup = async (group: string, env: CoreEnv = { APP_ENV: "prod
     for (const [index, item] of cases.entries()) {
       current = index;
       resetLimits();
-      const headers: Record<string, string> = { authorization: "Bearer parity-token", "x-request-id": "parity" };
+      const headers: Record<string, string> = { "x-request-id": "parity" };
+      if (item.auth !== false) headers.authorization = "Bearer parity-token";
       if (["POST", "PATCH", "PUT"].includes(item.method)) headers["idempotency-key"] = idempotencyKey(index);
-      if (item.body !== null && item.body !== undefined) headers["content-type"] = "application/json";
       const res = await handle(new Request("https://core.example" + item.path, {
         method: item.method,
         headers,
-        body: item.body === null || item.body === undefined ? undefined : JSON.stringify(item.body),
+        body: requestBody(item.body, headers),
       }), env, { query, now: () => NOW });
-      const text = await res.text();
-      const got = JSON.stringify(normalize(text ? JSON.parse(text) : null, known));
-      const want = JSON.stringify(normalize(golden[index].body, known));
+      const want = expected(golden[index], known, item.ignoreKeys);
+      const got = await actual(res, known, item.ignoreKeys);
       if (res.status !== golden[index].status || got !== want) {
         mismatches.push(`${item.name}: status ${res.status} vs ${golden[index].status}\n  core:   ${got}\n  python: ${want}`);
       }

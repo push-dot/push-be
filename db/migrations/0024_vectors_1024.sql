@@ -39,3 +39,12 @@ $$;
 CREATE TRIGGER rag_nodes_drop_source
 AFTER DELETE ON sources
 FOR EACH ROW EXECUTE FUNCTION rag_nodes_drop_source();
+
+-- Image uploads moved from VPS disk to core (Workers cannot write disk).
+CREATE TABLE upload_images (
+    key text PRIMARY KEY,
+    user_id uuid NULL REFERENCES users(id) ON DELETE CASCADE,
+    mime_type text NOT NULL,
+    content bytea NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);

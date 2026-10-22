@@ -9,7 +9,9 @@ import { archiveConversation, createConversation, patchConversation, postAttachm
 import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
-import { createSource } from "./routes/sources.ts";
+import { dispatchSources } from "./routes/sources.ts";
+import { dispatchImages, isImageRead } from "./routes/images.ts";
+import { dispatchEvidence } from "./routes/evidence.ts";
 import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
@@ -109,6 +111,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
+  if (isImageRead(method, path)) return true;
   return authorization === "" && isGuestRead(method, path);
 }
 
@@ -154,7 +157,6 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
   const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
   if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);
-  if (method === "POST" && path === "/api/v1/sources") return createSource(ctx);
   const generate = path.match(/^\/api\/v1\/documents\/([^/]+)\/generate$/);
   if (method === "POST" && generate) return enqueueDocumentGenerate(ctx, generate[1]);
   const fit = path.match(/^\/api\/v1\/postings\/([^/]+)\/fit$/);
@@ -184,6 +186,12 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
 
   const applications = await dispatchApplications(ctx, path);
   if (applications) return applications;
+  const sources = await dispatchSources(ctx, path);
+  if (sources) return sources;
+  const images = await dispatchImages(ctx, path);
+  if (images) return images;
+  const evidence = await dispatchEvidence(ctx, path);
+  if (evidence) return evidence;
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }

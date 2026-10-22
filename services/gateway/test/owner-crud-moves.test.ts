@@ -18,3 +18,19 @@ test("application routes go to core except the AI resume run", () => {
   assert.equal(ownerOf("GET", `/api/v1/applications/${ID}/submissions`), "core");
   assert.equal(ownerOf("POST", `/api/v1/applications/${ID}/resume-run`), "python");
 });
+
+test("source, image and career evidence routes go to core except file parsing", () => {
+  assert.equal(ownerOf("GET", "/api/v1/sources"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/sources"), "core");
+  assert.equal(ownerOf("GET", `/api/v1/sources/${ID}`), "core");
+  assert.equal(ownerOf("DELETE", `/api/v1/sources/${ID}`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/content`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/profile-draft`), "python");
+  assert.equal(ownerOf("POST", "/api/v1/uploads/images"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/uploads/images/0123456789abcdef0123456789abcdef.png"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/career-evidence"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/career-evidence"), "core");
+  assert.equal(ownerOf("GET", `/api/v1/career-evidence/${ID}`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/career-evidence/${ID}/archive`), "core");
+  assert.equal(ownerOf("POST", "/api/v1/career-evidence/import"), "python");
+});

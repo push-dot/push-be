@@ -63,7 +63,14 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/ai/usage") return method === "GET";
   if (/^\/api\/v1\/ai\/jobs\/[^/]+$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/documents\/[^/]+\/generate$/.test(path)) return method === "POST";
-  if (path === "/api/v1/sources") return method === "POST";
+  if (path === "/api/v1/sources") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/sources\/[^/]+\/content$/.test(path)) return method === "GET";
+  if (path === "/api/v1/uploads/images") return method === "POST";
+  if (/^\/api\/v1\/uploads\/images\/[^/]+$/.test(path)) return method === "GET";
+  if (path === "/api/v1/career-evidence") return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/career-evidence\/[^/]+$/.test(path)) return method === "GET" && path !== "/api/v1/career-evidence/import";
+  if (/^\/api\/v1\/career-evidence\/[^/]+\/archive$/.test(path)) return method === "POST";
   if (path === "/api/v1/applications") return method === "GET" || method === "POST";
   if (path === "/api/v1/applications/import") return method === "POST";
   if (/^\/api\/v1\/applications\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";

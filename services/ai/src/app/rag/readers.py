@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 
 import httpx
 
-from app.ingest.pdf_text import extract_pdf_bytes, extract_pdf_text
+from app.ingest.pdf_text import extract_pdf_bytes
 from app.ingest.web_page import fetch_page_text
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -27,20 +27,13 @@ async def read_source(query, source_id: UUID) -> dict | None:
     if row is None:
         return None
     mime = row["mime_type"]
-    if row["path"].startswith("db://"):
-        data = bytes(row["content"] or b"")
-        if mime == "application/pdf":
-            text = extract_pdf_bytes(data)
-        elif mime == DOCX:
-            text = docx_text(data)
-        else:
-            text = data.decode("utf-8", errors="replace")
-    elif mime == "application/pdf":
-        text = await extract_pdf_text(row["path"])
+    data = bytes(row["content"] or b"")
+    if mime == "application/pdf":
+        text = extract_pdf_bytes(data)
+    elif mime == DOCX:
+        text = docx_text(data)
     else:
-        with open(row["path"], "rb") as f:
-            data = f.read()
-        text = docx_text(data) if mime == DOCX else data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
     return {"user_id": row["user_id"], "text": text}
 
 

@@ -8,6 +8,10 @@
 2. Dokploy를 설치한다. Dokploy가 Docker와 Traefik을 같이 띄운다.
 3. AI 호스트 이름(예: `push.devcyjoon.tech`)과 디스패처 호스트 이름(`DISPATCH_HOST`)의 A 레코드를 이 VPS로 보낸다.
 4. Neon에 `db/migrations/0024_vectors_1024.sql`까지 직접 적용한다. 컨테이너는 `RUN_MIGRATIONS=0`이라 기동할 때 스키마를 바꾸지 않는다.
+   적용한 뒤 VPS 디스크의 업로드 파일을 DB로 옮긴다. 게이트웨이가 업로드·이미지 경로를 core로 보내기 전에 한 번 실행한다. 다시 실행해도 안전하다.
+   ```bash
+   docker compose exec ai-worker python scripts/migrate_blobs_to_db.py
+   ```
 5. `services/ai/scripts/seed_local.py`는 `APP_ENV=development`가 아니면 종료한다. 프로덕션에서 실행하지 않는다.
 
 ## Dokploy

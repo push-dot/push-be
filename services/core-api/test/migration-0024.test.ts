@@ -15,4 +15,5 @@ test("migration 0024 creates rag_nodes with a 1024 HNSW index, trigram index and
   assert.match(sql, /USING hnsw \(embedding vector_cosine_ops\)/);
   assert.match(sql, /USING gin \(text gin_trgm_ops\)/);
   assert.match(sql, /AFTER DELETE ON sources/);
+  assert.match(sql, /CREATE TABLE upload_images \(/);
 });

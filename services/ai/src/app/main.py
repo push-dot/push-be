@@ -48,7 +48,7 @@ from app.api.middleware import ApiMiddleware
 from app.api.routers import (
     ai, applications, approvals, conversations, documents, evidence,
     experiments, integrations, internal, interviews, jobs, operations,
-    postings, projects, uploads,
+    postings, projects,
 )
 
 
@@ -276,7 +276,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               documents.router, projects.router, interviews.router,
               conversations.router, approvals.router,
               operations.router, integrations.router, ai.router,
-              experiments.router, uploads.router):
+              experiments.router):
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

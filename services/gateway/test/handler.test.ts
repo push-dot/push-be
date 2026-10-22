@@ -1105,7 +1105,7 @@ test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async (
   assert.equal(postings.status, 200);
   const upload = await handle(new Request("https://push-be.example/api/v1/uploads/images", { method: "POST" }), env(python, core), deps(async () => []));
   assert.equal(upload.status, 200);
-  assert.deepEqual(forwarded, ["core /api/v1/postings", "python /api/v1/uploads/images"]);
+  assert.deepEqual(forwarded, ["core /api/v1/postings", "core /api/v1/uploads/images"]);
 
   let target = "";
   let secret = "";
