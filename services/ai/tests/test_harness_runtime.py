@@ -47,7 +47,8 @@ async def test_resume_flow_saves_state_and_text_answers_the_gate():
     svc = service(rows)
     runtime = HarnessRuntime(svc)
     items = await run(runtime, _payload("서류 만들어줘", ai=None))
-    assert ("custom", {"type": "done", "awaiting": "choice"}) in items
+    assert any(mode == "custom" and chunk.get("type") == "done" and chunk["awaiting"] == "choice"
+               for mode, chunk in items)
     choice = next(chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "choice")
     assert choice["gate"] == "mode_select"
     assert select_harness(rows.conversation).id == "resume"
@@ -79,3 +80,31 @@ async def test_bypass_intake_with_a_page_does_not_stop():
     from app.harness.resume.graph import _must_stop
     assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")
     assert _must_stop({"access_mode": "BYPASS", "inputs": {}}, "intake")
+
+
+async def test_resume_turn_saves_the_assistant_message():
+    from tests.harness_fakes import Rows
+    ScriptedLC.replies = [{"content": json.dumps({"message": "어떤 방식으로 쓸지 골라 주세요"})}]
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    svc = service(rows)
+    items = await run(HarnessRuntime(svc, model_cls=ScriptedLC), _payload("서류 만들어줘"))
+    assert [(m.role, m.text) for m in svc.messages] == [
+        ("USER", "서류 만들어줘"), ("ASSISTANT", "어떤 방식으로 쓸지 골라 주세요")]
+    done = [chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "done"]
+    assert len(done) == 1
+    assert done[0]["awaiting"] == "choice"
+    assert done[0]["operation"]["result"]["value"]["assistantMessage"]["text"] == "어떤 방식으로 쓸지 골라 주세요"
+    assert ("custom", {"token": "어떤 방식으로 쓸지 골라 주세요"}) in items
+
+
+async def test_answering_a_gate_without_new_work_saves_nothing():
+    from tests.harness_fakes import Rows
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    svc = service(rows)
+    runtime = HarnessRuntime(svc)
+    first = await run(runtime, _payload("서류", ai=None))
+    gate_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "choice")
+    before = len(svc.messages)
+    await run(runtime, _payload("", ai=None, job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                                resume={"approvalId": gate_id, "optionId": "resume_based"}))
+    assert len(svc.messages) == before

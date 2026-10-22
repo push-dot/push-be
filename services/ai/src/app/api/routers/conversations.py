@@ -53,7 +53,8 @@ async def _sse_frames(gen, request: Request):
             elif kind == "error":
                 body = {"type": "error", "error": payload}
             elif kind == "done" and isinstance(payload, dict) and payload.get("awaiting"):
-                body = {"type": "done", "operation": None, "awaiting": payload["awaiting"]}
+                body = {"type": "done", "operation": to_jsonable(payload.get("operation")),
+                        "awaiting": payload["awaiting"]}
             elif kind == "done":
                 body = {"type": "done", "operation": to_jsonable(payload)}
             elif kind == "cancelled":

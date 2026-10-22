@@ -162,8 +162,9 @@ async def test_bypass_auto_picks_recommended():
             events.append(chunk)
     snap = await graph.aget_state(config)
     assert snap.next
-    assert events[0]["gate"] == "mode_select"
-    assert "auto" not in events[0]
+    choices = [event for event in events if event.get("type") == "choice"]
+    assert choices[0]["gate"] == "mode_select"
+    assert "auto" not in choices[0]
     await _run(graph, Command(resume={"option_id": "resume_based"}), config)
     later = []
     for _ in range(8):
@@ -190,8 +191,9 @@ async def test_bypass_empty_inputs_stops_at_intake():
             events.append(chunk)
     snap = await graph.aget_state(config)
     assert snap.next
-    assert events[0]["gate"] == "intake"
-    assert "auto" not in events[0]
+    choices = [event for event in events if event.get("type") == "choice"]
+    assert choices[0]["gate"] == "intake"
+    assert "auto" not in choices[0]
 
 
 async def test_scenario_c_skips_strategy():

@@ -481,3 +481,11 @@ async def test_persist_survives_a_conflicting_auto_edit():
         })
     finally:
         event_sink.reset(token)
+
+
+async def test_sse_frames_done_awaiting_keeps_the_operation():
+    async def gen():
+        yield ("done", {"awaiting": "choice", "operation": {"status": "SUCCEEDED"}}, 9)
+
+    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
+    assert frames[-1] == {"type": "done", "operation": {"status": "SUCCEEDED"}, "awaiting": "choice", "seq": 9}

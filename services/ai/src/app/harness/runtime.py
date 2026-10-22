@@ -298,10 +298,22 @@ class HarnessRuntime:
         else:
             state = _resume_state(payload, conversation)
             state["inputs"] = merge_inputs(state["inputs"], await _turn_inputs(payload))
+        waiting = None
         async for item in self._stream_graph(graph, state, config, stream_mode):
+            if item[0] == "custom" and item[1].get("type") == "done":
+                waiting = item[1]
+                continue
             yield item
         after = await graph.aget_state(config)
         await self._save_resume_state(payload["conversation_id"], after.values)
+        reply = after.values.get("reply") or ""
+        operation = None
+        if reply and after.values.get("reply_job") == str(payload.get("job_id") or ""):
+            operation = await self._persist(payload, reply, ai, turn)
+        if waiting is not None:
+            yield "custom", {**waiting, **({"operation": to_jsonable(operation)} if operation else {})}
+        elif operation is not None:
+            yield "values", {"operation": operation}
         if after.values.get("status") == "active" and _pending(after) is None:
             await self._next_phase(payload, after.values.get("phase"))
 

@@ -79,6 +79,8 @@ class ResumeGraphState(TypedDict, total=False):
     user_id: str
     job_id: str
     retry: bool
+    reply: str
+    reply_job: str
 
 
 def _emit(event: dict) -> None:
@@ -256,7 +258,7 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     context = {key: state.get(key) for key in (
         "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review")}
     messages = [
-        SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답한다."),
+        SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
     ]
     used = 0
@@ -274,6 +276,26 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
             messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=call["id"]))
 
 
+def _reply(phase: str, output: dict) -> str:
+    for key in ("message", "summary", "text"):
+        value = output.get(key)
+        if isinstance(value, str) and value.strip() and value != phase:
+            return value.strip()
+    return _PHASE_DONE[phase]
+
+
+_PHASE_DONE = {
+    "mode_select": "어떤 방식으로 서류를 만들지 골라 주세요.",
+    "intake": "자료를 받았어요. 이대로 분석할지 골라 주세요.",
+    "analyze": "자료 분석을 마쳤어요.",
+    "strategy": "작성 전략을 세웠어요.",
+    "craft": "초안을 썼어요.",
+    "review": "품질 검토를 마쳤어요. 디자인을 골라 주세요.",
+    "publish": "최종 서류를 만들었어요.",
+    "present": "결과를 정리했어요.",
+}
+
+
 def _finish(merged: dict, name: str, option_id: str) -> dict:
     update = _apply_answer(merged, name, {"option_id": option_id})
     nxt = _next_phase({**merged, **update}, name)
@@ -288,6 +310,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         name = current["phase"]
         output = await _output(turn_model.get() or model, name, current, _context(db, current))
         stored = await _store_output(db, current, name, output)
+        reply = _reply(name, output)
+        _emit({"token": reply})
+        stored = {**stored, "reply": reply, "reply_job": current["job_id"]}
         retries = int((current.get("strategy") or {}).get("retries") or 0)
         if name == "strategy" and output.get("valid") is False and retries < 2:
             stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
