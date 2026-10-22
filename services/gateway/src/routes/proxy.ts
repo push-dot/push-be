@@ -10,10 +10,19 @@ const stripInternal = (headers: Headers): void => {
   headers.delete("x-push-company");
 };
 
-export async function proxy(request: Request, binding: FrontEnv["API"] | undefined, rid: string): Promise<Response> {
+/** True when the request carries the AI worker's act-as secret. Only core routes may keep the act-as headers. */
+export async function isInternalCall(request: Request, env: FrontEnv): Promise<boolean> {
+  const want = (env.INTERNAL_API_SECRET || "").trim();
+  const got = request.headers.get("x-push-internal-secret") || "";
+  if (!want || !got) return false;
+  return (await sha256Hex(got)) === (await sha256Hex(want));
+}
+
+export async function proxy(request: Request, binding: FrontEnv["API"] | undefined, rid: string, keepInternal = false): Promise<Response> {
   if (!binding) return errorResponse(500, "INTERNAL", "internal error", rid);
   const headers = new Headers(request.headers);
-  stripInternal(headers);
+  if (keepInternal) headers.delete("x-push-internal");
+  else stripInternal(headers);
   headers.set("x-request-id", rid);
   const init: RequestInit = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD") {
