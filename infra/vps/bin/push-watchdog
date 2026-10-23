@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Integrity watchdog. push-watchdog.timer runs it as root every 5 minutes.
+# Alerts (Discord webhook, then Resend mail; always the journal) when, since the last run:
+#   - a systemd unit, cron entry, authorized key, sshd/sudo config or local binary changed
+#   - a user or a sudo/docker group member appeared
+#   - a listening socket appeared
+#   - the firewall rate-limited or dropped outbound traffic (scanner, SMTP, private ranges)
+#   - a process runs from /tmp, /var/tmp, /dev/shm, /root or /home, or has a miner name
+# The first run records a baseline. After an alert the new state becomes the baseline.
+set -euo pipefail
+shopt -s nullglob
+
+STATE=/var/lib/push-watchdog
+ENV_FILE=/opt/push-be/.env
+install -d -m 700 "$STATE"
+alerts=()
+fresh=0
+
+# Reads one KEY='value' from the deploy-owned .env without sourcing it as root.
+env_get() {
+  local line
+  line="$(grep -m1 -E "^$1=" "$ENV_FILE" 2>/dev/null || true)"
+  line="${line#*=}"
+  line="${line#\'}"
+  printf '%s' "${line%\'}"
+}
+
+hash_tree() {
+  local p
+  for p in "$@"; do
+    [ -e "$p" ] || continue
+    find "$p" -type f -exec sha256sum {} + 2>/dev/null || true
+    find "$p" -type l -printf 'link %p -> %l\n' 2>/dev/null || true
+  done
+}
+
+# track <name> <mode> <cmd...>: mode "both" reports added and removed lines, "new" only added.
+track() {
+  local name="$1" mode="$2" base="$STATE/$1.base" cur="$STATE/$1.cur" diff
+  shift 2
+  "$@" 2>/dev/null | LC_ALL=C sort -u >"$cur" || true
+  if [ ! -f "$base" ]; then
+    fresh=1
+  else
+    if [ "$mode" = new ]; then
+      diff="$(LC_ALL=C comm -13 "$base" "$cur" | sed 's/^/+ /')"
+    else
+      diff="$(LC_ALL=C comm -3 "$base" "$cur" | sed 's/^\t/+ /; t; s/^/- /')"
+    fi
+    if [ -n "$diff" ]; then alerts+=("$name:"$'\n'"$(head -n 15 <<<"$diff")"); fi
+  fi
+  mv "$cur" "$base"
+}
+
+units() {
+  hash_tree /etc/systemd /usr/local/lib/systemd /root/.config/systemd /home/*/.config/systemd
+  find /usr/lib/systemd/system /usr/lib/systemd/user -maxdepth 1 -printf 'pkg %p\n'
+}
+cron() {
+  hash_tree /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly \
+    /etc/cron.monthly /etc/anacrontab /var/spool/cron /etc/at.allow /etc/at.deny
+}
+access() {
+  hash_tree /etc/ssh/authorized_keys /etc/ssh/sshd_config /etc/ssh/sshd_config.d \
+    /root/.ssh /home/*/.ssh /etc/sudoers /etc/sudoers.d /etc/ld.so.preload /etc/pam.d
+}
+binaries() {
+  hash_tree /usr/local/bin /usr/local/sbin /usr/local/lib/push /etc/docker
+}
+users() {
+  cut -d: -f1,3,4,6,7 /etc/passwd
+  grep -E '^(root|sudo|adm|docker|wheel):' /etc/group
+}
+listeners() {
+  ss -Hlntu | awk '{print $1, $5}'
+}
+procs() {
+  local p exe comm
+  for p in /proc/[0-9]*; do
+    exe="$(readlink "$p/exe" 2>/dev/null)" || continue
+    comm="$(cat "$p/comm" 2>/dev/null || true)"
+    case "$exe" in
+      /tmp/* | /var/tmp/* | /dev/shm/* | /root/* | /home/*) echo "pid ${p#/proc/} $comm $exe" ;;
+    esac
+    case "$comm" in
+      masscan | zmap | zgrab* | xmrig* | kinsing | kdevtmpfsi | nmap | pnscan)
+        echo "pid ${p#/proc/} $comm $exe" ;;
+    esac
+  done
+}
+
+# Packet counters of the firewall's drop rules. A rise means outbound traffic was blocked.
+fw_counters() {
+  local ipt chain
+  for ipt in iptables ip6tables; do
+    for chain in PUSH-DOCKER-LIMIT PUSH-DOCKER-DROP PUSH-OUT-LIMIT PUSH-DROP-OUT; do
+      # IPv6 has no PUSH-DOCKER-* chains; a missing chain is not an error here.
+      { "$ipt" -w -nvx -L "$chain" 2>/dev/null || true; } | awk -v n="$ipt/$chain" '$3 == "DROP" {print n, $1}'
+    done
+  done
+}
+check_firewall() {
+  local file="$STATE/fw.counters" name now before
+  if ! iptables -w -n -L PUSH-DOCKER-EGRESS >/dev/null 2>&1; then
+    alerts+=("firewall: PUSH chains are missing; run push-firewall")
+    return
+  fi
+  touch "$file"
+  while read -r name now; do
+    before="$(awk -v n="$name" '$1 == n {print $2}' "$file")"
+    before="${before:-0}"
+    [ "$now" -ge "$before" ] || before=0 # counters reset when the firewall is rebuilt
+    if [ $((now - before)) -gt 0 ]; then
+      alerts+=("firewall: $name dropped $((now - before)) outbound packets in the last run (journalctl -k -g push-fw)")
+    fi
+  done < <(fw_counters)
+  fw_counters >"$file"
+}
+
+notify() {
+  local text="$1" hook key to from
+  logger -t push-watchdog -p auth.alert -- "$text"
+  hook="$(env_get DISCORD_ALERT_WEBHOOK_URL)"
+  # URLs and keys go through curl config on a pipe so they never appear in argv.
+  if [ -n "$hook" ] && jq -n --arg c "$text" '{content: $c[0:1900]}' \
+    | curl -fsS -m 15 -K <(printf 'url = "%s"\n' "$hook") -H 'content-type: application/json' -d @- >/dev/null; then
+    return 0
+  fi
+  key="$(env_get RESEND_API_KEY)"
+  to="$(env_get ALERT_EMAIL_TO)"
+  from="$(env_get ALERT_EMAIL_FROM)"
+  if [ -n "$key" ] && [ -n "$to" ] && [ -n "$from" ]; then
+    jq -n --arg f "$from" --arg t "$to" --arg s "[push-watchdog] $(hostname)" --arg x "$text" \
+      '{from: $f, to: ($t | split(",")), subject: $s, text: $x}' \
+      | curl -fsS -m 15 -K <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
+        -H 'content-type: application/json' -d @- https://api.resend.com/emails >/dev/null \
+      && return 0
+  fi
+  logger -t push-watchdog -p auth.err -- "alert could not be delivered (Discord and Resend failed or unset)"
+}
+
+track units both units
+track cron both cron
+track access both access
+track binaries both binaries
+track users both users
+track listeners new listeners
+track procs new procs
+check_firewall
+
+if [ "${#alerts[@]}" -gt 0 ]; then
+  notify "$(printf '[push-watchdog] %s %s\n' "$(hostname)" "$(date -u +%FT%TZ)"; printf '%s\n\n' "${alerts[@]}")"
+elif [ "$fresh" = 1 ]; then
+  notify "[push-watchdog] $(hostname): baseline recorded; alerts are armed"
+fi

@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Host and container firewall. Idempotent: owns the PUSH-* chains and DOCKER-USER,
+# rebuilds them on every run, and leaves Docker's own chains alone.
+# push-firewall.service runs it before docker.service on every boot.
+#
+# Inbound: only 22, 80, 443 (SSH rate limited per source). Containers cannot open
+#          connections to the host.
+# Egress (host OUTPUT and containers via DOCKER-USER): DNS and Docker subnets allowed;
+#          SMTP, RFC1918, CGNAT and link-local (cloud metadata) dropped; NEW TCP
+#          rate limited so a scanner cannot fan out. Every drop is logged (rate limited).
+# push-watchdog reads the PUSH-*-LIMIT counters to alert on spikes.
+set -euo pipefail
+
+# Must match default-address-pools (and the default bridge) in /etc/docker/daemon.json.
+DOCKER_NETS="172.17.0.0/16 172.30.0.0/16"
+PRIVATE_NETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 192.0.0.0/24 198.18.0.0/15"
+PRIVATE_NETS6="fc00::/7 fe80::/10"
+SMTP_PORTS="25,465,587,2525"
+# NEW outbound TCP connections. A port scanner opens thousands per second.
+CONTAINER_RATE="${PUSH_FW_CONTAINER_RATE:-20/sec}"   # per container IP
+CONTAINER_BURST="${PUSH_FW_CONTAINER_BURST:-200}"
+HOST_RATE="${PUSH_FW_HOST_RATE:-30/sec}"              # whole host
+HOST_BURST="${PUSH_FW_HOST_BURST:-300}"
+
+v4() { iptables -w "$@"; }
+v6() { ip6tables -w "$@"; }
+
+# chain_reset <cmd> <table> <chain>: create or flush.
+chain_reset() {
+  "$1" -t "$2" -N "$3" 2>/dev/null || "$1" -t "$2" -F "$3"
+}
+# jump_first <cmd> <from> <to>: make <from> start with a jump to <to>, exactly once.
+jump_first() {
+  while "$1" -C "$2" -j "$3" 2>/dev/null; do "$1" -D "$2" -j "$3"; done
+  "$1" -I "$2" 1 -j "$3"
+}
+# log_drop <cmd> <chain> <prefix>: terminal chain that logs (10/min) then drops.
+log_drop() {
+  chain_reset "$1" filter "$2"
+  "$1" -A "$2" -m limit --limit 10/min --limit-burst 20 -j LOG --log-prefix "$3 " --log-level warning
+  "$1" -A "$2" -j DROP
+}
+
+build_family() {
+  local ipt="$1" private="$2" icmp="$3" tag="$1"
+
+  log_drop "$ipt" PUSH-DROP-IN "push-fw-in:"
+  log_drop "$ipt" PUSH-DROP-OUT "push-fw-out:"
+  log_drop "$ipt" PUSH-OUT-LIMIT "push-fw-out-rate:"
+
+  # --- inbound to the host ---
+  chain_reset "$ipt" filter PUSH-INPUT
+  "$ipt" -A PUSH-INPUT -i lo -j ACCEPT
+  "$ipt" -A PUSH-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  "$ipt" -A PUSH-INPUT -m conntrack --ctstate INVALID -j DROP
+  "$ipt" -A PUSH-INPUT -i docker0 -j PUSH-DROP-IN
+  "$ipt" -A PUSH-INPUT -i br-+ -j PUSH-DROP-IN
+  if [ "$icmp" = icmp ]; then
+    "$ipt" -A PUSH-INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACCEPT
+    "$ipt" -A PUSH-INPUT -p icmp ! --icmp-type echo-request -j ACCEPT
+  else
+    # Neighbour discovery and PMTU need ICMPv6.
+    "$ipt" -A PUSH-INPUT -p ipv6-icmp -j ACCEPT
+    "$ipt" -A PUSH-INPUT -p udp --sport 547 --dport 546 -j ACCEPT
+  fi
+  "$ipt" -A PUSH-INPUT -p udp --sport 67 --dport 68 -j ACCEPT
+  "$ipt" -A PUSH-INPUT -p tcp --dport 22 -m conntrack --ctstate NEW \
+    -m hashlimit --hashlimit-name "push_ssh_$tag" --hashlimit-mode srcip \
+    --hashlimit-above 6/min --hashlimit-burst 12 -j PUSH-DROP-IN
+  "$ipt" -A PUSH-INPUT -p tcp -m multiport --dports 22,80,443 -j ACCEPT
+  "$ipt" -A PUSH-INPUT -j PUSH-DROP-IN
+  jump_first "$ipt" INPUT PUSH-INPUT
+  "$ipt" -P INPUT DROP
+
+  # --- egress from host processes ---
+  chain_reset "$ipt" filter PUSH-OUTPUT
+  "$ipt" -A PUSH-OUTPUT -o lo -j ACCEPT
+  "$ipt" -A PUSH-OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  "$ipt" -A PUSH-OUTPUT -p udp -m multiport --dports 53,67,123,547 -j ACCEPT
+  "$ipt" -A PUSH-OUTPUT -p tcp --dport 53 -j ACCEPT
+  if [ "$icmp" = icmp ]; then
+    for net in $DOCKER_NETS; do "$ipt" -A PUSH-OUTPUT -d "$net" -j ACCEPT; done
+  else
+    # Neighbour and router solicitation go to link-local addresses.
+    "$ipt" -A PUSH-OUTPUT -p ipv6-icmp -j ACCEPT
+  fi
+  "$ipt" -A PUSH-OUTPUT -p tcp -m multiport --dports "$SMTP_PORTS" -j PUSH-DROP-OUT
+  for net in $private; do "$ipt" -A PUSH-OUTPUT -d "$net" -j PUSH-DROP-OUT; done
+  "$ipt" -A PUSH-OUTPUT -p tcp --syn -m hashlimit --hashlimit-name "push_host_$tag" \
+    --hashlimit-above "$HOST_RATE" --hashlimit-burst "$HOST_BURST" -j PUSH-OUT-LIMIT
+  "$ipt" -A PUSH-OUTPUT -j RETURN
+  jump_first "$ipt" OUTPUT PUSH-OUTPUT
+}
+
+build_family v4 "$PRIVATE_NETS" icmp
+build_family v6 "$PRIVATE_NETS6" icmp6
+
+# --- containers (DOCKER-USER runs before Docker's own FORWARD rules) ---
+log_drop v4 PUSH-DOCKER-LIMIT "push-fw-docker-rate:"
+log_drop v4 PUSH-DOCKER-DROP "push-fw-docker:"
+
+# Traffic leaving a container.
+chain_reset v4 filter PUSH-DOCKER-EGRESS
+for net in $DOCKER_NETS; do v4 -A PUSH-DOCKER-EGRESS -d "$net" -j RETURN; done
+v4 -A PUSH-DOCKER-EGRESS -p udp --dport 53 -j RETURN
+v4 -A PUSH-DOCKER-EGRESS -p tcp --dport 53 -j RETURN
+v4 -A PUSH-DOCKER-EGRESS -p tcp -m multiport --dports "$SMTP_PORTS" -j PUSH-DOCKER-DROP
+for net in $PRIVATE_NETS; do v4 -A PUSH-DOCKER-EGRESS -d "$net" -j PUSH-DOCKER-DROP; done
+v4 -A PUSH-DOCKER-EGRESS -p tcp --syn -m hashlimit --hashlimit-name push_docker \
+  --hashlimit-mode srcip --hashlimit-above "$CONTAINER_RATE" --hashlimit-burst "$CONTAINER_BURST" \
+  -j PUSH-DOCKER-LIMIT
+v4 -A PUSH-DOCKER-EGRESS -j RETURN
+
+v4 -N DOCKER-USER 2>/dev/null || v4 -F DOCKER-USER
+v4 -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+v4 -A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+v4 -A DOCKER-USER -i docker0 -j PUSH-DOCKER-EGRESS
+v4 -A DOCKER-USER -i br-+ -j PUSH-DOCKER-EGRESS
+# Inbound from the internet: only the proxy's published 80/443 (matched before DNAT).
+v4 -A DOCKER-USER -m conntrack --ctstate NEW --ctorigdstport 80 -p tcp -j RETURN
+v4 -A DOCKER-USER -m conntrack --ctstate NEW --ctorigdstport 443 -p tcp -j RETURN
+v4 -A DOCKER-USER -j PUSH-DOCKER-DROP
+
+# Containers have no IPv6; nothing should be forwarded.
+v6 -P FORWARD DROP
+
+# fail2ban keeps its chains in INPUT; re-insert them after a rebuild.
+if systemctl is-active --quiet fail2ban 2>/dev/null; then systemctl restart fail2ban; fi
+echo "push-firewall: applied"

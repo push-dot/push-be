@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Forced command for the CI deploy key. harden.sh installs it root-owned at
+# /usr/local/bin/push-deploy and pins the key to it in /etc/ssh/authorized_keys/deploy
+# (restrict,command="..."), so that key gets no shell, only these verbs:
+#   release <sha>   tar of the repo on stdin -> /opt/push-be/releases/<sha>
+#   env             KEY='value' lines on stdin -> /opt/push-be/.env (0600)
+#   up <sha>        check the rendered compose, then build and start it
+#   ps | logs       current release status, last 200 log lines
+set -euo pipefail
+
+ROOT=/opt/push-be
+CHECK=/usr/local/lib/push/check-compose
+KEEP_RELEASES=3
+
+read -r -a argv <<<"${SSH_ORIGINAL_COMMAND:-${*:-}}"
+verb="${argv[0]:-}"
+release="${argv[1]:-}"
+
+die() {
+  echo "push-deploy: $*" >&2
+  exit 2
+}
+release_dir() {
+  [[ "$release" =~ ^[0-9a-f]{7,40}$ ]] || die "release id must be a git sha"
+  printf '%s/releases/%s' "$ROOT" "$release"
+}
+compose() {
+  docker compose -p push-ai --env-file "$ROOT/.env" -f "$1/infra/vps/compose.yaml" "${@:2}"
+}
+
+exec 9>"$ROOT/.deploy.lock"
+flock -w 600 9 || die "another deploy holds the lock"
+
+case "$verb" in
+  release)
+    dir="$(release_dir)"
+    rm -rf "$dir.tmp"
+    mkdir -p "$dir.tmp"
+    # GNU tar drops leading "/" and refuses ".." members; we run as deploy, never root.
+    umask 022
+    tar -x --no-same-owner -C "$dir.tmp"
+    [ -f "$dir.tmp/infra/vps/compose.yaml" ] || die "archive has no infra/vps/compose.yaml"
+    rm -rf "$dir"
+    mv "$dir.tmp" "$dir"
+    echo "push-deploy: unpacked $release"
+    ;;
+  env)
+    umask 077
+    tmp="$ROOT/.env.tmp"
+    cat >"$tmp"
+    if grep -qvE "^[A-Z][A-Z0-9_]*='[^']*'$" "$tmp"; then
+      rm -f "$tmp"
+      die "env lines must be KEY='value'"
+    fi
+    [ -s "$tmp" ] || { rm -f "$tmp"; die "env is empty"; }
+    chmod 600 "$tmp"
+    mv "$tmp" "$ROOT/.env"
+    echo "push-deploy: wrote $(wc -l <"$ROOT/.env") env keys"
+    ;;
+  up)
+    dir="$(release_dir)"
+    [ -d "$dir" ] || die "release $release is not unpacked"
+    [ -f "$ROOT/.env" ] || die "$ROOT/.env is missing; send it with 'env' first"
+    compose "$dir" config --format json | "$CHECK"
+    compose "$dir" up -d --build --remove-orphans
+    ln -sfn "$dir" "$ROOT/current"
+    # Keep the newest releases and the one now running.
+    find "$ROOT/releases" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' -printf '%T@ %p\n' \
+      | sort -rn | tail -n +$((KEEP_RELEASES + 1)) | cut -d' ' -f2- \
+      | while read -r old; do [ "$old" = "$dir" ] || rm -rf "$old"; done
+    docker image prune -f >/dev/null
+    echo "push-deploy: $release is up"
+    ;;
+  ps)
+    compose "$ROOT/current" ps
+    ;;
+  logs)
+    compose "$ROOT/current" logs --no-color --tail 200
+    ;;
+  *)
+    die "usage: release <sha> | env | up <sha> | ps | logs"
+    ;;
+esac
