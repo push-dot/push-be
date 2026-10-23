@@ -1,0 +1,21 @@
+# Fixture for test/run.sh: every service breaks one rule bin/check-compose enforces.
+services:
+  sock:
+    image: busybox
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - dokploy-network
+  priv:
+    image: busybox
+    privileged: true
+  hostnet:
+    image: busybox
+    network_mode: host
+  exposed:
+    image: busybox
+    ports:
+      - "6379:6379"
+networks:
+  dokploy-network:
+    external: true
