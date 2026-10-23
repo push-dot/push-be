@@ -12,7 +12,6 @@ from starlette.types import Message, Receive, Scope, Send
 
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
-from app.graphs.chat import byok_key_var
 from app.api.errors import error_body
 from app.ratelimit import allow as allow_shared
 
@@ -142,8 +141,6 @@ class ApiMiddleware:
             await self._error(send, 429, "RATE_LIMITED",
                               "too many requests", rid)
             return
-        byok_key_var.set(
-            headers.get(b"x-byok-key", b"").decode(errors="replace"))
 
         if (scope["method"] != "POST" or path in _IDEMPOTENCY_EXEMPT
                 or path.endswith("/stream")):

@@ -12,7 +12,7 @@ export type ResumeJob = {
   idempotencyKey?: string;
 };
 
-const CARRIED = ["ai", "access_mode", "accessMode", "intent", "_byok"] as const;
+const CARRIED = ["ai", "access_mode", "accessMode", "intent"] as const;
 
 const CONVERSATION = `SELECT c.company_id, co.plan AS company_plan, u.plan AS user_plan,
     (SELECT payload FROM ai_jobs WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last
@@ -42,7 +42,7 @@ export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() !== "redis") {
     const jobId = crypto.randomUUID();
     await one(ctx.deps.query, LEGACY_INSERT, [jobId, job.userId, job.conversationId, JSON.stringify(payload), WAITING]);
-    await scheduleChatJob(ctx, jobId, "");
+    await scheduleChatJob(ctx, jobId);
     return jobId;
   }
   const companyId = conversation.company_id == null ? undefined : String(conversation.company_id);
@@ -54,7 +54,6 @@ export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string
     payload,
     idempotencyKey: job.idempotencyKey,
     conversationId: job.conversationId,
-    byok: payload._byok != null,
   });
   await one(ctx.deps.query, STATUS, [jobId, WAITING]);
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));

@@ -45,23 +45,11 @@ export function workersCache(): CacheStore | undefined {
   };
 }
 
-const PROVIDERS = ["", "OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"];
-const MODES = ["", "MANAGED", "BYOK"];
-
-export function modelCacheUrl(authHash: string, provider: string, credMode: string): string {
+export function modelCacheUrl(authHash: string, provider: string): string {
   const q = new URLSearchParams();
   if (provider) q.set("provider", provider);
-  if (credMode) q.set("credentialMode", credMode);
   const qs = q.toString();
   return `https://cache.push-be.internal/v1/models/${authHash}${qs ? "?" + qs : ""}`;
-}
-
-export function modelCacheUrls(authHash: string): string[] {
-  const urls: string[] = [];
-  for (const provider of PROVIDERS) {
-    for (const mode of MODES) urls.push(modelCacheUrl(authHash, provider, mode));
-  }
-  return urls;
 }
 
 export const JOB_SITES_CACHE_URL = "https://cache.push-be.internal/v1/job-sites";

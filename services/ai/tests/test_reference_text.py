@@ -574,7 +574,7 @@ async def _prepare_prompt(query, *, user_id, text, employer=False, intent=None,
         "attachments": [],
         "ai": {
             "provider": "OPENAI", "model": "client-model",
-            "credential_mode": "MANAGED", "effort": "LOW",
+            "effort": "LOW",
         },
     }
     if intent:

@@ -22,7 +22,7 @@ from tests.test_conversation import _svc
 def _ai() -> ent.AiOptions:
     return ent.AiOptions(
         provider="OPENAI", model="client-model",
-        credential_mode="MANAGED", effort="LOW", web_search=False,
+        effort="LOW", web_search=False,
     )
 
 
@@ -81,7 +81,7 @@ async def test_prepare_reply_puts_the_posting_fence_in_the_prompt():
             "intent": "posting",
             "ai": {
                 "provider": "OPENAI", "model": "client-model",
-                "credential_mode": "MANAGED", "effort": "LOW",
+                "effort": "LOW",
                 "web_search": False,
             },
         })

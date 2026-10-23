@@ -57,7 +57,7 @@ class GateModel:
             text = "".join(str(getattr(message, "content", "")) for message in messages)
             self.turn["usage_id"] = await self.gate._reserve(
                 self.user_id, self.ai, "", text, self.job_id)
-        reasoning = self.ai.effort.lower() if self.ai.credential_mode == "MANAGED" else ""
+        reasoning = self.ai.effort.lower()
         lc = chat_model(api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
                         reasoning=reasoning, headers=headers, cls=self.cls)
         runnable = lc.bind_tools([tool_schema(tool) for tool in self.tools]) if self.tools else lc

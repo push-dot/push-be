@@ -7,7 +7,7 @@ import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
-import { deleteKey, listKeys, listUsage, putKey, testKey } from "./routes/keys.ts";
+import { listUsage } from "./routes/usage.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
 import { dispatchSources } from "./routes/sources.ts";
@@ -171,12 +171,6 @@ async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && path === "/api/v1/billing/webhook/app-store") return appleWebhook(ctx);
   if (method === "POST" && path === "/api/v1/billing/webhook/google-play") return googleWebhook(ctx);
 
-  if (method === "GET" && path === "/api/v1/ai/keys") return listKeys(ctx);
-  const key = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)$/);
-  if (method === "PUT" && key) return putKey(ctx, decodeURIComponent(key[1]));
-  if (method === "DELETE" && key) return deleteKey(ctx, decodeURIComponent(key[1]));
-  const test = path.match(/^\/api\/v1\/ai\/keys\/([^/]+)\/test$/);
-  if (method === "POST" && test) return testKey(ctx, decodeURIComponent(test[1]));
   if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
   const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
   if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);

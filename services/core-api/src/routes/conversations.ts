@@ -1,4 +1,4 @@
-import { base64ToBytes, bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
+import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
@@ -9,7 +9,6 @@ import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
-const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
@@ -215,21 +214,16 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const ai = raw as Record<string, unknown>;
-  forbidExtra(ai, ["provider", "model", "credentialMode", "effort", "ultraResume", "webSearch", "models"]);
-  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.credentialMode !== "string" || typeof ai.effort !== "string") {
+  forbidExtra(ai, ["provider", "model", "effort", "ultraResume", "webSearch", "models"]);
+  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.effort !== "string") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   if (!AI_PROVIDERS.has(ai.provider)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });
   if (!ai.model) throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });
-  if (!CREDENTIALS.has(ai.credentialMode)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported credentialMode", { field: "ai.credentialMode" });
-  if (ai.credentialMode === "MANAGED" && ai.provider !== "OPENAI") {
-    throw new HttpError(400, "VALIDATION_ERROR", "MANAGED is only supported for OPENAI", { field: "ai.credentialMode" });
-  }
   if (!EFFORTS.has(ai.effort)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
   return {
     provider: ai.provider,
     model: ai.model,
-    credentialMode: ai.credentialMode,
     effort: ai.effort,
     ultraResume: ai.ultraResume === true,
     webSearch: ai.webSearch === true,
@@ -237,40 +231,28 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
   };
 }
 
-async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: string): Promise<void> {
+async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
   if (!ai) return;
-  if (ai.ultraResume === true || ai.credentialMode === "MANAGED") {
-    const user = await one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]);
-    if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
-      throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
-    }
-    if (ai.credentialMode === "MANAGED") {
-      const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
-      const spent = await one(ctx.deps.query,
-        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
-        [ctx.user.id, start]);
-      const raw = user.plan == null ? "" : String(user.plan).trim();
-      const plan = raw === "" ? "FREE" : raw;
-      if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
-        throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
-      }
-      if (!flag(ctx.env.MANAGED_AI)) {
-        throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
-      }
-      return;
-    }
+  const user = await one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]);
+  if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
+    throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
   }
-  if (byok) return;
-  const has = await one(ctx.deps.query,
-    "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE user_id = $1 AND provider = $2) AS has",
-    [ctx.user.id, String(ai.provider)]);
-  if (!ctx.env.BYOK_MASTER_KEY || !has || has.has === false || has.has === "f") {
-    throw new HttpError(409, "INTEGRATION_REQUIRED", "no BYOK key configured for " + String(ai.provider));
+  const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
+  const spent = await one(ctx.deps.query,
+    "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
+    [ctx.user.id, start]);
+  const raw = user.plan == null ? "" : String(user.plan).trim();
+  const plan = raw === "" ? "FREE" : raw;
+  if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
+    throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
+  }
+  if (!flag(ctx.env.MANAGED_AI)) {
+    throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
   }
 }
 
-async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): Promise<void> {
+async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -283,7 +265,7 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
     const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
       method: "POST",
       headers,
-      body: JSON.stringify({ jobId, byok }),
+      body: JSON.stringify({ jobId }),
     });
     if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
   } catch {
@@ -293,10 +275,10 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
 
 // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
 // AI_ORIGIN is set. Clearing it schedules through the service binding again.
-export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Promise<void> => {
+export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
   const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
   if (origin) {
-    await wakeVps(ctx, origin, jobId, byok);
+    await wakeVps(ctx, origin, jobId);
     return;
   }
   if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
@@ -307,7 +289,7 @@ export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Pr
       "x-push-internal": "1",
       "x-request-id": ctx.rid,
     },
-    body: JSON.stringify({ jobId, byok }),
+    body: JSON.stringify({ jobId }),
   }));
   if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
 };
@@ -317,7 +299,6 @@ const enqueueChatMessage = async (
   conversationId: string,
   payload: Record<string, unknown>,
   text: string,
-  byok: string,
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
@@ -341,7 +322,6 @@ const enqueueChatMessage = async (
     payload,
     idempotencyKey: headerKey || undefined,
     conversationId,
-    byok: byok.length > 0,
   });
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
@@ -409,8 +389,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  const byok = ctx.request.headers.get("x-byok-key") || "";
-  await allowChat(ctx, ai, byok);
+  await allowChat(ctx, ai);
   const owned = await one(ctx.deps.query,
     "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
     [conversationId, ctx.user.id]);
@@ -421,13 +400,8 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const payload: Record<string, unknown> = {
     text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
   };
-  if (byok && ctx.env.BYOK_MASTER_KEY) {
-    const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
-    const sealed = await encryptAes(key, byok, ctx.user.id, "chat-job");
-    payload._byok = { ct: bytesToBase64(sealed.ciphertext), nonce: bytesToBase64(sealed.nonce) };
-  }
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis") {
-    return enqueueChatMessage(ctx, conversationId, payload, body.text, byok);
+    return enqueueChatMessage(ctx, conversationId, payload, body.text);
   }
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
@@ -435,7 +409,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  await scheduleChatJob(ctx, jobId, byok);
+  await scheduleChatJob(ctx, jobId);
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,

@@ -13,7 +13,7 @@ def test_schedule_is_hidden_without_the_internal_header():
     assert missing.json()["error"]["code"] == "NOT_FOUND"
     ok = client.post(
         "/internal/chat/schedule",
-        json={"jobId": "job-1", "byok": ""},
+        json={"jobId": "job-1"},
         headers={"x-push-internal": "1"},
     )
     assert ok.status_code == 200

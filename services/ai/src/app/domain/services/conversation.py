@@ -17,7 +17,7 @@ from app.domain.errors import (
 )
 from app.domain.services.ai import AIGate
 from app.domain.validators import code_point_len
-from app.graphs.chat import build_chat_graph, byok_key_var as _BYOK_KEY
+from app.graphs.chat import build_chat_graph
 from app.graphs.chat import event_sink
 from app.graphs.freeze import freeze_state, thaw_state
 from app.jobs import (
@@ -186,7 +186,6 @@ class ConversationService:
         self.document_svc = document_svc
         self.job_svc = job_svc
         self.application_svc = application_svc
-        self._byok_keys: dict[UUID, str] = {}
         self._sem = asyncio.Semaphore(4)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
@@ -236,7 +235,7 @@ class ConversationService:
             self._wake = asyncio.Event()
         self._prev_scheduler = get_job_scheduler()
 
-        async def _schedule(job_id, byok="", claim="") -> None:
+        async def _schedule(job_id, claim="") -> None:
             self.wake()
 
         set_job_scheduler(_schedule)
@@ -310,7 +309,6 @@ class ConversationService:
         job_id = job["id"]
         async with self._sem:
             p = job["payload"]
-            token = _BYOK_KEY.set(self._byok_keys.get(job_id, ""))
             terminal = False
             try:
                 source = self.graph
@@ -382,10 +380,6 @@ class ConversationService:
                                    "message": str(e)[:500]}})
                     await self.jobs.finish(job_id, "FAILED", str(e)[:500])
                     terminal = True
-            finally:
-                _BYOK_KEY.reset(token)
-                if terminal:
-                    self._byok_keys.pop(job_id, None)
 
     async def list(self, user_id: UUID, application_id: Optional[UUID], page):
         try:
@@ -501,19 +495,14 @@ class ConversationService:
 
     async def post_message(self, user_id: UUID, conversation_id: UUID, text: str,
                            context: dict, ai: Optional[ent.AiOptions],
-                           access_mode: str,
-                           byok_key: str = "") -> ent.Operation:
+                           access_mode: str) -> ent.Operation:
         access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        token = _BYOK_KEY.set(byok_key)
-        try:
-            result = await self.graph.ainvoke(
-                self._chat_input(user_id, conversation_id, text, context, ai,
-                                 access_mode),
-                config={"configurable": {"thread_id": str(conversation_id)}},
-            )
-        finally:
-            _BYOK_KEY.reset(token)
+        result = await self.graph.ainvoke(
+            self._chat_input(user_id, conversation_id, text, context, ai,
+                             access_mode),
+            config={"configurable": {"thread_id": str(conversation_id)}},
+        )
         return result["operation"]
 
     async def _canonical_access(self, user_id, raw: str) -> str:
@@ -564,29 +553,25 @@ class ConversationService:
     async def stream_message(self, user_id: UUID, conversation_id: UUID,
                              text: str, context: dict,
                              ai: Optional[ent.AiOptions], access_mode: str,
-                             byok_key: str = "", intent: str | None = None,
+                             intent: str | None = None,
                              application_id=None):
         access_mode = await self._canonical_access(user_id, access_mode)
         self._validate_message(text, access_mode)
-        token = _BYOK_KEY.set(byok_key)
-        try:
-            async for mode, chunk in self.graph.astream(
-                    self._chat_input(user_id, conversation_id, text, context,
-                                     ai, access_mode, intent, application_id),
-                    config={"configurable": {"thread_id": str(conversation_id)}},
-                    stream_mode=["custom", "values"]):
-                if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
-                    yield ("token", chunk["token"], None)
-                elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
-                    yield ("status", chunk["status"], None)
-                elif mode == "custom" and isinstance(chunk, dict):
-                    live = _live_event(chunk)
-                    if live is not None:
-                        yield (live[0], live[1], None)
-                elif mode == "values" and chunk.get("operation") is not None:
-                    yield ("done", chunk["operation"], None)
-        finally:
-            _BYOK_KEY.reset(token)
+        async for mode, chunk in self.graph.astream(
+                self._chat_input(user_id, conversation_id, text, context,
+                                 ai, access_mode, intent, application_id),
+                config={"configurable": {"thread_id": str(conversation_id)}},
+                stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
+                yield ("token", chunk["token"], None)
+            elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
+                yield ("status", chunk["status"], None)
+            elif mode == "custom" and isinstance(chunk, dict):
+                live = _live_event(chunk)
+                if live is not None:
+                    yield (live[0], live[1], None)
+            elif mode == "values" and chunk.get("operation") is not None:
+                yield ("done", chunk["operation"], None)
 
     async def active_job_id(self, user_id: UUID,
                             conversation_id: UUID) -> Optional[UUID]:
@@ -649,21 +634,6 @@ class ConversationService:
                         return
                     idle = 0
             await asyncio.sleep(0.25 if external_jobs() else 0.2)
-
-    def _byok_from_payload(self, user_id, payload) -> str:
-        cipher = getattr(self.ai, "cipher", None)
-        blob = (payload or {}).get("_byok") if isinstance(payload, dict) else None
-        if not blob or cipher is None:
-            return ""
-        import base64
-        try:
-            uid = user_id if isinstance(user_id, UUID) else UUID(str(user_id))
-            return cipher.decrypt(
-                base64.b64decode(blob["ct"]),
-                base64.b64decode(blob["nonce"]),
-                uid, "chat-job")
-        except Exception:
-            return ""
 
     async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
         jid = UUID(str(job_id))
@@ -736,9 +706,6 @@ class ConversationService:
             await self.jobs.save_checkpoint(jid, {**ck, "fails": fails})
         except LostClaim:
             return "skip"
-        byok = self._byok_keys.get(jid) or self._byok_from_payload(
-            job["user_id"], payload)
-        token = _BYOK_KEY.set(byok or "")
         queue: asyncio.Queue = asyncio.Queue()
         closed = False
 
@@ -788,7 +755,6 @@ class ConversationService:
                     await self.jobs.finish(jid, "DONE")
                     await self._notify_ai_done(
                         job["user_id"], job["conversation_id"])
-                    self._byok_keys.pop(jid, None)
                 event_id = await self.jobs.max_event_id(jid)
                 await self.jobs.save_checkpoint(
                     jid, {"state": freeze_state(state), "node": name,
@@ -828,7 +794,6 @@ class ConversationService:
                 except (asyncio.CancelledError, Exception):
                     pass
             event_sink.reset(sink)
-            _BYOK_KEY.reset(token)
 
     async def _drop_enqueued_user_message(self, job_id: UUID) -> None:
         """A rejected chat must not keep the USER row written at enqueue."""
@@ -860,5 +825,5 @@ class ConversationService:
         await self.jobs.reset_stale()
         ids = await self.jobs.pending_ids(5)
         for pending in ids:
-            await schedule_chat_job(pending, "")
+            await schedule_chat_job(pending)
         return len(ids)

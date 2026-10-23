@@ -48,10 +48,10 @@ class Gate:
         self.released: list = []
         self.reserved: list = []
 
-    async def check(self, user_id, ai, byok_key=""):
+    async def check(self, user_id, ai):
         ai.model = "gate-model"
 
-    async def _route(self, user_id, ai, byok_key=""):
+    async def _route(self, user_id, ai):
         return SimpleNamespace(base_url="http://llm.test"), "key", ai.model, None
 
     async def _reserve(self, user_id, ai, system, user, job_id=None):
@@ -122,7 +122,7 @@ def service(rows: Rows | None = None):
 
 
 def managed_ai() -> dict:
-    return {"provider": "OPENAI", "model": "managed", "credentialMode": "MANAGED", "effort": "LOW"}
+    return {"provider": "OPENAI", "model": "managed", "effort": "LOW"}
 
 
 async def run(runtime, payload: dict, thread: str = str(CONV)) -> list:

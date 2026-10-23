@@ -45,7 +45,7 @@ async def test_nudge_schedules_on_the_cloudflare_path(monkeypatch):
     svc, calls = _service()
     scheduled = []
 
-    async def sched(job_id, byok="", claim=""):
+    async def sched(job_id, claim=""):
         scheduled.append(job_id)
 
     set_job_scheduler(sched)
@@ -63,7 +63,7 @@ async def test_nudge_is_noop_when_the_vps_owns_chat(monkeypatch):
     svc, calls = _service()
     scheduled = []
 
-    async def sched(job_id, byok="", claim=""):
+    async def sched(job_id, claim=""):
         scheduled.append(job_id)
 
     set_job_scheduler(sched)

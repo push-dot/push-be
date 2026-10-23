@@ -114,7 +114,7 @@ async def test_redis_backend_does_not_schedule_workflow(monkeypatch):
     prev = get_job_scheduler()
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-1", "byok")
+        await schedule_chat_job("job-1")
         assert queue_backend() == "redis"
         assert seen == []
     finally:
@@ -132,7 +132,7 @@ async def test_postgres_backend_still_schedules_workflow(monkeypatch):
     prev = get_job_scheduler()
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-1", "byok")
+        await schedule_chat_job("job-1")
         assert seen
         assert seen[0][0] == "job-1"
     finally:

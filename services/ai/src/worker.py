@@ -60,7 +60,7 @@ def apply_env(env) -> None:
     _patch_to_thread()
 
 
-async def _create_workflow(env, job_id: str, byok: str, claim: str = "") -> None:
+async def _create_workflow(env, job_id: str, claim: str = "") -> None:
     binding = getattr(env, "CHAT_WORKFLOW", None)
     if binding is None:
         return
@@ -68,7 +68,6 @@ async def _create_workflow(env, job_id: str, byok: str, claim: str = "") -> None
         "id": f"chat-{job_id}-{int(time.time() * 1000)}",
         "params": {
             "jobId": str(job_id),
-            "byok": byok or "",
             "claim": claim or "",
         },
     }
@@ -100,8 +99,8 @@ async def _end_db_scope(scope) -> None:
 
 
 def _install_scheduler(env) -> None:
-    async def schedule(job_id: str, byok: str, claim: str = "") -> None:
-        await _create_workflow(env, job_id, byok, claim)
+    async def schedule(job_id: str, claim: str = "") -> None:
+        await _create_workflow(env, job_id, claim)
 
     set_job_scheduler(schedule)
 
@@ -119,7 +118,6 @@ def _payload(event) -> dict:
     except Exception:
         return {
             "jobId": getattr(raw, "jobId", ""),
-            "byok": getattr(raw, "byok", "") or "",
             "claim": getattr(raw, "claim", "") or "",
         }
 
