@@ -144,7 +144,8 @@ if [ "$daemon_changed" = 1 ]; then systemctl restart docker; fi
 # ---------------------------------------------------------------- deploy user
 log "user $DEPLOY_USER"
 id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group "$DEPLOY_USER"
-usermod -aG docker "$DEPLOY_USER"
+# docker is root-equivalent; that is why the CI key is pinned to push-deploy.
+usermod -aG docker,systemd-journal "$DEPLOY_USER"
 usermod -p '*' "$DEPLOY_USER" # no password; key login only
 install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 "$APP_ROOT" "$APP_ROOT/releases"
 install -d -m 0755 /usr/local/lib/push
