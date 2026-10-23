@@ -252,7 +252,8 @@ def _bind_param(value: Any) -> tuple[int, Optional[bytes]]:
         if all(isinstance(v, bool) or isinstance(v, int) for v in value):
             body = "{" + ",".join(str(int(v)) for v in value) + "}"
             return _INT8ARRAY, body.encode()
-        body = "{" + ",".join(json.dumps(str(v)) for v in value) + "}"
+        body = "{" + ",".join(
+            '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"' for v in value) + "}"
         return _TEXTARRAY, body.encode()
     return 0, str(value).encode()
 

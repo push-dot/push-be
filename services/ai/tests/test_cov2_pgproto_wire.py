@@ -477,12 +477,9 @@ def test_error_fields_default_when_missing():
     assert str(e) == "XX000: postgres error"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: text[] params are escaped with json.dumps (ensure_ascii, \\n, \\uXXXX); "
-    "Postgres array literals only treat backslash as 'take next char literally', "
-    "so non-ASCII/control characters are corrupted (pgproto.py:255)"))
 def test_bind_text_array_preserves_non_ascii():
     assert _bind_param(["é", "a\nb"]) == (1009, '{"é","a\nb"}'.encode())
+    assert _bind_param(['q"x', "b\\s"]) == (1009, b'{"q\\"x","b\\\\s"}')
 
 
 @pytest.mark.xfail(strict=True, reason=(
