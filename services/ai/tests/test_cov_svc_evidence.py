@@ -197,16 +197,9 @@ def test_profile_draft_route_unknown_source_is_404():
     assert res.status_code == 404
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: import_/_progress_import never apply validate_evidence_input, so the "
-    "1-200 char title limit enforced by evidence create (here and in core-api "
-    "routes/evidence.ts:111) is bypassed by POST /career-evidence/import"))
 async def test_import_enforces_the_evidence_title_limit():
     s = _svc()
-    try:
-        op = await s.import_(A, None, "text", None, "", "TEXT", "CAREER", "x" * 201)
-    except DomainError as e:
-        assert e.code == "VALIDATION_ERROR"
-    else:
-        assert op.status != ent.OP_SUCCEEDED
+    with pytest.raises(DomainError) as e:
+        await s.import_(A, None, "text", None, "", "TEXT", "CAREER", "x" * 201)
+    assert e.value.code == "VALIDATION_ERROR"
     assert s.evidence.rows == {}
