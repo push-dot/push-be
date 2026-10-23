@@ -199,7 +199,10 @@ def _decode_text(oid: int, text: Optional[str]) -> Any:
     if oid in (_FLOAT4OID, _FLOAT8OID):
         return float(text)
     if oid == _NUMERICOID:
-        return float(text) if "." in text else int(text)
+        try:
+            return int(text)
+        except ValueError:  # fractions, NaN, Infinity
+            return float(text)
     if oid in (_JSONOID, _JSONBOID):
         return json.loads(text)
     if oid == _UUIDOID:

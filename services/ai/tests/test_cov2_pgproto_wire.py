@@ -482,8 +482,5 @@ def test_bind_text_array_preserves_non_ascii():
     assert _bind_param(['q"x', "b\\s"]) == (1009, b'{"q\\"x","b\\\\s"}')
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: numeric 'NaN' (valid Postgres numeric) is fed to int() and raises "
-    "ValueError (pgproto.py:202)"))
 def test_decode_numeric_nan():
     assert math.isnan(_decode_text(1700, "NaN"))
