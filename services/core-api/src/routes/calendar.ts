@@ -157,7 +157,7 @@ export async function patchEvent(ctx: Ctx, idRaw: string): Promise<Response> {
   if (body.notes != null) current.notes = String(body.notes);
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "calendar_events",
-    "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, updated_at = $8 WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at",
+    "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, updated_at = $8 WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at",
     [id, ctx.user.id, current.title, current.starts_at, current.ends_at, current.time_zone, current.notes, now, body.expectedRevision],
     id, ctx.user.id);
   return data(200, eventDto(updated), ctx.rid);
