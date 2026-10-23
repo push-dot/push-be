@@ -235,9 +235,6 @@ class _Record:
         return self._data.get(key, default)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: harness/personal/tools.py:238 only reads resume_state when the row is a "
-    "dict; asyncpg returns Record, so an active resume is reset to mode_select"))
 async def test_start_document_reads_resume_state_from_an_asyncpg_record(emitted):
     db = _ResumeDB(_Record({"resume_state": {"status": "active", "phase": "craft"}}))
     out = await _run("start_document", {}, ctx=_ctx(db=db))

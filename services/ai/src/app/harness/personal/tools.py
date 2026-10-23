@@ -235,7 +235,10 @@ async def _resume_row(ctx: ToolContext):
 def _resume_status(row) -> str:
     if not row:
         return ""
-    raw = row["resume_state"] if isinstance(row, dict) else None
+    try:
+        raw = row["resume_state"]  # dict from pgproto, Record from asyncpg
+    except (KeyError, TypeError):
+        return ""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
