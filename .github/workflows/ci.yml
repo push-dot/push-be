@@ -108,7 +108,8 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Test
         working-directory: services/ai
-        run: python -m pytest
+        # Coverage is reported, not enforced.
+        run: python -m pytest --cov=app --cov-report=term
 
   test-gateway:
     needs: changes
@@ -125,7 +126,7 @@ jobs:
       - name: Test gateway
         run: |
           npm ci
-          npm test -w push-be-front
+          npm run test:coverage -w push-be-front
           npx tsc -p services/gateway --noEmit
 
   test-db:
@@ -206,7 +207,7 @@ jobs:
       - name: Test core API
         run: |
           npm ci
-          npm test -w push-be-core
+          npm run test:coverage -w push-be-core
           npx tsc -p services/core-api --noEmit
 
   bundle-core:

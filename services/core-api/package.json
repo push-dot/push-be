@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --expose-gc --experimental-strip-types --test 'test/**/*.ts'"
+    "test": "node --expose-gc --experimental-strip-types --test 'test/**/*.ts'",
+    "test:coverage": "node --expose-gc --experimental-strip-types --experimental-test-coverage --test 'test/**/*.ts'"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.0.2",
