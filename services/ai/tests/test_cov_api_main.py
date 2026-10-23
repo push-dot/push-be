@@ -66,7 +66,7 @@ async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, m
     assert any("VALUES ($1,'dev','dev','Dev User'" in s for s in sqls)
     assert any(s.startswith("INSERT INTO experiments") for s in sqls)
     deps = fa.state.deps
-    assert deps.cfg.managed_ai and deps.cfg.stripe_configured and not deps.cfg.byok_enabled
+    assert deps.cfg.managed_ai and deps.cfg.stripe_configured
     assert not deps.cfg.google_configured and not deps.cfg.managed_go
     assert fa.state.db.pool is pool
     assert deps.conversations._checkpointer is not None

@@ -16,7 +16,7 @@ from app.domain.services import conversation as conv_mod
 from app.domain.services.conversation import (
     ConversationService, _checkpoint_dict, _wait, flush_chat_events,
 )
-from app.graphs.chat import byok_key_var, event_sink
+from app.graphs.chat import event_sink
 from app.infrastructure.store_chat_jobs import user_message_id
 from app.jobs import get_job_scheduler, set_job_scheduler
 from tests.stubs import StubChatJobStore, StubConversationStore
@@ -149,7 +149,7 @@ async def test_start_worker_failure_restores_the_previous_scheduler():
         async def reset_stale(self, max_age_s=None):
             raise RuntimeError("db down")
 
-    async def mine(job_id, byok="", claim=""):
+    async def mine(job_id, claim=""):
         return None
 
     previous = get_job_scheduler()
@@ -276,7 +276,6 @@ def _job(jobs, attempt=1, **payload):
 def _run_svc(jobs, graph):
     svc = _svc(jobs)
     svc._compiled = graph
-    svc._byok_keys[jobs.job_id] = "sk-user"
     return svc
 
 
@@ -298,7 +297,7 @@ async def test_run_job_success_streams_events_and_notifies(monkeypatch):
                                                 "done"]
     assert jobs.events[-1]["payload"] == {"operation": {"status": "SUCCEEDED"}}
     assert jobs.finished == [("DONE", None)]
-    assert _ai_done(svc) and jobs.job_id not in svc._byok_keys
+    assert _ai_done(svc)
     state, config = graph.inputs[0]
     assert state["access_mode"] == "SUGGEST" and state["intent"] == "review"
     assert config["configurable"]["thread_id"] == str(j["conversation_id"])
@@ -309,7 +308,6 @@ async def test_run_job_cancelled_before_done_never_finishes():
     svc = _run_svc(jobs, _Graph([("values", {"operation": {"x": 1}})]))
     await svc._run_job(_job(jobs))
     assert jobs.events == [] and jobs.finished == [] and _ai_done(svc) == []
-    assert jobs.job_id not in svc._byok_keys
 
 
 async def test_run_job_cancelled_after_last_chunk_keeps_cancelled():
@@ -329,16 +327,13 @@ async def test_run_job_domain_error_fails_and_drops_the_user_message():
     assert ev["type"] == "error"
     assert ev["payload"]["error"]["code"] == "FEATURE_DISABLED"
     assert jobs.finished == [("FAILED", "FEATURE_DISABLED")]
-    assert jobs.job_id not in svc._byok_keys
 
 
-async def test_run_job_crash_requeues_with_backoff_and_keeps_the_key():
+async def test_run_job_crash_requeues_with_backoff():
     jobs = _RunJobs()
     svc = _run_svc(jobs, _Graph(err=RuntimeError("flaky")))
     await svc._run_job(_job(jobs, attempt=2))
     assert jobs.delays == [4.0] and jobs.finished == [] and jobs.events == []
-    assert svc._byok_keys[jobs.job_id] == "sk-user"
-    assert byok_key_var.get() == ""
 
 
 async def test_run_job_crash_on_last_attempt_fails_with_truncated_message():
@@ -348,7 +343,6 @@ async def test_run_job_crash_on_last_attempt_fails_with_truncated_message():
     (ev,) = jobs.events
     assert ev["payload"]["error"] == {"code": "INTERNAL", "message": "x" * 500}
     assert jobs.finished == [("FAILED", "x" * 500)] and jobs.delays == []
-    assert jobs.job_id not in svc._byok_keys
 
 
 # ---- exec_chat_node --------------------------------------------------------
@@ -590,12 +584,10 @@ async def test_persist_emits_done_and_finishes():
 
     svc = _step_svc(jobs, persist=persist)
     jid = uuid4()
-    svc._byok_keys[jid] = "sk"
     assert await svc.exec_chat_node(str(jid), "persist") == "ok"
     assert jobs.events == [("done", {"operation": {"id": "op-1",
                                                    "status": "SUCCEEDED"}})]
     assert jobs.finished == [("DONE", None)] and len(_ai_done(svc)) == 1
-    assert jid not in svc._byok_keys
     assert jobs.job["checkpoint"]["node"] == "persist"
 
 
@@ -634,7 +626,7 @@ async def test_setup_failure_cancels_the_pump_and_resets_context(monkeypatch):
     monkeypatch.setattr("app.graphs.chat.bind_chat_nodes", broken)
     with pytest.raises(RuntimeError, match="import failed"):
         await svc.exec_chat_node(str(uuid4()), "generate_reply")
-    assert event_sink.get() is None and byok_key_var.get() == ""
+    assert event_sink.get() is None
     assert jobs.events == []
 
 

@@ -1,5 +1,5 @@
 """HTTP contract of the Python-owned /ai/models, /ai/generate and
-/jobs/{id}/analyze routes (BYOK model listing excluded)."""
+/jobs/{id}/analyze routes."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -23,9 +23,8 @@ def _client(user=USER, err=None, managed_ai=True, managed_go=False):
     app.include_router(jobs.router, prefix="/api/v1")
     rec = _Recorder(err)
     app.state.deps = SimpleNamespace(
-        ai=rec, jobs=rec, ai_keys=None,
-        cfg=SimpleNamespace(managed_ai=managed_ai, managed_go=managed_go,
-                            byok_enabled=False))
+        ai=rec, jobs=rec,
+        cfg=SimpleNamespace(managed_ai=managed_ai, managed_go=managed_go))
     return TestClient(_AsUser(app, user)), rec
 
 
@@ -50,7 +49,7 @@ def test_models_lists_every_managed_model_with_availability():
 
 def test_models_go_availability_follows_its_own_key():
     c, _ = _client(managed_ai=False, managed_go=True)
-    avail = _avail(c.get("/api/v1/ai/models?credentialMode=MANAGED"))
+    avail = _avail(c.get("/api/v1/ai/models"))
     assert avail["opencode-go/deepseek-v4.1-flash"] is True
     assert avail["deepseek/deepseek-v4.1-flash"] is False
 
@@ -61,15 +60,18 @@ def test_models_filtered_by_another_provider_is_empty():
     assert r.status_code == 200 and r.json()["data"] == []
 
 
-@pytest.mark.parametrize("qs,field", [
-    ("provider=NOPE", "provider"),
-    ("credentialMode=FREE", "credentialMode"),
-])
-def test_models_rejects_unknown_filters(qs, field):
+def test_models_rejects_unknown_provider_filter():
     c, _ = _client()
-    r = c.get("/api/v1/ai/models?" + qs)
+    r = c.get("/api/v1/ai/models?provider=NOPE")
     assert r.status_code == 400
-    assert r.json()["error"]["details"] == {"field": field}
+    assert r.json()["error"]["details"] == {"field": "provider"}
+
+
+def test_models_ignores_legacy_credential_mode_query():
+    c, _ = _client()
+    r = c.get("/api/v1/ai/models?credentialMode=FREE")
+    assert r.status_code == 200
+    assert len(r.json()["data"]) == len(ent.OPENAI_MODELS)
 
 
 # ---- POST /ai/generate -----------------------------------------------------
@@ -85,13 +87,16 @@ def test_generate_passes_user_prompt_and_options():
     name, (uid, opts, prompt, a, ids) = rec.calls[0]
     assert (name, uid, prompt, a, ids) == ("generate", USER.id, "write", aid,
                                            [eid])
-    assert opts.credential_mode == "MANAGED"
+    assert isinstance(opts, ent.AiOptions)
+    assert (opts.provider, opts.model, opts.effort) == ("OPENAI", "m", "LOW")
 
 
 @pytest.mark.parametrize("body", [
     {"ai": AI, "applicationId": str(uuid4())},
     {"ai": AI, "prompt": "p", "applicationId": "nope"},
     {"ai": AI, "prompt": "p", "applicationId": str(uuid4()), "extra": 1},
+    {"ai": {**AI, "credentialMode": "BYOK"}, "prompt": "p",
+     "applicationId": str(uuid4())},
 ])
 def test_generate_rejects_bad_bodies(body):
     c, rec = _client()

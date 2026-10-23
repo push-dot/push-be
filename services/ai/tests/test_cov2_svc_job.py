@@ -178,7 +178,7 @@ async def test_analyze_records_gap_analysis_and_operation():
 async def test_analyze_with_ai_marks_ai_assisted_after_the_gate():
     s = _svc()
     j, app, ids = _seed(s)
-    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+    ai = ent.AiOptions(provider="OPENAI", model="m",
                        effort="LOW")
     await s.analyze(A, j.id, app.id, 1, ids, ai)
     assert s.ai.checked == [(A, ai)]

@@ -1,4 +1,4 @@
-"""AIGate / AIService behaviour on the live managed-AI paths (BYOK excluded)."""
+"""AIGate / AIService behaviour on the managed-AI paths."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -17,15 +17,14 @@ from tests.test_ai import _now, _user
 
 
 def _ai(**kw):
-    base = dict(provider="OPENAI", model="m", credential_mode="MANAGED",
-                effort="LOW")
+    base = dict(provider="OPENAI", model="m", effort="LOW")
     base.update(kw)
     return ent.AiOptions(**base)
 
 
 def _gate(managed_key="sk-managed", chat=None, user=None, usage=None,
           **kw):
-    g = AIGate(FakeDB(), managed_key, None,
+    g = AIGate(FakeDB(), managed_key,
                chat if chat is not None else StubChatCompleter(text="ok"),
                **kw)
     g.users = StubUserStore(user if user is not None else _user("FREE"))
@@ -41,18 +40,22 @@ async def _code(aw) -> DomainError:
 
 # ---- check / validate_ai_options ------------------------------------------
 
-@pytest.mark.parametrize("kw,field", [
-    ({"provider": "NOPE"}, "ai.provider"),
-    ({"model": ""}, "ai.model"),
-    ({"credential_mode": "FREE"}, "ai.credentialMode"),
-    ({"provider": "CLAUDE"}, "ai.credentialMode"),
-    ({"effort": "EXTREME"}, "ai.effort"),
-])
-async def test_check_rejects_invalid_options_before_any_lookup(kw, field):
+async def test_check_rejects_invalid_effort_before_any_lookup():
     g = _gate()
     g.users = StubUserStore(None)  # a lookup would fail with NOT_FOUND
-    err = await _code(g.check(uuid4(), _ai(**kw)))
-    assert (err.code, err.details) == ("VALIDATION_ERROR", {"field": field})
+    err = await _code(g.check(uuid4(), _ai(effort="EXTREME")))
+    assert (err.code, err.details) == ("VALIDATION_ERROR",
+                                       {"field": "ai.effort"})
+
+
+@pytest.mark.parametrize("kw", [
+    {"provider": "NOPE"}, {"provider": "CLAUDE"}, {"model": ""},
+])
+async def test_check_overrides_client_provider_and_model(kw):
+    g = _gate(user=_user("PRO"))
+    ai = _ai(**kw)
+    await g.check(uuid4(), ai)
+    assert (ai.provider, ai.model) == ("OPENAI", "anthropic/claude-sonnet-5-5")
 
 
 async def test_check_without_ai_options_is_a_no_op():
@@ -192,7 +195,7 @@ async def test_company_research_custom_model_and_no_context():
     ("sk", StubChatCompleter(err=RuntimeError("timeout"))),
 ])
 async def test_company_research_degrades_to_empty(managed_key, chat):
-    g = AIGate(FakeDB(), managed_key, None, chat)
+    g = AIGate(FakeDB(), managed_key, chat)
     g.usage = StubAiUsageStore()
     assert await g.company_research("Acme", user_id=uuid4()) == ""
     assert g.usage.items == []
@@ -265,7 +268,7 @@ async def test_provider_failure_releases_reservation_even_if_release_fails():
 
 async def test_web_search_needs_managed_router_key():
     go = StubChatCompleter(text="go")
-    g = AIGate(FakeDB(), "", None, StubChatCompleter(), go_chat=go,
+    g = AIGate(FakeDB(), "", StubChatCompleter(), go_chat=go,
                go_key="sk-go",
                config=Config(model_free="opencode-go/deepseek-v4.1-flash"))
     g.users = StubUserStore(_user("FREE"))
@@ -292,7 +295,7 @@ async def _drain(agen):
 
 
 async def test_stream_managed_requires_a_chat_client():
-    g = AIGate(FakeDB(), "sk", None, None)
+    g = AIGate(FakeDB(), "sk", None)
     g.users = StubUserStore(_user())
     g.usage = StubAiUsageStore()
     err = await _code(_drain(g.stream(uuid4(), _ai(), "", "hi", {})))

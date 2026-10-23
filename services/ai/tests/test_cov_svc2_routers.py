@@ -17,8 +17,7 @@ from app.domain.errors import DomainError, not_found
 USER = ent.User(id=UUID("00000000-0000-4000-8000-0000000000aa"),
                 display_name="Ada",
                 created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
-AI = {"provider": "OPENAI", "model": "m", "credentialMode": "MANAGED",
-      "effort": "LOW"}
+AI = {"provider": "OPENAI", "model": "m", "effort": "LOW"}
 
 
 class _AsUser:
@@ -67,8 +66,7 @@ def test_generate_blueprints_passes_user_and_ids():
     assert name == "generate_blueprints"
     assert (uid, a, g) == (USER.id, aid, gid)
     assert isinstance(ai, ent.AiOptions)
-    assert (ai.provider, ai.credential_mode, ai.effort) == (
-        "OPENAI", "MANAGED", "LOW")
+    assert (ai.provider, ai.model, ai.effort) == ("OPENAI", "m", "LOW")
 
 
 def test_generate_blueprints_without_ai_passes_none():

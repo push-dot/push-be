@@ -22,7 +22,7 @@ NOW = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 
 def ai_dict(**over) -> dict:
-    out = {"provider": "OPENAI", "model": "m", "credential_mode": "MANAGED", "effort": "LOW"}
+    out = {"provider": "OPENAI", "model": "m", "effort": "LOW"}
     out.update(over)
     return out
 
@@ -130,7 +130,7 @@ class Gate:
         self.research: list = []
         self.plans: list = []
 
-    async def stream(self, user_id, opts, system, user, usage, byok_key="",
+    async def stream(self, user_id, opts, system, user, usage,
                      search_query="", assistant_prefix="", job_id=None):
         from app.domain.employer_chat import current_employer_plan
         if self.err is not None:
@@ -351,7 +351,7 @@ async def test_resolve_context_version_only_attaches_and_applies_settings():
                   if "user_settings" in sql else None))
     svc = make_svc(c, docs=StubDocumentStore(doc=doc, version=version), db=db)
     out = await _resolve(svc, user_id, c, {"versionId": str(version.id)},
-                         ai={"provider": "OPENAI", "model": "m", "credential_mode": "MANAGED"})
+                         ai={"provider": "OPENAI", "model": "m"})
     assert out["attachments"][0].id == version.id
     assert out["context_text"] == "[첨부 문서] 이력서\n본문"
     assert out["confirm_before_edit"] is False

@@ -85,7 +85,7 @@ async def test_prepare_with_no_requirements_or_evidence_is_empty():
 async def test_prepare_checks_ai_gate_first_and_writes_nothing_on_refusal():
     gate = f.AIGate(err=feature_disabled("ultraResume requires the ULTRA plan"))
     s, iv, _ = _world(gate=gate)
-    opts = ent.AiOptions(provider="OPENAI", model="m", credential_mode="BYOK",
+    opts = ent.AiOptions(provider="OPENAI", model="m",
                          effort="LOW")
     await _raises("FEATURE_DISABLED", s.prepare(A, iv.id, 2, opts))
     assert gate.checked == [(A, opts)] and s.ops.rows == {}

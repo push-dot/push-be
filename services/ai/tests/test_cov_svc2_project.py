@@ -127,7 +127,7 @@ def _gen_svc(*, user_present=True, check_err=None, analysis_app=None,
 
 async def test_generate_blueprints_success_persists_and_reports_operation():
     svc, user_id, app, analysis, gate = _gen_svc()
-    ai = ent.AiOptions(provider="OPENAI", model="m", credential_mode="MANAGED",
+    ai = ent.AiOptions(provider="OPENAI", model="m",
                        effort="LOW")
     op = await svc.generate_blueprints(user_id, app.id, analysis.id, ai)
     assert gate.checked == [(user_id, ai)]

@@ -5,10 +5,9 @@ import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
-const USER_B = "bbbbbbbb-0000-4000-8000-00000000000b";
 const NOW = new Date("2026-10-18T00:00:00Z");
 const MODELS = "https://push-be.example/api/v1/ai/models";
-const TOKENS: Record<string, string> = { [USER_A]: "tok-a", [USER_B]: "tok-b" };
+const TOKENS: Record<string, string> = { [USER_A]: "tok-a" };
 const GO = "opencode-go/deepseek-v4.1-flash";
 
 type Seen = Array<[string, unknown[]]>;
@@ -35,32 +34,22 @@ const userRow = (id: string): Record<string, unknown> => ({
 
 const isShared = (sql: string) => sql.startsWith("WITH auth");
 const isAuthOnly = (sql: string) => sql.includes("FROM access_tokens") && !isShared(sql);
-const isKeys = (sql: string) => sql.startsWith("SELECT EXISTS(SELECT 1 FROM ai_keys");
 
 type Fake = {
   user: string;
-  hasKey?: boolean;
   shared?: "throw" | "none";
-  keys?: "throw";
 };
-
-// Key lookups answer per user id, so a query bound to the wrong user returns the wrong catalog.
-const OWNS_KEY = new Set([USER_A]);
 
 const fake = (seen: Seen, f: Fake): Query => async (sql, params = []) => {
   seen.push([sql, params]);
   if (isShared(sql)) {
     if (f.shared === "throw") throw new Error("db down");
     if (f.shared === "none") return [];
-    return [{ ...userRow(f.user), hits: 1, has: OWNS_KEY.has(f.user) }];
+    return [{ ...userRow(f.user), hits: 1 }];
   }
   if (isAuthOnly(sql)) return [userRow(f.user)];
   if (sql.includes("FROM users u LEFT JOIN company_members")) return [userRow(f.user)];
   if (sql.includes("rate_limits")) return [{ hits: 1 }];
-  if (isKeys(sql)) {
-    if (f.keys === "throw") throw new Error("db down");
-    return [{ has: OWNS_KEY.has(String(params[0])) }];
-  }
   return [];
 };
 
@@ -73,7 +62,6 @@ const goAvailable = async (res: Response): Promise<boolean> => {
   return body.data.find((m) => m.model === GO)!.available;
 };
 
-const keyParams = (seen: Seen) => seen.filter(([sql]) => isKeys(sql)).map(([, p]) => p);
 
 const warm = async (user: string, e: FrontEnv): Promise<void> => {
   const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
@@ -83,15 +71,21 @@ const warm = async (user: string, e: FrontEnv): Promise<void> => {
 };
 
 
-test("models needs a bearer token and validates credentialMode", async () => {
+test("models needs a bearer token and validates provider", async () => {
   resetLimits();
   const seen: Seen = [];
   const anon = await handle(new Request(MODELS), env(), deps(fake(seen, { user: USER_A })));
   assert.equal(anon.status, 401);
   assert.equal(seen.length, 0);
-  const bad = await handle(get(USER_A, "?credentialMode=FREE"), env(), deps(fake(seen, { user: USER_A })));
+  const bad = await handle(get(USER_A, "?provider=NOPE"), env(), deps(fake(seen, { user: USER_A })));
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "credentialMode");
+  assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
+});
+
+test("a leftover credentialMode param is ignored", async () => {
+  resetLimits();
+  const res = await handle(get(USER_A, "?credentialMode=BYOK"), env(), deps(fake([], { user: USER_A })));
+  assert.equal(await goAvailable(res), false);
 });
 
 test("an unknown token on the shared read is 401 and nothing is cached", async () => {
@@ -105,16 +99,19 @@ test("an unknown token on the shared read is 401 and nothing is cached", async (
   assert.ok(queried > 0, "a miss must re-check the token");
 });
 
-test("MANAGED mode authenticates but never reads ai_keys", async () => {
+test("availability follows MANAGED_AI and MANAGED_GO only", async () => {
   resetLimits();
   const seen: Seen = [];
-  const res = await handle(get(USER_A, "?credentialMode=MANAGED"), env(), deps(fake(seen, { user: USER_A })));
+  const res = await handle(get(USER_A), env(), deps(fake(seen, { user: USER_A })));
   assert.equal(await goAvailable(res), false);
-  assert.equal(keyParams(seen).length, 0);
   assert.ok(seen.some(([sql]) => isShared(sql)));
+  assert.equal(seen.some(([sql]) => sql.includes("ai_keys")), false);
 
   resetLimits();
-  const denied = await handle(get(USER_A, "?credentialMode=MANAGED"), env(), deps(fake([], { user: USER_A, shared: "none" })));
+  assert.equal(await goAvailable(await handle(get(USER_A), env({ MANAGED_GO: "1" }), deps(fake([], { user: USER_A })))), true);
+
+  resetLimits();
+  const denied = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" })));
   assert.equal(denied.status, 401);
 });
 
