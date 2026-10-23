@@ -11,7 +11,7 @@ from app.ingest.web_page import fetch_page_text
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-_REPO = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
+_REPO = re.compile(r"[A-Za-z0-9-]{1,39}/(?!\.+$)[A-Za-z0-9._-]{1,100}")
 
 
 def docx_text(data: bytes) -> str:
@@ -54,7 +54,7 @@ async def read_web(url: str) -> str:
 
 
 async def read_github(client: httpx.AsyncClient, repo: str) -> str:
-    if not _REPO.match(repo):
+    if not _REPO.fullmatch(repo):
         raise ValueError("repo must be owner/name")
     headers = {"accept": "application/vnd.github.raw+json", "user-agent": "push-ingest"}
     readme = await client.get(f"https://api.github.com/repos/{repo}/readme", headers=headers)

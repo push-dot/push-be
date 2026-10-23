@@ -178,10 +178,6 @@ async def test_read_github_rejects_malformed_repo_without_calling_github(repo):
     assert seen == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: rag/readers.py:14,57 _REPO uses `$` with re.match, so a trailing newline passes and "
-    "dot-only names ('.', '..') pass; '..' rewrites the GitHub API path and '\\n' raises httpx.InvalidURL "
-    "(not ValueError) so the ingest job retries instead of failing with VALIDATION_ERROR"))
 @pytest.mark.parametrize("repo", ["octo/repo\n", "octo/..", "octo/."])
 async def test_read_github_rejects_newline_and_dot_segments(repo):
     client, seen = github_client()
