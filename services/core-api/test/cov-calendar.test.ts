@@ -309,7 +309,7 @@ test("calendar: delete needs the current revision and answers 204", async () => 
   assert.deepEqual(bad.body.error?.details, { field: "id" });
 });
 
-test("calendar: patch response keeps the event's remindAt", { todo: "BUG: src/routes/calendar.ts:160 UPDATE ... RETURNING omits remind_at, so PATCH always answers remindAt: null" }, async () => {
+test("calendar: patch response keeps the event's remindAt", async () => {
   const w = world();
   const id = (await w.call("POST", "/api/v1/calendar/events", { body: valid })).body.data.id;
   await w.call("PATCH", `/api/v1/calendar/events/${id}`, { body: { expectedRevision: 1, title: "Moved" } });
