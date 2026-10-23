@@ -309,16 +309,20 @@ async def test_pool_reconnects_after_connection_marked_closed(monkeypatch):
     assert len(opened) == 2
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: only PgPool.execute drops the connection on ConnectionError/OSError "
-    "(pgproto.py:843); fetch/fetchrow/fetchval/executemany keep the dead "
-    "connection, so every later read on that scope fails"))
-async def test_pool_fetch_drops_connection_on_transport_error(monkeypatch):
+@pytest.mark.parametrize("call", [
+    lambda pool: pool.fetch("F"),
+    lambda pool: pool.fetchrow("R"),
+    lambda pool: pool.fetchval("V"),
+    lambda pool: pool.executemany("I", [(1,)]),
+], ids=["fetch", "fetchrow", "fetchval", "executemany"])
+async def test_pool_read_drops_connection_on_transport_error(monkeypatch, call):
     opened = _patch(monkeypatch, asyncio.IncompleteReadError(b"", 5))
     pool = PgPool("postgresql://u:p@h/db")
     with pytest.raises(asyncio.IncompleteReadError):
-        await pool.fetch("F")
+        await call(pool)
     assert opened[0].closed
+    await pool.fetchval("V")
+    assert len(opened) == 2
 
 
 async def test_acquire_releases_lock_when_connect_fails(monkeypatch):

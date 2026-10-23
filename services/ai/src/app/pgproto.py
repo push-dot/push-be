@@ -834,39 +834,30 @@ class PgPool:
             except ValueError:
                 _request_state.set(None)
 
-    async def execute(self, sql: str, *args) -> str:
+    async def _call(self, method: str, *args):
         state = self._current_state()
         async with state.lock:
             conn = await self._ensure_locked(state)
             try:
-                return await conn.execute(sql, *args)
+                return await getattr(conn, method)(*args)
             except (ConnectionError, asyncio.IncompleteReadError, OSError):
                 await self._drop_state(state)
                 raise
 
+    async def execute(self, sql: str, *args) -> str:
+        return await self._call("execute", sql, *args)
+
     async def executemany(self, sql: str, seq) -> None:
-        state = self._current_state()
-        async with state.lock:
-            conn = await self._ensure_locked(state)
-            await conn.executemany(sql, seq)
+        await self._call("executemany", sql, seq)
 
     async def fetch(self, sql: str, *args):
-        state = self._current_state()
-        async with state.lock:
-            conn = await self._ensure_locked(state)
-            return await conn.fetch(sql, *args)
+        return await self._call("fetch", sql, *args)
 
     async def fetchrow(self, sql: str, *args):
-        state = self._current_state()
-        async with state.lock:
-            conn = await self._ensure_locked(state)
-            return await conn.fetchrow(sql, *args)
+        return await self._call("fetchrow", sql, *args)
 
     async def fetchval(self, sql: str, *args):
-        state = self._current_state()
-        async with state.lock:
-            conn = await self._ensure_locked(state)
-            return await conn.fetchval(sql, *args)
+        return await self._call("fetchval", sql, *args)
 
     async def close(self) -> None:
         current = _request_state.get()
