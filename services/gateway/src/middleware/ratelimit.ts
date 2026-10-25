@@ -224,11 +224,19 @@ export async function releaseExpired(deps: Deps, nowMs: number, exceptKey = ""):
     const minuteRolled = currentWindow !== "" && window !== currentWindow;
     if (lease.remaining > 0 && (minuteRolled || nowMs >= lease.expiresAt)) due.push([key, lease]);
   }
-  for (const [key, lease] of due) {
-    await releaseLease(deps, lease);
+  // releaseLease takes the hits out before it awaits, so the map entries can
+  // go now. Other tokens' leftovers must not add serial Neon round trips to
+  // this request: they run together, after the response when possible.
+  const returns = due.map(([key, lease]) => {
+    const pending = releaseLease(deps, lease);
     leases.delete(key);
     remoteHits.delete(key);
-  }
+    return pending;
+  });
+  if (!returns.length) return;
+  const all = Promise.all(returns);
+  if (deps.waitUntil) deps.waitUntil(all);
+  else await all;
 }
 
 function nearCap(lease: Lease): boolean {
