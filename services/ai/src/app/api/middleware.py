@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Final
 from uuid import UUID, uuid4
 
 from starlette.types import Message, Receive, Scope, Send
@@ -15,17 +16,10 @@ from app.domain.errors import DomainError
 from app.api.errors import error_body, redact
 from app.ratelimit import SlidingWindow, allow as allow_shared
 
-_PUBLIC_EXACT = {
-    "/api/v1/healthz",
-    "/api/v1/auth/exchange",
-    "/api/v1/auth/refresh",
-    "/api/v1/auth/logout",
-    "/api/v1/integrations/google/callback",
-    "/api/v1/billing/webhook",
-}
-_PUBLIC_PATTERN = re.compile(r"^/api/v1/auth/[^/]+/(start|callback)$")
-_PUBLIC_SHARE = re.compile(r"^/api/v1/conversations/shared/[^/]+$")
-_IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
+# Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
+# webhooks and image bytes are served by push-be-core, not this service.
+_PUBLIC_EXACT: Final = frozenset({"/api/v1/healthz"})
+_PUBLIC_SHARE: Final = re.compile(r"^/api/v1/conversations/shared/[^/]+$")
 _PENDING_TTL = timedelta(minutes=5)
 
 logger = logging.getLogger(__name__)
@@ -37,16 +31,8 @@ def _public_error(exc: BaseException) -> str:
 
 
 def _is_public(path: str, method: str = "GET") -> bool:
-    if path in _PUBLIC_EXACT or _PUBLIC_PATTERN.match(path):
-        return True
-    if method == "GET" and _PUBLIC_SHARE.match(path):
-        return True
-    # Image bytes are loaded by <img>. POST /uploads/images stays authenticated.
-    return (
-        method == "GET"
-        and path.startswith("/api/v1/uploads/images/")
-        and ".." not in path
-    )
+    return path in _PUBLIC_EXACT or (
+        method == "GET" and _PUBLIC_SHARE.match(path) is not None)
 
 
 def _client_ip(scope: Scope) -> str:
@@ -117,8 +103,7 @@ class ApiMiddleware:
                               "too many requests", rid)
             return
 
-        if (scope["method"] != "POST" or path in _IDEMPOTENCY_EXEMPT
-                or path.endswith("/stream")):
+        if scope["method"] != "POST" or path.endswith("/stream"):
             await self.app(scope, receive, send)
             return
         await self._idempotent(scope, receive, send, user, path, rid)

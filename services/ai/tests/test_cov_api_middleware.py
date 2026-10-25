@@ -119,13 +119,20 @@ def _err(body):
 
 def test_public_paths():
     assert _is_public("/api/v1/healthz")
-    assert _is_public("/api/v1/auth/google/start")
     assert _is_public("/api/v1/conversations/shared/abc")
     assert not _is_public("/api/v1/conversations/shared/abc", "POST")
-    assert _is_public("/api/v1/uploads/images/a.png")
-    assert not _is_public("/api/v1/uploads/images/../x")
-    assert not _is_public("/api/v1/uploads/images/a.png", "POST")
     assert not _is_public("/api/v1/documents")
+
+
+@pytest.mark.parametrize("path", [
+    # Served by push-be-core; this service has no handler for them.
+    "/api/v1/auth/exchange", "/api/v1/auth/google/start",
+    "/api/v1/auth/github/callback", "/api/v1/billing/webhook",
+    "/api/v1/integrations/google/callback", "/api/v1/uploads/images/a.png",
+])
+def test_core_owned_paths_are_not_public_here(path):
+    assert not _is_public(path)
+    assert not _is_public(path, "POST")
 
 
 def test_client_ip_prefers_cloudflare_then_forwarded_then_peer():
