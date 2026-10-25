@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
@@ -24,8 +23,8 @@ const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
   ...extra,
 });
 
-const deps = (query: Query, cache = memoryCache(() => NOW.getTime())): Deps => ({
-  query, cache, sleep: async () => {}, now: () => NOW,
+const deps = (query: Query): Deps => ({
+  query, sleep: async () => {}, now: () => NOW,
 });
 
 const userRow = (id: string): Record<string, unknown> => ({
@@ -88,13 +87,12 @@ test("a leftover credentialMode param is ignored", async () => {
   assert.equal(await goAvailable(res), false);
 });
 
-test("an unknown token on the shared read is 401 and nothing is cached", async () => {
+test("an unknown token on the shared read is 401 and the next request re-checks it", async () => {
   resetLimits();
-  const cache = memoryCache(() => NOW.getTime());
-  const res = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" }), cache));
+  const res = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" })));
   assert.equal(res.status, 401);
   let queried = 0;
-  const again = await handle(get(USER_A), env(), deps(async () => { queried += 1; return []; }, cache));
+  const again = await handle(get(USER_A), env(), deps(async () => { queried += 1; return []; }));
   assert.equal(again.status, 401);
   assert.ok(queried > 0, "a miss must re-check the token");
 });
@@ -132,12 +130,11 @@ test("a lease without cached auth revalidates, and a revoked token is 401", asyn
   assert.equal(revoked.status, 401);
 });
 
-test("a cache hit with a revoked token is 401, not the cached body", async () => {
+test("a revoked token is 401 after an earlier success", async () => {
   resetLimits();
-  const cache = memoryCache(() => NOW.getTime());
-  assert.equal((await handle(get(USER_A), env(), deps(fake([], { user: USER_A }), cache))).status, 200);
+  assert.equal((await handle(get(USER_A), env(), deps(fake([], { user: USER_A })))).status, 200);
   resetLimits();
-  const revoked = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" }), cache));
+  const revoked = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" })));
   assert.equal(revoked.status, 401);
 });
 

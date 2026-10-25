@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { ownerOf } from "../src/routes/owner.ts";
 
@@ -17,7 +16,7 @@ const env = (core: (request: Request) => Promise<Response>): FrontEnv => ({
   SSE_MAX_POLLS: "3",
 });
 
-const deps = (query: Query): Deps => ({ query, cache: memoryCache(() => NOW.getTime()), sleep: async () => {}, now: () => NOW });
+const deps = (query: Query): Deps => ({ query, sleep: async () => {}, now: () => NOW });
 
 const send = (body: unknown = { text: "안녕", accessMode: "AUTO" }): Request =>
   new Request(`https://push-be.example/api/v1/conversations/${CONV}/messages/stream`, {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { encodeCursor } from "../src/time.ts";
 
@@ -31,7 +30,7 @@ const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
 });
 
 const deps = (query: Query, sleep: Deps["sleep"] = async () => {}): Deps => ({
-  query, cache: memoryCache(() => NOW.getTime()), sleep, now: () => NOW,
+  query, sleep, now: () => NOW,
 });
 
 const userRow = (id: string, companyId: string | null = null): Record<string, unknown> => ({
