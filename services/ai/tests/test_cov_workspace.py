@@ -73,10 +73,10 @@ def test_md_to_doc_empty_input_yields_single_empty_block():
 
 # --- workspace_dir --------------------------------------------------------------------
 
-def test_workspace_dir_is_under_root_and_slugged(root):
+def test_workspace_dir_is_under_root_and_keyed_by_full_id(root):
     d = ws.workspace_dir(CONV, "토스 Backend/Engineer!!")
     assert d.parent == root and d.is_dir()
-    assert d.name == "토스-backend-engineer-12345678"
+    assert d.name == str(CONV)
 
 
 @pytest.mark.parametrize("title", ["../../etc/passwd", "..", "/abs/path", "a\\b", ""])
@@ -85,21 +85,30 @@ def test_workspace_dir_title_cannot_escape_root(root, title):
     assert d.resolve().parent == root.resolve()
 
 
-def test_workspace_dir_defaults_and_truncates_slug(root):
-    assert ws.workspace_dir(CONV).name == "chat-12345678"
-    assert ws.workspace_dir(CONV, "!!!").name == "chat-12345678"
-    long = ws.workspace_dir(CONV, "x" * 100).name
-    assert long == "x" * 40 + "-12345678"
+def test_workspace_dir_rejects_non_uuid_ids(root):
+    with pytest.raises(ValueError):
+        ws.workspace_dir("../../etc", "t")
+
+
+def test_workspace_dir_survives_a_title_change(root):
+    first = ws.workspace_dir(CONV, "새 채팅")
+    (first / "03_resume.md").write_text("x")
+    assert ws.workspace_dir(CONV, "토스 지원") == first
+
+
+def test_workspace_dir_adopts_the_legacy_directory(root):
+    legacy = root / "토스-지원-12345678"
+    legacy.mkdir(parents=True)
+    (legacy / "03_resume.md").write_text("kept")
+    d = ws.workspace_dir(CONV, "토스 지원")
+    assert (d / "03_resume.md").read_text() == "kept"
+    assert not legacy.exists()
 
 
 def test_workspace_dir_separates_conversations(root):
     assert ws.workspace_dir(uuid4(), "새 채팅") != ws.workspace_dir(uuid4(), "새 채팅")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: workspace_dir keys the directory on title slug + first 8 chars of the "
-    "conversation id, so two conversations (possibly of different users) with the "
-    "same title and id prefix share one artifact directory"))
 def test_workspace_dir_isolates_conversations_sharing_id_prefix(root):
     a = UUID("abcdef01-0000-4000-8000-00000000000a")
     b = UUID("abcdef01-ffff-4fff-bfff-ffffffffffff")
