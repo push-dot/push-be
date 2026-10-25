@@ -54,7 +54,8 @@ async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, m
     monkeypatch.setattr(main, "external_jobs", lambda: False)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: True)
     monkeypatch.setenv("CHECKPOINTER", "memory")
-    cfg = Config(database_url="postgres://db", dev_auth_token="dev", managed_ai_key="k",
+    cfg = Config(database_url="postgres://db", app_env="development",
+                 dev_auth_token="dev", managed_ai_key="k",
                  stripe_secret="s", experiments=[{"key": "exp", "variants": ["a", "b"]}])
     fa = FastAPI()
     await main._bootstrap(fa, cfg)
@@ -98,7 +99,8 @@ async def test_bootstrap_existing_dev_user_is_not_reseeded(boot, monkeypatch):
     boot["pool"].results.append(row(_USER_COLS, User))
     monkeypatch.setattr(main, "external_jobs", lambda: True)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: False)
-    await main._bootstrap(FastAPI(), Config(database_url="d", dev_auth_token="dev"))
+    await main._bootstrap(FastAPI(), Config(
+        database_url="d", app_env="development", dev_auth_token="dev"))
     assert len(boot["pool"].calls) == 1
 
 
