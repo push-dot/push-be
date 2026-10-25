@@ -756,3 +756,39 @@ async def test_fetch_github_context_returns_empty_on_failure():
         raise httpx.ConnectError("down")
 
     assert await web_page.fetch_github_context("x", transport=httpx.MockTransport(boom)) == ""
+
+
+async def test_fetch_page_text_decodes_declared_charset_and_asks_for_identity(monkeypatch):
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    _dns(monkeypatch, {"kr.example": ["93.184.216.34"]})
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("accept-encoding"))
+        return httpx.Response(200, headers={"content-type": "text/plain; charset=euc-kr"},
+                              content="채용 공고".encode("euc-kr"))
+
+    _pinned(monkeypatch, handler)
+    assert await web_page.fetch_page_text("https://kr.example/") == "채용 공고"
+    assert seen == ["identity"]
+
+
+def test_decode_falls_back_to_utf8_for_unknown_charset():
+    assert web_page._decode("é".encode(), "no-such-codec") == "é"
+
+
+async def test_render_text_runs_at_most_two_browsers_at_once(monkeypatch):
+    live, peak = 0, 0
+
+    async def fake_render(url, guard):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await asyncio.sleep(0.01)
+        live -= 1
+        return url
+
+    monkeypatch.setattr(web_page, "_render_with_browser", fake_render)
+    monkeypatch.setattr(web_page, "_RENDER_SLOTS", asyncio.Semaphore(2))
+    await asyncio.gather(*(web_page._render_text(f"https://e{i}.example/") for i in range(6)))
+    assert peak == 2

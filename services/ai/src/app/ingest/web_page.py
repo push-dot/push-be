@@ -22,7 +22,8 @@ from app.domain.validators import validate_https_url
 
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36")
-_HEADERS = {"User-Agent": _UA, "Accept-Language": "ko,en;q=0.8"}
+# identity: a gzip bomb can inflate one 64 KB chunk far past _MAX_BYTES.
+_HEADERS = {"User-Agent": _UA, "Accept-Language": "ko,en;q=0.8", "Accept-Encoding": "identity"}
 _MAX_BYTES = 1_000_000
 _MAX_TEXT = 8000
 _MAX_HOPS = 6
@@ -44,6 +45,9 @@ _CHROMIUM_ARGS = [
     # WebRTC UDP does not go through the proxy.
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 ]
+
+# Each render is a Chromium process; a few concurrent jobs must not OOM the worker.
+_RENDER_SLOTS = asyncio.Semaphore(2)
 
 type IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 type HopCheck = Callable[[str], Awaitable[None]]
@@ -270,8 +274,6 @@ _MIN_TEXT = 1500
 
 
 async def _render_text(url: str) -> str:
-    from playwright.async_api import async_playwright
-
     async def guard(route):
         req_url = route.request.url
         if not req_url.startswith(("http://", "https://")):
@@ -283,6 +285,13 @@ async def _render_text(url: str) -> str:
             await route.abort()
             return
         await route.continue_()
+
+    async with _RENDER_SLOTS:
+        return await _render_with_browser(url, guard)
+
+
+async def _render_with_browser(url: str, guard) -> str:
+    from playwright.async_api import async_playwright
 
     proxy_server, proxy_port = await _start_egress_proxy()
     try:
@@ -380,11 +389,18 @@ async def _read_page(client: httpx.AsyncClient, url: str,
                 buf += chunk
                 if len(buf) > _MAX_BYTES:
                     break
-        body = bytes(buf).decode("utf-8", errors="replace")
+        body = _decode(bytes(buf), r.charset_encoding)
         if "text/plain" in ct:
             return url, body[:_MAX_TEXT], False
         return url, _html_to_text(body), True
     raise ValueError("too many redirects")
+
+
+def _decode(data: bytes, charset: str | None) -> str:
+    try:
+        return data.decode(charset or "utf-8", errors="replace")
+    except LookupError:  # unknown charset label from the server
+        return data.decode("utf-8", errors="replace")
 
 
 async def _with_render_fallback(url: str, text: str, is_html: bool,
