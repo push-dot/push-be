@@ -22,6 +22,11 @@ const CANONICAL_ACCESS: Record<string, string> = {
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
+const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
+const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
+  + " WHERE e.user_id = $1 AND e.archived = false"
+  + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
+  + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -68,6 +73,8 @@ const memberOfCaller = (companyExpr: string, userParam: string): string =>
 const visibleConversation = (idParam: string, userParam: string): string =>
   `id = ${idParam} AND (user_id = ${userParam} OR (${memberOfCaller("company_id", userParam)}))`;
 
+const COMPANY_APPLICATION = "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id JOIN job_postings p ON p.id = j.source_posting_id WHERE a.id = $1 AND p.company_id = $2";
+
 const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
   forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
   if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -82,19 +89,17 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
   if (!member || member.verified_at == null) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
-  if (postingId) {
-    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]);
-    if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  }
-  if (applicationId) {
-    const application = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1", [applicationId]);
-    if (!application) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  }
+  const companyId = String(member.company_id);
+  const [posting, application] = await Promise.all([
+    postingId ? one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]) : null,
+    applicationId ? one(ctx.deps.query, COMPANY_APPLICATION, [applicationId, companyId]) : null,
+  ]);
+  if ((postingId && !posting) || (applicationId && !application)) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
     "INSERT INTO conversations (id, user_id, revision, application_id, title, pinned, archived, created_at, updated_at, company_id, posting_id) VALUES ($1,$2,1,$3,$4,false,false,$5,$5,$6,$7)",
-    [id, ctx.user.id, applicationId, body.title, now, String(member.company_id), postingId]);
+    [id, ctx.user.id, applicationId, body.title, now, companyId, postingId]);
   return data(201, convDto({
     id, revision: 1, application_id: applicationId, title: body.title, pinned: false, created_at: now, updated_at: now,
   }), ctx.rid);
@@ -184,26 +189,10 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   if (current.company_id != null) {
     await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
   }
-  const refs = await query(ctx.deps.query,
-    "SELECT DISTINCT (a->>'id')::uuid AS eid FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id = $2 AND a->>'type' = 'EVIDENCE'",
-    [ctx.user.id, id]);
-  for (const ref of refs.rows) {
-    const eid = String(ref.eid);
-    const elsewhere = await one(ctx.deps.query,
-      "SELECT count(*) AS n FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id <> $2 AND a->>'type' = 'EVIDENCE' AND a->>'id' = $3",
-      [ctx.user.id, id, eid]);
-    if (Number(elsewhere?.n || 0) > 0) continue;
-    const evidence = await one(ctx.deps.query,
-      "SELECT id, revision, archived FROM career_evidence WHERE id = $1 AND user_id = $2",
-      [eid, ctx.user.id]);
-    if (!evidence || evidence.archived === true || evidence.archived === "t") continue;
-    try {
-      await query(ctx.deps.query,
-        "UPDATE career_evidence SET archived = true, revision = revision + 1, updated_at = $3 WHERE id = $1 AND user_id = $2 AND revision = $4 AND archived = false",
-        [eid, ctx.user.id, now, evidence.revision]);
-    } catch {
-      // A conflicting evidence write does not fail the archive.
-    }
+  try {
+    await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
+  } catch {
+    // A conflicting evidence write does not fail the archive.
   }
   return data(200, convDto(updated), ctx.rid);
 }
@@ -233,15 +222,17 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
 
 async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
   if (!ai) return;
-  const user = await one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]);
+  const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
+  const [user, spent] = await Promise.all([
+    one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]),
+    one(ctx.deps.query,
+      "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
+      [ctx.user.id, start]),
+  ]);
   if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
     throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
   }
-  const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
-  const spent = await one(ctx.deps.query,
-    "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
-    [ctx.user.id, start]);
   const raw = user.plan == null ? "" : String(user.plan).trim();
   const plan = raw === "" ? "FREE" : raw;
   if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
@@ -352,14 +343,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
-  let canonical = CANONICAL_ACCESS[access] ?? "";
-  if (!access) {
-    const saved = await one(ctx.deps.query,
-      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
-      [ctx.user.id]);
-    canonical = CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
-  }
-  if (!canonical) {
+  if (access && !CANONICAL_ACCESS[access]) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
   let context: Record<string, unknown> = {};
@@ -389,10 +373,16 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  await allowChat(ctx, ai);
-  const owned = await one(ctx.deps.query,
-    "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
-    [conversationId, ctx.user.id]);
+  const [saved, owned] = await Promise.all([
+    access ? null : one(ctx.deps.query,
+      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
+      [ctx.user.id]),
+    one(ctx.deps.query,
+      "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+      [conversationId, ctx.user.id]),
+    allowChat(ctx, ai),
+  ]);
+  const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
   if (owned && owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");

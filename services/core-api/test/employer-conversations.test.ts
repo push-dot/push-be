@@ -468,3 +468,87 @@ test("a missing application id on employer create is 404", async () => {
   assert.equal(res.status, 404);
   assert.equal(inserted, false);
 });
+
+test("an employer conversation cannot link an application outside the company", async () => {
+  resetLimits();
+  let applicationSql: { sql: string; params: unknown[] } | null = null;
+  let inserted = false;
+  const res = await handle(post("/api/v1/conversations", JSON.stringify({
+    audience: "EMPLOYER",
+    title: "지원자",
+    applicationId: POSTING,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeea",
+  }), env(), deps(async (sql, next) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-scope" }], rowCount: 1 };
+    if (sql.includes("FROM applications")) {
+      applicationSql = { sql, params: next ?? [] };
+      const scoped = sql.includes("p.company_id = $2") && (next ?? [])[1] === COMPANY;
+      return scoped ? { rows: [], rowCount: 0 } : { rows: [{ id: POSTING }], rowCount: 1 };
+    }
+    if (sql.includes("company_members")) {
+      return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: "PRO", role: "MEMBER" }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO conversations")) {
+      inserted = true;
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 404);
+  assert.equal(inserted, false);
+  assert.ok(applicationSql);
+});
+
+test("archiving archives orphaned evidence in one statement", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/archive", JSON.stringify({
+    expectedRevision: 1,
+  }), { "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeeb" }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-ev" }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) {
+      return { rows: [{ id: CONV, revision: 1, application_id: null, title: "t", pinned: false, company_id: null, created_at: "2026-01-02T03:04:05Z" }], rowCount: 1 };
+    }
+    if (sql.startsWith("UPDATE conversations")) {
+      return { rows: [{ id: CONV, revision: 2, application_id: null, title: "t", pinned: false, created_at: "2026-01-02T03:04:05Z", updated_at: NOW.toISOString() }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 200);
+  const evidence = sqls.filter((sql) => sql.includes("career_evidence"));
+  assert.equal(evidence.length, 1);
+  assert.match(evidence[0] ?? "", /^UPDATE career_evidence e SET archived = true/);
+  assert.match(evidence[0] ?? "", /NOT IN/);
+});
+
+const withFetch = (query: Deps["query"]): Deps => ({ ...deps(query), fetch: (async () => new Response("{}")) as typeof fetch });
+
+test("posting a message reads settings, conversation and usage concurrently", async () => {
+  resetLimits();
+  let inFlight = 0;
+  let peak = 0;
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", JSON.stringify({
+    text: "hi",
+    ai: { provider: "OPENAI", model: "gpt", effort: "LOW" },
+  }), { "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeec" }), env(), withFetch(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-par" }], rowCount: 1 };
+    if (sql.includes("chat_jobs")) return { rows: [{ id: "job" }], rowCount: 1 };
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+    if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 202);
+  assert.equal(peak >= 4, true);
+});
