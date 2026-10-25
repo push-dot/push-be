@@ -179,3 +179,15 @@ async def test_reindex_all_with_nothing_missing_returns_zero():
     store = Store([])
     assert await reindex_all(lambda: Query(), store, Ingestor(), never) == 0
     assert store.calls == [("BAAI/bge-m3", None)]
+
+
+async def test_url_payload_blocked_or_broken_page_fails_without_retry(monkeypatch):
+    async def fetch(url):
+        raise ValueError("host resolves to a private address")
+
+    monkeypatch.setattr(readers, "fetch_page_text", fetch)
+    ingest, ingestor = handler()
+    with pytest.raises(JobFailed) as err:
+        await ingest(ctx({"url": "https://intranet.example/"}))
+    assert err.value.error["code"] == "VALIDATION_ERROR"
+    assert ingestor.calls == []

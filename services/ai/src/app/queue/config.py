@@ -24,6 +24,16 @@ _HEARTBEAT_DEFAULTS = {
     "notify": ("HEARTBEAT_LIMIT_NOTIFY_S", 60),
 }
 
+# Wall-clock cap per handler run; heartbeats keep a hung handler "alive", so this ends it.
+_DEADLINE_DEFAULTS = {
+    "chat": ("JOB_DEADLINE_CHAT_S", 900),
+    "employer_ai": ("JOB_DEADLINE_EMPLOYER_AI_S", 900),
+    "document": ("JOB_DEADLINE_DOCUMENT_S", 900),
+    "fit": ("JOB_DEADLINE_FIT_S", 300),
+    "ingest": ("JOB_DEADLINE_INGEST_S", 3600),
+    "notify": ("JOB_DEADLINE_NOTIFY_S", 60),
+}
+
 _VISIBILITY_DEFAULTS = {
     "q:chat:priority": ("VISIBILITY_Q_CHAT_PRIORITY_S", 60),
     "q:chat": ("VISIBILITY_Q_CHAT_S", 60),
@@ -52,5 +62,5 @@ def visibility_limits() -> dict[str, int]:
     return _resolve(_VISIBILITY_DEFAULTS)
 
 
-HEARTBEAT_LIMIT_S = {key: value for key, (_, value) in _HEARTBEAT_DEFAULTS.items()}
-VISIBILITY_S = {key: value for key, (_, value) in _VISIBILITY_DEFAULTS.items()}
+def job_deadlines() -> dict[str, int]:
+    return _resolve(_DEADLINE_DEFAULTS)

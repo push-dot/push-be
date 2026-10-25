@@ -16,6 +16,7 @@ async def main() -> None:
     from app.infrastructure.store_chat_jobs import ChatJobStore, QueueJobs
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
+    from app.workers.shutdown import stop_on_signals
     from app.rag.pipeline import Ingestor
     from app.rag.store import RagNodeStore
     from app.workers.handlers.ingest import make_ingest
@@ -25,7 +26,9 @@ async def main() -> None:
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
     client = httpx.AsyncClient(timeout=120)
     store = RagNodeStore(db)
-    ingestor = Ingestor(store, get_embedder(client, redis))
+    # No embedding cache here: bulk ingest vectors would evict TTL'd queue locks
+    # under Redis volatile-lru. Query-time caching stays on the API path.
+    ingestor = Ingestor(store, get_embedder(client))
     worker = Worker(
         StreamQueue(redis),
         QueueJobs(ChatJobStore(db)),
@@ -36,6 +39,7 @@ async def main() -> None:
         int(os.environ.get("QUEUE_CONCURRENCY", "2")),
         min_idle_ms=600_000,
     )
+    stop_on_signals(worker.stop)
     try:
         await worker.run_forever()
     finally:
