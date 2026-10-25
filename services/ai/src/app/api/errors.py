@@ -9,7 +9,7 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
-from starlette.types import Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.domain.errors import DomainError
 
@@ -117,11 +117,11 @@ class RequestIDMiddleware:
 
 
 class BodyLimitMiddleware:
-    def __init__(self, app, limit: int):
+    def __init__(self, app: ASGIApp, limit: int) -> None:
         self.app = app
         self.limit = limit
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -135,6 +135,7 @@ class BodyLimitMiddleware:
             return
         received = 0
         overflow = False
+        started = False
 
         async def counting_receive() -> Message:
             nonlocal received, overflow
@@ -146,20 +147,25 @@ class BodyLimitMiddleware:
                     return {"type": "http.disconnect"}
             return message
 
-        async def guarded_send(message: Message):
-            if overflow and message["type"] == "http.response.start":
-                message["status"] = 413
-                message["headers"] = [(b"content-type", b"application/json")]
-            elif overflow and message["type"] == "http.response.body":
-                message["body"] = json.dumps(error_body(
-                    "PAYLOAD_TOO_LARGE", "request body too large",
-                    (scope.get("state") or {}).get("request_id", ""))).encode()
-                message["more_body"] = False
+        async def guarded_send(message: Message) -> None:
+            nonlocal started
+            if overflow and not started:
+                return  # the 413 below replaces whatever the app answers
+            if message["type"] == "http.response.start":
+                started = True
             await send(message)
 
-        await self.app(scope, counting_receive, guarded_send)
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            if not overflow or started:
+                raise
+        # Handlers that return silently on disconnect would otherwise leave
+        # the client without any response.
+        if overflow and not started:
+            await self._too_large(scope, send)
 
-    async def _too_large(self, scope: Scope, send: Send):
+    async def _too_large(self, scope: Scope, send: Send) -> None:
         body = json.dumps(error_body(
             "PAYLOAD_TOO_LARGE", "request body too large",
             (scope.get("state") or {}).get("request_id", ""))).encode()

@@ -163,10 +163,30 @@ async def test_streamed_body_over_limit_rewrites_response():
 
     sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
     assert seen == ["http.request", "http.disconnect"]
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
     assert sent[0]["status"] == 413
-    assert sent[0]["headers"] == [(b"content-type", b"application/json")]
     assert json.loads(sent[1]["body"])["error"]["requestId"] == "rq"
-    assert sent[1]["more_body"] is False
+
+
+async def test_body_over_limit_is_413_when_the_app_sends_nothing():
+    # ApiMiddleware's idempotent path returns silently on http.disconnect.
+    async def app(scope, receive, send):
+        while (await receive())["type"] != "http.disconnect":
+            pass
+
+    sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+
+async def test_body_over_limit_is_413_when_the_app_raises_on_disconnect():
+    async def app(scope, receive, send):
+        await receive()
+        await receive()
+        raise RuntimeError("client disconnected")
+
+    sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
+    assert len(sent) == 2 and sent[0]["status"] == 413
 
 
 async def test_bad_content_length_is_ignored_and_small_body_passes():
