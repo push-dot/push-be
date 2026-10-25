@@ -291,3 +291,30 @@ test("a new document version verifies all cited evidence in one query", async ()
   assert.equal(res.status, 201);
   assert.equal(calls.filter((c) => c.sql.includes("FROM career_evidence")).length, 1);
 });
+
+test("deleting a source is one statement that unpins the profile resume instead of cascading the profile away", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const SRC = "55555555-5555-4555-8555-555555555555";
+  const { calls, query } = recorder((sql) => (sql.includes("DELETE FROM sources") ? [{ found: 1, used: 0, deleted: 1 }] : null));
+  const res = await handle(new Request(`https://core.example/api/v1/sources/${SRC}`, { method: "DELETE", headers: { authorization: "Bearer t" } }),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 204);
+  const writes = calls.filter((c) => !c.sql.includes("rate_limits") && !c.sql.includes("access_tokens"));
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].sql, /UPDATE profiles SET resume_source_id = NULL/);
+});
+
+test("the source library reads one bounded page from each side and merges them", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql, params) => {
+    const limit = Number(params.at(-1));
+    if (sql.includes("FROM sources")) return [{ id: E1, file_name: "a", mime_type: "text/plain", size: 1, created_at: "2026-10-03T00:00:00Z" }].slice(0, limit);
+    if (sql.includes("FROM documents")) return [{ id: E2, title: "d", created_at: "2026-10-04T00:00:00Z" }, { id: E3, title: "e", created_at: "2026-10-01T00:00:00Z" }].slice(0, limit);
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/sources?limit=2", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { data: { id: string }[]; page: { hasMore: boolean } };
+  assert.deepEqual(body.data.map((item) => item.id), [E2, E1]);
+  assert.equal(body.page.hasMore, true);
+  for (const c of calls.filter((x) => x.sql.includes("FROM sources") || x.sql.includes("FROM documents"))) assert.match(c.sql, /LIMIT \$2$/);
+});
