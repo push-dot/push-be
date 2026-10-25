@@ -336,6 +336,8 @@ const deadlineWindow = (ctx: Ctx, params: unknown[], where: string): string => {
 };
 
 const recordPostingView = async (ctx: Ctx, postingId: string): Promise<void> => {
+  // posting_views.user_id references users; the guest id has no row there.
+  if (ctx.user.id === GUEST_ID) return;
   try {
     const inserted = await one(ctx.deps.query,
       "INSERT INTO posting_views (user_id, posting_id, viewed_on) VALUES ($1,$2,$3::date) ON CONFLICT DO NOTHING RETURNING posting_id",
@@ -1007,6 +1009,13 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   }, ctx.rid);
 };
 
+/** RFC 6266: an ASCII fallback plus the UTF-8 name, so non-Latin-1 names do not break the header. */
+const attachment = (fileName: string): string => {
+  const fallback = fileName.replace(/[^\x20-\x7e]|["\\]/g, "_") || "file";
+  const encoded = encodeURIComponent(fileName).replace(/['()*]/g, (ch) => "%" + ch.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+};
+
 const streamApplicationFile = async (ctx: Ctx, postingRaw: string, applicationRaw: string, fileRaw: string): Promise<Response> => {
   const postingId = requireUuid(postingRaw, "id");
   const applicationId = requireUuid(applicationRaw, "applicationId");
@@ -1021,13 +1030,13 @@ const streamApplicationFile = async (ctx: Ctx, postingRaw: string, applicationRa
     [fileId, applicationId, postingId]);
   const bytes = fileBytes(row?.content);
   if (!row || !bytes) throw notFound();
-  const name = String(row.file_name ?? "file").replace(/["\r\n\\]/g, "");
   return new Response(bytes, {
     status: 200,
     headers: {
       "content-type": String(row.mime_type ?? "application/octet-stream"),
-      "content-disposition": `attachment; filename="${name}"`,
+      "content-disposition": attachment(String(row.file_name ?? "file")),
       "content-length": String(bytes.byteLength),
+      "x-content-type-options": "nosniff",
       "x-request-id": ctx.rid,
     },
   });

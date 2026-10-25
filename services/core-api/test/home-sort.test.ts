@@ -154,5 +154,6 @@ test("detail view counts once per user per day and a public detail includes appl
     }),
   );
   assert.equal(guest.status, 200);
-  assert.equal(guestSeen.some((call) => call.sql.includes("INSERT INTO posting_views") && call.params.includes(GUEST)), true);
+  // posting_views.user_id references users, so the nil guest id cannot be stored (23503 on Postgres).
+  assert.equal(guestSeen.some((call) => call.sql.includes("INSERT INTO posting_views") && call.params.includes(GUEST)), false);
 });

@@ -50,3 +50,42 @@ test("a cursor id is normalized to the lowercase UUID", () => {
   const page = pageOf(new URL("https://x/?cursor=" + encodeCursor("2026-10-01T00:00:00Z", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")));
   assert.equal(page.cursor?.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 });
+
+const NIL = "00000000-0000-0000-0000-000000000000";
+const POSTING = "11111111-1111-4111-8111-111111111111";
+const APP = "22222222-2222-4222-8222-222222222222";
+const FILE = "33333333-3333-4333-8333-333333333333";
+const NOW = new Date("2026-10-21T00:00:00Z");
+const ENV = { APP_ENV: "production" };
+
+const openPosting = { id: POSTING, company: "Acme", title: "BE", created_at: "2026-10-01T00:00:00Z", revision: 1, status: "OPEN" };
+
+test("a guest can open a public posting without writing a view row for the nil user", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("INSERT INTO posting_views")) throw Object.assign(new Error("insert or update on table \"posting_views\" violates foreign key constraint"), { code: "23503" });
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [openPosting];
+    return null;
+  });
+  const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.equal(calls.some((c) => c.sql.includes("posting_views") && c.params.includes(NIL)), false);
+});
+
+test("an applicant file with a Korean name downloads with an RFC 5987 filename", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("JOIN company_members m")) return [{ id: POSTING }];
+    if (sql.includes("FROM application_files f")) return [{ file_name: "이력서 \"최종\".pdf", mime_type: "application/pdf", content: "\\x255044" }];
+    return null;
+  });
+  const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}/files/${FILE}`, {
+    headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const disposition = res.headers.get("content-disposition") ?? "";
+  assert.match(disposition, /^attachment; filename="[\x20-\x7e]*"; filename\*=UTF-8''/);
+  assert.ok(disposition.includes(encodeURIComponent("이력서")));
+  assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [0x25, 0x50, 0x44]);
+});
