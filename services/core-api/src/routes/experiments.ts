@@ -39,14 +39,14 @@ const assignmentFor = async (ctx: Ctx, key: string): Promise<Assignment> => {
     return { experimentKey: key, variant: exp.variants[0], enrolled: false, createdAt: now };
   }
   const select = "SELECT experiment_key, variant, created_at FROM experiment_assignments WHERE experiment_key = $1 AND user_id = $2";
-  let row = await one(ctx.deps.query, select, [key, ctx.user.id]);
-  if (!row) {
-    await query(ctx.deps.query,
-      "INSERT INTO experiment_assignments (experiment_key, user_id, variant, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-      [key, ctx.user.id, await pickBy(`${ctx.user.id}:${key}`, exp.variants), now]);
-    row = await one(ctx.deps.query, select, [key, ctx.user.id]);
-    if (!row) throw new HttpError(500, "INTERNAL", "internal error");
-  }
+  // The first assignment sticks: insert-or-keep and read back in one round trip.
+  let row = await one(ctx.deps.query,
+    `WITH ins AS (INSERT INTO experiment_assignments (experiment_key, user_id, variant, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING experiment_key, variant, created_at)
+     SELECT experiment_key, variant, created_at FROM ins UNION ALL ${select} AND NOT EXISTS (SELECT 1 FROM ins)`,
+    [key, ctx.user.id, await pickBy(`${ctx.user.id}:${key}`, exp.variants), now]);
+  // A concurrent first insert commits after this statement's snapshot; read it back.
+  row ??= await one(ctx.deps.query, select, [key, ctx.user.id]);
+  if (!row) throw new HttpError(500, "INTERNAL", "internal error");
   return { experimentKey: String(row.experiment_key), variant: String(row.variant), enrolled: true, createdAt: ts(row.created_at) };
 };
 
