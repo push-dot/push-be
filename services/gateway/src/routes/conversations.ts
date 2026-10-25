@@ -1,4 +1,4 @@
-import { decodeCursor, encodeCursor, formatJsonTimestamp, pyJson } from "../time.ts";
+import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp, pyJson } from "../time.ts";
 import type { Deps, FrontEnv } from "../types.ts";
 import {
   asBool, conditional, errorResponse, fieldError, freshRead, jsonResponse, jsonRows,
@@ -15,7 +15,8 @@ function cursorPair(url: URL, rid: string): { at: string | null; id: string | nu
     const decoded = decodeCursor(cur);
     const id = parseUuid(decoded.id);
     if (!id) throw new Error("bad cursor");
-    return { at: decoded.createdAt, id };
+    // parseUtc also takes Date-parsable text Postgres may reject; send canonical ISO.
+    return { at: formatCursorTimestamp(decoded.createdAt), id };
   } catch {
     return fieldError("cursor", "invalid cursor", rid);
   }

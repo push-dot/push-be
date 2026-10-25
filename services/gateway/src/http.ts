@@ -39,8 +39,9 @@ export function corsHeaders(request: Request): Headers {
   if (origin && (ALLOWED_ORIGINS.has(origin) || ORIGIN_RE.test(origin))) {
     headers.set("access-control-allow-origin", origin);
     headers.set("access-control-allow-credentials", "true");
-    headers.set("vary", "Origin");
   }
+  // The allow-origin header depends on Origin, so a cache must key on it either way.
+  headers.set("vary", "Origin");
   return headers;
 }
 
@@ -50,7 +51,10 @@ export function withCors(request: Request, response: Response): Response {
     for (const [k, v] of corsHeaders(request)) {
       if (k.toLowerCase() === "vary") {
         const existing = headers.get("vary");
-        headers.set("vary", existing ? `${existing}, ${v}` : v);
+        if (!existing) headers.set("vary", v);
+        else if (!existing.split(",").some((name) => name.trim().toLowerCase() === v.toLowerCase())) {
+          headers.set("vary", `${existing}, ${v}`);
+        }
       } else if (!headers.has(k)) {
         headers.set(k, v);
       }
@@ -72,9 +76,9 @@ export function withCors(request: Request, response: Response): Response {
 }
 
 export function requestIdOf(request: Request): string {
+  // Forwarded to core and python logs and echoed back, so only a plain token is kept.
   const rid = request.headers.get("x-request-id") || "";
-  if (!rid || rid.length > 128) return "req_" + crypto.randomUUID();
-  return rid;
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(rid) ? rid : "req_" + crypto.randomUUID();
 }
 
 export function jsonResponse(status: number, body: unknown, rid: string, contentType = "application/json"): Response {
