@@ -12,7 +12,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
-from app.api.errors import error_body
+from app.api.errors import error_body, redact
 from app.ratelimit import SlidingWindow, allow as allow_shared
 
 _PUBLIC_EXACT = {
@@ -29,17 +29,11 @@ _IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
 _PENDING_TTL = timedelta(minutes=5)
 
 logger = logging.getLogger(__name__)
-_URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:]+:[^@\s/]+@", re.I)
-_SECRET_ASSIGN = re.compile(
-    r"(?i)(password|secret|token|api_key|database_url)=([^\s,;]+)")
 
 
 def _public_error(exc: BaseException) -> str:
     """Exception text safe to log. Connection strings and secrets are redacted."""
-    text = f"{type(exc).__name__}: {exc}"
-    text = _URL_USERINFO.sub(r"\1", text)
-    text = _SECRET_ASSIGN.sub(r"\1=***", text)
-    return text[:400]
+    return redact(f"{type(exc).__name__}: {exc}")[:400]
 
 
 def _is_public(path: str, method: str = "GET") -> bool:

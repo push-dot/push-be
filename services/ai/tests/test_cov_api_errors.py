@@ -50,6 +50,10 @@ def make_app():
     async def ok():
         return {"ok": True}
 
+    @app.get("/leak")
+    async def leak():
+        raise RuntimeError("connect postgres://u:hunter2@db/x failed token=abc123")
+
     return app
 
 
@@ -115,6 +119,23 @@ def test_request_id_generated_when_missing_or_too_long(client):
     assert r.headers["x-request-id"].startswith("req_")
     r = client.get("/ok", headers={"X-Request-Id": "a" * 129})
     assert r.headers["x-request-id"].startswith("req_")
+
+
+def test_request_id_with_unsafe_characters_is_replaced(client):
+    # The id is echoed into logs and a response header; keep it to a token charset.
+    for bad in ('a"b', "a b", "<script>", "a\x7fb"):
+        r = client.get("/ok", headers={"X-Request-Id": bad})
+        assert r.headers["x-request-id"].startswith("req_"), bad
+    r = client.get("/ok", headers={"X-Request-Id": "req_1a2B-3.c:4"})
+    assert r.headers["x-request-id"] == "req_1a2B-3.c:4"
+
+
+def test_unhandled_error_log_redacts_secrets(client, caplog):
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        r = client.get("/leak", headers={"X-Request-Id": "rid-leak"})
+    assert r.status_code == 500
+    assert "RuntimeError" in caplog.text and "rid-leak" in caplog.text
+    assert "hunter2" not in caplog.text and "abc123" not in caplog.text
 
 
 def test_request_is_logged_once_per_response(client, caplog):
