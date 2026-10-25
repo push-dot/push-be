@@ -16,6 +16,34 @@ services:
     image: busybox
     ports:
       - "6379:6379"
+  rootuser:
+    image: busybox
+    user: "root:root"
+  apisock:
+    image: busybox
+    use_api_socket: true
+  hostvol:
+    image: busybox
+    volumes:
+      - hostroot:/host
+  hostnet2:
+    image: busybox
+    networks:
+      - hostnet
+  buildhost:
+    build:
+      context: .
+      network: host
+      privileged: true
 networks:
   dokploy-network:
     external: true
+  hostnet:
+    name: host
+    external: true
+volumes:
+  hostroot:
+    driver_opts:
+      type: none
+      o: bind
+      device: /
