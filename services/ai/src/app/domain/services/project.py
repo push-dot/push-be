@@ -14,6 +14,7 @@ from app.domain.errors import (
 from app.domain.services.ai import AIGate
 from app.domain.services.approval import ApprovalService, hash_json
 from app.domain.validators import hash_bytes, validate_https_url
+from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_jobs import GapAnalysisStore
 from app.infrastructure.store_operations import OperationStore
@@ -108,6 +109,7 @@ class ProjectService:
         self.analyses = GapAnalysisStore(db)
         self.approvals = approvals
         self.ops = OperationStore(db)
+        self.locks = AiUsageStore(db)
         self.ai = ai
 
     async def list_blueprints(self, user_id: UUID, application_id: Optional[UUID], page):
@@ -151,6 +153,8 @@ class ProjectService:
             now = _now()
             blueprints = build_blueprints(
                 user_id, application_id, gap_analysis_id, analysis, now)
+            # Without the lock two parallel requests both see the same count and pass the cap.
+            await self.locks.lock_user(user_id)
             held = await self.projects.count_blueprints(user_id)
             if cap is not None and held + len(blueprints) > cap:
                 raise plan_required("project blueprint limit reached")

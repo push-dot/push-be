@@ -96,12 +96,22 @@ class _Analyses:
         return self.analysis
 
 
+class _Locks:
+    def __init__(self, log):
+        self.log = log
+
+    async def lock_user(self, user_id):
+        self.log.append(("lock", user_id))
+
+
 class _Blueprints:
     def __init__(self, held=0):
         self.held = held
         self.created = []
+        self.log = []
 
     async def count_blueprints(self, user_id):
+        self.log.append(("count", user_id))
         return self.held
 
     async def create_blueprint(self, b):
@@ -121,8 +131,15 @@ def _gen_svc(*, user_present=True, check_err=None, analysis_app=None,
     svc.applications = _Apps(app)
     svc.analyses = _Analyses(analysis, analysis_err)
     svc.projects = _Blueprints(held)
+    svc.locks = _Locks(svc.projects.log)
     svc.ops = StubOperationStore()
     return svc, user_id, app, analysis, gate
+
+
+async def test_generate_blueprints_counts_the_plan_cap_under_the_user_lock():
+    svc, user_id, app, analysis, _ = _gen_svc()
+    await svc.generate_blueprints(user_id, app.id, analysis.id, None)
+    assert svc.projects.log == [("lock", user_id), ("count", user_id)]
 
 
 async def test_generate_blueprints_success_persists_and_reports_operation():
