@@ -89,3 +89,14 @@ test("an applicant file with a Korean name downloads with an RFC 5987 filename",
   assert.equal(res.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [0x25, 0x50, 0x44]);
 });
+
+test("the in-memory rate limit fallback drops buckets from past minutes", async () => {
+  const { allow, memoryBuckets, resetLimits } = await import("../src/ratelimit.ts");
+  resetLimits();
+  const down: Deps["query"] = async () => { throw new Error("connection reset"); };
+  const t0 = Date.parse("2026-10-22T00:00:30Z");
+  for (let i = 0; i < 50; i += 1) await allow(down, "ip", "10.0.0." + i, 60, t0);
+  assert.equal(memoryBuckets(), 50);
+  await allow(down, "ip", "10.0.0.1", 60, t0 + 60_000);
+  assert.equal(memoryBuckets(), 1);
+});
