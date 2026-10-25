@@ -75,7 +75,7 @@ async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, m
 
     await main._shutdown(fa)
     assert boot["workers"] == ["start", "stop"] and pool.closed
-    assert fa.state._closers is None
+    assert fa.state.exit_stack is None
     await main._shutdown(fa)
 
 
@@ -107,12 +107,12 @@ async def test_bootstrap_existing_dev_user_is_not_reseeded(boot, monkeypatch):
 async def test_bootstrap_opens_postgres_checkpointer_and_exits_it(boot, monkeypatch):
     exited = []
 
-    class Ctx:
-        async def __aexit__(self, *a):
-            exited.append(a)
+    class SaverPool:
+        async def close(self):
+            exited.append("closed")
 
     async def open_saver(url):
-        return "saver", Ctx()
+        return "saver", SaverPool()
 
     monkeypatch.setattr(main, "external_jobs", lambda: False)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: False)
@@ -121,7 +121,47 @@ async def test_bootstrap_opens_postgres_checkpointer_and_exits_it(boot, monkeypa
     await main._bootstrap(fa, Config(database_url="d"))
     assert fa.state.deps.conversations._checkpointer == "saver"
     await main._shutdown(fa)
-    assert exited == [(None, None, None)]
+    assert exited == ["closed"]
+
+
+async def test_failed_bootstrap_closes_what_it_opened(boot, monkeypatch):
+    # A migration error used to leave the pool and HTTP clients open.
+    closed = []
+
+    async def failing_migrations(p, d):
+        raise RuntimeError("migration 0027 failed")
+
+    async def aclose(self):
+        closed.append(type(self).__name__)
+
+    monkeypatch.setattr(main, "run_migrations", failing_migrations)
+    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+        monkeypatch.setattr(client, "aclose", aclose)
+    fa = FastAPI()
+    with pytest.raises(RuntimeError):
+        await main._bootstrap(fa, Config(database_url="d"))
+    assert boot["pool"].closed
+    assert getattr(fa.state, "deps", None) is None
+
+
+async def test_failed_seed_after_clients_closes_clients_and_pool(boot, monkeypatch):
+    closed = []
+
+    async def aclose(self):
+        closed.append(type(self).__name__)
+
+    async def seed(self, experiments):
+        raise RuntimeError("seed failed")
+
+    monkeypatch.setenv("RUN_MIGRATIONS", "0")
+    monkeypatch.setattr(main.ExperimentService, "seed", seed)
+    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+        monkeypatch.setattr(client, "aclose", aclose)
+    with pytest.raises(RuntimeError):
+        await main._bootstrap(FastAPI(), Config(database_url="d"))
+    assert sorted(closed) == sorted(
+        ["OAuthClient", "OpenAIClient", "OpenAIClient", "GoogleClient", "StripeClient"])
+    assert boot["pool"].closed
 
 
 async def test_ensure_ready_bootstraps_once(monkeypatch):

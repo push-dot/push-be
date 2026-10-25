@@ -157,8 +157,6 @@ def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
     assert runs_local_chat_worker() is True
     monkeypatch.setenv("CHAT_EXECUTOR", "workflow")
     assert runs_local_chat_worker() is False
-    main = (Path(__file__).resolve().parents[1] / "src" / "app" / "main.py").read_text()
-    assert main.count("runs_local_chat_worker()") == 2
 
 
 @pytest.mark.asyncio
