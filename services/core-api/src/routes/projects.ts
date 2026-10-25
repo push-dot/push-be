@@ -225,12 +225,14 @@ export const createRun = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     state: "APPROVAL_REQUIRED", launch_status: "NOT_CLAIMED", created_at: now, updated_at: now,
   };
   const done = await one(ctx.deps.query,
-    `WITH run AS (INSERT INTO cli_runs (${RUN_COLS}) VALUES ($1,$2,1,$3,$4,$5,$6,$7,'[]'::jsonb,$8,$9,'APPROVAL_REQUIRED','NOT_CLAIMED',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,$10,$10) RETURNING id),
+    `WITH ok AS (SELECT 1 FROM project_blueprints WHERE id = $3 AND user_id = $2 AND ($12 = false OR (state = 'SELECTED' AND revision = $11))),
+     run AS (INSERT INTO cli_runs (${RUN_COLS}) SELECT $1,$2,1,$3,$4,$5,$6,$7,'[]'::jsonb,$8,$9,'APPROVAL_REQUIRED','NOT_CLAIMED',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,$10,$10 FROM ok RETURNING id),
      bp AS (UPDATE project_blueprints SET revision = revision + 1, state = 'IN_PROGRESS', updated_at = $10
        FROM run WHERE project_blueprints.id = $3 AND project_blueprints.user_id = $2 AND project_blueprints.state = 'SELECTED' AND project_blueprints.revision = $11 RETURNING project_blueprints.id)
      SELECT (SELECT count(*) FROM run)::int AS runs, (SELECT count(*) FROM bp)::int AS moved`,
-    [run.id, ctx.user.id, projectId, bp.application_id, provider, dir, executable, prompt, run.payload_hash, now, Number(bp.revision)]);
-  if (bp.state === "SELECTED" && Number(done?.moved) !== 1) await failedUpdate(ctx, "project_blueprints", projectId);
+    [run.id, ctx.user.id, projectId, bp.application_id, provider, dir, executable, prompt, run.payload_hash, now, Number(bp.revision), bp.state === "SELECTED"]);
+  // Python runs insert and move in one transaction; the guard keeps a lost race from leaving a run behind.
+  if (Number(done?.runs) !== 1 || (bp.state === "SELECTED" && Number(done?.moved) !== 1)) await failedUpdate(ctx, "project_blueprints", projectId);
   return data(201, runDto(run), ctx.rid);
 };
 
