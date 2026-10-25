@@ -1152,7 +1152,7 @@ test("company routes are owned by core", () => {
     assert.equal(ownerOf("PATCH", path), "core");
     assert.equal(ownerOf("DELETE", path), "core");
   }
-  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "deny");
 });
 
 test("billing top-up, iap, and store webhooks are owned by core", () => {
@@ -1162,10 +1162,10 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/ai-done"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/run"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "deny");
   assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
   assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "deny");
 });
 
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -1218,7 +1218,7 @@ test("employer conversation list sql filters by the caller company", async () =>
 
 test("conversation pdf upload is owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "deny");
 });
 
 const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
