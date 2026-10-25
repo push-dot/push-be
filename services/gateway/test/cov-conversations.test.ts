@@ -591,6 +591,43 @@ test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async (
   assert.deepEqual(sleeps, [250, 250]);
 });
 
+test("idle polls back off to one second so a waiting stream costs fewer Neon reads", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "8" });
+  await warm(USER_A, e);
+  const sleeps: number[] = [];
+  let reads = 0;
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: withJob(() => { reads += 1; return reads === 3 ? [{ id: 9, type: "token", payload: { text: "a" } }] : []; }),
+  }), async (ms) => { sleeps.push(ms); }));
+  await res.text();
+  assert.deepEqual(sleeps, [250, 500, 250, 250, 500, 1000, 1000]);
+});
+
+test("a full page of events is read again at once, from the last id", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "3" });
+  await warm(USER_A, e);
+  const sleeps: number[] = [];
+  const reads: Array<[string, unknown[]]> = [];
+  const page = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, type: "token", payload: { text: "x" } }));
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: (sql, params) => {
+      if (sql.includes("chat_events")) {
+        reads.push([sql, params]);
+        return reads.length === 1 ? page : [{ id: 201, type: "done", payload: {} }];
+      }
+      return sql.includes("FROM chat_jobs") ? [{ id: JOB }] : [];
+    },
+  }), async (ms) => { sleeps.push(ms); }));
+  assert.equal(framesOf(await res.text()).length, 201);
+  assert.match(reads[0][0], /ORDER BY id LIMIT 200$/);
+  assert.deepEqual(reads.map(([, params]) => params), [[JOB, 0], [JOB, 200]]);
+  assert.deepEqual(sleeps, []);
+});
+
 test("a failing event read ends the stream with an INTERNAL error frame", async () => {
   resetLimits();
   const e = env();

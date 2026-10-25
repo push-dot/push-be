@@ -379,6 +379,12 @@ export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps,
   return jobEvents(jobId, 0, env, deps, rid);
 };
 
+// Each poll is a Neon read. Idle polls back off to MAX_POLL_MS; a full
+// page is read again at once so a replay is not slowed to one page a poll.
+const POLL_MS = 250;
+const MAX_POLL_MS = 1000;
+const EVENT_PAGE = 200;
+
 const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string): Response => {
   let after = start;
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
@@ -394,10 +400,11 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
       };
       send("retry: 400\n\n");
       try {
+        let idle = 0;
         for (let i = 0; i < polls; i++) {
           if (!open) break;
           const rows = await deps.query(
-            "SELECT id, type, payload FROM chat_events WHERE job_id = $1::uuid AND id > $2 ORDER BY id",
+            `SELECT id, type, payload FROM chat_events WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`,
             [jobId, after],
           );
           let terminal = false;
@@ -410,7 +417,9 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
             }
           }
           if (terminal) break;
-          if (i + 1 < polls) await sleep(250);
+          if (rows.length >= EVENT_PAGE) continue;
+          idle = rows.length ? 0 : idle + 1;
+          if (i + 1 < polls) await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
         }
       } catch {
         send("data: " + pyJson({
