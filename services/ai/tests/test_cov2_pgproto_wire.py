@@ -135,11 +135,12 @@ class ScramServer:
     """Minimal RFC 5802 server that verifies the client proof."""
 
     def __init__(self, password: str, *, salt=b"NaCl-salt", iters=4096,
-                 bad_sig=False, final=None, first=None, nonce_suffix="srv"):
+                 bad_sig=False, final=None, first=None, nonce_suffix="srv", skip_ok=False):
         self.salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iters)
         self.salt, self.iters = salt, iters
         self.bad_sig, self.final, self.first = bad_sig, final, first
         self.nonce_suffix = nonce_suffix
+        self.skip_ok = skip_ok
         self.step = 0
         self.proof_ok = None
         self.client_first = None
@@ -178,7 +179,8 @@ class ScramServer:
             sig = bytes(32)
         if self.final is not None:
             return self.final
-        return auth(12, b"v=" + base64.b64encode(sig)) + auth(0) + READY
+        ok = b"" if self.skip_ok else auth(0)
+        return auth(12, b"v=" + base64.b64encode(sig)) + ok + READY
 
 
 async def test_scram_handshake_proves_password_and_escapes_user():
@@ -206,7 +208,7 @@ async def test_scram_rejects_bad_server_signature():
 
 async def test_scram_final_without_r0_pushes_back_next_message():
     # Server skips AuthenticationOk and goes straight to ReadyForQuery.
-    server = ScramServer("pw", final=auth(12, b"v=") + READY)
+    server = ScramServer("pw", skip_ok=True)
     c = PgConnection(FakeStream(responder=server), "u", "pw", "db")
     await c.start()
     assert c._pushback is None
@@ -484,3 +486,86 @@ def test_bind_text_array_preserves_non_ascii():
 
 def test_decode_numeric_nan():
     assert math.isnan(_decode_text(1700, "NaN"))
+
+
+# --- protocol sync -------------------------------------------------------
+
+async def test_decode_error_leaves_the_connection_in_sync():
+    # A row that fails to decode used to stop the read loop before
+    # ReadyForQuery; the next query then read the leftover rows as its own.
+    c = conn(rowdesc(("id", 2950)), datarow(b"not-a-uuid"), datarow(str(U1).encode()),
+             complete("SELECT 2"), READY,
+             rowdesc(("n", 23)), datarow(b"7"), complete("SELECT 1"), READY)
+    with pytest.raises(ValueError):
+        await c.fetch("SELECT id FROM t")
+    assert await c.fetchval("SELECT 7") == 7
+    assert c.closed is False
+
+
+class _SlowStream(FakeStream):
+    """Yields to the loop on every read so concurrent callers can interleave."""
+
+    async def readexactly(self, n: int) -> bytes:
+        await asyncio.sleep(0)
+        return await super().readexactly(n)
+
+
+async def test_concurrent_queries_on_one_connection_do_not_interleave():
+    def responder(data: bytes) -> bytes:
+        # One reply per Sync; the value is the query text after "SELECT ".
+        sql = data[5:].split(b"\x00", 2)[1]
+        return rowdesc(("v", 25)) + datarow(sql[7:]) + complete("SELECT 1") + READY
+
+    c = PgConnection(_SlowStream(responder=responder), "u", "pw", "db")
+    got = await asyncio.gather(*(c.fetchval(f"SELECT q{i}") for i in range(5)))
+    assert got == [f"q{i}" for i in range(5)]
+
+
+async def test_cancelled_read_closes_the_connection():
+    gate = asyncio.Event()
+
+    class Blocking(FakeStream):
+        async def readexactly(self, n: int) -> bytes:
+            await gate.wait()
+            return await super().readexactly(n)
+
+    c = PgConnection(Blocking(), "u", "pw", "db")
+    task = asyncio.create_task(c.fetch("SELECT 1"))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert c.closed is True
+    with pytest.raises(ConnectionError):
+        await c.fetch("SELECT 1")
+
+
+async def test_close_after_a_broken_exchange_still_closes_the_stream():
+    c = conn()  # empty inbox: the read fails mid-exchange
+    with pytest.raises(asyncio.IncompleteReadError):
+        await c.execute("SELECT 1")
+    assert c.closed is True
+    await c.close()
+    assert c.stream.closed is True
+
+
+async def test_scram_requires_the_server_signature():
+    # Without v= the server never proved it knows the password.
+    server = ScramServer("pw", final=auth(12, b"v=") + auth(0) + READY)
+    c = PgConnection(FakeStream(responder=server), "u", "pw", "db")
+    with pytest.raises(PgError, match="server signature"):
+        await c.start()
+
+
+async def test_scram_rejects_ok_without_a_final_message():
+    server = ScramServer("pw", final=auth(0) + READY)
+    c = PgConnection(FakeStream(responder=server), "u", "pw", "db")
+    with pytest.raises(PgError, match="server signature"):
+        await c.start()
+
+
+def test_array_null_elements():
+    assert _parse_array('{a,NULL,"NULL"}') == ["a", None, "NULL"]
+    assert _decode_text(2951, "{%s,NULL}" % U1) == [U1, None]
+    assert _decode_text(1007, "{1,NULL}") == [1, None]
+    assert _bind_param(["a", None]) == (1009, b'{"a",NULL}')
