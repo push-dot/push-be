@@ -6,7 +6,7 @@ import {
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LIST_SQL, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import { LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -148,32 +148,43 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
   };
 }
 
+// Reads for a session that is already authenticated. Each is one round
+// trip: visibility, then the page, job, or cancel, in a single statement.
+// $1 conversation, $2 user, $3 the user's company. A company conversation
+// is visible to every member; in a personal one only the author's rows are.
+const SCOPED_FOUND = "WITH found AS (SELECT id, company_id FROM conversations WHERE id = $1::uuid "
+  + "AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid)))";
+
+const SCOPED_MESSAGES_SQL = SCOPED_FOUND + ", page AS ("
+  + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
+  + "FROM messages m JOIN found ON found.id = m.conversation_id "
+  + "WHERE (found.company_id IS NOT NULL OR m.user_id = $2::uuid) "
+  + "AND ($4::timestamptz IS NULL OR (m.created_at, m.id) < ($4::timestamptz, $5::uuid)) "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT $6"
+  + ") SELECT (SELECT id FROM found) AS conversation_id, " + MESSAGE_ROWS;
+
+const ACTIVE_JOB = "SELECT j.id FROM chat_jobs j JOIN found ON found.id = j.conversation_id "
+  + "WHERE j.status IN ('PENDING', 'RUNNING') AND (found.company_id IS NOT NULL OR j.user_id = $2::uuid) "
+  + "ORDER BY j.created_at DESC LIMIT 1";
+
+const ACTIVE_JOB_SQL = SCOPED_FOUND
+  + " SELECT (SELECT id FROM found) AS conversation_id, (" + ACTIVE_JOB + ") AS job_id";
+
+// The cancel and its event commit together, so a stream always sees the
+// terminal event. A job that finished in the meantime updates no row.
+const CANCEL_SQL = SCOPED_FOUND + ", job AS (" + ACTIVE_JOB + "), cancelled AS ("
+  + "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
+  + "WHERE id = (SELECT id FROM job) AND status IN ('PENDING', 'RUNNING') RETURNING id"
+  + "), recorded AS ("
+  + "INSERT INTO chat_events (job_id, type, payload) SELECT id, 'cancelled', '{}'::jsonb FROM cancelled RETURNING job_id"
+  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id";
+
+const present = (value: unknown): boolean => value != null && value !== "";
+
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
-  const found = await deps.query(
-    "SELECT id, company_id FROM conversations WHERE id = $1::uuid AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid))",
-    [id, userId, companyId],
-  );
-  if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  const shared = found[0].company_id != null && found[0].company_id !== "";
-  const params: unknown[] = shared ? [id] : [userId, id];
-  let cursorSql = "";
-  if (cursor.at && cursor.id) {
-    params.push(cursor.at, cursor.id);
-    cursorSql = ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
-  }
-  params.push(limit + 1);
-  const where = shared
-    ? "conversation_id = $1::uuid"
-    : "user_id = $1::uuid AND conversation_id = $2::uuid";
-  const rows = await deps.query(
-    "SELECT id, conversation_id, role, text, attachments, operation_id, "
-    + tsText("created_at") + " AS created_at "
-    + "FROM messages WHERE " + where +
-    cursorSql +
-    ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
-    params,
-  );
-  return jsonResponse(200, pageBody(rows, limit, messageJson), rid);
+  const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
+  if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  return jsonResponse(200, pageBody(jsonRows(rows[0].rows), limit, messageJson), rid);
 }
 
 export async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -267,20 +278,11 @@ function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Rec
   return { data: items, page: { nextCursor, hasMore: more } };
 }
 
-async function activeJobFor(deps: Deps, userId: string, id: string, companyId: string | null): Promise<string | null | Response> {
-  const found = await deps.query(
-    "SELECT id, company_id FROM conversations WHERE id = $1::uuid AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid))",
-    [id, userId, companyId],
-  );
-  if (!found.length) return errorResponse(404, "NOT_FOUND", "resource not found", "");
-  const shared = found[0].company_id != null && found[0].company_id !== "";
-  const jobs = await deps.query(
-    shared
-      ? "SELECT id FROM chat_jobs WHERE conversation_id = $1::uuid AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1"
-      : "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid AND status IN ('PENDING', 'RUNNING') ORDER BY created_at DESC LIMIT 1",
-    shared ? [id] : [userId, id],
-  );
-  return jobs.length ? String(jobs[0].id) : null;
+/** The newest running job id, null when there is none, or a 404 when the conversation is not visible. */
+async function activeJobFor(deps: Deps, userId: string, id: string, companyId: string | null, rid: string): Promise<string | null | Response> {
+  const rows = await deps.query(ACTIVE_JOB_SQL, [id, userId, companyId]);
+  if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  return present(rows[0].job_id) ? String(rows[0].job_id) : null;
 }
 
 export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> => {
@@ -289,23 +291,10 @@ export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, 
   const user = await requireUser(request, env, deps, rid, limits, now);
   if (user instanceof Response) return user;
   try {
-    const found = await activeJobFor(deps, user.id, id, user.companyId);
-    if (found instanceof Response) {
-      return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
-    }
-    if (!found) return errorResponse(409, "CONFLICT", "no active stream", rid);
-    const updated = await deps.query(
-      "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
-      + "WHERE id = $1::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id",
-      [found],
-    );
-    if (!updated.length) return errorResponse(409, "CONFLICT", "no active stream", rid);
-    await deps.query(
-      "INSERT INTO chat_events (job_id, type, payload) "
-      + "VALUES ($1::uuid, 'cancelled', '{}'::jsonb)",
-      [found],
-    );
-    return jsonResponse(200, { data: { jobId: found, status: "CANCELLED" } }, rid);
+    const rows = await deps.query(CANCEL_SQL, [id, user.id, user.companyId]);
+    if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    if (!present(rows[0].job_id)) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    return jsonResponse(200, { data: { jobId: String(rows[0].job_id), status: "CANCELLED" } }, rid);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
@@ -321,18 +310,14 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     if (ctx.user || ctx.revalidate) {
       const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id, user.companyId);
-      if (found instanceof Response) {
-        return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
-      }
+      const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
+      if (found instanceof Response) return found;
       jobId = found;
     } else if (ctx.dev) {
       const user = await requireUser(request, env, deps, rid, limits, now);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id, user.companyId);
-      if (found instanceof Response) {
-        return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
-      }
+      const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
+      if (found instanceof Response) return found;
       jobId = found;
     } else {
       const rows = await queryToleratingCompany(deps.query, STREAM_SQL, [
@@ -352,10 +337,8 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     try {
       const user = await requireUser(request, env, deps, rid, limits, now);
       if (user instanceof Response) return user;
-      const found = await activeJobFor(deps, user.id, id, user.companyId);
-      if (found instanceof Response) {
-        return errorResponse(found.status, "NOT_FOUND", "resource not found", rid);
-      }
+      const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
+      if (found instanceof Response) return found;
       jobId = found;
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);

@@ -161,6 +161,13 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "'last_message_preview', page.last_message_preview, 'status', page.status"
   + ") ORDER BY page.updated_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
+/** A `page` CTE of messages as one JSON array column, newest first. */
+export const MESSAGE_ROWS = "COALESCE((SELECT json_agg(json_build_object("
+  + "'id', page.id, 'conversation_id', page.conversation_id, 'role', page.role, "
+  + "'text', page.text, 'attachments', page.attachments, 'operation_id', page.operation_id, "
+  + "'created_at', " + tsText("page.created_at")
+  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows";
+
 export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
   + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
@@ -172,11 +179,7 @@ export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + "AND ($9::timestamptz IS NULL OR (m.created_at, m.id) < ($9::timestamptz, $10::uuid)) "
   + "ORDER BY m.created_at DESC, m.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
-  + "COALESCE((SELECT json_agg(json_build_object("
-  + "'id', page.id, 'conversation_id', page.conversation_id, 'role', page.role, "
-  + "'text', page.text, 'attachments', page.attachments, 'operation_id', page.operation_id, "
-  + "'created_at', " + tsText("page.created_at")
-  + ") ORDER BY page.created_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
+  + MESSAGE_ROWS + " FROM auth";
 
 export const STREAM_SQL = AUTH_RATE_PREFIX
   + ", found AS ("

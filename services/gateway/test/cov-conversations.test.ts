@@ -64,10 +64,17 @@ const fake = (seen: Seen, f: Fake): Query => async (sql, params = []) => {
   if (isShared(sql)) return f.shared ? f.shared(sql, params) : [{ ...f.user, hits: 1 }];
   if (isAuthOnly(sql) || isDevUser(sql)) return [f.user];
   if (sql.includes("rate_limits")) return [{ hits: 1 }];
-  if (sql.startsWith("SELECT id, company_id FROM conversations")) {
+  // The scoped statements: visibility first, then messages, the active job, or a cancel.
+  if (sql.startsWith("WITH found AS (SELECT id, company_id FROM conversations")) {
     const [id, userId, companyId] = params as [string, string, string | null];
     const c = CONVS[id];
-    return c && (c.owner === userId || (companyId != null && c.company === companyId)) ? [{ id, company_id: c.company }] : [];
+    if (!c || !(c.owner === userId || (companyId != null && c.company === companyId))) {
+      return [{ conversation_id: null, job_id: null, rows: [] }];
+    }
+    const rows = f.data ? f.data(sql, params) : [];
+    return sql.includes("FROM messages")
+      ? [{ conversation_id: id, rows }]
+      : [{ conversation_id: id, job_id: rows[0]?.id ?? null }];
   }
   return f.data ? f.data(sql, params) : [];
 };
@@ -273,10 +280,13 @@ test("the owner reads a personal conversation with user-scoped SQL, paging, and 
   const res = await handle(get(`/conversations/${CONV_A}/messages?limit=1&cursor=${cursor}`, USER_A), e,
     deps(fake(seen, { user: userRow(USER_A), data: msgRows })));
   assert.equal(res.status, 200);
-  const [found, list] = dataSeen(seen);
-  assert.deepEqual(found[1], [CONV_A, USER_A, null]);
-  assert.match(list[0], /FROM messages WHERE user_id = \$1::uuid AND conversation_id = \$2::uuid AND \(created_at, id\) < \(\$3::timestamptz, \$4::uuid\)/);
-  assert.deepEqual(list[1], [USER_A, CONV_A, "2026-10-03T00:00:00Z", MSG_2, 2]);
+  const reads = dataSeen(seen);
+  assert.equal(reads.length, 1);
+  const [[sql, params]] = reads;
+  assert.match(sql, /user_id = \$2::uuid OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
+  assert.match(sql, /found\.company_id IS NOT NULL OR m\.user_id = \$2::uuid/);
+  assert.match(sql, /\(m\.created_at, m\.id\) < \(\$4::timestamptz, \$5::uuid\)/);
+  assert.deepEqual(params, [CONV_A, USER_A, null, "2026-10-03T00:00:00Z", MSG_2, 2]);
   const body = await res.json() as { data: Record<string, unknown>[]; page: { hasMore: boolean; nextCursor: string } };
   assert.deepEqual(body.data, [{
     id: MSG_2, conversationId: CONV_A, role: "assistant", text: "",
@@ -310,7 +320,7 @@ test("user B cannot read user A's personal conversation", async () => {
   assert.equal(await errorCode(res), "NOT_FOUND");
   const [found] = dataSeen(seen);
   assert.match(found[0], /user_id = \$2::uuid OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
-  assert.deepEqual(found[1], [CONV_A, USER_B, null]);
+  assert.deepEqual(found[1].slice(0, 3), [CONV_A, USER_B, null]);
 });
 
 test("a company member reads a shared conversation without the user filter", async () => {
@@ -321,10 +331,9 @@ test("a company member reads a shared conversation without the user filter", asy
   const res = await handle(get(`/conversations/${CONV_SHARED}/messages`, USER_B), e,
     deps(fake(seen, { user: userRow(USER_B, COMPANY), data: () => [] })));
   assert.equal(res.status, 200);
-  const [found, list] = dataSeen(seen);
-  assert.deepEqual(found[1], [CONV_SHARED, USER_B, COMPANY]);
-  assert.match(list[0], /FROM messages WHERE conversation_id = \$1::uuid ORDER BY/);
-  assert.deepEqual(list[1], [CONV_SHARED, 51]);
+  const [[sql, params]] = dataSeen(seen);
+  assert.match(sql, /found\.company_id IS NOT NULL OR m\.user_id/);
+  assert.deepEqual(params, [CONV_SHARED, USER_B, COMPANY, null, null, 51]);
 });
 
 test("a cached session message read maps a database failure to 500", async () => {
@@ -345,7 +354,7 @@ test("dev token reads messages for the seeded user and maps list failures to 500
   const ok = await handle(get(`/conversations/${CONV_A}/messages`, USER_A), devEnv(USER_A),
     deps(fake(seen, { user: userRow(USER_A), data: msgRows })));
   assert.equal(ok.status, 200);
-  assert.deepEqual(dataSeen(seen)[0][1], [CONV_A, USER_A, null]);
+  assert.deepEqual(dataSeen(seen)[0][1].slice(0, 3), [CONV_A, USER_A, null]);
 
   resetLimits();
   const failing = await handle(get(`/conversations/${CONV_A}/messages`, USER_A), devEnv(USER_A), deps(async (sql) => {
@@ -363,7 +372,7 @@ test("when the shared message read fails it falls back to scoped queries", async
     deps(fake(seen, { user: userRow(USER_A), shared: boom, data: msgRows })));
   assert.equal(ok.status, 200);
   assert.equal((await ok.json() as { data: unknown[] }).data.length, 2);
-  assert.deepEqual(dataSeen(seen)[0][1], [CONV_A, USER_A, null]);
+  assert.deepEqual(dataSeen(seen)[0][1].slice(0, 3), [CONV_A, USER_A, null]);
 
   resetLimits();
   const isolated = await handle(get(`/conversations/${CONV_A}/messages`, USER_B), env(),
@@ -422,13 +431,13 @@ test("cancel on a shared conversation looks up the job by conversation only; db 
   const seen: Seen = [];
   const res = await handle(cancel(CONV_SHARED, USER_B), env(), deps(fake(seen, {
     user: userRow(USER_B, COMPANY),
-    data: (sql) => (sql.includes("FROM chat_jobs") || sql.startsWith("UPDATE") ? [{ id: JOB }] : []),
+    data: (sql) => (sql.includes("FROM chat_jobs") ? [{ id: JOB }] : []),
   })));
   assert.equal(res.status, 200);
   const jobs = dataSeen(seen).find(([sql]) => sql.includes("FROM chat_jobs"));
   assert.ok(jobs);
-  assert.match(jobs[0], /WHERE conversation_id = \$1::uuid AND status/);
-  assert.deepEqual(jobs[1], [CONV_SHARED]);
+  assert.match(jobs[0], /found\.company_id IS NOT NULL OR j\.user_id = \$2::uuid/);
+  assert.deepEqual(jobs[1], [CONV_SHARED, USER_B, COMPANY]);
 
   resetLimits();
   const failing = await handle(cancel(CONV_A, USER_A), env(), deps(fake([], { user: userRow(USER_A), data: boom })));

@@ -47,6 +47,8 @@ const authRow = (job: boolean): Record<string, unknown> => ({
   job_id: job ? JOB : null,
 });
 
+// The cancel is one statement: find the job, mark it, record the event.
+// The fake applies it the way Postgres would for the given job state.
 const cancelQuery = (
   sqls: string[],
   events: Record<string, unknown>[],
@@ -55,15 +57,13 @@ const cancelQuery = (
 ): Query => {
   return async (sql) => {
     sqls.push(sql);
-    if (sql.includes("UPDATE chat_jobs")) return updateHits ? [{ id: JOB }] : [];
-    if (sql.includes("INSERT INTO chat_events")) {
-      events.push({ id: 4, type: "cancelled", payload: {} });
-      return [];
+    if (sql.includes("UPDATE chat_jobs")) {
+      const cancelled = selectJob && updateHits;
+      if (cancelled) events.push({ id: 4, type: "cancelled", payload: {} });
+      return [{ conversation_id: CONV, job_id: cancelled ? JOB : null }];
     }
     if (sql.includes("chat_events")) return events.slice();
     if (sql.includes("access_tokens")) return [authRow(selectJob)];
-    if (sql.includes("FROM conversations")) return [{ id: CONV }];
-    if (sql.includes("FROM chat_jobs")) return selectJob ? [{ id: JOB }] : [];
     return [];
   };
 };
@@ -82,13 +82,10 @@ test("active job cancels, records the event, and the next SSE read ends", async 
   const res = await cancel(cancelQuery(sqls, events, true, true));
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { data: { jobId: JOB, status: "CANCELLED" } });
-  const update = sqls.find((sql) => sql.includes("UPDATE chat_jobs")) || "";
-  assert.match(update, /CANCELLED/);
-  assert.match(update, /PENDING/);
-  assert.match(update, /RUNNING/);
-  const insert = sqls.find((sql) => sql.includes("INSERT INTO chat_events")) || "";
-  assert.match(insert, /cancelled/);
-  assert.match(insert, /\{\}/);
+  const writes = sqls.filter((sql) => sql.includes("UPDATE chat_jobs") || sql.includes("INSERT INTO chat_events"));
+  assert.equal(writes.length, 1);
+  assert.match(writes[0], /UPDATE chat_jobs SET status = 'CANCELLED'.*WHERE id = \(SELECT id FROM job\) AND status IN \('PENDING', 'RUNNING'\)/);
+  assert.match(writes[0], /INSERT INTO chat_events \(job_id, type, payload\) SELECT id, 'cancelled', '\{\}'::jsonb FROM cancelled/);
   const stream = await handle(new Request(
     `https://push-be.example/api/v1/conversations/${CONV}/messages/stream/active`,
     { headers: { authorization: "Bearer secret-token" } },
@@ -98,14 +95,14 @@ test("active job cancels, records the event, and the next SSE read ends", async 
   assert.equal(sqls.filter((sql) => sql.includes("FROM chat_events")).length, 1);
 });
 
-test("no active job is a conflict and does not write", async () => {
+test("no active job is a conflict and records no event", async () => {
   resetLimits();
   const sqls: string[] = [];
-  const res = await cancel(cancelQuery(sqls, [], false, false));
+  const events: Record<string, unknown>[] = [];
+  const res = await cancel(cancelQuery(sqls, events, false, false));
   assert.equal(res.status, 409);
   assert.equal((await res.json() as { error: { code: string } }).error.code, "CONFLICT");
-  assert.equal(sqls.some((sql) => sql.includes("UPDATE chat_jobs")), false);
-  assert.equal(sqls.some((sql) => sql.includes("INSERT INTO chat_events")), false);
+  assert.equal(events.length, 0);
 });
 
 test("a job that is no longer pending or running is a conflict", async () => {
@@ -116,5 +113,4 @@ test("a job that is no longer pending or running is a conflict", async () => {
   assert.equal(res.status, 409);
   assert.equal((await res.json() as { error: { code: string } }).error.code, "CONFLICT");
   assert.equal(events.length, 0);
-  assert.equal(sqls.some((sql) => sql.includes("INSERT INTO chat_events")), false);
 });
