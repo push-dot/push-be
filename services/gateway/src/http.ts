@@ -125,6 +125,12 @@ export async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Compares digests, so the time taken does not depend on where the inputs differ. Empty never matches. */
+export async function secretEquals(got: string, want: string): Promise<boolean> {
+  if (!got || !want) return false;
+  return (await sha256Hex(got)) === (await sha256Hex(want));
+}
+
 export function parseUuid(value: string): string | null {
   if (UUID_RE.test(value)) return value.toLowerCase();
   if (/^[0-9a-f]{32}$/i.test(value)) {

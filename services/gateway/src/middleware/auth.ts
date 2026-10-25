@@ -7,7 +7,7 @@ import type { CachedUser } from "./cache.ts";
 import { clampTtl } from "./cache.ts";
 import type { Deps, FrontEnv } from "../types.ts";
 import type { User } from "../types.ts";
-import { codedError, errorResponse, sha256Hex } from "../http.ts";
+import { codedError, errorResponse, secretEquals, sha256Hex } from "../http.ts";
 import {
   acceptGrant, allow, allowShared, AUTH_RATE_SQL, AUTH_SQL, isolate, leases,
   nextBatch, queryToleratingCompany, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
@@ -101,7 +101,7 @@ export async function tokenContext(request: Request, env: FrontEnv, deps: Deps, 
   }
   const token = authz.slice(7);
   const moment = now();
-  if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
+  if (env.APP_ENV === "development" && await secretEquals(token, env.DEV_AUTH_TOKEN || "")) {
     return { dev: true, hash: "", moment, cacheKey: "", batch: 1, release: 0 };
   }
   let hash: string;
