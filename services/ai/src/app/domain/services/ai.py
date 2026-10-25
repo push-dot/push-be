@@ -274,6 +274,10 @@ class AIGate:
         except Exception:
             await self._release(usage_id)
             raise provider_error("AI provider request failed")
+        except BaseException:
+            # Cancellation must not leave the reservation counting against the allowance.
+            await self._release(usage_id)
+            raise
         await self._settle(usage_id, model, c.input_tokens, c.output_tokens)
         return c.model_copy(update={"usage_id": usage_id})
 
