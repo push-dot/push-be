@@ -169,7 +169,7 @@ async def test_edit_document_always_ask_skip_leaves_the_document(monkeypatch):
 
 async def test_edit_document_always_ask_without_an_answer_is_skipped(monkeypatch):
     monkeypatch.setattr(tools, "interrupt", lambda payload: None)
-    out = await _run("edit_document", {"document_id": "d1"},
+    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1"},
                      ctx=_ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK"))
     assert out == {"skipped": True}
 

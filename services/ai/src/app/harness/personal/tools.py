@@ -93,11 +93,12 @@ class ProfilePatch(_Camel):
 
 
 class DocumentId(BaseModel):
-    document_id: str
+    document_id: UUID
 
 
 class EditDocumentArgs(BaseModel):
-    document_id: str
+    # UUID, not str: the id is interpolated into the core path.
+    document_id: UUID
     version_id: UUID | None = None
     before: str = ""
     after: str = ""
@@ -162,7 +163,7 @@ async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:
     document_svc = getattr(svc, "document_svc", None) if svc else None
     if document_svc is None:
         return {}
-    return to_jsonable(await document_svc.get(UUID(ctx.user_id), UUID(args.document_id)))
+    return to_jsonable(await document_svc.get(UUID(ctx.user_id), args.document_id))
 
 
 def _diff(args: EditDocumentArgs) -> dict:
@@ -173,7 +174,7 @@ def _diff(args: EditDocumentArgs) -> dict:
         hunks.append({"line": None, "sign": "+", "text": args.after})
     return {
         "type": "diff",
-        "documentId": args.document_id,
+        "documentId": str(args.document_id),
         "revisionId": str(args.version_id or ""),
         "hunks": hunks,
     }
@@ -196,13 +197,13 @@ def _document_event(job_id: str, document_id: str) -> dict:
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     if ctx.access_mode == "ALWAYS_ASK":
-        event = _document_event(ctx.job_id, args.document_id)
+        event = _document_event(ctx.job_id, str(args.document_id))
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
         if row is None:
             await insert_chat_approval(
-                ctx.db, ctx.user_id, ctx.conversation_id, event, args.document_id)
+                ctx.db, ctx.user_id, ctx.conversation_id, event, str(args.document_id))
             await ctx.db.q().execute(
                 "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
             _emit(event)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from urllib.parse import unquote, urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -11,6 +12,16 @@ class CoreError(Exception):
         self.status = status
         self.code = code
         self.message = message
+
+
+def _assert_plain_path(path: str) -> None:
+    """Model-derived ids end up in paths; refuse anything that could re-route the call."""
+    parts = urlsplit(path)
+    if parts.scheme or parts.netloc or parts.fragment or not parts.path.startswith("/"):
+        raise CoreError(400, "INVALID_ARGS", "invalid core path")
+    if any(unquote(seg) in (".", "..") or "\\" in unquote(seg) or "/" in unquote(seg)
+           for seg in parts.path.split("/")):
+        raise CoreError(400, "INVALID_ARGS", "invalid core path")
 
 
 def idempotency_key(job_id: str, tool_call_id: str) -> str:
@@ -33,6 +44,7 @@ class CoreClient:
         json: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
+        _assert_plain_path(path)
         headers = {
             "x-push-internal-secret": self.secret,
             "x-push-act-as": user_id,
