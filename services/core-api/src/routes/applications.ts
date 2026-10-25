@@ -271,10 +271,12 @@ export const createSubmissionDraft = async (ctx: Ctx, idRaw: string): Promise<Re
   if (adapter !== null) throw fieldError("adapter", "adapter is only valid with ADAPTER mode");
   const versionIds = uuids(values.documentVersionIds);
   if (!versionIds.length) throw fieldError("documentVersionIds", "at least one document version is required");
+  const loaded = await query(ctx.deps.query,
+    "SELECT v.id, v.application_id, d.finalized_version_id FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.user_id = $1 AND v.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+    [ctx.user.id, JSON.stringify(versionIds)]);
+  const versions = new Map(loaded.rows.map((row) => [String(row.id), row]));
   for (const vid of versionIds) {
-    const version = await one(ctx.deps.query,
-      "SELECT v.application_id, d.finalized_version_id FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.id = $1 AND v.user_id = $2",
-      [vid, ctx.user.id]);
+    const version = versions.get(vid);
     if (!version) throw fieldError("documentVersionIds", "version " + vid + " not found");
     if (String(version.application_id) !== appId) throw fieldError("documentVersionIds", "version " + vid + " belongs to another application");
     if (version.finalized_version_id == null || String(version.finalized_version_id) !== vid) {
