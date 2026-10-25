@@ -653,3 +653,19 @@ async def test_resume_prompt_survives_a_missing_sample_table():
     assert out["prepared"] is True
     assert out["prompt_system"]
     assert "건 수치" not in out["prompt_system"]
+
+
+@pytest.mark.parametrize("text", [
+    "a" * 50_000,
+    "가" * 50_000,
+    "「" * 50_000,
+    "x@" * 25_000,
+    "1-" * 25_000 + "a",
+], ids=["latin", "hangul", "open-quotes", "at-signs", "phone-like"])
+def test_long_single_tokens_scan_in_linear_time(text):
+    import time
+    from app.domain.reference_text import features_of, templates_of
+    started = time.perf_counter()
+    features_of(text)
+    templates_of(text)
+    assert time.perf_counter() - started < 1.0
