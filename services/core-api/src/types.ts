@@ -51,7 +51,7 @@ export interface CoreEnv {
   IAP_PRODUCT_ULTRA?: string;
   IAP_PRODUCT_TOPUP?: string;
   IAP_TOPUP_CREDITS?: string;
-  APPLE_IAP_KEY?: string;
+  APPLE_BUNDLE_ID?: string;
   APPLE_ROOT_PEM?: string;
   GOOGLE_PLAY_KEY?: string;
   GOOGLE_PLAY_PACKAGE?: string;
