@@ -48,7 +48,8 @@ async def test_import_with_full_details_creates_owned_evidence():
     stored = await s.evidence.get(A, ev["id"])
     assert stored.title == "Lead" and stored.kind == "CAREER"
     assert stored.source_url == "https://x.dev/cv"
-    assert stored.provenance.content_hash == "sha-1"
+    # The client hash is not trusted; provenance always hashes the stored text.
+    assert stored.provenance.content_hash == hash_bytes(b"Led 3 engineers")
     assert stored.provenance.source_location.end == len("Led 3 engineers")
     assert stored.verification_status == ent.VERIFICATION_USER_PROVIDED
     await _raises("NOT_FOUND", s.get(B, stored.id))
@@ -202,4 +203,20 @@ async def test_import_enforces_the_evidence_title_limit():
     with pytest.raises(DomainError) as e:
         await s.import_(A, None, "text", None, "", "TEXT", "CAREER", "x" * 201)
     assert e.value.code == "VALIDATION_ERROR"
+    assert s.evidence.rows == {}
+
+
+async def test_import_caps_text_like_evidence_create():
+    s = _svc()
+    err = await _raises("VALIDATION_ERROR", s.import_(
+        A, None, "x" * 100_001, None, "", "TEXT", "CAREER", "t"))
+    assert err.details == {"field": "sourceText"}
+    assert s.evidence.rows == {}
+
+
+async def test_complete_import_input_rejects_non_string_text():
+    s = _svc()
+    op = await s.import_(A, None, "", None, "", "TEXT", "CAREER", "t")
+    await _raises("VALIDATION_ERROR",
+                  s.complete_import_input(op, {"text": {"nested": "x"}}))
     assert s.evidence.rows == {}

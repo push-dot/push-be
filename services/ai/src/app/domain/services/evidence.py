@@ -191,16 +191,18 @@ class EvidenceService:
                 fields=missing)
             op.updated_at = now
             return
-        if len(p["title"]) > 200:
-            raise validation_field("title", "title must be 1-200 characters")
+        text, title = p["text"], p["title"]
+        if not isinstance(text, str) or not isinstance(title, str):
+            raise validation_field("fields", "text and title must be strings")
+        validate_evidence_input(p["kind"], title, text, p.get("sourceUrl"), [], None)
         evidence = ent.CareerEvidence(
-            id=uuid4(), user_id=op.user_id, revision=1, kind=p["kind"], title=p["title"],
-            source_text=p["text"], source_url=p.get("sourceUrl"), skills=[],
+            id=uuid4(), user_id=op.user_id, revision=1, kind=p["kind"], title=title,
+            source_text=text, source_url=p.get("sourceUrl"), skills=[],
             verification_status=ent.VERIFICATION_USER_PROVIDED,
             provenance=ent.Provenance(
-                content_hash=p.get("contentHash") or hash_bytes(p["text"].encode()),
+                content_hash=hash_bytes(text.encode()),
                 source_location=ent.SourceLocation(
-                    start=0, end=code_point_len(p["text"]), unit="CODE_POINT")),
+                    start=0, end=code_point_len(text), unit="CODE_POINT")),
             created_at=now, updated_at=now)
         op.result = ent.OperationResult(
             kind=ent.OP_EVIDENCE_IMPORT,
