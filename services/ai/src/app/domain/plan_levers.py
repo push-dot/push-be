@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.entities import PLAN_CREDITS_MICRO, PLAN_FREE, PLAN_PRO, PLAN_ULTRA
+
 _DEFAULT_FREE = "deepseek/deepseek-v4.1-flash"
 _DEFAULT_PRO = "anthropic/claude-sonnet-5-5"
 _DEFAULT_ULTRA = "anthropic/claude-opus-5-5"
@@ -9,9 +11,9 @@ _DEFAULT_EMPLOYER_ULTRA = "anthropic/claude-fable-5-1"
 _DEFAULT_PROVIDERS = "Together,Fireworks,Novita"
 
 _ROWS = {
-    ("PERSONAL", "FREE"): ("model_free", _DEFAULT_FREE, "LOW", "basic", "same", "same", 1_800_000),
-    ("PERSONAL", "PRO"): ("model_pro", _DEFAULT_PRO, "MEDIUM", "extended", "plus1", "up1", 30_000_000),
-    ("PERSONAL", "ULTRA"): ("model_ultra", _DEFAULT_ULTRA, "HIGH", "full", "plus2", "top", 100_000_000),
+    ("PERSONAL", "FREE"): ("model_free", _DEFAULT_FREE, "LOW", "basic", "same", "same", PLAN_CREDITS_MICRO[PLAN_FREE]),
+    ("PERSONAL", "PRO"): ("model_pro", _DEFAULT_PRO, "MEDIUM", "extended", "plus1", "up1", PLAN_CREDITS_MICRO[PLAN_PRO]),
+    ("PERSONAL", "ULTRA"): ("model_ultra", _DEFAULT_ULTRA, "HIGH", "full", "plus2", "top", PLAN_CREDITS_MICRO[PLAN_ULTRA]),
     ("EMPLOYER", ""): ("model_pro", _DEFAULT_PRO, "MEDIUM", "extended", "plus1", "up1", 0),
     ("EMPLOYER", "BASIC"): ("model_pro", _DEFAULT_PRO, "MEDIUM", "extended", "plus1", "up1", 18_000_000),
     ("EMPLOYER", "PRO"): ("model_ultra", _DEFAULT_ULTRA, "HIGH", "full", "plus2", "top", 90_000_000),
@@ -21,7 +23,7 @@ _ROWS = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlanLevers:
     model: str
     effort: str
