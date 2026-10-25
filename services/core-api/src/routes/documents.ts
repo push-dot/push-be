@@ -4,8 +4,8 @@ import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
 } from "../document-content.ts";
-import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, requireUuid } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, language, status, latest_version_id, finalized_version_id, created_at, updated_at";
@@ -86,19 +86,6 @@ const exportDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const pageOfRows = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const loadDocument = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
@@ -226,7 +213,7 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
     params.push(value);
     where.push(`${column} = $${params.length}`);
   }
-  return pageOfRows(ctx, DOC_COLS, "documents", where, params, page, documentDto);
+  return listPage(ctx.deps.query, ctx.rid, DOC_COLS, "documents", where, params, page, documentDto);
 };
 
 export const createDocument = async (ctx: Ctx): Promise<Response> => {
@@ -298,7 +285,7 @@ export const listVersions = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadDocument(ctx, id);
-  return pageOfRows(ctx, VERSION_COLS, "document_versions", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, versionDto);
+  return listPage(ctx.deps.query, ctx.rid, VERSION_COLS, "document_versions", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, versionDto);
 };
 
 export const getVersion = async (ctx: Ctx, idRaw: string, versionRaw: string): Promise<Response> => {
@@ -472,7 +459,7 @@ export const listExports = async (ctx: Ctx, idRaw: string): Promise<Response> =>
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadDocument(ctx, id);
-  return pageOfRows(ctx, EXPORT_COLS, "document_exports", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, exportDto);
+  return listPage(ctx.deps.query, ctx.rid, EXPORT_COLS, "document_exports", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, exportDto);
 };
 
 export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: string): Promise<Response> => {

@@ -1,8 +1,8 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { base64ToBytes, bytesToBase64, decryptAes, encryptAes, masterKey, verifyPkce } from "../crypto.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, noContent, pageBody, parseUuid, randomToken } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, noContent, parseUuid, randomToken } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import { formatJsonTimestamp, pyJson } from "../time.ts";
 import type { Ctx } from "../types.ts";
 
@@ -112,19 +112,6 @@ const eventDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const pageOfRows = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const requireConnection = async (ctx: Ctx): Promise<Integration> => {
   const gi = await loadIntegration(ctx);
@@ -464,7 +451,7 @@ export const googleMessages = async (ctx: Ctx): Promise<Response> => {
     params.push(applicationId);
     where.push(`application_id = $${params.length}`);
   }
-  return pageOfRows(ctx, GM_COLS, "google_messages", where, params, page, messageDto);
+  return listPage(ctx.deps.query, ctx.rid, GM_COLS, "google_messages", where, params, page, messageDto);
 };
 
 export const googleEvents = async (ctx: Ctx): Promise<Response> => {
@@ -482,7 +469,7 @@ export const googleEvents = async (ctx: Ctx): Promise<Response> => {
   }
   params.push("GOOGLE");
   where.push(`source = $${params.length}`);
-  return pageOfRows(ctx, EVENT_COLS, "calendar_events", where, params, page, eventDto);
+  return listPage(ctx.deps.query, ctx.rid, EVENT_COLS, "calendar_events", where, params, page, eventDto);
 };
 
 export const googleLinkMessage = async (ctx: Ctx, idRaw: string): Promise<Response> => {

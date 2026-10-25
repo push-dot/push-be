@@ -1,7 +1,7 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, hashJson, pageBody, requireUuid } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const STAGE_ORDER = ["DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED"];
@@ -89,19 +89,6 @@ const submissionDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const listPage = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const loadApp = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${APP_SELECT} FROM applications WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
@@ -136,7 +123,7 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
     params.push("%" + q + "%", "%" + q + "%");
     where.push(`(company ILIKE $${params.length - 1} OR title ILIKE $${params.length})`);
   }
-  return listPage(ctx, APP_SELECT, "applications", where, params, page, appDto);
+  return listPage(ctx.deps.query, ctx.rid, APP_SELECT, "applications", where, params, page, appDto);
 };
 
 export const getApplication = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -240,7 +227,7 @@ export const applicationTimeline = async (ctx: Ctx, idRaw: string): Promise<Resp
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadApp(ctx, id);
-  return listPage(ctx, EVENT_COLS, "application_events", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, eventDto);
+  return listPage(ctx.deps.query, ctx.rid, EVENT_COLS, "application_events", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, eventDto);
 };
 
 export const applicationChecklist = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -372,7 +359,7 @@ export const listSubmissions = async (ctx: Ctx, idRaw: string): Promise<Response
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadApp(ctx, id);
-  return listPage(ctx, SUB_COLS, "submissions", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, submissionDto);
+  return listPage(ctx.deps.query, ctx.rid, SUB_COLS, "submissions", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, submissionDto);
 };
 
 export const dispatchApplications = async (ctx: Ctx, path: string): Promise<Response | null> => {

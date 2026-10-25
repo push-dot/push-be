@@ -1,5 +1,5 @@
-import { one, type Query } from "./db.ts";
-import { fieldError, type HttpError } from "./http.ts";
+import { one, query, type Query } from "./db.ts";
+import { HttpError, fieldError, pageBody, parseUuid } from "./http.ts";
 import { decodeCursor, encodeCursor, formatJsonTimestamp } from "./time.ts";
 
 export interface Page {
@@ -14,13 +14,17 @@ export function pageOf(url: URL): Page {
     if (!/^[1-9]\d*$/.test(raw)) throw fieldError("limit", "must be a positive integer");
     limit = Math.min(Number(raw), 100);
   }
-  const cur = url.searchParams.get("cursor");
-  if (!cur) return { limit, cursor: null };
+  const encoded = url.searchParams.get("cursor");
+  if (!encoded) return { limit, cursor: null };
+  let cursor: { createdAt: string; id: string };
   try {
-    return { limit, cursor: decodeCursor(cur) };
+    cursor = decodeCursor(encoded);
   } catch {
     throw fieldError("cursor", "invalid cursor");
   }
+  const id = parseUuid(cursor.id);
+  if (!id) throw fieldError("cursor", "invalid cursor");
+  return { limit, cursor: { createdAt: cursor.createdAt, id } };
 }
 
 export function pageResult<T>(items: T[], limit: number, cursorOf: (item: T) => { createdAt: unknown; id: string }): {
@@ -46,10 +50,6 @@ export function ts(value: unknown): string | null {
   return formatJsonTimestamp(value);
 }
 
-export function idOf(value: unknown): string {
-  return String(value);
-}
-
 export async function revisionUpdate(
   q: Query,
   table: string,
@@ -61,16 +61,27 @@ export async function revisionUpdate(
   const updated = await one(q, sql, params);
   if (updated) return updated;
   const current = await one(q, `SELECT revision FROM ${table} WHERE id = $1 AND user_id = $2`, [id, userId]);
-  if (!current) {
-    const { HttpError } = await import("./http.ts");
-    throw new HttpError(404, "NOT_FOUND", "resource not found");
-  }
-  const { HttpError } = await import("./http.ts");
+  if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", {
     currentRevision: Number(current.revision),
   });
 }
 
-export function notFound(): HttpError {
-  return fieldError("id", "must be a UUID");
-}
+type Row = Record<string, unknown>;
+
+/** Keyset page over `(created_at, id)`, newest first, as the Python stores list. */
+export const listPage = async (
+  q: Query, rid: string, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row,
+): Promise<Response> => {
+  const args = [...params];
+  const conds = [...where];
+  if (page.cursor) {
+    args.push(page.cursor.createdAt, page.cursor.id);
+    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
+  }
+  args.push(page.limit + 1);
+  const rows = await query(q,
+    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
+  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
+  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, rid);
+};
