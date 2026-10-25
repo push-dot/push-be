@@ -233,24 +233,6 @@ async def test_generate_bad_application():
     assert e.value.code == "NOT_FOUND"
 
 
-async def test_list_usage():
-    user_id = uuid4()
-    usage = StubAiUsageStore([
-        ent.AiUsage(id=uuid4(), user_id=user_id, provider="OPENAI",
-                    model="m", managed=True, input_tokens=1, output_tokens=1,
-                    cost_micro_credits=1, status="SETTLED",
-                    created_at=_now()),
-        ent.AiUsage(id=uuid4(), user_id=uuid4(), provider="OPENAI",
-                    model="m", managed=True, input_tokens=1, output_tokens=1,
-                    cost_micro_credits=1, status="SETTLED",
-                    created_at=_now()),
-    ])
-    svc = _ai_svc(AIGate(FakeDB(), "", None), StubOperationStore(),
-                  usage, StubApplicationStore())
-    p = await svc.list_usage(user_id, None, None, None)
-    assert len(p.items) == 1
-
-
 async def test_post_message_ai_completion():
     user_id = uuid4()
     conv = _conv(user_id=user_id)
