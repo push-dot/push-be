@@ -13,7 +13,7 @@ from starlette.types import Message, Receive, Scope, Send
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.api.errors import error_body
-from app.ratelimit import allow as allow_shared
+from app.ratelimit import SlidingWindow, allow as allow_shared
 
 _PUBLIC_EXACT = {
     "/api/v1/healthz",
@@ -66,30 +66,11 @@ def _client_ip(scope: Scope) -> str:
     return (scope.get("client") or ("", 0))[0] or ""
 
 
-class _RateLimiter:
-    def __init__(self, limit: int, window_s: float):
-        self.limit = limit
-        self.window = window_s
-        self.hits: dict[str, list[float]] = {}
-
-    def allow(self, key: str, now: float) -> bool:
-        hits = self.hits.setdefault(key, [])
-        cutoff = now - self.window
-        while hits and hits[0] <= cutoff:
-            hits.pop(0)
-        if len(hits) >= self.limit:
-            return False
-        hits.append(now)
-        if len(self.hits) > 10000:
-            self.hits = {k: v for k, v in self.hits.items() if v}
-        return True
-
-
 class ApiMiddleware:
     def __init__(self, app):
         self.app = app
-        self._user_rl = _RateLimiter(600, 60)
-        self._public_rl = _RateLimiter(60, 60)
+        self._user_rl = SlidingWindow()
+        self._public_rl = SlidingWindow()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -149,13 +130,13 @@ class ApiMiddleware:
         await self._idempotent(scope, receive, send, user, path, rid)
 
     async def _limited(self, scope: Scope, kind: str, key: str,
-                       memory: _RateLimiter, limit: int, now: float) -> bool:
+                       memory: SlidingWindow, limit: int, now: float) -> bool:
         # Local uvicorn and the test suite stay on the in-process window.
         # Workers set CF_WORKER and share one Neon counter across isolates.
         if os.environ.get("CF_WORKER") == "1":
             pool = getattr(getattr(scope["app"].state, "db", None), "pool", None)
             return await allow_shared(pool, kind, key, limit, now)
-        return memory.allow(key or "unknown", now)
+        return memory.allow(key or "unknown", limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
                           user, path: str, rid: str):

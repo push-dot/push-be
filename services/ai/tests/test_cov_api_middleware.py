@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.api import middleware as mw
-from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error, _RateLimiter
+from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error
 from app.domain.entities import IdempotencyRecord, User
 from app.domain.errors import token_expired
 
@@ -135,16 +135,6 @@ def test_client_ip_prefers_cloudflare_then_forwarded_then_peer():
     assert _client_ip({"headers": []}) == ""
 
 
-def test_rate_limiter_window_and_prune(monkeypatch):
-    rl = _RateLimiter(2, 10)
-    assert rl.allow("a", 0) and rl.allow("a", 1)
-    assert not rl.allow("a", 2)
-    assert rl.allow("a", 10.5)
-    rl.hits = {str(i): [] for i in range(10001)}
-    assert rl.allow("z", 100)
-    assert list(rl.hits) == ["z"]
-
-
 def test_public_error_redacts_secrets():
     text = _public_error(RuntimeError(
         "connect postgres://user:pw@host/db failed password=hunter2 token=abc"))
@@ -215,10 +205,10 @@ async def test_auth_backend_failure_is_500_without_leaking():
 async def test_user_rate_limit():
     app, _ = inner(200)
     m = ApiMiddleware(app)
-    m._user_rl = _RateLimiter(1, 60)
     d = deps()
     hdr = {"Authorization": "Bearer t"}
-    assert (await call(m, d, "GET", headers=hdr))[0] == 200
+    for _ in range(600):
+        assert (await call(m, d, "GET", headers=hdr))[0] == 200
     status, _, body = await call(m, d, "GET", headers=hdr)
     assert status == 429 and _err(body)["code"] == "RATE_LIMITED"
 
