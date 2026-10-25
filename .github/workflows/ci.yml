@@ -166,6 +166,8 @@ jobs:
           PG_TRANSPORT: tcp
           RUN_MIGRATIONS: "1"
         run: python scripts/migrate.py
+      - name: Check schema invariants
+        run: psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f db/tests/schema_checks.sql
 
   bundle-ai:
     needs: changes
