@@ -47,3 +47,15 @@ def test_effective_limit():
     assert PageRequest().effective_limit() == 50
     assert PageRequest(limit=500).effective_limit() == 100
     assert PageRequest(limit=7).effective_limit() == 7
+
+
+@pytest.mark.parametrize("raw", [
+    "!!!notbase64!!!",
+    base64.urlsafe_b64encode(b"\xff\xfe").decode(),
+    base64.urlsafe_b64encode(b"no-separator").decode(),
+    base64.urlsafe_b64encode(b"2026-01-01T00:00:00Z|not-a-uuid").decode(),
+    base64.urlsafe_b64encode(b"yesterday|" + str(uuid4()).encode()).decode(),
+])
+def test_malformed_cursor_is_a_value_error(raw):
+    with pytest.raises(ValueError, match="bad cursor"):
+        decode_cursor(raw)
