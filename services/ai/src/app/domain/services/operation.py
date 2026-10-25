@@ -36,7 +36,7 @@ class OperationService:
 
         async def work():
             nonlocal out
-            # Two parallel submits would both see NEEDS_INPUT and each create evidence.
+            # Parallel submits (or a cancel) would otherwise both see NEEDS_INPUT and race.
             await self.locks.lock_user(user_id)
             try:
                 op = await self.ops.get(user_id, id_)
@@ -66,6 +66,7 @@ class OperationService:
 
         async def work():
             nonlocal out
+            await self.locks.lock_user(user_id)
             try:
                 op = await self.ops.get(user_id, id_)
             except NotFoundError:

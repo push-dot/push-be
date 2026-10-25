@@ -201,3 +201,16 @@ async def test_submit_input_serializes_on_the_user_lock_before_reading():
 
     s.ops.get = guarded_get
     await s.submit_input(A, op.id, {"kind": "SKILL", "title": "X"}, None)
+
+
+async def test_cancel_takes_the_user_lock_before_reading():
+    s = _svc()
+    op = await _pending_import(s)
+    get = s.ops.get
+
+    async def guarded_get(user_id, id_):
+        assert s.locks.locked == [A], "op read before the user lock"
+        return await get(user_id, id_)
+
+    s.ops.get = guarded_get
+    assert (await s.cancel(A, op.id)).status == ent.OP_CANCELLED
