@@ -97,7 +97,8 @@ export const experimentResults = async (ctx: Ctx, key: string): Promise<Response
 export const dispatchExperiments = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const m = path.match(/^\/api\/v1\/experiments\/([^/]+)\/(assignment|events|stats|results)$/);
   if (!m) return null;
-  const key = decodeURIComponent(m[1]);
+  let key: string;
+  try { key = decodeURIComponent(m[1]); } catch { throw fieldError("key", "invalid experiment key"); }
   const method = ctx.request.method;
   if (m[2] === "assignment" && method === "GET") return getAssignment(ctx, key);
   if (m[2] === "events" && method === "POST") return recordEvent(ctx, key);

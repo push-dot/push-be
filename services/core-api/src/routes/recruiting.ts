@@ -1758,7 +1758,8 @@ async function registerDevice(ctx: Ctx): Promise<Response> {
 }
 
 async function deleteDevice(ctx: Ctx, tokenRaw: string): Promise<Response> {
-  const token = decodeURIComponent(tokenRaw);
+  let token: string;
+  try { token = decodeURIComponent(tokenRaw); } catch { throw fieldError("token", "invalid device token"); }
   await query(ctx.deps.query, "DELETE FROM user_devices WHERE user_id = $1 AND token = $2", [ctx.user.id, token]);
   return noContent(ctx.rid);
 }

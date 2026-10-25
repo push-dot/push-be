@@ -4,6 +4,7 @@ import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { pageOf, ts } from "../page.ts";
 import { encodeCursor, parseUtc } from "../time.ts";
 import type { Ctx } from "../types.ts";
+import { declaredTooLarge } from "./images.ts";
 
 const MAX_SOURCE_BYTES = 20 << 20;
 
@@ -26,6 +27,7 @@ const base64 = (bytes: Uint8Array): string => {
 };
 
 export const createSource = async (ctx: Ctx): Promise<Response> => {
+  if (declaredTooLarge(ctx.request, MAX_SOURCE_BYTES)) throw tooLarge();
   const form = await ctx.request.formData();
   const kind = form.get("kind");
   if (!kind || typeof kind !== "string") throw fieldError("kind", "required");

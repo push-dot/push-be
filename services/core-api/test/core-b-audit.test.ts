@@ -24,6 +24,7 @@ export const recorder = (answer: (sql: string, params: unknown[]) => Record<stri
         rowCount: 1,
       };
     }
+    if (sql.startsWith("INSERT INTO idempotency_keys")) return { rows: [{ id: "idem" }], rowCount: 1 };
     const rows = answer(sql, params) ?? [];
     return { rows, rowCount: rows.length };
   };
@@ -100,3 +101,42 @@ test("the in-memory rate limit fallback drops buckets from past minutes", async 
   await allow(down, "ip", "10.0.0.1", 60, t0 + 60_000);
   assert.equal(memoryBuckets(), 1);
 });
+
+for (const path of [
+  "/api/v1/uploads/images/%E0%A4%A",
+  "/api/v1/experiments/%E0%A4%A/assignment",
+]) {
+  test(`a malformed percent-encoding in ${path.split("/")[3]} is a 400, not a 500`, async () => {
+    const { handle } = await import("../src/handler.ts");
+    const { query } = recorder();
+    const res = await handle(new Request("https://core.example" + path, { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+    assert.equal(res.status, 400);
+  });
+}
+
+test("deleting a device with a malformed percent-encoding is a 400, not a 500", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder();
+  const res = await handle(new Request("https://core.example/api/v1/me/devices/%E0%A4%A", {
+    method: "DELETE", headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 400);
+});
+
+for (const [path, limit] of [["/api/v1/uploads/images", 10 << 20], ["/api/v1/sources", 20 << 20]] as const) {
+  test(`an upload to ${path} declaring more than the limit is refused with 413`, async () => {
+    const { handle } = await import("../src/handler.ts");
+    const { calls, query } = recorder();
+    const request = new Request("https://core.example" + path, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer t", "idempotency-key": "00000000-0000-4000-8000-000000000001",
+        "content-type": "multipart/form-data; boundary=x", "content-length": String(limit + (1 << 20)),
+      },
+      body: "--x--",
+    });
+    const res = await handle(request, ENV, { query, now: () => NOW });
+    assert.equal(res.status, 413);
+    assert.equal(calls.some((c) => c.sql.includes("INSERT INTO upload_images") || c.sql.includes("INSERT INTO sources")), false);
+  });
+}
