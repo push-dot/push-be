@@ -115,6 +115,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | `binaries` | `/usr/local/bin`, `/usr/local/sbin`, `/usr/local/lib/push`, `/etc/docker`가 바뀌었다 |
 | `users` | 계정이나 `root`·`sudo`·`adm`·`docker` 그룹 구성원이 바뀌었다 |
 | `listeners` | 호스트에 새 리스닝 소켓이 생겼다 |
+| `containers` | 처음 보는 컨테이너가 떴거나, 컨테이너의 이미지·privileged·호스트 네임스페이스·추가 권한이 바뀌었다. 이미지 다이제스트를 올린 배포 직후 한 번은 정상이다 |
 | `procs` | `/tmp`, `/var/tmp`, `/dev/shm`, `/root`, `/home`에서 실행 중인 프로세스나 masscan·xmrig 같은 이름이 있다 |
 | `firewall` | 방화벽이 나가는 연결을 버렸다. `*-LIMIT`은 연결 속도 초과(스캐너), `*-DROP`은 SMTP·사설망 시도다. `PUSH chains are missing`은 규칙이 사라졌다는 뜻이다 |
 
