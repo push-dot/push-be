@@ -114,8 +114,10 @@ v4 -A PUSH-DOCKER-EGRESS -j RETURN
 v4 -N DOCKER-USER 2>/dev/null || v4 -F DOCKER-USER
 v4 -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 v4 -A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
-v4 -A DOCKER-USER -i docker0 -j PUSH-DOCKER-EGRESS
-v4 -A DOCKER-USER -i br-+ -j PUSH-DOCKER-EGRESS
+# goto, not jump: a RETURN in PUSH-DOCKER-EGRESS must leave DOCKER-USER (allow), not fall
+# through to the inbound-only 80/443 rules and the final drop below.
+v4 -A DOCKER-USER -i docker0 -g PUSH-DOCKER-EGRESS
+v4 -A DOCKER-USER -i br-+ -g PUSH-DOCKER-EGRESS
 # Inbound from the internet: only the proxy's published 80/443 (matched before DNAT).
 v4 -A DOCKER-USER -m conntrack --ctstate NEW --ctorigdstport 80 -p tcp -j RETURN
 v4 -A DOCKER-USER -m conntrack --ctstate NEW --ctorigdstport 443 -p tcp -j RETURN
