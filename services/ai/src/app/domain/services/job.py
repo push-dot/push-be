@@ -26,6 +26,8 @@ def _now() -> datetime:
 
 
 _WORD_RE = re.compile(r"[a-z0-9+#가-힣]+")
+# Each id costs an evidence read and an approval check inside one transaction.
+MAX_ANALYSIS_EVIDENCE = 100
 _SAMPLE_PLANS = frozenset({"FREE", "PRO", "ULTRA"})
 
 
@@ -243,6 +245,10 @@ class JobService:
     async def analyze(self, user_id: UUID, job_id: UUID, application_id: UUID,
                       expected: int, evidence_ids: list[UUID],
                       ai: Optional[ent.AiOptions]) -> ent.Operation:
+        evidence_ids = list(dict.fromkeys(evidence_ids))
+        if len(evidence_ids) > MAX_ANALYSIS_EVIDENCE:
+            raise validation_field(
+                "evidenceIds", f"at most {MAX_ANALYSIS_EVIDENCE} evidence items")
         await self.ai.check(user_id, ai)
         op = None
 
