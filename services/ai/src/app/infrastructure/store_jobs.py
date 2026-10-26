@@ -5,7 +5,7 @@ from uuid import UUID
 from app.domain.entities import GapAnalysis, JobPosting
 from app.domain.pagination import Cursor, Page
 from app.jsonutil import dump
-from app.infrastructure.store_common import Conds, Store
+from app.infrastructure.store_common import Conds, Store, like_contains
 
 _JOB_COLS = ("id, user_id, revision, company, title, source_kind, source_url, source_text, "
              "requirements, preferred, keywords, risks, deadline, language, archived, "
@@ -45,7 +45,8 @@ class JobStore(Store):
         if archived is not None:
             c.add("archived = {}", archived)
         if query:
-            c.add("(company ILIKE {} OR title ILIKE {})", "%" + query + "%", "%" + query + "%")
+            c.add("(company ILIKE {} ESCAPE '\\' OR title ILIKE {} ESCAPE '\\')",
+                  like_contains(query), like_contains(query))
         c.cursor(page)
         sql, args = c.query(_JOB_COLS, "jobs", page.effective_limit())
         rows = await self.q().fetch(sql, *args)
@@ -130,10 +131,13 @@ class ReferenceSampleStore(Store):
             sample_id, source_user_id, job_category, tenure_years, fit_score, band,
             dump(part_scores), plan, dump(features), dump(sentence_templates))
 
-    async def application_owner(self, application_id):
+    async def application_owner(self, application_id, company_id):
         return await self.q().fetchval(
-            "SELECT user_id FROM applications WHERE id = $1",
-            application_id)
+            "SELECT a.user_id FROM applications a "
+            "JOIN jobs j ON j.id = a.job_id "
+            "JOIN job_postings p ON p.id = j.source_posting_id "
+            "WHERE a.id = $1 AND p.company_id = $2",
+            application_id, company_id)
 
     async def latest_fit(self, application_id):
         return await self.q().fetchval(
@@ -144,6 +148,7 @@ class ReferenceSampleStore(Store):
     async def list_for_prompt(self, job_category):
         rows = await self.q().fetch(
             "SELECT job_category, tenure_years, score_band, features "
-            "FROM reference_samples WHERE job_category = $1",
+            "FROM reference_samples WHERE job_category = $1 "
+            "ORDER BY created_at DESC LIMIT 500",
             job_category)
         return [dict(row) for row in rows]

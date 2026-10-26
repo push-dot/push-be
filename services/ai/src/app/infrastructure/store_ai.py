@@ -4,8 +4,8 @@ from typing import Optional
 from uuid import UUID
 
 from app.domain.entities import AiUsage
-from app.domain.pagination import Cursor, Page, new_page
-from app.infrastructure.store_common import Store, to_model
+from app.domain.pagination import Cursor, Page
+from app.infrastructure.store_common import Conds, Store, list_page
 
 _USAGE_COLS = ("id, user_id, operation_id, provider, model, managed, input_tokens, "
                "output_tokens, cost_micro_credits, status, created_at")
@@ -15,10 +15,13 @@ _USAGE_UPSERT = (
     " ON CONFLICT (id) DO UPDATE SET "
     "operation_id = COALESCE(EXCLUDED.operation_id, ai_usage.operation_id), "
     "provider = EXCLUDED.provider, model = EXCLUDED.model, "
-    "managed = EXCLUDED.managed, input_tokens = EXCLUDED.input_tokens, "
-    "output_tokens = EXCLUDED.output_tokens, "
-    "cost_micro_credits = EXCLUDED.cost_micro_credits, "
-    "status = EXCLUDED.status "
+    "managed = EXCLUDED.managed, "
+    # Meter rows share one id per job and model, so repeated settled calls add up.
+    + "".join(
+        f"{c} = CASE WHEN ai_usage.status = 'SETTLED' AND EXCLUDED.status = 'SETTLED' "
+        f"THEN ai_usage.{c} + EXCLUDED.{c} ELSE EXCLUDED.{c} END, "
+        for c in ("input_tokens", "output_tokens", "cost_micro_credits"))
+    + "status = EXCLUDED.status "
     "WHERE (ai_usage.status <> 'SETTLED' OR EXCLUDED.status = 'SETTLED')"
 )
 _USAGE_JOB_SQL = (
@@ -41,7 +44,6 @@ class AiUsageStore(Store):
             u.created_at, job_id)
 
     async def create(self, u: AiUsage) -> None:
-        from uuid import UUID
         from app.claimctx import LostClaim, claim_job, claim_token
         values = (
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
@@ -119,27 +121,13 @@ class AiUsageStore(Store):
 
     async def list(self, user_id: UUID, from_: Optional[datetime],
                    to: Optional[datetime], page) -> Page:
-        q = (f"SELECT {_USAGE_COLS} FROM ai_usage WHERE user_id = $1")
-        args: list = [user_id]
-        n = 1
+        c = Conds()
+        c.add("user_id = {}", user_id)
         if from_:
-            n += 1
-            q += f" AND created_at >= ${n}"
-            args.append(from_)
+            c.add("created_at >= {}", from_)
         if to:
-            n += 1
-            q += f" AND created_at <= ${n}"
-            args.append(to)
-        if page.cursor is not None:
-            n += 1
-            q += f" AND (created_at, id) < (${n}"
-            n += 1
-            q += f", ${n})"
-            args.extend([page.cursor.created_at, page.cursor.id])
-        q += " ORDER BY created_at DESC, id DESC"
-        n += 1
-        q += f" LIMIT ${n}"
-        args.append(page.effective_limit() + 1)
-        rows = await self.q().fetch(q, *args)
-        return new_page([to_model(AiUsage, r) for r in rows], page.effective_limit(),
-                        lambda u: Cursor(u.created_at, u.id))
+            c.add("created_at <= {}", to)
+        c.cursor(page)
+        sql, args = c.query(_USAGE_COLS, "ai_usage", page.effective_limit())
+        rows = await self.q().fetch(sql, *args)
+        return list_page(rows, page, AiUsage, lambda u: Cursor(u.created_at, u.id))

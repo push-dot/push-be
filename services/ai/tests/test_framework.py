@@ -73,7 +73,8 @@ class _Query:
     async def fetch(self, sql, *args):
         self.calls.append((sql, args))
         if self.fail_union and "rag_chunks" in sql:
-            raise RuntimeError("rag_chunks missing")
+            from app.pgproto import PgError
+            raise PgError("42P01", "relation \"rag_chunks\" does not exist")
         return list(self.rows)
 
     async def execute(self, sql, *args):
@@ -89,6 +90,9 @@ class _DB:
 
     def q(self):
         return self.query
+
+    async def do(self, fn):
+        return await fn()
 
 
 def test_cloudflare_worker_forces_legacy(monkeypatch):
@@ -394,7 +398,7 @@ def test_rag_store_replace_and_missing_sql():
     source_id = uuid4()
     asyncio.run(store.replace(
         user_id, "link", source_id, "Blog", [("body", [0.2, 0.3])]))
-    assert "DELETE FROM rag_chunks" in query.calls[0][0]
+    assert "DELETE FROM rag_chunks" in query.calls[1][0]
     insert_sql, insert_rows = query.many[0]
     assert "INSERT INTO rag_chunks" in insert_sql
     assert insert_rows[0][2] == "link"
@@ -413,7 +417,8 @@ def test_rag_store_replace_and_missing_sql():
 
     class Boom:
         async def fetch(self, sql, *args):
-            raise RuntimeError("missing table")
+            from app.pgproto import PgError
+            raise PgError("42P01", "missing table")
 
     empty = asyncio.run(RagStore(_DB(Boom())).missing("resume", user_id, 1))
     assert empty == []

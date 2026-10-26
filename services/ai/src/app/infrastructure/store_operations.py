@@ -4,6 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from app.domain.entities import Approval, Operation
+from app.domain.errors import invalid_transition
 from app.domain.pagination import Cursor, Page
 from app.jsonutil import dump
 from app.infrastructure.store_common import Conds, Store, list_page, to_model
@@ -35,14 +36,17 @@ class OperationStore(Store):
             f"SELECT {_OP_COLS} FROM operations WHERE id = $1 AND user_id = $2", id_, user_id))
 
     async def update(self, o: Operation) -> None:
-        await self.q().execute(
+        tag = await self.q().execute(
             "UPDATE operations SET status = $2, progress = $3, result = $4, error = $5, "
-            "input_request = $6, pending_payload = $7, updated_at = $8 WHERE id = $1",
+            "input_request = $6, pending_payload = $7, updated_at = $8 WHERE id = $1 "
+            "AND user_id = $9 AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED')",
             o.id, o.status, o.progress, dump(o.result) if o.result else None,
             dump(o.error) if o.error else None,
             dump(o.input_request) if o.input_request else None,
             dump(o.pending_payload) if o.pending_payload is not None else None,
-            o.updated_at)
+            o.updated_at, o.user_id)
+        if tag.split()[-1] == "0":
+            raise invalid_transition("operation already finished")
 
 
 class ApprovalStore(Store):

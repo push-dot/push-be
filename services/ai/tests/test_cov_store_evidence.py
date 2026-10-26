@@ -1,7 +1,7 @@
 """EvidenceStore and the reachable SourceStore reads.
 
-SourceStore.create/delete/referenced and EvidenceStore.list_by_ids have no
-callers in Python (sources CRUD lives in core-api)."""
+SourceStore.create/delete have no callers in Python (sources CRUD lives in
+core-api)."""
 from uuid import uuid4
 
 import pytest
@@ -37,7 +37,7 @@ async def test_evidence_list_filters_skip_archived():
     p = await s.list(USER, "SKILL", "go", page(1, Cursor(NOW, cid)))
     _, sql, args = conn.last
     assert_scoped(conn.last, USER)
-    assert "user_id = $1 AND NOT archived AND kind = $2 AND (title ILIKE $3 OR source_text ILIKE $4)" in sql
+    assert "user_id = $1 AND NOT archived AND kind = $2 AND (title ILIKE $3 ESCAPE '\\' OR source_text ILIKE $4 ESCAPE '\\')" in sql
     assert args == (USER, "SKILL", "%go%", "%go%", NOW, cid, 2) and p.has_more
     await s.list(USER, None, "", page())
     assert conn.last[2] == (USER, 51)

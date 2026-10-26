@@ -5,7 +5,7 @@ from uuid import UUID
 from app.domain.entities import Application, ApplicationEvent, Submission, SubmissionDraft
 from app.domain.pagination import Cursor, Page
 from app.jsonutil import dump
-from app.infrastructure.store_common import Conds, Store, list_page, to_model
+from app.infrastructure.store_common import Conds, Store, like_contains, list_page, to_model
 
 _APP_COLS = ("id, user_id, revision, job_id, company, title, stage, notes, "
              "applied_at, next_action_at, imported, created_at, updated_at")
@@ -42,7 +42,8 @@ class ApplicationStore(Store):
         if stage:
             c.add("stage = {}", stage)
         if query:
-            c.add("(company ILIKE {} OR title ILIKE {})", "%" + query + "%", "%" + query + "%")
+            c.add("(company ILIKE {} ESCAPE '\\' OR title ILIKE {} ESCAPE '\\')",
+                  like_contains(query), like_contains(query))
         c.cursor(page)
         sql, args = c.query(_APP_SELECT, "applications", page.effective_limit())
         rows = await self.q().fetch(sql, *args)
