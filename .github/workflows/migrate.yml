@@ -33,6 +33,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
+      # The migrate extra (services/ai/pyproject.toml) adds asyncpg and websockets>=13,<17.
       - name: Install dependencies
         working-directory: services/ai
         run: uv sync --locked --no-dev --extra migrate --python 3.12
