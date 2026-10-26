@@ -29,11 +29,10 @@ class FitQuery:
             return self.cache.get(args)
         if "FROM job_postings" in sql:
             self.posting_reads += 1
-            return {"id": POSTING, "requirements": ["Python"], "skills": ["Python"], "description": ""}
-        if "FROM documents" in sql:
-            return {"id": DOC, "user_id": self.owner, "content": "I use Python daily"}
-        if "FROM users" in sql:
-            return {"plan": "PRO"}
+            if args[0] != self.owner:  # documents.user_id = $1
+                return None
+            return {"requirements": ["Python"], "skills": ["Python"], "description": "",
+                    "content": "I use Python daily", "plan": "PRO"}
         return None
 
     async def execute(self, sql, *args):
