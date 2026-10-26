@@ -55,6 +55,8 @@ export const createMailer = (env: MailEnv, fetchImpl?: typeof fetch): Mailer => 
       return;
     }
     const from = env.MAIL_FROM || "noreply@push.local";
-    console.log(`[mail] ${from} -> ${mail.to} ${mail.subject} ${mail.text}`);
+    // The body carries live verify/reset/invite tokens; only a development worker may print it.
+    const body = env.APP_ENV === "development" ? mail.text : "(not sent: no mail provider)";
+    console.log(`[mail] ${from} -> ${mail.to} ${mail.subject} ${body}`);
   },
 });

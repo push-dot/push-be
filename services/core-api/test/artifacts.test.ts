@@ -69,3 +69,8 @@ test("traversal and hidden names are rejected before any read", async () => {
   }
   // A bare ".." segment is resolved away by URL parsing, so it never reaches the route.
 });
+
+test("artifacts are served with nosniff", async () => {
+  const res = await get("05_final_resume.md");
+  assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+});

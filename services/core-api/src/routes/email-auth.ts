@@ -2,12 +2,24 @@ import { isUnique, one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError, noContent, randomToken, sha256Hex } from "../http.ts";
 import { createMailer, type Mailer } from "../mail/mailer.ts";
 import { hashPassword, verifyPassword } from "../mail/password.ts";
+import { allow } from "../ratelimit.ts";
 import type { Ctx } from "../types.ts";
 import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
+const LOGIN_PER_MINUTE = 10;
+const MAIL_PER_MINUTE = 3;
+
+let decoy: Promise<string> | null = null;
+const decoyHash = (): Promise<string> => (decoy ??= hashPassword(crypto.randomUUID()));
+
+const limitEmail = async (ctx: Ctx, kind: "login" | "mail", email: string, limit: number): Promise<void> => {
+  if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime()))) {
+    throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 60 });
+  }
+};
 
 const readJson = async (request: Request): Promise<Record<string, unknown>> => {
   const raw = await request.text();
@@ -76,13 +88,14 @@ const sendLink = async (ctx: Ctx, to: string, kind: "verify" | "reset", token: s
   await mailerOf(ctx).send({ to, subject, text, html, idempotencyKey: token });
 };
 
+// Issuing a link revokes the owner's unused links of the same kind, so only the newest one works.
+const ISSUE_EMAIL_TOKEN = "WITH revoked AS (DELETE FROM email_tokens WHERE kind = $4 AND used_at IS NULL AND (user_id = $2 OR signup_id = $3)) INSERT INTO email_tokens (id, user_id, signup_id, kind, token_hash, expires_at, used_at) VALUES ($1,$2,$3,$4,$5,$6,NULL)";
+
 const issueEmailToken = async (ctx: Ctx, kind: "VERIFY" | "RESET", userId: string | null, signupId: string | null): Promise<string> => {
   const token = randomToken();
   const hash = await sha256Hex(token);
   const expires = new Date(ctx.now.getTime() + (kind === "VERIFY" ? 24 * HOUR_MS : HOUR_MS)).toISOString();
-  await query(ctx.deps.query,
-    "INSERT INTO email_tokens (id, user_id, signup_id, kind, token_hash, expires_at, used_at) VALUES ($1,$2,$3,$4,$5,$6,NULL)",
-    [crypto.randomUUID(), userId, signupId, kind, hash, expires]);
+  await query(ctx.deps.query, ISSUE_EMAIL_TOKEN, [crypto.randomUUID(), userId, signupId, kind, hash, expires]);
   return token;
 };
 
@@ -103,6 +116,7 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
   const consent = requireConsent(body.consentReference);
+  await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (existing) throw emailTaken(existing);
   const passwordHash = await hashPassword(password);
@@ -112,7 +126,6 @@ const signup = async (ctx: Ctx): Promise<Response> => {
     "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_employer = EXCLUDED.is_employer, display_name = EXCLUDED.display_name, consent_reference = EXCLUDED.consent_reference, created_at = EXCLUDED.created_at RETURNING id",
     [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now]);
   const signupId = String(row?.id ?? id);
-  await query(ctx.deps.query, "DELETE FROM email_tokens WHERE signup_id = $1", [signupId]);
   const token = await issueEmailToken(ctx, "VERIFY", null, signupId);
   await sendLink(ctx, email, "verify", token);
   return data(202, { accepted: true }, ctx.rid);
@@ -143,11 +156,12 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     if (taken) throw emailTaken(taken);
     throw err;
   }
-  if (asBool(row.consent_reference)) {
-    await query(ctx.deps.query,
-      "INSERT INTO user_consents (user_id, reference_data, updated_at) VALUES ($1,$2,$3)",
-      [userId, true, now]);
-  }
+  await Promise.all([
+    asBool(row.consent_reference)
+      ? query(ctx.deps.query, "INSERT INTO user_consents (user_id, reference_data, updated_at) VALUES ($1,$2,$3)", [userId, true, now])
+      : null,
+    query(ctx.deps.query, "DELETE FROM email_signups WHERE id = $1", [String(row.signup_id)]),
+  ]);
   return data(200, await issue(ctx, userId), ctx.rid);
 };
 
@@ -155,17 +169,19 @@ const login = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const email = requireEmail(body.email);
   const password = typeof body.password === "string" ? body.password : "";
+  await limitEmail(ctx, "login", email, LOGIN_PER_MINUTE);
   const user = await one(ctx.deps.query,
     "SELECT id, password_hash, email_verified_at, is_employer FROM users WHERE lower(email) = lower($1)",
     [email]);
   if (!user) {
+    await verifyPassword(password, await decoyHash());
     const pending = await one(ctx.deps.query, "SELECT id FROM email_signups WHERE lower(email) = lower($1)", [email]);
     if (pending) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   }
   if (user.email_verified_at == null) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
   const stored = user.password_hash == null ? "" : String(user.password_hash);
-  if (!stored || !(await verifyPassword(password, stored))) {
+  if (!(await verifyPassword(password, stored || await decoyHash())) || !stored) {
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   }
   await clearDeletion(ctx, String(user.id));
@@ -175,6 +191,7 @@ const login = async (ctx: Ctx): Promise<Response> => {
 const requestReset = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const email = requireEmail(body.email);
+  await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const user = await one(ctx.deps.query, "SELECT id FROM users WHERE lower(email) = lower($1)", [email]);
   if (user) {
     const token = await issueEmailToken(ctx, "RESET", String(user.id), null);

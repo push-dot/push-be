@@ -5,7 +5,7 @@ import type { CoreEnv } from "../types.ts";
 
 export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
-  verifyGoogle(purchaseToken: string, productId: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
+  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
 }
@@ -28,6 +28,10 @@ const jsonOf = (bytes: Uint8Array): Record<string, unknown> => {
 };
 
 const invalidSignature = (): HttpError => new HttpError(400, "VALIDATION_ERROR", "invalid webhook signature");
+
+const invalidPurchase = (): HttpError => new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
+
+const LIVE_SUBSCRIPTION = new Set(["SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"]);
 
 const exactBytes = (bytes: Uint8Array): ArrayBuffer => {
   const copy = new ArrayBuffer(bytes.byteLength);
@@ -159,11 +163,12 @@ const bearerToken = (authorization: string | null): string => {
   return match[1];
 };
 
-const verifyGoogleOidc = async (env: CoreEnv, authorization: string | null): Promise<void> => {
+const verifyGoogleOidc = async (env: CoreEnv, authorization: string | null, now: Date): Promise<void> => {
   const token = bearerToken(authorization);
   if (!env.GOOGLE_OIDC_AUDIENCE || !env.GOOGLE_OIDC_KEY) throw notConfigured("google oidc is not configured");
   const claims = await verifyJws(token, env.GOOGLE_OIDC_KEY);
   if (claims.iss !== "https://accounts.google.com" || claims.aud !== env.GOOGLE_OIDC_AUDIENCE) throw invalidSignature();
+  if (typeof claims.exp !== "number" || claims.exp * 1000 <= now.getTime()) throw invalidSignature();
 };
 
 const appleToken = (body: string): string => {
@@ -231,34 +236,40 @@ const googleType = (value: unknown, consumable: boolean): string => {
   return String(value ?? "");
 };
 
-export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): StoreReceipts => ({
+export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: Date): StoreReceipts => ({
   verifyApple: async (signedTransaction) => {
-    if (!env.APPLE_IAP_KEY) throw notConfigured("app store is not configured");
-    const res = await fetchImpl("https://api.storekit.itunes.apple.com/inApps/v1/transactions/" + encodeURIComponent(signedTransaction), {
-      headers: { authorization: "Bearer " + env.APPLE_IAP_KEY },
-    });
-    const body = await readStore(res);
-    const type = String(body.type ?? "");
+    if (!env.APPLE_BUNDLE_ID) throw notConfigured("app store is not configured");
+    const { payload } = await appleVerified(signedTransaction, env.APPLE_ROOT_PEM);
+    if (payload.bundleId !== env.APPLE_BUNDLE_ID) throw invalidPurchase();
+    if (payload.revocationDate != null) throw invalidPurchase();
+    const originalTransactionId = String(payload.originalTransactionId ?? "");
+    if (!originalTransactionId) throw invalidPurchase();
     return {
-      productId: String(body.productId ?? ""),
-      originalTransactionId: String(body.originalTransactionId ?? ""),
-      expiresAt: expiresOf(body.expiresAt ?? body.expiresDate),
-      consumable: body.consumable === true || type === "Consumable",
+      productId: String(payload.productId ?? ""),
+      originalTransactionId,
+      expiresAt: expiresOf(payload.expiresDate),
+      consumable: payload.type === "Consumable",
     };
   },
-  verifyGoogle: async (purchaseToken, productId) => {
+  verifyGoogle: async (purchaseToken, productId, subscription) => {
     if (!env.GOOGLE_PLAY_KEY || !env.GOOGLE_PLAY_PACKAGE) throw notConfigured("google play is not configured");
-    const url = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
-      + encodeURIComponent(env.GOOGLE_PLAY_PACKAGE)
-      + "/purchases/products/" + encodeURIComponent(productId)
-      + "/tokens/" + encodeURIComponent(purchaseToken);
+    const app = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + encodeURIComponent(env.GOOGLE_PLAY_PACKAGE);
+    const url = subscription
+      ? app + "/purchases/subscriptionsv2/tokens/" + encodeURIComponent(purchaseToken)
+      : app + "/purchases/products/" + encodeURIComponent(productId) + "/tokens/" + encodeURIComponent(purchaseToken);
     const res = await fetchImpl(url, { headers: { authorization: "Bearer " + env.GOOGLE_PLAY_KEY } });
     const body = await readStore(res);
+    if (!subscription) {
+      if (body.purchaseState !== 0) throw invalidPurchase();
+      return { productId, originalTransactionId: purchaseToken, expiresAt: null, consumable: true };
+    }
+    if (!LIVE_SUBSCRIPTION.has(String(body.subscriptionState ?? ""))) throw invalidPurchase();
+    const line = Array.isArray(body.lineItems) ? body.lineItems[0] as Record<string, unknown> | undefined : undefined;
     return {
-      productId,
-      originalTransactionId: String(body.orderId ?? purchaseToken),
-      expiresAt: expiresOf(body.expiryTime ?? body.expiryTimeMillis),
-      consumable: body.consumptionState != null || body.consumable === true,
+      productId: String(line?.productId ?? ""),
+      originalTransactionId: purchaseToken,
+      expiresAt: expiresOf(line?.expiryTime),
+      consumable: false,
     };
   },
   decodeAppleNotification: async (body) => {
@@ -277,7 +288,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch): Stor
     };
   },
   decodeGoogleNotification: async (body, authorization) => {
-    await verifyGoogleOidc(env, authorization);
+    await verifyGoogleOidc(env, authorization, now);
     if (!env.GOOGLE_PLAY_KEY) throw notConfigured("google play is not configured");
     const decoded = await verifyJws(googleToken(body), env.GOOGLE_PLAY_KEY);
     const sub = decoded.subscriptionNotification && typeof decoded.subscriptionNotification === "object"
