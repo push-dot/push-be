@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("reportlab")  # local extra; CI installs the Workers set
+
 import io
 
 import pytest

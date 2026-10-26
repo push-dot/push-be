@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("langgraph.checkpoint.postgres")  # local extra; CI installs the Workers set
+
 import sys
 from pathlib import Path
 from types import SimpleNamespace
