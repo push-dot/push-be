@@ -4,6 +4,7 @@
 #   - a systemd unit, cron entry, authorized key, sshd/sudo config or local binary changed
 #   - a user or a sudo/docker group member appeared
 #   - a listening socket appeared
+#   - a container appeared, or one runs privileged, with host namespaces or added capabilities
 #   - the firewall rate-limited or dropped outbound traffic (scanner, SMTP, private ranges)
 #   - a process runs from /tmp, /var/tmp, /dev/shm, /root or /home, or has a miner name
 # The first run records a baseline. After an alert the new state becomes the baseline.
@@ -73,6 +74,11 @@ users() {
 }
 listeners() {
   ss -Hlntu | awk '{print $1, $5}'
+}
+# Running containers by name and image, with the host access each one holds.
+containers() {
+  docker ps -q | xargs -r docker inspect --format \
+    '{{.Name}} {{.Config.Image}} privileged={{.HostConfig.Privileged}} pid={{.HostConfig.PidMode}} net={{.HostConfig.NetworkMode}} caps={{.HostConfig.CapAdd}}'
 }
 procs() {
   local p exe comm
@@ -145,6 +151,7 @@ track access both access
 track binaries both binaries
 track users both users
 track listeners new listeners
+track containers new containers
 track procs new procs
 check_firewall
 

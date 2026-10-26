@@ -31,9 +31,10 @@ jobs:
       deploy: ${{ steps.filter.outputs.deploy }}
       vps: ${{ steps.filter.outputs.vps }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -70,21 +71,22 @@ jobs:
             db=true
             deploy=true
           fi
-          echo "ai=$ai" >> "$GITHUB_OUTPUT"
-          echo "gateway=$gateway" >> "$GITHUB_OUTPUT"
-          echo "core=$core" >> "$GITHUB_OUTPUT"
-          echo "db=$db" >> "$GITHUB_OUTPUT"
-          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
-          echo "vps=$vps" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "ai=$ai" "gateway=$gateway" "core=$core" "db=$db" \
+            "deploy=$deploy" "vps=$vps" >> "$GITHUB_OUTPUT"
 
+  # 3.12 is the floor (requires-python, Workers); 3.14 is the VPS image (services/ai/Dockerfile).
   test-ai:
     needs: changes
     if: needs.changes.outputs.ai == 'true' || needs.changes.outputs.vps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.15@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
         env:
           POSTGRES_USER: push
           POSTGRES_PASSWORD: push
@@ -97,19 +99,50 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: services/ai/pyproject.toml
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: python -m pip install -e ".[test]"
+        run: uv sync --locked --no-dev --extra test --python "${{ matrix.python }}"
       - name: Test
         working-directory: services/ai
         # Coverage is reported, not enforced.
-        run: python -m pytest --cov=app --cov-report=term
+        run: uv run --no-sync python -m pytest --cov=app --cov-report=term
+
+  # Reports ruff and mypy findings without failing the build (the backlog is not fixed yet).
+  lint-ai:
+    needs: changes
+    if: needs.changes.outputs.ai == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
+      - name: Install dependencies
+        working-directory: services/ai
+        run: uv sync --locked --no-dev --extra local --extra test --group lint --python 3.14
+      - name: ruff check
+        working-directory: services/ai
+        continue-on-error: true
+        run: uv run --no-sync ruff check --statistics .
+      - name: ruff format
+        working-directory: services/ai
+        continue-on-error: true
+        run: uv run --no-sync ruff format --check .
+      - name: mypy
+        working-directory: services/ai
+        continue-on-error: true
+        run: uv run --no-sync mypy
 
   test-gateway:
     needs: changes
@@ -117,8 +150,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: npm
@@ -136,7 +171,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         env:
           POSTGRES_USER: push
           POSTGRES_PASSWORD: push
@@ -149,15 +184,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: services/ai/pyproject.toml
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: python -m pip install -e . 'asyncpg>=0.30'
+        run: uv sync --locked --no-dev --extra migrate --python 3.12
       - name: Apply migrations
         working-directory: services/ai
         env:
@@ -165,7 +201,9 @@ jobs:
           DB_DRIVER: asyncpg
           PG_TRANSPORT: tcp
           RUN_MIGRATIONS: "1"
-        run: python scripts/migrate.py
+        run: uv run --no-sync python scripts/migrate.py
+      - name: Check schema invariants
+        run: psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f db/tests/schema_checks.sql
 
   bundle-ai:
     needs: changes
@@ -173,23 +211,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
-          cache-dependency-glob: services/ai/pyproject.toml
+          cache-dependency-glob: services/ai/uv.lock
       - name: Install Python
         run: uv python install 3.12
       - name: Install Workers tooling
         working-directory: services/ai
-        run: uv sync --group dev --python 3.12
+        run: uv sync --locked --group dev --python 3.12
       - name: Check Python worker bundle
         working-directory: services/ai
         run: |
-          uv run pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
+          uv run --no-sync pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
           python3 scripts/check_worker_bundle.py /tmp/push-be-bundle
 
   test-core:
@@ -198,8 +238,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: npm
@@ -216,8 +258,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: npm
@@ -234,8 +278,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: npm
@@ -254,7 +300,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check infra/vps
         run: infra/vps/test/run.sh
 
@@ -306,13 +354,14 @@ jobs:
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID != '' }}
           STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO != '' }}
           STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA != '' }}
+          VPS_SSH_HOST_KEY: ${{ vars.VPS_SSH_HOST_KEY != '' }}
         run: |
           missing=()
           for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID VPS_HOST VPS_SSH_KEY \
             DATABASE_URL REDIS_PASSWORD AI_SHARED_SECRET INTERNAL_API_SECRET DISPATCH_SECRET \
             ADMIN_TOKEN BYOK_MASTER_KEY OPENROUTER_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
             GOOGLE_CLIENT_SECRET GH_OAUTH_CLIENT_SECRET AI_HOST DISPATCH_HOST GOOGLE_CLIENT_ID \
-            GH_OAUTH_CLIENT_ID STRIPE_PRICE_PRO STRIPE_PRICE_ULTRA; do
+            GH_OAUTH_CLIENT_ID STRIPE_PRICE_PRO STRIPE_PRICE_ULTRA VPS_SSH_HOST_KEY; do
             [ "${!name}" = true ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -gt 0 ]; then
@@ -320,21 +369,23 @@ jobs:
             exit 1
           fi
           echo "All required deploy secrets and variables are set."
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: package-lock.json
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
-          cache-dependency-glob: services/ai/pyproject.toml
+          cache-dependency-glob: services/ai/uv.lock
       - name: Install Python
         run: uv python install 3.12
       - name: Install Workers tooling
         working-directory: services/ai
-        run: uv sync --group dev --python 3.12
+        run: uv sync --locked --group dev --python 3.12
       - name: Install gateway
         run: npm ci
       # Uploads the script and wrangler vars. Each "Set ... secrets" step
@@ -349,7 +400,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: uv run pywrangler deploy
+        run: uv run --no-sync pywrangler deploy
       # AI_SHARED_SECRET stays unset on this Worker: it is reached through a
       # service binding, and the shared-secret check is for VPS traffic only.
       - name: Set Python worker secrets
@@ -374,7 +425,7 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          # Public host key printed by harden.sh. Unset falls back to trust on first use.
+          # Public host key printed by harden.sh. Required: a scanned key would trust whoever answers.
           VPS_SSH_HOST_KEY: ${{ vars.VPS_SSH_HOST_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
@@ -417,12 +468,7 @@ jobs:
           install -m 700 -d ~/.ssh
           umask 077
           printf '%b\n' "$VPS_SSH_KEY" > ~/.ssh/id_vps
-          if [ -n "$VPS_SSH_HOST_KEY" ]; then
-            printf '%s %s\n' "$VPS_HOST" "$VPS_SSH_HOST_KEY" > ~/.ssh/known_hosts
-          else
-            echo "::warning::VPS_SSH_HOST_KEY is not set; trusting the VPS host key on first use. Set it from the harden.sh output."
-            ssh-keyscan -t ed25519 "$VPS_HOST" > ~/.ssh/known_hosts
-          fi
+          printf '%s %s\n' "$VPS_HOST" "$VPS_SSH_HOST_KEY" > ~/.ssh/known_hosts
           # The deploy key is pinned to push-deploy on the VPS; each call is one verb.
           ssh_vps() {
             ssh -i ~/.ssh/id_vps \

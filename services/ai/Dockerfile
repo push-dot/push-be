@@ -1,8 +1,17 @@
-FROM python:3.12.7-slim-bookworm
+# Base images are pinned by digest; Dependabot (.github/dependabot.yml) proposes bumps.
+FROM python:3.14.9-slim-trixie@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8
+
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff \
+    /uv /usr/local/bin/uv
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
+    PATH=/opt/venv/bin:$PATH \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_NO_SANDBOX=1 \
     CHAT_EXECUTOR=local \
@@ -12,16 +21,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# Dependencies before source, so a code-only change reuses this layer on the VPS.
+# uv.lock pins every package with hashes; --locked fails if it is stale.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --extra local --no-install-project \
+    && playwright install --with-deps chromium \
+    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+    && install -d -o app -g app /app/data /data/sources \
+    && chown -R app:app /data /ms-playwright
+
+# Source stays root-owned: the app user cannot rewrite its own code.
 COPY src ./src
 COPY scripts ./scripts
 COPY eval ./eval
-
-RUN pip install --no-cache-dir ".[local]" \
-    && playwright install --with-deps chromium \
-    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /data/sources /ms-playwright \
-    && chown -R app:app /app /data /ms-playwright
 
 USER 10001
 EXPOSE 8080

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Python 3.13 · FastAPI · LangGraph · PostgreSQL 16 + pgvector · asyncpg
+  Python 3.14 (3.12+) · FastAPI · LangGraph · PostgreSQL 16 + pgvector · asyncpg
 </p>
 
 ---
@@ -150,12 +150,12 @@ DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?ssl
 
 ```bash
 cd services/ai
-pip install -e ".[local]"
+uv sync --locked --extra migrate
 DATABASE_URL='postgresql://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require' \
-  python scripts/migrate.py
+  uv run python scripts/migrate.py
 ```
 
-`db/migrations/`의 `0001`–`0015`가 순서대로 적용된다. `0014_workers_blobs.sql`은 `chat_jobs.checkpoint`, `sources.content`, `workspace_files`를 추가한다. `0015_rate_limits.sql`은 공유 속도 제한 카운터다.
+`db/migrations/`의 파일이 이름 순서대로 한 번씩 적용된다(`schema_migrations`에 기록). 파일마다 트랜잭션 하나라서 `CREATE INDEX CONCURRENTLY`는 쓸 수 없다. 적용한 파일은 고치지 않고 새 번호로 추가한다. `db/tests/schema_checks.sql`은 계정 삭제가 막히지 않는지(사용자에게 이어지는 FK가 모두 `CASCADE`나 `SET NULL`인지)와 남의 행을 지우는 연쇄 삭제가 없는지 확인한다. CI `test-db`가 마이그레이션 뒤에 실행한다.
 
 ### 3. 시크릿
 
@@ -226,10 +226,10 @@ cd services/gateway && npx wrangler dev
 
 ```bash
 cd services/ai
-pip install -e ".[local,test]"
+uv sync --locked --extra local --extra test
 # 저장소 루트의 .env.example 을 .env 로 복사. DATABASE_URL 은 localhost:5434
-python scripts/migrate.py
-PYTHONPATH=src uvicorn app.main:app --port 8080
+uv run python scripts/migrate.py
+PYTHONPATH=src uv run uvicorn app.main:app --port 8080
 ```
 
 Workers 런타임 (`wrangler dev`). 시크릿은 `.dev.vars` 또는 이미 넣은 Worker 시크릿을 쓴다. `.dev.vars`는 커밋하지 않는다. 명령은 `services/ai`에서 실행한다. 엔트리가 `src/worker.py`라 업로드 루트는 `src/`다.
@@ -245,9 +245,13 @@ uv run pywrangler dev
 
 ```bash
 cd services/ai
-pip install -e ".[local,test]"
-python -m pytest
+uv sync --locked --extra local --extra test
+uv run python -m pytest
+uv sync --locked --extra local --extra test --group lint   # ruff, mypy (CI는 보고만 한다)
+uv run ruff check . && uv run mypy
 ```
+
+Python 의존성은 `services/ai/uv.lock`이 해시까지 고정한다. CI와 VPS 이미지는 `uv sync --locked`로 설치하므로 `pyproject.toml`을 바꾸면 `uv lock`으로 잠금 파일도 함께 커밋한다. GitHub Actions는 커밋 SHA로, 컨테이너 이미지는 다이제스트로 고정하고 Dependabot이 주마다 올리는 PR을 연다.
 
 ### 5. 배포
 
