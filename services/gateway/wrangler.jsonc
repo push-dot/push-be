@@ -12,7 +12,7 @@
   // once-a-minute cron on Cloudflare. Omitting `triggers` does not delete
   // it, so the platform invokes this worker every minute and records
   // "Handler does not export a scheduled() function". An empty list is
-  // what clears the schedule. The Python worker keeps `* * * * *`.
+  // what clears the schedule. The Python worker has no crons either.
   "triggers": { "crons": [] },
   // Public URL stays https://push-be.<account>.workers.dev.
   // Reads listed in src/handler.ts are answered here. Other non-AI
