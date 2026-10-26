@@ -1,14 +1,12 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
-from app.domain.errors import (
-    internal, map_revision_err, not_found, validation_field, integration_required,
-)
+from app.domain.errors import internal, validation_field, integration_required
 from app.domain.validators import code_point_len, hash_bytes, validate_https_url
 from app.infrastructure.store_evidence import EvidenceStore, SourceStore
 from app.infrastructure.store_operations import OperationStore
@@ -54,60 +52,6 @@ class EvidenceService:
             return await self.evidence.list(user_id, kind, query, page)
         except Exception:
             raise internal()
-
-    async def get(self, user_id: UUID, id_: UUID) -> ent.CareerEvidence:
-        try:
-            return await self.evidence.get(user_id, id_)
-        except NotFoundError:
-            raise not_found()
-        except Exception:
-            raise internal()
-
-    async def create(self, user_id: UUID, kind: str, title: str, source_text: str,
-                     source_url: Optional[str], skills: list[str],
-                     supersedes_id: Optional[UUID]) -> ent.CareerEvidence:
-        validate_evidence_input(kind, title, source_text, source_url, skills or [], supersedes_id)
-        now = _now()
-        e = ent.CareerEvidence(
-            id=uuid4(), user_id=user_id, revision=1, kind=kind, title=title,
-            source_text=source_text, source_url=source_url, skills=skills or [],
-            verification_status=ent.VERIFICATION_USER_PROVIDED,
-            provenance=ent.Provenance(content_hash=hash_bytes(source_text.encode())),
-            supersedes_id=supersedes_id, created_at=now, updated_at=now)
-        if supersedes_id is not None:
-            try:
-                await self.evidence.get(user_id, supersedes_id)
-            except NotFoundError:
-                raise validation_field("supersedesId", "referenced evidence not found")
-        try:
-            await self.evidence.create(e)
-        except Exception:
-            raise internal()
-        return e
-
-    async def archive(self, user_id: UUID, id_: UUID, expected: int) -> ent.CareerEvidence:
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                e = await self.evidence.get(user_id, id_)
-            except NotFoundError:
-                raise not_found()
-            if e.archived:
-                out = e
-                return
-            e.archived = True
-            e.updated_at = _now()
-            try:
-                await self.evidence.update(e, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            e.revision = expected + 1
-            out = e
-
-        await self.db.run(work)
-        return out
 
     async def import_(self, user_id: UUID, source_id: Optional[UUID], text: str,
                       source_url: Optional[str], content_hash: str,
@@ -191,16 +135,18 @@ class EvidenceService:
                 fields=missing)
             op.updated_at = now
             return
-        if len(p["title"]) > 200:
-            raise validation_field("title", "title must be 1-200 characters")
+        text, title = p["text"], p["title"]
+        if not isinstance(text, str) or not isinstance(title, str):
+            raise validation_field("fields", "text and title must be strings")
+        validate_evidence_input(p["kind"], title, text, p.get("sourceUrl"), [], None)
         evidence = ent.CareerEvidence(
-            id=uuid4(), user_id=op.user_id, revision=1, kind=p["kind"], title=p["title"],
-            source_text=p["text"], source_url=p.get("sourceUrl"), skills=[],
+            id=uuid4(), user_id=op.user_id, revision=1, kind=p["kind"], title=title,
+            source_text=text, source_url=p.get("sourceUrl"), skills=[],
             verification_status=ent.VERIFICATION_USER_PROVIDED,
             provenance=ent.Provenance(
-                content_hash=p.get("contentHash") or hash_bytes(p["text"].encode()),
+                content_hash=hash_bytes(text.encode()),
                 source_location=ent.SourceLocation(
-                    start=0, end=code_point_len(p["text"]), unit="CODE_POINT")),
+                    start=0, end=code_point_len(text), unit="CODE_POINT")),
             created_at=now, updated_at=now)
         op.result = ent.OperationResult(
             kind=ent.OP_EVIDENCE_IMPORT,

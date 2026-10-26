@@ -48,10 +48,11 @@ async def test_import_with_full_details_creates_owned_evidence():
     stored = await s.evidence.get(A, ev["id"])
     assert stored.title == "Lead" and stored.kind == "CAREER"
     assert stored.source_url == "https://x.dev/cv"
-    assert stored.provenance.content_hash == "sha-1"
+    # The client hash is not trusted; provenance always hashes the stored text.
+    assert stored.provenance.content_hash == hash_bytes(b"Led 3 engineers")
     assert stored.provenance.source_location.end == len("Led 3 engineers")
     assert stored.verification_status == ent.VERIFICATION_USER_PROVIDED
-    await _raises("NOT_FOUND", s.get(B, stored.id))
+    assert stored.user_id == A
     assert (await s.ops.get(A, op.id)).status == ent.OP_SUCCEEDED
 
 
@@ -156,15 +157,12 @@ async def test_complete_import_input_finishes_import():
     assert (ev.kind, ev.title, ev.source_text) == ("PROJECT", "Side", "text")
 
 
-async def test_list_and_get_are_scoped_and_map_outages():
+async def test_list_is_scoped_and_maps_outages():
     s = _svc()
     mine = s.evidence.put(f.evidence(A))
     s.evidence.put(f.evidence(B))
     assert [e.id for e in (await s.list(A, None, "", PageRequest())).items] == [mine.id]
-    assert (await s.get(A, mine.id)).id == mine.id
-    await _raises("NOT_FOUND", s.get(B, mine.id))
     s.evidence = f.Boom()
-    await _raises("INTERNAL", s.get(A, mine.id))
     await _raises("INTERNAL", s.list(A, None, "", PageRequest()))
 
 
@@ -202,4 +200,20 @@ async def test_import_enforces_the_evidence_title_limit():
     with pytest.raises(DomainError) as e:
         await s.import_(A, None, "text", None, "", "TEXT", "CAREER", "x" * 201)
     assert e.value.code == "VALIDATION_ERROR"
+    assert s.evidence.rows == {}
+
+
+async def test_import_caps_text_like_evidence_create():
+    s = _svc()
+    err = await _raises("VALIDATION_ERROR", s.import_(
+        A, None, "x" * 100_001, None, "", "TEXT", "CAREER", "t"))
+    assert err.details == {"field": "sourceText"}
+    assert s.evidence.rows == {}
+
+
+async def test_complete_import_input_rejects_non_string_text():
+    s = _svc()
+    op = await s.import_(A, None, "", None, "", "TEXT", "CAREER", "t")
+    await _raises("VALIDATION_ERROR",
+                  s.complete_import_input(op, {"text": {"nested": "x"}}))
     assert s.evidence.rows == {}

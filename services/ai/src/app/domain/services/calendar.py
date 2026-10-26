@@ -1,6 +1,6 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError

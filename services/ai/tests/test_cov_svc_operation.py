@@ -24,7 +24,16 @@ def _svc():
     ev = _evidence_svc()
     s = OperationService(f.FakeDB(), ev)
     s.ops = ev.ops  # import_ and the operation routes share one table
+    s.locks = _Locks()
     return s
+
+
+class _Locks:
+    def __init__(self):
+        self.locked = []
+
+    async def lock_user(self, user_id):
+        self.locked.append(user_id)
 
 
 def _op(user_id, status, type_=ent.OP_JOB_ANALYSIS, **kw):
@@ -179,3 +188,29 @@ def test_events_snapshot(op_kw, want):
         assert events[1][1]["payload"] == {"code": "CANCELLED",
                                            "message": "operation cancelled",
                                            "retryable": False}
+
+
+async def test_submit_input_serializes_on_the_user_lock_before_reading():
+    s = _svc()
+    op = await _pending_import(s)
+    get = s.ops.get
+
+    async def guarded_get(user_id, id_):
+        assert s.locks.locked == [A], "op read before the user lock"
+        return await get(user_id, id_)
+
+    s.ops.get = guarded_get
+    await s.submit_input(A, op.id, {"kind": "SKILL", "title": "X"}, None)
+
+
+async def test_cancel_takes_the_user_lock_before_reading():
+    s = _svc()
+    op = await _pending_import(s)
+    get = s.ops.get
+
+    async def guarded_get(user_id, id_):
+        assert s.locks.locked == [A], "op read before the user lock"
+        return await get(user_id, id_)
+
+    s.ops.get = guarded_get
+    assert (await s.cancel(A, op.id)).status == ent.OP_CANCELLED

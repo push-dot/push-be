@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from uuid import uuid4
 
+# A pasted list of links must not turn into hundreds of inserts and queries for one turn.
+MAX_URLS_PER_MESSAGE = 20
 _URL_RE = re.compile(r"https://[^\s<>\"'\)\]]+")
 _REPO_RE = re.compile(r"^https://github\.com/([^/\s?#]+)/([^/\s?#]+)$")
 _INSERT = (
@@ -20,6 +22,12 @@ _READ = (
 _FIT = (
     "UPDATE user_links SET fit_count = fit_count + 1 "
     "WHERE id = $1 AND user_id = $2"
+)
+_OLDER = (
+    "SELECT 1 FROM messages WHERE conversation_id = $1 "
+    "AND ($2::uuid IS NULL OR id <> $2) "
+    "AND EXISTS (SELECT 1 FROM unnest($3::text[]) AS u(url) "
+    "WHERE strpos(messages.text, u.url) > 0) LIMIT 1"
 )
 _LINKS = (
     "SELECT id, kind, url, title, status, fit_count, ai_read "
@@ -45,6 +53,8 @@ def _https_urls(text: str) -> list[str]:
         if url not in seen:
             seen.add(url)
             found.append(url)
+            if len(found) == MAX_URLS_PER_MESSAGE:
+                break
     return found
 
 
@@ -105,20 +115,10 @@ def _status(response) -> int:
 
 
 async def older_message_counted(query, conversation_id, exclude_message_id, text: str) -> bool:
-    for url in _https_urls(text):
-        if exclude_message_id is None:
-            found = await query.fetch(
-                "SELECT id FROM messages WHERE conversation_id = $1 "
-                "AND strpos(text, $2) > 0 LIMIT 1",
-                conversation_id, url)
-        else:
-            found = await query.fetch(
-                "SELECT id FROM messages WHERE conversation_id = $1 "
-                "AND id <> $2 AND strpos(text, $3) > 0 LIMIT 1",
-                conversation_id, exclude_message_id, url)
-        if found:
-            return True
-    return False
+    urls = _https_urls(text)
+    if not urls:
+        return False
+    return bool(await query.fetch(_OLDER, conversation_id, exclude_message_id, urls))
 
 
 async def _read_repo(query, fetch, row, owner: str, repo: str, user_id) -> None:

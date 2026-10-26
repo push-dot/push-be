@@ -61,6 +61,9 @@ class _Approvals:
     def __init__(self):
         self.required = []
 
+    async def denied_evidence(self, user_id, app_id):
+        return set()
+
     async def require_evidence_use(self, user_id, app_id, eid):
         self.required.append(eid)
         raise approval_required("not approved")
@@ -132,3 +135,70 @@ async def test_resume_workflow_chains_pipeline():
     assert v["fitScore"] == 80
     assert v["version"]["number"] == 1
     assert v["export"]["status"] == "READY_TO_RENDER"
+
+
+def _evidence():
+    return ent.CareerEvidence(
+        id=uuid4(), user_id=uuid4(), kind="RESUME", title="r",
+        source_text="text", source_url=None, skills=[],
+        verification_status="USER_PROVIDED",
+        created_at=_now(), updated_at=_now())
+
+
+def _job(job_id):
+    return ent.JobPosting(
+        id=job_id, user_id=uuid4(), revision=1, company="Acme", title="BE",
+        source_kind="MANUAL", source_url=None, source_text="t",
+        requirements=["py"], preferred=[], keywords=[], risks=[],
+        deadline=None, language="ko", created_at=_now(), updated_at=_now())
+
+
+async def test_resume_workflow_never_overrides_a_denied_evidence_approval():
+    app = _app(uuid4())
+    kept, denied = _evidence(), _evidence()
+
+    class Approvals(_Approvals):
+        def __init__(self):
+            super().__init__()
+            self.created = []
+
+        async def denied_evidence(self, user_id, app_id):
+            return {denied.id}
+
+        async def create(self, user_id, kind, app_id, target_id, rev):
+            self.created.append(target_id)
+            return await super().create(user_id, kind, app_id, target_id, rev)
+
+    class Jobs(_Jobs):
+        async def analyze(self, user_id, job_id, app_id, expected, eids, ai):
+            self.eids = eids
+            return await super().analyze(user_id, job_id, app_id, expected, eids, ai)
+
+    approvals, jobs = Approvals(), Jobs(_job(app.job_id))
+    svc = ResumeWorkflowService(FakeDB(), _Apps(app), jobs, _Documents(),
+                                _Evidence([kept, denied]), approvals)
+    svc.ops = StubOperationStore()
+    await svc.run(app.user_id, app.id, None)
+    assert jobs.eids == [kept.id]
+    assert denied.id not in approvals.created
+
+
+async def test_resume_workflow_keeps_the_document_title_within_the_limit():
+    app = _app(uuid4())
+    app.company, app.title = "c" * 200, "t" * 300
+
+    class Docs(_Documents):
+        async def create(self, user_id, app_id, title, *rest):
+            self.title = title
+            return await super().create(user_id, app_id, title, *rest)
+
+    class Approvals(_Approvals):
+        async def denied_evidence(self, user_id, app_id):
+            return set()
+
+    docs = Docs()
+    svc = ResumeWorkflowService(FakeDB(), _Apps(app), _Jobs(_job(app.job_id)),
+                                docs, _Evidence([_evidence()]), Approvals())
+    svc.ops = StubOperationStore()
+    await svc.run(app.user_id, app.id, None)
+    assert len(docs.title) <= 300

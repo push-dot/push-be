@@ -1,8 +1,7 @@
 from __future__ import annotations
 from app.clock import utcnow
 import logging
-import os
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4, uuid5
 
@@ -15,6 +14,7 @@ from app.domain.errors import (
 from app.domain.employer_chat import current_employer_plan
 from app.domain.plan_levers import levers_for
 from app.domain.validators import code_point_len
+from app.jobs import queue_backend
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_auth import UserStore
 from app.infrastructure.store_applications import ApplicationStore
@@ -35,10 +35,6 @@ def usage_row_id(job_id, purpose: str) -> UUID:
 
 def _now() -> datetime:
     return utcnow()
-
-
-def queue_backend() -> str:
-    return os.environ.get("QUEUE_BACKEND", "postgres").strip().lower() or "postgres"
 
 
 def managed_allowance(plan: str | None) -> int:
@@ -274,6 +270,10 @@ class AIGate:
         except Exception:
             await self._release(usage_id)
             raise provider_error("AI provider request failed")
+        except BaseException:
+            # Cancellation must not leave the reservation counting against the allowance.
+            await self._release(usage_id)
+            raise
         await self._settle(usage_id, model, c.input_tokens, c.output_tokens)
         return c.model_copy(update={"usage_id": usage_id})
 
@@ -382,10 +382,3 @@ class AIService:
 
         await self.db.run(work)
         return op
-
-    async def list_usage(self, user_id: UUID, from_, to, page):
-        try:
-            return await self.usage.list(user_id, from_, to, page)
-        except Exception:
-            raise internal()
-

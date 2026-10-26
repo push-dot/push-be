@@ -301,3 +301,20 @@ def test_part_scores_ignore_blank_keywords_and_wordless_requirements():
     e = f.evidence(A, "SQL", skills=["go"])
     assert part_scores(["a b"], ["", "GO"], [e]) == {
         "techStack": 50, "experienceLink": 0, "keyword": 0}
+
+
+async def test_analyze_rejects_too_many_evidence_ids_before_any_lookup():
+    from app.domain.services.job import MAX_ANALYSIS_EVIDENCE
+    s = _svc()
+    j, app, _ = _seed(s)
+    ids = [uuid4() for _ in range(MAX_ANALYSIS_EVIDENCE + 1)]
+    err = await _code(s.analyze(A, j.id, app.id, j.revision, ids, None))
+    assert (err.code, err.details) == ("VALIDATION_ERROR", {"field": "evidenceIds"})
+    assert s.analyses.created == []
+
+
+async def test_analyze_uses_each_evidence_once():
+    s = _svc()
+    j, app, ids = _seed(s)
+    op = await s.analyze(A, j.id, app.id, j.revision, ids * 3, None)
+    assert op.result.value["evidenceIds"] == [str(ids[0])]

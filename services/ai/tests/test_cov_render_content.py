@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.content import code_point_slice, replace_in_node, validate_document_content
+from app.domain.content import code_point_slice, validate_document_content
 from app.domain.entities import Block
 from app.domain.errors import DomainError
 
@@ -92,20 +92,3 @@ def test_nested_list_items_are_blocks_with_concatenated_text():
 def test_code_point_slice_bounds(s, start, end, expected):
     assert code_point_slice(s, start, end) == expected
 
-
-def test_replace_in_node_replaces_first_match_only():
-    doc = _doc(_para("b1", "keep"), _para("b2", "old and old"), _para("b3", "old"))
-    state = [False]
-    replace_in_node(doc, "old", "new", state)
-    texts = [p["content"][0]["text"] for p in doc["content"]]
-    assert texts == ["keep", "new and old", "old"]
-    assert state == [True]
-    replace_in_node(doc, "old", "x", state)  # already done: no further edits
-    assert [p["content"][0]["text"] for p in doc["content"]] == texts
-
-
-def test_replace_in_node_no_match_leaves_state():
-    doc = _doc(_para("b1", "text"))
-    state = [False]
-    replace_in_node(doc, "missing", "x", state)
-    assert state == [False]
