@@ -32,4 +32,7 @@ for want in "docker.sock" "Dokploy" "priv: privileged" "hostnet: network_mode=ho
   "volume hostroot: driver_opts" "network hostnet: host network" "buildhost: build.network=host" "buildhost: build.privileged"; do
   grep -qF "$want" <<<"$out" || { echo "check-compose missed: $want" >&2; echo "$out" >&2; exit 1; }
 done
+# Container egress must use goto so allowed traffic (DNS, HTTPS) is not dropped by DOCKER-USER.
+grep -q -- "-i docker0 -g PUSH-DOCKER-EGRESS" bin/push-firewall || { echo "push-firewall: DOCKER-USER must goto PUSH-DOCKER-EGRESS" >&2; exit 1; }
 echo "infra/vps checks passed"
+
