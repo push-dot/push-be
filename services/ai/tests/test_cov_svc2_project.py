@@ -354,3 +354,12 @@ async def test_verify_evidence_missing_run_or_blueprint_is_not_found(missing):
     assert _code(err) == "NOT_FOUND"
     assert svc.ops.created == []
 
+
+
+async def test_verify_evidence_refuses_failing_test_results():
+    svc, store, user_id, project_id, e = _verify_fixture()
+    e.test_results = ent.TestResults(test_command="pytest", exit_code=1)
+    with pytest.raises(DomainError) as err:
+        await svc.verify_evidence(user_id, project_id, e.id, 1)
+    assert _code(err) == "INVALID_TRANSITION"
+    assert store.ev_updates == [] and e.status == PEV_PENDING

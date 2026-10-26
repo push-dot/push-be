@@ -478,6 +478,8 @@ class ProjectService:
                 raise revision_conflict(e.revision)
             if e.status == PEV_VERIFIED:
                 raise invalid_transition("evidence already verified")
+            if e.test_results.exit_code != 0:
+                raise invalid_transition("recorded tests failed")
             now = _now()
             e.status = PEV_VERIFIED
             e.verified_at = now
