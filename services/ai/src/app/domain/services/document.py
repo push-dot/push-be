@@ -37,9 +37,12 @@ EXPORT_SUCCEEDED = "SUCCEEDED"
 EXPORT_FAILED = "FAILED"
 
 
+MAX_DOCUMENT_TITLE = 300
+
+
 def validate_document_input(title: str, kind: str, template: str) -> None:
-    if not 1 <= len(title) <= 300:
-        raise validation_field("title", "title must be 1-300 characters")
+    if not 1 <= len(title) <= MAX_DOCUMENT_TITLE:
+        raise validation_field("title", f"title must be 1-{MAX_DOCUMENT_TITLE} characters")
     if not ent.valid_document_kind(kind):
         raise validation_field("kind", "must be RESUME, PORTFOLIO or COVER_LETTER")
     if not ent.valid_document_template(template):

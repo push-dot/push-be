@@ -11,6 +11,7 @@ from app.domain.errors import (
     invalid_transition, map_revision_err, not_found, revision_conflict,
     validation_field,
 )
+from app.domain.pagination import PageRequest
 from app.domain.validators import hash_bytes
 from app.infrastructure.store_applications import ApplicationStore, SubmissionStore
 from app.infrastructure.store_documents import DocumentStore
@@ -212,6 +213,16 @@ class ApprovalService:
                 raise map_revision_err(err)
             a.revision += 1
         return a
+
+    async def denied_evidence(self, user_id: UUID, application_id: UUID) -> set[UUID]:
+        """Evidence the user explicitly refused for this application."""
+        # shortcut: reads the newest 100 DENIED approvals, page through them if users deny more.
+        try:
+            page = await self.approvals.list(
+                user_id, application_id, ent.APPROVAL_DENIED, PageRequest(limit=100))
+        except Exception:
+            raise internal()
+        return {a.target_id for a in page.items if a.kind == ent.APPROVAL_EVIDENCE_USE}
 
     async def require_evidence_use(self, user_id: UUID,
                                    application_id: Optional[UUID],

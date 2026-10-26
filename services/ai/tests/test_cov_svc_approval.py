@@ -420,3 +420,16 @@ def test_router_rejects_bad_status_bad_id_and_other_user():
     other = _client(s, B).get(f"/api/v1/approvals/{a.id}")
     assert other.status_code == 404 and other.json()["error"]["code"] == "NOT_FOUND"
     assert _client(s, None).get("/api/v1/approvals").status_code == 401
+
+
+async def test_denied_evidence_lists_only_this_users_refused_evidence_use():
+    s = _svc()
+    app_id, other_app = uuid4(), uuid4()
+    refused = s.approvals.put(f.approval(A, application_id=app_id,
+                                         status=ent.APPROVAL_DENIED))
+    s.approvals.put(f.approval(A, application_id=app_id, status=ent.APPROVAL_APPROVED))
+    s.approvals.put(f.approval(A, kind=ent.APPROVAL_DOCUMENT_FINALIZE,
+                               application_id=app_id, status=ent.APPROVAL_DENIED))
+    s.approvals.put(f.approval(A, application_id=other_app, status=ent.APPROVAL_DENIED))
+    s.approvals.put(f.approval(B, application_id=app_id, status=ent.APPROVAL_DENIED))
+    assert await s.denied_evidence(A, app_id) == {refused.target_id}
