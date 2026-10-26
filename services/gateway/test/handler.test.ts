@@ -259,15 +259,12 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.match(text, /id: 8\ndata: \{"type": "done", "operation": \{"status": "SUCCEEDED"\}, "seq": 8\}/);
 });
 
-test("model catalog is cached and a live BYOK list is proxied", async () => {
+test("model catalog is cached per token and validates provider", async () => {
   resetLimits();
-  const calls: string[] = [];
   const query: Query = async (sql) => {
-    calls.push(sql);
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("ai_keys")) return [{ has: false }];
     return [];
   };
   const cache = memoryCache(() => NOW.getTime());
@@ -279,31 +276,17 @@ test("model catalog is cached and a live BYOK list is proxied", async () => {
   assert.equal(body.data.length, 5);
   assert.equal(body.data.find((m) => m.model.startsWith("opencode-go/"))?.available, false);
   assert.equal(body.data.find((m) => m.model === "openai/gpt-5.6-sol")?.available, true);
-  const before = calls.filter((sql) => sql.includes("ai_keys")).length;
   const second = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
-  }), env(), d);
+  }), { ...env(), MANAGED_GO: "1" }, d);
   assert.equal(second.status, 200);
-  assert.equal(calls.filter((sql) => sql.includes("ai_keys")).length, before);
+  assert.deepEqual(JSON.parse(await second.text()), body);
   const bad = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=NOPE", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(bad.status, 400);
   assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
 
-  let proxied = 0;
-  const api = { async fetch() { proxied += 1; return new Response("{}", { status: 200 }); } };
-  const empty = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=OPENAI&credentialMode=BYOK", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(api), d);
-  assert.equal(empty.status, 200);
-  assert.equal(await empty.text(), '{"data": []}');
-  assert.equal(proxied, 0);
-  const live = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=OPENAI&credentialMode=BYOK", {
-    headers: { authorization: "Bearer secret-token", "x-byok-key": "sk-live" },
-  }), env(api), d);
-  assert.equal(live.status, 200);
-  assert.equal(proxied, 1);
 });
 
 test("job sites are served from cache after the first auth", async () => {
@@ -331,7 +314,7 @@ test("job sites are served from cache after the first auth", async () => {
   assert.equal(keyQueries, 0);
 });
 
-test("chat enqueue and other writes are proxied, and key writes drop the model cache", async () => {
+test("chat enqueue and other writes are proxied", async () => {
   resetLimits();
   const calls: string[] = [];
   const query: Query = async (sql) => {
@@ -339,7 +322,6 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("ai_keys")) return [{ has: true }];
     return [];
   };
   const cache = memoryCache(() => NOW.getTime());
@@ -386,18 +368,6 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
   }), env(python, core), d);
   assert.equal(hidden.status, 404);
 
-  const put = await handle(new Request("https://push-be.example/api/v1/ai/keys/OPENAI", {
-    method: "PUT",
-    headers: { authorization: "Bearer secret-token" },
-    body: '{"key":"sk-12345678"}',
-  }), env(python, core), d);
-  assert.equal(put.status, 200);
-  const after = calls.length;
-  const again = await handle(new Request("https://push-be.example/api/v1/ai/models", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(), d);
-  assert.equal(again.status, 200);
-  assert.ok(calls.length > after);
 });
 
 test("shared rate limit is one query with auth and a full bucket is not written again", async () => {
@@ -514,7 +484,6 @@ test("a rejected python proxy and a broken cache still return a response", async
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
     if (sql.includes("rate_limits")) return [{ hits: 1 }];
-    if (sql.includes("ai_keys")) return [{ has: false }];
     return [];
   };
   const failed = await handle(new Request("https://push-be.example/api/v1/conversations", {

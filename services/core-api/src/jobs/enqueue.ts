@@ -26,7 +26,6 @@ export type EnqueueInput = {
   payload: unknown;
   idempotencyKey?: string;
   conversationId?: string;
-  byok: boolean;
   now?: Date;
 };
 
@@ -115,7 +114,7 @@ export const enqueueJob = async (tx: Query, input: EnqueueInput): Promise<{ jobI
   const audience: Audience = input.companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(input.type, input.plan, audience);
   const amount = estimateMicro(input.type, input.plan);
-  if (!input.byok && amount > 0n) {
+  if (amount > 0n) {
     await ensureMonthlyGrant(tx, {
       audience,
       plan: input.plan,
@@ -127,9 +126,8 @@ export const enqueueJob = async (tx: Query, input: EnqueueInput): Promise<{ jobI
     userId: input.userId,
     companyId: input.companyId,
     amount,
-    byok: input.byok,
   });
-  const hold = !input.byok && amount > 0n;
+  const hold = amount > 0n;
   const params: unknown[] = [
     crypto.randomUUID(),
     input.type,

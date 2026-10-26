@@ -17,10 +17,8 @@ from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
 from app.infrastructure.oauth import OAuthClient, provider_configs
-from app.infrastructure.anthropic_client import AnthropicClient
 from app.infrastructure.openai_client import OpenAIClient
 from app.infrastructure.stripe_client import StripeClient
-from app.infrastructure.store_ai import AiKeyStore
 from app.infrastructure.store_auth import IdempotencyStore, UserStore
 from app.infrastructure.store_evidence import SourceStore
 from app.domain.services.ai import AIGate, AIService
@@ -58,7 +56,6 @@ class ConfigView:
     gmail_beta: bool = False
     managed_ai: bool = False
     managed_go: bool = False
-    byok_enabled: bool = False
     stripe_configured: bool = False
     job_site_adapters: dict = field(default_factory=dict)
 
@@ -82,11 +79,9 @@ class Deps:
     billing: BillingService
     experiments: ExperimentService
     sources: SourceStore
-    ai_keys: AiKeyStore
     idem: IdempotencyStore
     cfg: ConfigView
     storage_dir: str
-    master_key: str
 
 
 def _healthz():
@@ -124,21 +119,13 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         cipher = new_key_cipher(cfg.byok_master_key)
     oauth = OAuthClient()
     openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)
-    openai_byok = OpenAIClient()
-    openrouter_byok = OpenAIClient(base_url="https://openrouter.ai/api/v1")
-    grok_byok = OpenAIClient(base_url="https://api.x.ai/v1")
-    claude_byok = AnthropicClient()
     openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
     gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
     stripe = StripeClient(cfg.stripe_secret)
     managed_ai = bool(cfg.managed_ai_key)
-    byok_enabled = cipher is not None
 
-    gate = AIGate(db, cfg.managed_ai_key, cipher, openai, openai_byok,
-                  go_chat=openai_go, go_key=cfg.opencode_go_key,
-                  openrouter_chat=openrouter_byok,
-                  grok_chat=grok_byok, claude_chat=claude_byok,
-                  config=cfg)
+    gate = AIGate(db, cfg.managed_ai_key, openai,
+                  go_chat=openai_go, go_key=cfg.opencode_go_key, config=cfg)
     auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                         cfg.dev_auth_token, cfg.dev_user_id)
     approvals = ApprovalService(db)
@@ -188,7 +175,6 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
                                and cfg.google.client_secret),
         gmail_beta=cfg.gmail_beta, managed_ai=managed_ai,
         managed_go=bool(cfg.opencode_go_key),
-        byok_enabled=byok_enabled,
         stripe_configured=bool(cfg.stripe_secret),
         job_site_adapters=cfg.job_site_adapters)
     app.state.deps = Deps(
@@ -200,21 +186,19 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         operations=operations, ai=ai_svc, google=google,
         billing=billing, experiments=experiments_svc,
         sources=SourceStore(db),
-        ai_keys=AiKeyStore(db), idem=IdempotencyStore(db), cfg=view,
-        storage_dir=cfg.storage_dir,
-        master_key=cfg.byok_master_key)
+        idem=IdempotencyStore(db), cfg=view,
+        storage_dir=cfg.storage_dir)
     app.state.db = db
     app.state._closers = (
-        conversations, saver_ctx, oauth, openai, openai_byok,
-        openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool)
+        conversations, saver_ctx, oauth, openai, openai_go, gapi, stripe, pool)
 
 
 async def _shutdown(app: FastAPI) -> None:
     closers = getattr(app.state, "_closers", None)
     if not closers:
         return
-    (conversations, saver_ctx, oauth, openai, openai_byok,
-     openrouter_byok, grok_byok, claude_byok, openai_go, gapi, stripe, pool) = closers
+    (conversations, saver_ctx, oauth, openai, openai_go, gapi, stripe,
+     pool) = closers
     if conversations is not None and runs_local_chat_worker():
         await conversations.stop_worker()
     if saver_ctx is not None:
@@ -225,10 +209,6 @@ async def _shutdown(app: FastAPI) -> None:
             await saver_ctx.__aexit__(None, None, None)
     await oauth.aclose()
     await openai.aclose()
-    await openai_byok.aclose()
-    await openrouter_byok.aclose()
-    await grok_byok.aclose()
-    await claude_byok.aclose()
     await openai_go.aclose()
     await gapi.aclose()
     await stripe.aclose()
@@ -265,7 +245,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=True,
         allow_headers=["Origin", "Content-Type", "Accept", "Authorization",
-                       "Idempotency-Key", "X-Request-Id", "X-Byok-Key"],
+                       "Idempotency-Key", "X-Request-Id"],
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
     from app.api.routers.evidence import MAX_SOURCE_BYTES
     app.add_middleware(BodyLimitMiddleware, limit=MAX_SOURCE_BYTES)

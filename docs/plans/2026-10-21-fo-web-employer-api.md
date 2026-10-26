@@ -527,7 +527,7 @@ def levers_for(audience: str, plan: str, config: object) -> PlanLevers: ...
 
 Values match PRD 7.13. `reference` is `basic | extended | full`. `tenure` is `same | plus1 | plus2 | all`. `score_band` is `same | up1 | top | all`.
 
-- Managed chat uses `levers_for` when the caller does not pass BYOK. Employer audience is read from the conversation's `company_id` in task 9; this task only needs the pure function and personal plan application.
+- Managed chat uses `levers_for`. Employer audience is read from the conversation's `company_id` in task 9; this task only needs the pure function and personal plan application.
 - FREE OpenRouter payload includes the provider ignore and order from Decision 20.
 - `generate_blueprints` counts existing blueprints and raises a domain 403 `PLAN_REQUIRED` when the cap is exceeded.
 - Gateway model catalog accepts `MAX`.

@@ -5,8 +5,7 @@ from app.domain import entities as ent
 def test_missing_ai_uses_managed_plan_model_when_a_managed_key_exists(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     ai = with_managed_default(None)
-    assert ai["credentialMode"] == "MANAGED"
-    assert ent.AiOptions(**ai).credential_mode == "MANAGED"
+    assert ent.AiOptions(**ai).model == "managed"
 
 
 def test_missing_ai_stays_none_without_a_managed_key(monkeypatch):
@@ -16,5 +15,5 @@ def test_missing_ai_stays_none_without_a_managed_key(monkeypatch):
 
 def test_client_ai_options_are_kept(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    raw = {"provider": "OPENROUTER", "model": "x/y", "credentialMode": "BYOK", "effort": "HIGH"}
+    raw = {"provider": "OPENROUTER", "model": "x/y", "effort": "HIGH"}
     assert with_managed_default(raw) is raw

@@ -811,26 +811,12 @@ class Operation(Model):
     updated_at: datetime
 
 
-class AiKey(BaseModel):
-    user_id: UUID
-    provider: str
-    last_four: str
-    ciphertext: bytes
-    nonce: bytes
-    updated_at: datetime
-
-
 AI_PROVIDERS = {"OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"}
-CREDENTIAL_MODES = {"MANAGED", "BYOK"}
 EFFORTS = {"LOW", "MEDIUM", "HIGH", "MAX"}
 
 
 def valid_ai_provider(p: str) -> bool:
     return p in AI_PROVIDERS
-
-
-def valid_credential_mode(m: str) -> bool:
-    return m in CREDENTIAL_MODES
 
 
 def valid_effort(e: str) -> bool:
@@ -840,7 +826,6 @@ def valid_effort(e: str) -> bool:
 class AiOptions(Model):
     provider: str
     model: str
-    credential_mode: str
     effort: str
     ultra_resume: bool = False
     web_search: bool = False

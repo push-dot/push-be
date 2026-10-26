@@ -191,6 +191,8 @@ class EvidenceService:
                 fields=missing)
             op.updated_at = now
             return
+        if len(p["title"]) > 200:
+            raise validation_field("title", "title must be 1-200 characters")
         evidence = ent.CareerEvidence(
             id=uuid4(), user_id=op.user_id, revision=1, kind=p["kind"], title=p["title"],
             source_text=p["text"], source_url=p.get("sourceUrl"), skills=[],

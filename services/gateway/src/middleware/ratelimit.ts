@@ -190,10 +190,6 @@ export const STREAM_SQL = AUTH_RATE_PREFIX
   + ") SELECT " + AUTH_COLUMNS + ", (SELECT id FROM found) AS conversation_id, "
   + "(SELECT id FROM job) AS job_id FROM auth";
 
-export const MODELS_SQL = AUTH_RATE_PREFIX
-  + "SELECT " + AUTH_COLUMNS + ", EXISTS(SELECT 1 FROM ai_keys k "
-  + "WHERE k.user_id = auth.id AND k.provider = 'OPENAI') AS has FROM auth";
-
 export function resetLimits(): void {
   hits.clear();
   remoteHits.clear();

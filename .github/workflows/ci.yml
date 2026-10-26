@@ -61,7 +61,7 @@ jobs:
           if match '^(services/gateway/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then gateway=true; fi
           if match '^(services/core-api/|packages/contracts/|package\.json|package-lock\.json|\.github/workflows/ci\.yml)'; then core=true; fi
           if match '^(db/|\.github/workflows/migrate\.yml|services/ai/scripts/migrate\.py|\.github/workflows/ci\.yml)'; then db=true; fi
-          if match '^(services/ai/|infra/vps/)'; then vps=true; fi
+          if match '^(services/ai/|infra/vps/|\.github/workflows/ci\.yml)'; then vps=true; fi
           deploy=false
           if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEPLOY_BRANCH" ]; then
             ai=true
@@ -108,7 +108,8 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Test
         working-directory: services/ai
-        run: python -m pytest
+        # Coverage is reported, not enforced.
+        run: python -m pytest --cov=app --cov-report=term
 
   test-gateway:
     needs: changes
@@ -125,7 +126,7 @@ jobs:
       - name: Test gateway
         run: |
           npm ci
-          npm test -w push-be-front
+          npm run test:coverage -w push-be-front
           npx tsc -p services/gateway --noEmit
 
   test-db:
@@ -206,7 +207,7 @@ jobs:
       - name: Test core API
         run: |
           npm ci
-          npm test -w push-be-core
+          npm run test:coverage -w push-be-core
           npx tsc -p services/core-api --noEmit
 
   bundle-core:
@@ -245,8 +246,20 @@ jobs:
         working-directory: services/gateway
         run: npx wrangler deploy --dry-run --outdir /tmp/push-be-front
 
+  # Static checks for the VPS: shellcheck, `docker compose config`, and
+  # bin/check-compose (no docker.sock, privileged, host namespaces or Dokploy).
+  test-vps:
+    needs: changes
+    if: needs.changes.outputs.vps == 'true' || needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check infra/vps
+        run: infra/vps/test/run.sh
+
   deploy:
-    needs: [changes, test-ai, test-gateway, test-core, test-db, bundle-ai, bundle-core, bundle-gateway]
+    needs: [changes, test-ai, test-gateway, test-core, test-db, test-vps, bundle-ai, bundle-core, bundle-gateway]
     if: |
       always() &&
       needs.changes.outputs.deploy == 'true' &&
@@ -255,6 +268,7 @@ jobs:
       (needs.test-gateway.result == 'success' || needs.test-gateway.result == 'skipped') &&
       (needs.test-core.result == 'success' || needs.test-core.result == 'skipped') &&
       (needs.test-db.result == 'success' || needs.test-db.result == 'skipped') &&
+      (needs.test-vps.result == 'success' || needs.test-vps.result == 'skipped') &&
       (needs.bundle-ai.result == 'success' || needs.bundle-ai.result == 'skipped') &&
       (needs.bundle-core.result == 'success' || needs.bundle-core.result == 'skipped') &&
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
@@ -264,6 +278,48 @@ jobs:
       group: deploy-${{ vars.DEPLOY_BRANCH || 'main' }}
       cancel-in-progress: false
     steps:
+      # Fails before anything ships when a required secret or variable is
+      # missing. Only presence is checked here, so no value enters this step.
+      # GitHub forbids the GITHUB_ prefix, so the GitHub OAuth app lives in
+      # GH_OAUTH_CLIENT_ID / GH_OAUTH_CLIENT_SECRET and is renamed below.
+      - name: Check deploy secrets and variables
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          VPS_HOST: ${{ secrets.VPS_HOST != '' }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY != '' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD != '' }}
+          AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET != '' }}
+          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET != '' }}
+          DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET != '' }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN != '' }}
+          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY != '' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY != '' }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET != '' }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET != '' }}
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET != '' }}
+          AI_HOST: ${{ vars.AI_HOST != '' }}
+          DISPATCH_HOST: ${{ vars.DISPATCH_HOST != '' }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID != '' }}
+          GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID != '' }}
+          STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO != '' }}
+          STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA != '' }}
+        run: |
+          missing=()
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID VPS_HOST VPS_SSH_KEY \
+            DATABASE_URL REDIS_PASSWORD AI_SHARED_SECRET INTERNAL_API_SECRET DISPATCH_SECRET \
+            ADMIN_TOKEN BYOK_MASTER_KEY OPENROUTER_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
+            GOOGLE_CLIENT_SECRET GH_OAUTH_CLIENT_SECRET AI_HOST DISPATCH_HOST GOOGLE_CLIENT_ID \
+            GH_OAUTH_CLIENT_ID STRIPE_PRICE_PRO STRIPE_PRICE_ULTRA; do
+            [ "${!name}" = true ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Deploy configuration missing::Set these GitHub Actions secrets or variables (see infra/vps/README.md): ${missing[*]}"
+            exit 1
+          fi
+          echo "All required deploy secrets and variables are set."
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
@@ -281,9 +337,9 @@ jobs:
         run: uv sync --group dev --python 3.12
       - name: Install gateway
         run: npm ci
-      # Uploads the script and wrangler vars. Existing Worker secrets
-      # persist. The core step below writes DATABASE_URL and
-      # BYOK_MASTER_KEY only when those GitHub secrets are non-empty.
+      # Uploads the script and wrangler vars. Each "Set ... secrets" step
+      # writes its Worker's secrets from GitHub with `wrangler secret bulk`
+      # (empty optional values are skipped; other existing secrets persist).
       # Python worker first, then the VPS image when services/ai or
       # infra/vps changed, then core, then the gateway. Each service
       # binding needs its target to exist. The public workers.dev name
@@ -294,65 +350,143 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: uv run pywrangler deploy
+      # AI_SHARED_SECRET stays unset on this Worker: it is reached through a
+      # service binding, and the shared-secret check is for VPS traffic only.
+      - name: Set Python worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+        run: |
+          set -euo pipefail
+          umask 077
+          file="$RUNNER_TEMP/secrets-python.json"
+          jq -n '{DATABASE_URL: env.DATABASE_URL, BYOK_MASTER_KEY: env.BYOK_MASTER_KEY,
+                  OPENROUTER_API_KEY: env.OPENROUTER_API_KEY, INTERNAL_API_SECRET: env.INTERNAL_API_SECRET}
+                 | with_entries(select((.value // "") != ""))' >"$file"
+          npx wrangler secret bulk "$file" --name push-be-python
+          rm -f "$file"
       - name: Deploy AI service to VPS
         if: needs.changes.outputs.vps == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          HEALTH_URL: https://ai.187-127-112-169.sslip.io/healthz
+          # Public host key printed by harden.sh. Unset falls back to trust on first use.
+          VPS_SSH_HOST_KEY: ${{ vars.VPS_SSH_HOST_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET }}
+          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+          DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
+          EXPO_ACCESS_TOKEN: ${{ secrets.EXPO_ACCESS_TOKEN }}
+          AI_HOST: ${{ vars.AI_HOST }}
+          DISPATCH_HOST: ${{ vars.DISPATCH_HOST }}
+          CORE_ORIGIN: ${{ vars.CORE_ORIGIN }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
+          STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO }}
+          STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA }}
+          QUEUE_BACKEND: ${{ vars.QUEUE_BACKEND }}
+          EMBEDDING_PROVIDER: ${{ vars.EMBEDDING_PROVIDER }}
+          EMBEDDING_API_MODEL: ${{ vars.EMBEDDING_API_MODEL }}
+          RAG_ENGINE: ${{ vars.RAG_ENGINE }}
+          RERANK_PROVIDER: ${{ vars.RERANK_PROVIDER }}
+          AI_HARNESS: ${{ vars.AI_HARNESS }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+          NEON_STORAGE_LIMIT_BYTES: ${{ vars.NEON_STORAGE_LIMIT_BYTES }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_FROM: ${{ vars.ALERT_EMAIL_FROM }}
+          AI_WORKER_CONCURRENCY: ${{ vars.AI_WORKER_CONCURRENCY }}
+          INGEST_WORKER_CONCURRENCY: ${{ vars.INGEST_WORKER_CONCURRENCY }}
         run: |
           set -euo pipefail
-          if [ -z "${VPS_HOST}" ] || [ -z "${VPS_SSH_KEY}" ]; then
-            echo "VPS_HOST and VPS_SSH_KEY must be set on the repository"
-            exit 1
-          fi
           install -m 700 -d ~/.ssh
           umask 077
           printf '%b\n' "$VPS_SSH_KEY" > ~/.ssh/id_vps
-          chmod 600 ~/.ssh/id_vps
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          if [ -n "$VPS_SSH_HOST_KEY" ]; then
+            printf '%s %s\n' "$VPS_HOST" "$VPS_SSH_HOST_KEY" > ~/.ssh/known_hosts
+          else
+            echo "::warning::VPS_SSH_HOST_KEY is not set; trusting the VPS host key on first use. Set it from the harden.sh output."
+            ssh-keyscan -t ed25519 "$VPS_HOST" > ~/.ssh/known_hosts
+          fi
+          # The deploy key is pinned to push-deploy on the VPS; each call is one verb.
           ssh_vps() {
             ssh -i ~/.ssh/id_vps \
               -o IdentitiesOnly=yes \
               -o BatchMode=yes \
-              -o StrictHostKeyChecking=accept-new \
-              "root@${VPS_HOST}" "$@"
+              -o StrictHostKeyChecking=yes \
+              -o ControlMaster=auto \
+              -o ControlPath="$HOME/.ssh/cm-%C" \
+              -o ControlPersist=300 \
+              "deploy@${VPS_HOST}" "$@"
           }
-          ssh_vps "mkdir -p /opt/push-be && if [ -f /opt/push-be/.env ]; then cp -a /opt/push-be/.env /tmp/push-be.env.keep; fi"
-          git archive --format=tar HEAD | ssh_vps "tar -x -C /opt/push-be"
-          ssh_vps "set -euo pipefail
-            if [ -f /tmp/push-be.env.keep ]; then mv /tmp/push-be.env.keep /opt/push-be/.env; fi
-            if [ ! -f /opt/push-be/.env ]; then
-              echo '/opt/push-be/.env is missing; refusing to deploy' >&2
-              exit 1
-            fi
-            cd /opt/push-be
-            set -a
-            . ./.env
-            set +a
-            docker compose -p push-ai -f infra/vps/compose.yaml up -d --build --remove-orphans"
-          ok=0
-          for _ in $(seq 1 36); do
-            code="$(curl -sS -o /tmp/healthz -w "%{http_code}" --max-time 15 "$HEALTH_URL" || true)"
-            if [ "$code" = "200" ]; then
-              ok=1
-              break
-            fi
-            echo "healthz status=${code:-000}; retrying"
-            sleep 10
-          done
-          if [ "$ok" != "1" ]; then
-            echo "healthz did not return 200: $HEALTH_URL" >&2
-            cat /tmp/healthz >&2 || true
+          # /opt/push-be/.env is rebuilt from GitHub on every deploy (0600, owned
+          # by deploy). Values are written single-quoted and never printed.
+          env_file="$RUNNER_TEMP/push-be.env"
+          trap 'rm -f "$env_file"' EXIT
+          jq -nr '
+            env
+            | {DATABASE_URL, REDIS_PASSWORD, AI_SHARED_SECRET, INTERNAL_API_SECRET, DISPATCH_SECRET,
+               ADMIN_TOKEN, BYOK_MASTER_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, EMBEDDING_API_KEY,
+               STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
+               GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY,
+               DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, AI_HOST, DISPATCH_HOST, CORE_ORIGIN,
+               GOOGLE_CLIENT_ID, GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO,
+               STRIPE_PRICE_ULTRA, QUEUE_BACKEND, EMBEDDING_PROVIDER, EMBEDDING_API_MODEL, RAG_ENGINE,
+               RERANK_PROVIDER, AI_HARNESS, AI_BASE_URL, NEON_STORAGE_LIMIT_BYTES, ALERT_EMAIL_TO,
+               ALERT_EMAIL_FROM, AI_WORKER_CONCURRENCY, INGEST_WORKER_CONCURRENCY}
+            | to_entries[] | select((.value // "") != "")
+            | if (.value | test("[\u0027\n\r]")) then error("\(.key) contains a quote or newline")
+              else "\(.key)=\u0027\(.value)\u0027" end
+          ' > "$env_file"
+          git archive --format=tar HEAD | ssh_vps release "$GITHUB_SHA"
+          ssh_vps env < "$env_file"
+          if ! ssh_vps up "$GITHUB_SHA"; then
+            ssh_vps logs || true
             exit 1
           fi
-          echo "healthz ok"
+          for url in "https://${AI_HOST}/healthz" "https://${DISPATCH_HOST}/healthz"; do
+            ok=0
+            for _ in $(seq 1 36); do
+              code="$(curl -sS -o /tmp/healthz -w "%{http_code}" --max-time 15 "$url" || true)"
+              if [ "$code" = "200" ]; then
+                ok=1
+                break
+              fi
+              echo "$url status=${code:-000}; retrying"
+              sleep 10
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::$url did not return 200"
+              cat /tmp/healthz >&2 || true
+              ssh_vps ps || true
+              exit 1
+            fi
+            echo "$url ok"
+          done
       - name: Deploy core worker
         working-directory: services/core-api
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
+      # OAuth client IDs and Stripe price IDs are not secret, but they are
+      # stored as Worker secrets so `wrangler deploy` (which replaces plain
+      # vars with wrangler.jsonc) never drops them.
       - name: Set core secrets
         working-directory: services/core-api
         env:
@@ -363,13 +497,27 @@ jobs:
           AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
+          STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO }}
+          STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA }}
         run: |
-          for name in DATABASE_URL BYOK_MASTER_KEY AI_SHARED_SECRET DISPATCH_SECRET INTERNAL_API_SECRET; do
-            value="${!name}"
-            if [ -n "$value" ]; then
-              printf '%s' "$value" | npx wrangler secret put "$name"
-            fi
-          done
+          set -euo pipefail
+          umask 077
+          file="$RUNNER_TEMP/secrets-core.json"
+          jq -n 'env
+                 | {DATABASE_URL, BYOK_MASTER_KEY, AI_SHARED_SECRET, DISPATCH_SECRET, INTERNAL_API_SECRET,
+                    STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
+                    GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
+                    GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA}
+                 | with_entries(select((.value // "") != ""))' >"$file"
+          npx wrangler secret bulk "$file"
+          rm -f "$file"
       - name: Deploy gateway worker
         working-directory: services/gateway
         env:
@@ -381,8 +529,14 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
         run: |
-          if [ -n "${INTERNAL_API_SECRET}" ]; then
-            printf '%s' "$INTERNAL_API_SECRET" | npx wrangler secret put INTERNAL_API_SECRET
-          fi
+          set -euo pipefail
+          umask 077
+          file="$RUNNER_TEMP/secrets-gateway.json"
+          jq -n 'env | {DATABASE_URL, AI_SHARED_SECRET, INTERNAL_API_SECRET}
+                 | with_entries(select((.value // "") != ""))' >"$file"
+          npx wrangler secret bulk "$file"
+          rm -f "$file"

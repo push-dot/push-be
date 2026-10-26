@@ -35,7 +35,7 @@ Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`
 - **내구 큐 + 워커** — core가 `ai_jobs`·`outbox`·크레딧 예약을 한 트랜잭션에 쓰고 `202 {jobId}`를 돌려준다. VPS 디스패처가 outbox를 Redis Streams(`q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`)로 넘기고, 종류별 워커가 consumer group으로 처리한다. 원본 기록은 Postgres라서 Redis가 비어도 다시 채운다. 진행 상태는 `GET /api/v1/ai/jobs/{id}`. 운영은 [infra/vps/README.md](infra/vps/README.md)
 - **재연결 가능한 SSE** — `GET /conversations/{id}/messages/stream/active`가 진행 중 잡의 이벤트를 처음부터 재생해 이탈→복귀해도 스트림 복원
 - **근거 RAG** — LlamaIndex `SentenceSplitter`(512/64)로 자르고 TEI `bge-m3`(1024차원)로 임베딩해 `rag_nodes`에 둔다. 검색은 pgvector 밀집 검색과 `pg_trgm` 키워드 검색을 합친 뒤 `bge-reranker-v2-m3`로 재정렬한다. 모든 검색은 사용자나 회사 필터가 있어야 한다. `RAG_ENGINE=legacy`면 기존 `rag_chunks` 경로를 쓴다
-- **역할별 모델 라우팅** — `AIGate`가 generate/research/임베딩 역할별로 다른 모델을 호출. 관리형 모델과 BYOK 모두 지원
+- **역할별 모델 라우팅** — `AIGate`가 generate/research/임베딩 역할별로 다른 모델을 호출. Push가 제공하는 관리형 모델만 쓴다. 사용자 API 키는 받지 않는다
 - **문서 파이프라인** — 생성 산출물을 `내 서류` 문서 버전으로 동기화하고 PDF(ReportLab)·DOCX(직접 zip+XML)로 렌더링
 - **지원 항목 자동 연결** — 공고 URL 감지 시 JobPosting + Application을 생성(또는 `source_url`로 중복 제거)하고 대화에 링크
 - **A/B 실험** — `EXPERIMENTS` env로 시드, 사용자별 결정적 배정과 이벤트 집계
@@ -91,7 +91,7 @@ Hyperdrive는 무료 플랜(쿼리 10만/일)에 포함되지만 클라이언트
 
 `LLM_STREAM=1`은 generate 스텝에서 모델 응답을 한 번의 HTTP 스트림으로 받는다. 상태 이벤트는 바로 `chat_events`에 넣고, 첫 토큰도 바로 넣는다. 그 다음 토큰은 약 160자 또는 50ms 단위로 묶는다. 글자마다 INSERT를 하지 않고, 스텝이 끝날 때까지 한 덩어리로 두지도 않는다. 소켓은 그 스텝의 Neon 연결 하나다. `LLM_STREAM=0`이면 완성문을 받은 뒤 48자 단위로 넣는다. 클라이언트는 `retry: 400`과 `id:`를 보고 `GET /conversations/{id}/messages/stream/active?after=` 또는 `Last-Event-ID`로 이어서 재생한다.
 
-BYOK 키는 `BYOK_MASTER_KEY`가 있으면 잡 payload에 암호화해 넣고, Workflow 파라미터로도 넘긴다. 크론이 마스터 키 없이 재시도하면 그 키는 복호화되지 않는다.
+모든 AI 잡은 Push 관리형 모델로 돈다. 클라이언트가 보낸 provider와 model은 쓰지 않고, AIGate가 플랜(`plan_levers`)에 맞는 모델과 effort를 고른다. 큐에 넣는 AI 잡은 모두 크레딧을 예약한다.
 
 ### 무료 한도
 
@@ -184,7 +184,7 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `OPENROUTER_DEEPSEEK_PROVIDERS` | FREE 모델 OpenRouter `provider.order`. 쉼표로 구분. 비우면 `Together,Fireworks,Novita`. FREE 요청은 `provider.ignore`에 `DeepSeek`을 넣는다 |
 | `OPENAI_API_KEY` | OpenAI 호환 관리형 호출을 쓸 때 |
 | `OPENCODE_GO_API_KEY` | OpenCode Go 모델을 쓸 때 |
-| `BYOK_MASTER_KEY` | 저장된 BYOK를 재시도·크론에서 복호화할 때 |
+| `BYOK_MASTER_KEY` | Google 연동 OAuth 토큰을 암호화할 때. 이름은 예전 그대로다 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
 | `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
@@ -276,7 +276,7 @@ Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그
 | `GET /api/v1/conversations` | 목록. 매번 Neon에서 읽는다. 생성·수정·아카이브는 코어 |
 | `GET /api/v1/conversations/:id/messages` | 메시지 목록. 매번 Neon에서 읽는다 |
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 다시 보낸다. 생성 시작(`POST .../messages`, `POST .../stream`)은 Python |
-| `GET /api/v1/ai/models` | 정적 카탈로그. `credentialMode=BYOK`이고 `X-Byok-Key`가 있으면 프로바이더 목록이라 Python으로 넘긴다 |
+| `GET /api/v1/ai/models` | 정적 카탈로그. 관리형 모델만 돌려준다 |
 | `GET /api/v1/integrations/job-sites` | 어댑터가 모두 꺼진 고정 체크리스트 |
 | `OPTIONS` | CORS 프리플라이트 |
 
@@ -288,7 +288,7 @@ Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그
 | --- | --- | --- | --- |
 | 액세스 토큰 → 사용자 | isolate. 키는 토큰 SHA-256 | `AUTH_CACHE_TTL` 초, 기본 5, 최대 5. `0`이면 끈다 | 그 isolate의 `POST /api/v1/auth/logout`와 `POST /api/v1/auth/refresh`가 2xx이면 바로 지우고 남은 할당량도 버린다. 다른 isolate는 최대 5초 동안 이전 토큰을 인정할 수 있다. 만료된 토큰, 429, `hits`가 없는 행은 넣지 않는다 |
 | `GET /api/v1/conversations`, `GET .../messages` | 캐시하지 않는다 | | 사용자 본인의 쓰기 직후에도 다음 읽기가 Neon의 현재 행을 본다 |
-| `GET /api/v1/ai/models` | Cache API | `MODEL_CACHE_TTL` 초, 기본 600. 응답은 `private` | 같은 토큰으로 `PUT`/`DELETE /api/v1/ai/keys/:provider`가 2xx이면 그 토큰의 카탈로그 키를 지운다. BYOK 가능 여부가 사용자마다 달라 `public`이 아니다 |
+| `GET /api/v1/ai/models` | Cache API | `MODEL_CACHE_TTL` 초, 기본 600. 응답은 `private` | TTL이 지나면 사라진다. 캐시 키는 토큰 SHA-256이다 |
 | `GET /api/v1/integrations/job-sites` | Cache API | `JOB_SITES_CACHE_TTL` 초, 기본 3600. 응답은 `public` | 체크리스트가 바뀌면 `services/gateway/src/middleware/cache.ts`의 캐시 URL 버전을 올린다 |
 | `GET .../messages/stream/active` | 캐시하지 않는다 | | 이벤트는 요청 시점의 `chat_events`여야 한다 |
 
@@ -304,7 +304,7 @@ Python 엔트리포인트는 `services/ai/src/worker.py`다. `pywrangler`는 그
 
 채팅 Workflow 호출은 `prepare`, `generate_reply`, `persist` 세 번이다. `prepare` 안에서 claim, `resolve_context`, `prepare_reply`가 같은 Neon 연결을 쓴다. 각 호출은 재시도 5회, 2초에서 지수 백오프다. 타임아웃은 prepare 3분, generate 3분, persist 1분이다. 스텝이 CPU 한도로 죽으면 체크포인트의 `event_id` 이후 이벤트만 지우고 다시 실행한다. 이미 끝난 노드는 건너뛴다. 같은 노드가 3번 실패하면 잡을 `FAILED`로 닫는다. 예약마다 claim 토큰이 하나 생기고, 그 토큰이 `chat_jobs.checkpoint`에 들어간다. generate와 persist는 `UPDATE ... WHERE claim = $토큰`으로 주인만 이벤트, 사용량, 상태를 쓴다. 토큰을 잃은 실행은 조용히 멈춘다. `DONE`과 `FAILED`는 덮어쓰지 않는다. 프로덕션에서 `completion`이 없으면 로컬 스텁 문장을 저장하지 않고 스텝을 재시도한다. `ai_usage`는 잡과 용도마다 한 행이다. 메시지를 큐에 넣는 HTTP 요청은 LangGraph를 컴파일하지 않는다. 컴파일은 Workflow 스텝 안에서 노드 함수를 처음 부를 때 일어난다.
 
-`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 큐에 넣는 요청의 멱등 키와 BYOK 암호화는 코어 Worker가 처리한다. 스트림과 사용량 기록은 Python에 남는다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
+`POST /api/v1/conversations/:id/messages`는 대화 확인, `chat_jobs` 삽입, 사용자 메시지 삽입, 상태 이벤트 `대기 중`을 한 문으로 처리한 뒤 Workflow만 예약하고 바로 `202`를 돌려준다. 사용자 메시지 id는 잡 id로 정해져 재시도해도 한 행이다. 거절된 요청(도메인 오류)은 그 행을 지운다. persist는 그 행에 첨부 파일과 operation id를 채우고, 새로 넣는 것은 어시스턴트 답장뿐이다. 본문은 `status: QUEUED`와 `result.value.jobId`다. 모델 호출이 끝날 때까지 기다리지 않는다. SSE는 그 `대기 중`을 202 직후에 볼 수 있고, 토큰은 generate 스텝이 흘리는 동안 `chat_events`에 쌓인다. 완료된 operation은 `POST .../messages/stream`과 `GET .../messages/stream/active`로 받는다. 큐에 넣는 요청의 멱등 키는 코어 Worker가 처리한다. 스트림과 사용량 기록은 Python에 남는다. 인증은 액세스 토큰과 사용자를 한 조회로 읽는다.
 
 Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 않는다. fetch, 크론, Workflow 스텝이 끝나면 그 연결만 닫는다. 그래서 동시에 들어온 요청이 서로의 WebSocket을 갈아끼우지 않는다. 무료 플랜은 isolate에서 밖으로 나가는 연결이 동시에 6개다. 그 한도는 그대로다.
 
@@ -321,7 +321,7 @@ Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 �
 
 배포 잡은 코드와 wrangler vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않고, KV 네임스페이스도 만들지 않는다. Worker에 이미 넣어 둔 런타임 시크릿은 배포를 거듭해도 그대로다.
 
-프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 AI 키와 채팅 BYOK를 암호화하므로 `BYOK_MASTER_KEY`도 필요하다. 저장소 시크릿 `DATABASE_URL`과 `BYOK_MASTER_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
+프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 연동 OAuth 토큰을 암호화하므로 `BYOK_MASTER_KEY`도 필요하다. 이름은 예전 그대로다. 저장소 시크릿 `DATABASE_URL`과 `BYOK_MASTER_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
 
 ```bash
 printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-core

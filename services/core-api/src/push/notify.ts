@@ -29,7 +29,6 @@ export const sendNotification = async (ctx: Ctx, notice: Notice): Promise<string
         target: notice.target,
         createdAt: ctx.now.toISOString(),
       },
-      byok: false,
     });
     await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher("q:notify"));
     return id;

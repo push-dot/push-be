@@ -1,6 +1,6 @@
 """Reject VPS traffic that did not come through the gateway.
 
-Health checks stay open so Dokploy and Traefik can probe /healthz.
+Health checks stay open so the Traefik proxy and uptime checks can probe /healthz.
 When AI_SHARED_SECRET is unset (local uvicorn and the Cloudflare Worker)
 the check is skipped.
 """

@@ -135,6 +135,6 @@ def ai_options(req) -> Optional[ent.AiOptions]:
     if req is None:
         return None
     return ent.AiOptions(provider=req.provider, model=req.model,
-                         credential_mode=req.credential_mode, effort=req.effort,
+                         effort=req.effort,
                          ultra_resume=req.ultra_resume,
                          web_search=req.web_search, models=req.models)

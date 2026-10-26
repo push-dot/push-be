@@ -12,7 +12,7 @@ import os
 from typing import Awaitable, Callable, Optional
 from uuid import uuid4
 
-# (job_id, byok, claim). A 2-argument scheduler still works.
+# (job_id, claim). A 1-argument scheduler still works.
 Scheduler = Callable[..., Awaitable[None]]
 _scheduler: Optional[Scheduler] = None
 
@@ -50,16 +50,16 @@ def runs_local_chat_worker() -> bool:
     return not external_jobs() and queue_backend() != "redis"
 
 
-async def schedule_chat_job(job_id, byok: str = "") -> None:
+async def schedule_chat_job(job_id) -> None:
     if queue_backend() == "redis":
         return
     if _scheduler is None:
         return
     claim = str(uuid4())
     try:
-        await _scheduler(str(job_id), byok or "", claim)
+        await _scheduler(str(job_id), claim)
     except TypeError:
-        await _scheduler(str(job_id), byok or "")
+        await _scheduler(str(job_id))
 
 
 def sse_max_polls() -> int:

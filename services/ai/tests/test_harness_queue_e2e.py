@@ -52,7 +52,6 @@ async def test_harness_turn_on_the_redis_worker_runs_an_approved_tool_once(monke
     runtime = HarnessRuntime(svc, model_cls=ScriptedLC)
     runtime._core = CoreClient("http://core.test", "secret", httpx.MockTransport(core))
     svc.graph = runtime
-    svc._byok_from_payload = lambda _user, _payload: ""
     db = MemoryJobs()
 
     async def cancelled(job_id):
@@ -104,7 +103,7 @@ async def test_legacy_edit_answer_on_the_redis_worker_applies_without_chat_nodes
     monkeypatch.delenv("AI_HARNESS", raising=False)
     docs = _Docs()
     monkeypatch.setattr("app.harness.jobs.apply_edit", lambda core, user, diff: docs.apply_hunks(user, diff))
-    svc = SimpleNamespace(db=_Rows(), document_svc=SimpleNamespace(), _byok_from_payload=lambda _u, _p: "")
+    svc = SimpleNamespace(db=_Rows(), document_svc=SimpleNamespace())
     db = MemoryJobs()
 
     async def cancelled(job_id):

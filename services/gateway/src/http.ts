@@ -13,7 +13,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 const ALLOWED_HEADERS = new Set([
   "origin", "content-type", "accept", "authorization",
-  "idempotency-key", "x-request-id", "x-byok-key",
+  "idempotency-key", "x-request-id",
 ]);
 
 export const USER_CACHE_CONTROL = "private, no-cache";

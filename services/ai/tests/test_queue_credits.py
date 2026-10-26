@@ -153,7 +153,7 @@ async def test_retry_does_not_charge_twice():
 
 
 @pytest.mark.asyncio
-async def test_byok_job_has_no_reservation_to_settle():
+async def test_job_without_a_reservation_settles_nothing():
     store = book(0)
     assert await settle(store, JOB) == 0
     assert store.available(USER) == 0
@@ -175,7 +175,7 @@ async def test_redis_reserve_records_usage_without_a_second_hold(monkeypatch):
 
     gate = AIGate.__new__(AIGate)
     gate.usage = Usage()
-    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", credential_mode="MANAGED", effort="low")
+    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", effort="low")
     usage_id = await gate._reserve(USER, ai, "system", "user", JOB)
     assert usage_id is not None
     assert seen[0][1] == JOB

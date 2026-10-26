@@ -46,7 +46,6 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
     userId: ctx.user.id,
     plan: "FREE",
     payload: { sourceId: id },
-    byok: false,
   });
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher("q:ingest"));
   return data(201, {
