@@ -7,11 +7,11 @@
     "test:coverage": "node --experimental-strip-types --experimental-test-coverage --test 'test/**/*.ts'"
   },
   "dependencies": {
-    "@neondatabase/serverless": "1.0.2",
+    "@neondatabase/serverless": "1.2.0",
     "@push/contracts": "*"
   },
   "devDependencies": {
     "typescript": "5.9.3",
-    "wrangler": "4.151.1"
+    "wrangler": "4.152.0"
   }
 }
