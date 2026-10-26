@@ -270,13 +270,14 @@ class ChatJobStore:
             "WHERE id=$1 AND status='RUNNING'",
             job_id, _dump(result), now)
 
-    async def worker_fail(self, job_id, error, now) -> dict:
+    async def worker_fail(self, job_id, error, now) -> Optional[dict]:
+        # RUNNING only: a job finished, cancelled or requeued meanwhile must stay that way.
         row = await self.db.q().fetchrow(
             "UPDATE ai_jobs SET attempts=attempts+1, error=$2, updated_at=$3, "
             "status=CASE WHEN attempts+1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
-            "WHERE id=$1 RETURNING status, attempts, max_attempts, queue",
+            "WHERE id=$1 AND status='RUNNING' RETURNING status, attempts, max_attempts, queue",
             job_id, _dump(error), now)
-        return dict(row)
+        return dict(row) if row else None
 
     async def worker_fail_final(self, job_id, error, now) -> None:
         await self.db.q().execute(
@@ -292,7 +293,7 @@ class ChatJobStore:
 
     async def worker_touch(self, job_id, now) -> None:
         await self.db.q().execute(
-            "UPDATE ai_jobs SET heartbeat_at=$2, updated_at=$2 WHERE id=$1",
+            "UPDATE ai_jobs SET heartbeat_at=$2, updated_at=$2 WHERE id=$1 AND status='RUNNING'",
             job_id, now)
 
     async def worker_cancel(self, job_id, now) -> None:

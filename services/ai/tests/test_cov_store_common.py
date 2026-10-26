@@ -5,7 +5,7 @@ import pytest
 from app.db import ConflictError, NotFoundError
 from app.domain.entities import Conversation
 from app.domain.pagination import Cursor
-from app.infrastructure.store_common import Conds, Store, list_page, m, to_model
+from app.infrastructure.store_common import Conds, Store, like_contains, list_page, m, to_model
 from tests.cov_fakes import NOW, USER, entity, fake_db, page, row
 
 
@@ -75,3 +75,8 @@ def test_to_model_and_m_build_entities():
     d = dict(c)
     assert to_model(Conversation, d) == c
     assert m(Conversation)(d) == c
+
+
+def test_like_contains_escapes_wildcards_and_backslash():
+    assert like_contains("py") == "%py%"
+    assert like_contains("50%_a\\b") == "%50\\%\\_a\\\\b%"

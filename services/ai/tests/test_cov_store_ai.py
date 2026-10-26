@@ -119,3 +119,12 @@ async def test_list_with_range_and_cursor_numbers_params():
     assert args == (USER, NOW, NOW, NOW, cid, 3)
     assert len(p.items) == 2 and p.has_more
     assert p.next_cursor == Cursor(NOW, rows[1]["id"]).encode()
+
+
+async def test_upsert_adds_settled_meter_rows_instead_of_overwriting():
+    db, conn = fake_db()
+    await AiUsageStore(db).create(_usage())
+    sql = conn.last[1]
+    for c in ("input_tokens", "output_tokens", "cost_micro_credits"):
+        assert (f"{c} = CASE WHEN ai_usage.status = 'SETTLED' AND EXCLUDED.status = 'SETTLED' "
+                f"THEN ai_usage.{c} + EXCLUDED.{c} ELSE EXCLUDED.{c} END") in sql

@@ -24,6 +24,11 @@ class Store:
             await self.d.revision_guard(table, id_, user_id)
 
 
+def like_contains(text: str) -> str:
+    """ILIKE pattern matching ``text`` literally; pair with ESCAPE '\\'."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 def to_model(cls, row) -> Any:
     return cls(**dict(row))
 

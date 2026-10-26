@@ -5,6 +5,9 @@ from app.rag.tenant import Tenant
 
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 64
+# Every chunk's vector is held in memory at once; this keeps one source well
+# under the ingest worker's memory limit (~600 chunks).
+MAX_INGEST_CHARS = 300_000
 
 _TOKEN = re.compile(r"[가-힣]|[A-Za-z0-9]+|[^\sA-Za-z0-9가-힣]")
 
@@ -39,7 +42,8 @@ class Ingestor:
             "document_id": str(document_id) if document_id else None,
             "plan": plan,
         }
-        nodes = split_nodes(text.strip(), metadata, self.tokenizer) if text.strip() else []
+        text = text.strip()[:MAX_INGEST_CHARS]
+        nodes = split_nodes(text, metadata, self.tokenizer) if text else []
         vectors = await self.embedder.embed([n.get_content() for n in nodes]) if nodes else []
         rows = [{
             "id": uuid4(),

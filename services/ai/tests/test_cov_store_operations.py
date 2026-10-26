@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 
 from app.db import ConflictError, NotFoundError
+from app.domain.errors import DomainError
 from app.domain.entities import (
     Approval, InputField, InputRequest, Operation, OperationError, OperationResult,
 )
@@ -85,3 +86,15 @@ async def test_find_active_scoped_and_missing():
     assert conn.last[2] == (USER, "K", app_id, target, NOW)
     with pytest.raises(NotFoundError):
         await s.find_active(USER, "K", None, target, NOW)
+
+
+async def test_operation_update_is_scoped_and_refuses_finished_rows():
+    db, conn = fake_db("UPDATE 1", "UPDATE 0")
+    s = OperationStore(db)
+    op = entity(Operation, user_id=USER)
+    await s.update(op)
+    assert_scoped(conn.last, USER)
+    assert "status NOT IN ('SUCCEEDED','FAILED','CANCELLED')" in conn.last[1]
+    with pytest.raises(DomainError) as e:
+        await s.update(op)
+    assert e.value.status == 409

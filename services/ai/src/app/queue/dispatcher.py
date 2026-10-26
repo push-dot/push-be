@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID
 
 from fastapi import FastAPI, Request
@@ -12,10 +13,14 @@ from fastapi.responses import JSONResponse
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
 from app.queue.alerts import db_conditions, redis_conditions
-from app.queue.config import ALERT_S, SWEEP_S, heartbeat_limits, visibility_limits
+from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.streams import StreamQueue
 
 logger = logging.getLogger(__name__)
+
+BATCH = 500
+# A finished job whose reservation is still RESERVED this long after is reconciled.
+RECONCILE_AFTER_S = 300
 
 
 @dataclass(frozen=True)
@@ -30,7 +35,7 @@ class PgJobs(AdminJobs):
 
     async def pending_outbox(self):
         rows = await self.conn.fetch(
-            "SELECT id, job_id, queue FROM outbox WHERE dispatched_at IS NULL ORDER BY id")
+            "SELECT id, job_id, queue FROM outbox WHERE dispatched_at IS NULL ORDER BY id LIMIT $1", BATCH)
         return [_row(row, "id", "job_id", "queue") for row in rows]
 
     async def mark_dispatched(self, ids, at) -> None:
@@ -43,18 +48,44 @@ class PgJobs(AdminJobs):
             "SELECT id, type, heartbeat_at FROM ai_jobs WHERE status = 'RUNNING'")
         return [_row(row, "id", "type", "heartbeat_at") for row in rows]
 
-    async def mark_retry(self, ids, now) -> None:
-        await self.conn.execute(
-            "UPDATE ai_jobs SET status = 'RETRY', run_after = $1, updated_at = $1 "
-            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[])",
+    async def mark_retry(self, ids, now) -> list[dict]:
+        """Requeue jobs whose worker died; a lost heartbeat costs an attempt, so a job
+        that keeps killing its worker ends DEAD (reservation released) instead of looping."""
+        rows = await self.conn.fetch(
+            "WITH stale AS ("
+            "UPDATE ai_jobs SET attempts = attempts + 1, run_after = $1, updated_at = $1, "
+            "status = CASE WHEN attempts + 1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
+            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) RETURNING id, queue, status), "
+            "released AS ("
+            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 FROM stale s "
+            "WHERE r.job_id = s.id AND s.status = 'DEAD' AND r.status = 'RESERVED') "
+            "SELECT id, queue, status FROM stale",
             now, list(ids))
+        return [_row(row, "id", "queue", "status") for row in rows]
 
     async def pending_jobs(self, now):
         rows = await self.conn.fetch(
             "SELECT id, queue, updated_at FROM ai_jobs "
-            "WHERE status IN ('QUEUED', 'RETRY', 'PENDING') AND run_after <= $1",
-            now)
+            "WHERE status IN ('QUEUED', 'RETRY') AND run_after <= $1 ORDER BY run_after LIMIT $2",
+            now, BATCH)
         return [_row(row, "id", "queue", "updated_at") for row in rows]
+
+    async def reconcile_credits(self, now) -> int:
+        """Close reservations left RESERVED when a worker died between finish and settle."""
+        row = await self.conn.fetchrow(
+            "WITH settled AS ("
+            "UPDATE credit_reservations r SET status = 'SETTLED', updated_at = $1, settled_micro = "
+            "(SELECT COALESCE(SUM(u.cost_micro_credits), 0) FROM ai_usage u "
+            "WHERE u.job_id = r.job_id AND u.status = 'SETTLED') "
+            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' AND j.status = 'DONE' "
+            "AND j.updated_at < $2 RETURNING 1), "
+            "released AS ("
+            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 "
+            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' "
+            "AND j.status IN ('FAILED', 'DEAD', 'CANCELLED') AND j.updated_at < $2 RETURNING 1) "
+            "SELECT (SELECT count(*) FROM settled) + (SELECT count(*) FROM released) AS n",
+            now, now - timedelta(seconds=RECONCILE_AFTER_S))
+        return int(row["n"]) if row else 0
 
 
 def _row(row, *keys):
@@ -71,8 +102,14 @@ class Dispatcher:
         self.now = now
         self.alerts = alerts
         self.db_conditions: dict = {}
+        # The kick endpoint and the periodic sweep must not dispatch concurrently.
+        self._pass = asyncio.Lock()
 
     async def run_once(self, now, *, maintain: bool = False) -> DispatchStats:
+        async with self._pass:
+            return await self._run_once(now, maintain)
+
+    async def _run_once(self, now, maintain: bool) -> DispatchStats:
         db = await self.open_db()
         try:
             requeued = await self._requeue_stale(db, now)
@@ -81,6 +118,7 @@ class Dispatcher:
             rehydrated = await self._rehydrate(db, now)
             stats = DispatchStats(dispatched, promoted, requeued, rehydrated)
             if maintain:
+                await db.reconcile_credits(now)
                 await db.purge_finished(now)
                 await db.expire_approvals(now)
                 self.db_conditions = db_conditions(stats, await db.neon_stats())
@@ -125,16 +163,23 @@ class Dispatcher:
 
     async def _requeue_stale(self, db, now) -> int:
         ids = []
+        limits = heartbeat_limits()
         for row in await db.running_jobs():
             beat = row["heartbeat_at"]
             if beat is None:
                 continue
-            limits = heartbeat_limits()
             limit = limits.get(row["type"], limits["chat"])
             if (now - beat).total_seconds() >= limit:
                 ids.append(row["id"])
-        if ids:
-            await db.mark_retry(ids, now)
+        if not ids:
+            return 0
+        # The dead worker's message may already be acked by a reclaimer that saw
+        # RUNNING, so re-add explicitly instead of waiting for a rehydrate.
+        for row in await db.mark_retry(ids, now):
+            if row["status"] == "DEAD":
+                await self.queue.dead(row["id"], "heartbeat lost")
+            else:
+                await self.queue.add(row["queue"], UUID(str(row["id"])))
         return len(ids)
 
     async def _dispatch_outbox(self, db, now) -> int:
@@ -162,7 +207,7 @@ class Dispatcher:
             if (now - updated).total_seconds() < limit:
                 continue
             if queue not in present:
-                present[queue] = await self.queue.job_ids(queue)
+                present[queue] = await self.queue.live_job_ids(queue, QUEUE_GROUPS.get(queue, "ai"))
             if job_id in present[queue]:
                 continue
             await self.queue.add(queue, UUID(job_id))

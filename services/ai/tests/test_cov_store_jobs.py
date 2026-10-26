@@ -46,7 +46,7 @@ async def test_job_list_filters():
     cid = uuid4()
     p = await s.list(USER, False, "py", page(1, Cursor(NOW, cid)))
     assert_scoped(conn.last, USER)
-    assert "archived = $2 AND (company ILIKE $3 OR title ILIKE $4)" in conn.last[1]
+    assert "archived = $2 AND (company ILIKE $3 ESCAPE '\\' OR title ILIKE $4 ESCAPE '\\')" in conn.last[1]
     assert conn.last[2] == (USER, False, "%py%", "%py%", NOW, cid, 2) and p.has_more
     await s.list(USER, None, "", page())
     assert conn.last[2] == (USER, 51)
@@ -96,8 +96,13 @@ async def test_reference_sample_store():
     await s.insert(sid, USER, "be", 2, 70, "A", "PRO", {"f": 1}, ["t"], {"p": NOW})
     assert conn.last[2] == (sid, USER, "be", 2, 70, "A", {"p": "2026-01-02T03:04:05Z"},
                             "PRO", {"f": 1}, ["t"])
-    assert await s.application_owner(app_id) == USER
+    company = uuid4()
+    assert await s.application_owner(app_id, company) == USER
+    assert conn.last[2] == (app_id, company)
+    assert "JOIN job_postings p ON p.id = j.source_posting_id" in conn.last[1]
+    assert conn.last[1].endswith("WHERE a.id = $1 AND p.company_id = $2")
     assert await s.latest_fit(app_id) == 70
     assert conn.last[2] == (app_id,)
     assert await s.list_for_prompt("be") == [
         {"job_category": "be", "tenure_years": 2, "score_band": "A", "features": {}}]
+    assert conn.last[1].endswith("ORDER BY created_at DESC LIMIT 500")

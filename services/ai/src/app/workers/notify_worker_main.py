@@ -15,6 +15,7 @@ async def main() -> None:
     from app.infrastructure.store_chat_jobs import ChatJobStore, QueueJobs
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
+    from app.workers.shutdown import stop_on_signals
     from app.workers.handlers.notify import expo_push, make_notify
 
     pool = await create_pool(os.environ["DATABASE_URL"])
@@ -31,6 +32,7 @@ async def main() -> None:
         {"notify": make_notify(db.q, push)},
         int(os.environ.get("QUEUE_CONCURRENCY", "4")),
     )
+    stop_on_signals(worker.stop)
     try:
         await worker.run_forever()
     finally:

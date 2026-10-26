@@ -109,7 +109,7 @@ def assert_closed(made):
 async def test_ingest_worker_wires_queue_handler_and_long_lease(env, monkeypatch):
     embedders = []
 
-    def get_embedder(client, redis_conn):
+    def get_embedder(client, redis_conn=None):
         embedders.append((client, redis_conn))
         return SimpleNamespace(model="BAAI/bge-m3")
 
@@ -125,7 +125,8 @@ async def test_ingest_worker_wires_queue_handler_and_long_lease(env, monkeypatch
     assert list(w.handlers) == ["ingest"]
     client = env["clients"][0]
     assert client.timeout == 120
-    assert embedders == [(client, env["redis"])]
+    # Ingest vectors bypass the Redis cache so they cannot evict queue locks.
+    assert embedders == [(client, None)]
     with pytest.raises(JobFailed) as err:
         await w.handlers["ingest"](SimpleNamespace(job={"user_id": str(JOB), "payload": {}}, heartbeat=None))
     assert err.value.error["code"] == "VALIDATION_ERROR"
@@ -134,7 +135,7 @@ async def test_ingest_worker_wires_queue_handler_and_long_lease(env, monkeypatch
 
 
 async def test_ingest_worker_reads_overrides_and_cleans_up_on_crash(env, monkeypatch):
-    monkeypatch.setattr(app.embedding.factory, "get_embedder", lambda c, r: SimpleNamespace(model="m"))
+    monkeypatch.setattr(app.embedding.factory, "get_embedder", lambda c, r=None: SimpleNamespace(model="m"))
     monkeypatch.setenv("QUEUE_GROUP", "g")
     monkeypatch.setenv("QUEUE_CONSUMER", "c-1")
     monkeypatch.setenv("QUEUE_CONCURRENCY", "7")
@@ -420,3 +421,21 @@ async def test_ai_worker_serves_api_when_asked_and_closes_redis_on_crash(ai_env,
     with pytest.raises(RuntimeError):
         await ai_worker_main.main()
     assert ai_env["redis"].closed
+
+
+async def test_stop_on_signals_routes_sigterm_to_graceful_stop():
+    import asyncio
+    import os
+    import signal
+
+    from app.workers.shutdown import stop_on_signals
+
+    stopped = asyncio.Event()
+    stop_on_signals(stopped.set)
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(stopped.wait(), 2)
+    finally:
+        loop = asyncio.get_running_loop()
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)

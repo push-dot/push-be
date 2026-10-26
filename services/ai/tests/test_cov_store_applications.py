@@ -58,7 +58,7 @@ async def test_list_filters_and_cursor():
     p = await ApplicationStore(db).list(USER, "APPLIED", "acme", page(1, Cursor(NOW, cid)))
     _, sql, args = conn.last
     assert_scoped(conn.last, USER)
-    assert "stage = $2 AND (company ILIKE $3 OR title ILIKE $4)" in sql
+    assert "stage = $2 AND (company ILIKE $3 ESCAPE '\\' OR title ILIKE $4 ESCAPE '\\')" in sql
     assert args == (USER, "APPLIED", "%acme%", "%acme%", NOW, cid, 2)
     assert len(p.items) == 1 and p.has_more
 

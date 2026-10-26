@@ -133,3 +133,48 @@ async def test_phase_node_calls_read_tools():
     assert set(model.bound) == {"parse_attachment", "fetch_url", "explore_github", "get_posting", "compute_fit"}
     assert json.loads(db.files["01_parsed_resume.json"]) == {"posting": "백엔드 공고"}
     assert {"type": "tool", "name": "fetch_url", "state": "ok", "summary": "미리 읽은 페이지만 봐요", "tier": "READ"} in events
+
+
+def test_resume_fit_document_id_must_be_a_uuid():
+    from pydantic import ValidationError
+    assert resume_tools.FitArgs.model_validate({"document_id": ""}).document_id is None
+    with pytest.raises(ValidationError):
+        resume_tools.FitArgs.model_validate({"document_id": "x"})
+
+
+async def test_final_markdown_renders_pdf_off_the_event_loop(monkeypatch):
+    import threading
+
+    import app.infrastructure.resume_workspace as workspace
+
+    threads = []
+
+    def md_to_pdf(body, buf):
+        threads.append(threading.current_thread())
+        buf.write(b"%PDF")
+
+    class _Files:
+        def q(self):
+            return self
+
+        async def execute(self, sql, *args):
+            return "INSERT 1"
+
+    monkeypatch.setattr(workspace, "md_to_pdf", md_to_pdf)
+    ctx = ToolContext(user_id=USER, company_id=None, conversation_id=CONV, job_id="j",
+                      tool_call_id="t", db=_Files(), core=None)
+    await resume_tools.save_artifact(ctx, "05_final_resume.md", "# 이력서")
+    assert threads and threads[0] is not threading.main_thread()
+
+
+async def test_resume_read_tool_failure_becomes_tool_failed():
+    from app.harness.resume.graph import _read_tool
+
+    class _Down:
+        async def call(self, *args, **kwargs):
+            raise httpx.ConnectError("core down")
+
+    ctx = ToolContext(user_id=USER, company_id=None, conversation_id=CONV, job_id="j",
+                      tool_call_id="", db=None, core=_Down())
+    call = {"name": "get_posting", "id": "c1", "args": {"posting_id": str(uuid4())}}
+    assert await _read_tool(call, ctx) == {"error": "TOOL_FAILED"}

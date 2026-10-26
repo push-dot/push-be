@@ -55,12 +55,6 @@ class IntegrationStore(Store):
         return to_model(GoogleIntegration, await self.one(
             f"SELECT {_GI_COLS} FROM google_integrations WHERE user_id = $1", user_id))
 
-    async def delete_google_integration(self, user_id: UUID) -> None:
-        tag = await self.q().execute(
-            "DELETE FROM google_integrations WHERE user_id = $1", user_id)
-        if tag.split()[-1] == "0":
-            raise NotFoundError()
-
     async def upsert_google_message(self, m: GoogleMessage) -> None:
         await self.q().execute(
             f"INSERT INTO google_messages ({_GM_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) "
@@ -133,10 +127,6 @@ class BillingStore(Store):
             "WHERE stripe_customer_id=$1", customer_id, status, period_ends_at, plan)
         if tag.split()[-1] == "0":
             raise NotFoundError()
-
-    async def user_id_by_stripe_customer(self, customer_id: str) -> UUID:
-        return await self.q().fetchval(
-            "SELECT id FROM users WHERE stripe_customer_id=$1", customer_id)
 
     async def append_ledger(self, e: LedgerEntry) -> None:
         await self.q().execute(

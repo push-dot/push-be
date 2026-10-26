@@ -62,7 +62,21 @@ def test_html_to_text_drops_scripts_styles_and_tags():
     html = ("<script>var secret=1;</script><STYLE>p{}</STYLE>"
             "<noscript>enable js</noscript><svg><path d='x'/></svg>"
             "<h1>Title</h1>\n\n<p>Body&nbsp;text</p>")
-    assert web_page._html_to_text(html) == "Title Body&nbsp;text"
+    assert web_page._html_to_text(html) == "Title Body text"
+
+
+@pytest.mark.parametrize("html", [
+    "<script>" * 125_000, "<" * 1_000_000, "<style>" * 125_000, "<a " * 300_000])
+def test_html_to_text_is_linear_on_adversarial_markup(html):
+    import time
+    start = time.perf_counter()
+    web_page._html_to_text(html)
+    assert time.perf_counter() - start < 2
+
+
+def test_html_to_text_stops_parsing_once_text_cap_is_reached():
+    html = "<p>word</p>" * 1_000_000
+    assert len(web_page._html_to_text(html)) == web_page._MAX_TEXT
 
 
 def test_html_to_text_truncates_to_max_text():
@@ -97,7 +111,10 @@ def test_assert_public_rejects_blocked_hostnames(url):
 
 @pytest.mark.parametrize("ip", [
     "127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1", "169.254.169.254",
-    "100.64.0.1", "0.0.0.0", "[::1]", "[fe80::1]", "[::ffff:127.0.0.1]"])
+    "100.64.0.1", "0.0.0.0", "[::1]", "[fe80::1]", "[::ffff:127.0.0.1]",
+    # NAT64, 6to4 and v4-compatible forms of 127.0.0.1 / 169.254.169.254
+    "[64:ff9b::7f00:1]", "[64:ff9b::a9fe:a9fe]", "[2002:7f00:1::]", "[::127.0.0.1]",
+    "224.0.0.1", "[ff02::1]"])
 def test_assert_public_rejects_private_ip_literals(ip):
     with pytest.raises(ValueError, match="private"):
         web_page._assert_public_sync(f"https://{ip}/")
@@ -118,6 +135,18 @@ def test_assert_public_rejects_if_any_record_is_private(monkeypatch):
     _dns(monkeypatch, {"rebind.example": ["93.184.216.34", "10.1.2.3"]})
     with pytest.raises(ValueError, match="private"):
         web_page._assert_public_sync("https://rebind.example/")
+
+
+def test_assert_public_rejects_nat64_dns_answer(monkeypatch):
+    _dns(monkeypatch, {"nat64.example": ["64:ff9b::a9fe:a9fe"]})
+    with pytest.raises(ValueError, match="private"):
+        web_page._assert_public_sync("https://nat64.example/")
+
+
+def test_assert_public_resolves_idna_host(monkeypatch):
+    lookups = _dns(monkeypatch, {"xn--bcher-kva.de": ["93.184.216.34"]})
+    assert web_page._assert_public_sync("https://bücher.de/") == ["93.184.216.34"]
+    assert lookups == ["xn--bcher-kva.de"]
 
 
 def test_assert_public_maps_dns_failure(monkeypatch):
@@ -169,14 +198,16 @@ async def test_pinned_transport_connects_to_pinned_ip_and_keeps_host_header():
         await server.wait_closed()
 
 
-async def test_pinned_transport_unpinned_host_connects_directly():
+async def test_pinned_transport_refuses_unpinned_host():
+    # Fails closed: an unvalidated host must never fall back to fresh DNS.
     seen: list = []
     server, port = await _http_server(seen)
     transport = web_page._PinnedTransport()
     try:
         async with httpx.AsyncClient(transport=transport) as client:
-            r = await client.get(f"http://127.0.0.1:{port}/")
-        assert r.text == "ok"
+            with pytest.raises(httpx.ConnectError, match="not validated"):
+                await client.get(f"http://127.0.0.1:{port}/")
+        assert seen == []
     finally:
         server.close()
         await server.wait_closed()
@@ -198,7 +229,7 @@ def test_pinned_backend_delegates_other_attributes():
 # --- egress proxy -------------------------------------------------------------
 
 async def test_proxy_returns_502_when_no_validated_ip_accepts(monkeypatch):
-    monkeypatch.setattr(web_page, "_assert_public_sync", lambda url: ["127.0.0.1"])
+    monkeypatch.setattr(web_page, "_resolve_public", lambda host: ["127.0.0.1"])
     server, port = await web_page._start_egress_proxy()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -235,6 +266,51 @@ async def test_fetch_page_text_pins_resolved_ip_and_extracts_html(monkeypatch):
     assert text.startswith("Backend engineer")
     assert "x()" not in text
     assert pins_seen == [{"jobs.example": ["93.184.216.34"]}]
+
+
+async def test_fetch_page_text_pins_idna_host_as_connected(monkeypatch):
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    _dns(monkeypatch, {"xn--bcher-kva.de": ["93.184.216.34"]})
+    pins_seen = []
+
+    def handler(request):
+        pins_seen.append(dict(transport.pins))
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
+
+    transport = _pinned(monkeypatch, handler)
+    assert await web_page.fetch_page_text("https://bücher.de/") == "ok"
+    assert pins_seen == [{"xn--bcher-kva.de": ["93.184.216.34"]}]
+
+
+async def test_fetch_page_text_caps_total_time_for_slow_drip(monkeypatch):
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    monkeypatch.setattr(web_page, "_FETCH_DEADLINE", 0.2)
+    _dns(monkeypatch, {"slow.example": ["93.184.216.34"]})
+
+    async def drip():
+        while True:
+            await asyncio.sleep(0.05)
+            yield b"a"
+
+    _pinned(monkeypatch, lambda r: httpx.Response(
+        200, headers={"content-type": "text/plain"}, content=drip()))
+    with pytest.raises(TimeoutError):
+        await web_page.fetch_page_text("https://slow.example/")
+
+
+async def test_fetch_page_text_caps_render_time(monkeypatch):
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    monkeypatch.setattr(web_page, "_RENDER_DEADLINE", 0.05)
+    _dns(monkeypatch, {"spa.example": ["93.184.216.34"]})
+    _pinned(monkeypatch, lambda r: httpx.Response(
+        200, headers={"content-type": "text/html"}, text=_html("Loading")))
+
+    async def hang(url):
+        await asyncio.sleep(10)
+        return "never"
+
+    monkeypatch.setattr(web_page, "_render_text", hang)
+    assert await web_page.fetch_page_text("https://spa.example/") == "Loading"
 
 
 async def test_fetch_page_text_revalidates_each_redirect_hop(monkeypatch):
@@ -425,7 +501,10 @@ async def test_render_text_guards_subrequests_and_cleans_up(monkeypatch):
         ("http://127.0.0.1:8080/admin", "abort"),
         ("https://169.254.169.254/latest/meta-data", "abort"),
     ]
-    assert rec.launch["args"] == ["--no-sandbox", "--disable-dev-shm-usage"]
+    assert rec.launch["args"] == [
+        "--proxy-bypass-list=<-loopback>",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--no-sandbox", "--disable-dev-shm-usage"]
     proxy = rec.launch["proxy"]["server"]
     assert proxy.startswith("http://127.0.0.1:")
     assert rec.closed
@@ -438,7 +517,9 @@ async def test_render_text_keeps_sandbox_by_default(monkeypatch):
     monkeypatch.delenv("PLAYWRIGHT_NO_SANDBOX", raising=False)
     rec = _fake_playwright(monkeypatch, [])
     await web_page._render_text("https://example.com/")
-    assert "args" not in rec.launch
+    assert "--no-sandbox" not in rec.launch["args"]
+    # Loopback must go through the validating proxy too.
+    assert "--proxy-bypass-list=<-loopback>" in rec.launch["args"]
 
 
 # --- Workers runtime -----------------------------------------------------------
@@ -483,14 +564,20 @@ async def test_reject_private_host_checks_doh_answers(monkeypatch):
     answers = {
         ("pub.example", "A"): [{"type": 5, "data": "alias.example."},
                                {"type": 1, "data": "93.184.216.34"}],
-        ("pub.example", "AAAA"): "error",
         ("evil.example", "A"): [{"type": 1, "data": "93.184.216.34"}],
         ("evil.example", "AAAA"): [{"type": 28, "data": "::1"}],
+        ("nat64.example", "A"): [{"type": 28, "data": "64:ff9b::a00:1"}],
+        ("flaky.example", "A"): "error",
     }
     _patch_client(monkeypatch, _doh(answers))
     await web_page._reject_private_host("pub.example")
     with pytest.raises(ValueError, match="private"):
         await web_page._reject_private_host("evil.example")
+    with pytest.raises(ValueError, match="private"):
+        await web_page._reject_private_host("nat64.example")
+    # A DoH failure fails closed instead of skipping the check.
+    with pytest.raises(ValueError, match="cannot resolve"):
+        await web_page._reject_private_host("flaky.example")
 
 
 async def test_browser_markdown_requires_configuration(monkeypatch):
@@ -669,3 +756,39 @@ async def test_fetch_github_context_returns_empty_on_failure():
         raise httpx.ConnectError("down")
 
     assert await web_page.fetch_github_context("x", transport=httpx.MockTransport(boom)) == ""
+
+
+async def test_fetch_page_text_decodes_declared_charset_and_asks_for_identity(monkeypatch):
+    monkeypatch.delenv("CF_WORKER", raising=False)
+    _dns(monkeypatch, {"kr.example": ["93.184.216.34"]})
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("accept-encoding"))
+        return httpx.Response(200, headers={"content-type": "text/plain; charset=euc-kr"},
+                              content="채용 공고".encode("euc-kr"))
+
+    _pinned(monkeypatch, handler)
+    assert await web_page.fetch_page_text("https://kr.example/") == "채용 공고"
+    assert seen == ["identity"]
+
+
+def test_decode_falls_back_to_utf8_for_unknown_charset():
+    assert web_page._decode("é".encode(), "no-such-codec") == "é"
+
+
+async def test_render_text_runs_at_most_two_browsers_at_once(monkeypatch):
+    live, peak = 0, 0
+
+    async def fake_render(url, guard):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await asyncio.sleep(0.01)
+        live -= 1
+        return url
+
+    monkeypatch.setattr(web_page, "_render_with_browser", fake_render)
+    monkeypatch.setattr(web_page, "_RENDER_SLOTS", asyncio.Semaphore(2))
+    await asyncio.gather(*(web_page._render_text(f"https://e{i}.example/") for i in range(6)))
+    assert peak == 2

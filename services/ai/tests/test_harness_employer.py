@@ -196,7 +196,7 @@ async def test_draft_posting_tool_event_has_draft():
 
     tool = _tool("draft_posting")
     graph = build_harness_graph(
-        HarnessSpec(id="employer", audience="EMPLOYER", prompt="p", tools=[tool]),
+        HarnessSpec(id="employer", prompt="p", tools=[tool]),
         MemorySaver(),
         model=ScriptedChat([{
             "tool_calls": [{
@@ -225,3 +225,10 @@ async def test_draft_posting_tool_event_has_draft():
         events.append(event)
     tools = [event for event in events if event.get("type") == "tool" and event.get("state") == "ok"]
     assert tools[0]["result"]["draft"]["id"] == "p1"
+
+
+def test_employer_fit_ids_must_be_uuids():
+    from app.harness.employer.tools import FitArgs
+    assert FitArgs.model_validate({"posting_id": "", "document_id": ""}).posting_id is None
+    with pytest.raises(ValidationError):
+        FitArgs.model_validate({"document_id": "not-a-uuid"})
