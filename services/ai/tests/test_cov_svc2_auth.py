@@ -96,3 +96,19 @@ async def test_session_lookup_uses_hash_not_raw_token():
     assert (await svc.resolve_access_token("opaque-access")) is u
     assert sessions.lookups == [token_hash("opaque-access")]
     assert "opaque-access" not in sessions.lookups
+
+
+async def test_dev_token_is_compared_in_constant_time(monkeypatch):
+    import hmac
+    seen = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        seen.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    dev = _user()
+    svc = _svc("development", dev, _Sessions())
+    assert (await svc.resolve_access_token(DEV_TOKEN)) is dev
+    assert seen
