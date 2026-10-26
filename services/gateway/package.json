@@ -11,7 +11,7 @@
     "@push/contracts": "*"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "wrangler": "4.151.1"
   }
 }
