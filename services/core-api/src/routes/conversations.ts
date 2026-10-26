@@ -20,6 +20,7 @@ const CANONICAL_ACCESS: Record<string, string> = {
   CONFIRM_ACTIONS: "ALWAYS_ASK",
 };
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
+const FORM_OVERHEAD_BYTES = 64 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
@@ -425,6 +426,9 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
   assertPlanAllows(row.plan, "pdf_attachment");
+  if (Number(ctx.request.headers.get("content-length") ?? 0) > PDF_MAX_BYTES + FORM_OVERHEAD_BYTES) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "file must be at most 10 MiB", { field: "file" });
+  }
   const form = await ctx.request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) {
@@ -560,6 +564,7 @@ export const getArtifact = async (ctx: Ctx, idRaw: string, nameRaw: string): Pro
     headers: {
       "content-type": ARTIFACT_TYPES[ext] ?? "application/octet-stream",
       "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "x-content-type-options": "nosniff",
       "x-request-id": ctx.rid,
     },
   });

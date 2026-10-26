@@ -552,3 +552,22 @@ test("posting a message reads settings, conversation and usage concurrently", as
   assert.equal(res.status, 202);
   assert.equal(peak >= 4, true);
 });
+
+test("an oversized pdf upload is 413 before the form is parsed", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/attachments", "x", {
+    "content-type": "multipart/form-data; boundary=b",
+    "content-length": String(11 * 1024 * 1024),
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeed",
+  }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-big" }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) return { rows: [{ id: CONV, company_id: COMPANY, plan: "ULTRA", verified_at: NOW.toISOString() }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 413);
+  assert.equal(sqls.some((sql) => sql.includes("INSERT INTO conversation_attachments")), false);
+});
