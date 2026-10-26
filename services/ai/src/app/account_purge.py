@@ -1,8 +1,10 @@
 """Hard-delete accounts whose 30-day deletion grace period ended."""
 
+import asyncio
 import logging
 import os
 
+from app.api.errors import redact
 from app.infrastructure.images import image_dir
 
 logger = logging.getLogger(__name__)
@@ -42,8 +44,10 @@ async def purge_deleted(pool, storage_dir: str | None) -> None:
         return
     try:
         rows = await pool.fetch(PURGE_SQL)
-    except Exception:
-        logger.warning("account purge failed; is migration 0018 applied?")
+    except Exception as exc:
+        logger.warning("account purge failed; is migration 0018 applied? err=%s",
+                       redact(f"{type(exc).__name__}: {exc}")[:400])
         return
     if storage_dir:
-        remove_images(storage_dir, [r["key"] for r in rows])
+        # Up to 50 users' files: keep the unlinks off the event loop.
+        await asyncio.to_thread(remove_images, storage_dir, [r["key"] for r in rows])

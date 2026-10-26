@@ -60,8 +60,6 @@ class ApiMiddleware:
         if deps is None:
             await self.app(scope, receive, send)
             return
-        self.auth = deps.auth
-        self.idem = deps.idem
         path = scope.get("path", "")
         if not path.startswith("/api/v1"):
             await self.app(scope, receive, send)
@@ -83,7 +81,7 @@ class ApiMiddleware:
                               "missing bearer token", rid)
             return
         try:
-            user = await self.auth.resolve_access_token(authz[7:])
+            user = await deps.auth.resolve_access_token(authz[7:])
         except DomainError as e:
             logger.warning(
                 "auth rejected rid=%s path=%s code=%s status=%s",
@@ -106,7 +104,7 @@ class ApiMiddleware:
         if scope["method"] != "POST" or path.endswith("/stream"):
             await self.app(scope, receive, send)
             return
-        await self._idempotent(scope, receive, send, user, path, rid)
+        await self._idempotent(scope, receive, send, deps.idem, user, path, rid)
 
     async def _limited(self, scope: Scope, kind: str, key: str,
                        memory: SlidingWindow, limit: int, now: float) -> bool:
@@ -118,7 +116,7 @@ class ApiMiddleware:
         return memory.allow(key or "unknown", limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
-                          user, path: str, rid: str):
+                          idem, user, path: str, rid: str) -> None:
         headers = dict(scope.get("headers") or [])
         key_raw = headers.get(b"idempotency-key", b"").decode(errors="replace")
         try:
@@ -143,7 +141,7 @@ class ApiMiddleware:
             request_hash=request_hash,
             created_at=datetime.now(timezone.utc))
         try:
-            inserted = await self.idem.insert_pending(rec)
+            inserted = await idem.insert_pending(rec)
         except Exception as e:
             logger.error(
                 "idempotency insert failed rid=%s path=%s err=%s",
@@ -152,7 +150,7 @@ class ApiMiddleware:
             return
         if not inserted:
             try:
-                existing = await self.idem.get(user.id, "POST", path, key)
+                existing = await idem.get(user.id, "POST", path, key)
             except Exception as e:
                 logger.error(
                     "idempotency read failed rid=%s path=%s err=%s",
@@ -162,8 +160,8 @@ class ApiMiddleware:
             if existing.response_status is None and datetime.now(
                     timezone.utc) - existing.created_at > _PENDING_TTL:
                 try:
-                    await self.idem.delete_pending(existing.id)
-                    inserted = await self.idem.insert_pending(rec)
+                    await idem.delete_pending(existing.id)
+                    inserted = await idem.insert_pending(rec)
                 except Exception:
                     logger.exception("idempotency stale pending cleanup failed")
                     inserted = False
@@ -217,7 +215,7 @@ class ApiMiddleware:
             handler_failed = True
         if handler_failed or not (200 <= status < 300):
             try:
-                await self.idem.delete_pending(rec.id)
+                await idem.delete_pending(rec.id)
             except Exception:
                 logger.exception("idempotency delete_pending failed rid=%s", rid)
         else:
@@ -225,7 +223,7 @@ class ApiMiddleware:
                 [k.decode("latin-1"), v.decode("latin-1")]
                 for k, v in (start_message.get("headers") or [])]
             try:
-                await self.idem.complete(rec.id, status, bytes(captured),
+                await idem.complete(rec.id, status, bytes(captured),
                                          resp_headers)
             except Exception:
                 logger.exception("idempotency complete failed rid=%s", rid)
