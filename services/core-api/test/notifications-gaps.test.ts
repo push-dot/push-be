@@ -260,3 +260,23 @@ test("calendar stores a coffee chat and remindAt", async () => {
   assert.match(insert.sql, /remind_at/);
   assert.equal(insert.params.includes("2026-10-23T01:00:00.000Z"), true);
 });
+
+test("the notification job claims and filters in two statements, not per row", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const rows = Array.from({ length: 5 }, (_, i) => ({ user_id: OTHER, id: `p-${i}`, title: `T${i}` }));
+  const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
+    method: "POST",
+    headers: { authorization: "Bearer job-secret" },
+  }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("FROM bookmarks")) return { rows, rowCount: rows.length };
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { data: unknown }).data, { deadlines: 5, reminders: 0 });
+  const picks = seen.filter((call) => call.sql.includes("notification_dedupes"));
+  assert.equal(picks.length, 2);
+  assert.ok(picks.every((call) => call.sql.includes("COALESCE(s.notify_deadline, true)")));
+  assert.equal(seen.some((call) => call.sql.startsWith("SELECT notify_deadline")), false);
+});

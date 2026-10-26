@@ -28,7 +28,7 @@ const recording = (seen: Call[], rows: (sql: string, params: unknown[]) => Recor
   async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
-    if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
+    if (sql.includes("user_settings") && !sql.includes("notification_dedupes")) return { rows: [{ enabled: true }], rowCount: 1 };
     if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
     const out = rows(sql, params);
     return { rows: out, rowCount: out.length };
@@ -79,6 +79,7 @@ test("the hourly cron only creates deadline notify jobs", async () => {
   const res = await handle(internal("/api/v1/internal/notifications/run"), env({ DISPATCH_ORIGIN: "" }), {
     query: recording(seen, (sql, params) => {
       if (sql.includes("FROM bookmarks")) return [{ user_id: USER, id: POSTING, title: "Backend" }];
+      if (sql.includes("FROM calendar_events")) return [];
       if (sql.includes("notification_dedupes")) return [{ dedupe_key: params[0] }];
       return [];
     }),
