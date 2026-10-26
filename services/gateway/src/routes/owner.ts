@@ -1,28 +1,47 @@
 /**
  * Which worker answers a path the gateway does not handle itself.
- * `core` is push-be-core. `python` keeps AI work and the CRUD that
- * has not moved yet. `deny` is never forwarded.
+ * `core` is push-be-core. `python` is the AI work the FastAPI app still
+ * mounts. Anything else is `deny` and never forwarded, so FastAPI's
+ * /docs and /openapi.json and any unlisted route stay unreachable.
  */
 
 export type Owner = "core" | "python" | "deny";
 
 export function ownerOf(method: string, path: string): Owner {
+  if (ambiguous(path)) return "deny";
   if (path === "/internal" || path.startsWith("/internal/")) return "deny";
-  if (isAi(method, path)) return "python";
+  if (isPython(method, path)) return "python";
   if (isCore(method, path)) return "core";
-  return "python";
+  return "deny";
 }
 
-function isAi(method: string, path: string): boolean {
+// The URL parser already resolves dot segments. Uvicorn decodes %2F and
+// %5C into separators and Traefik may merge `//`, so a path routed here by
+// one shape could reach a different route behind the proxy.
+function ambiguous(path: string): boolean {
+  return path.includes("//") || /%2f|%5c/i.test(path);
+}
+
+// Mirrors the routers in services/ai/src/app/main.py.
+function isPython(method: string, path: string): boolean {
   if (method === "POST" && path === "/api/v1/ai/generate") return true;
   if (method === "POST" && /^\/api\/v1\/applications\/[^/]+\/resume-run$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/jobs\/[^/]+\/analyze$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+\/export$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
+  if (method === "GET" && /^\/api\/v1\/sources\/[^/]+\/profile-draft$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;
   if (method === "POST" && /^\/api\/v1\/projects\/[^/]+\/evidence\/[^/]+\/verify$/.test(path)) return true;
-  if (path.startsWith("/api/v1/operations")) return true;
+  if (method === "GET" && /^\/api\/v1\/operations\/[^/]+(\/events)?$/.test(path)) return true;
+  if (method === "POST" && /^\/api\/v1\/operations\/[^/]+\/(input|cancel)$/.test(path)) return true;
+  if (path === "/api/v1/approvals") return method === "GET" || method === "POST";
+  if (method === "GET" && /^\/api\/v1\/approvals\/[^/]+$/.test(path)) return true;
+  if (method === "POST" && /^\/api\/v1\/approvals\/[^/]+\/decision$/.test(path)) return true;
+  if (method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/share$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/conversations\/shared\/[^/]+$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/artifacts$/.test(path)) return true;
   return false;
 }
 
