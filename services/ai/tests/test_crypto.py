@@ -26,6 +26,7 @@ def test_key_cipher_wrong_purpose():
 
 def test_native_and_pure_aes_gcm_interoperate(monkeypatch):
     # Rows written by the pure-Python cipher (Workers) must still open on the VPS.
+    pytest.importorskip("cryptography")  # native AES-GCM is the local extra
     from app.infrastructure import aesgcm, crypto
 
     c = new_key_cipher("test-master-key")
