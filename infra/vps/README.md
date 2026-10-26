@@ -86,7 +86,7 @@ CI가 하는 일:
 
 `harden.sh`는 다시 실행해도 안전하다. VPS의 `check-compose`와 `push-watchdog`은 root 소유 사본이라 저장소에서 바꿔도 `harden.sh`를 다시 실행해야 반영된다. Docker 저장소 키는 공개된 지문(`9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`)과 다르면 설치를 멈춘다. 실행할 때마다 키 목록을 통째로 바꾸고, 설정 파일을 다시 쓰고, 감시 기준선을 새로 잡는다. root가 필요하므로 Hostinger 콘솔에서 실행한다.
 
-Neon 스키마는 여전히 수동이다. `db/migrations/0027_fk_actions_hot_indexes.sql`까지 적용한다. 0027은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
+Neon 스키마는 여전히 수동이다. `db/migrations/0028_fk_actions_hot_indexes.sql`까지 적용한다. 0027·0028은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
 ```bash
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml \
   exec ai-worker python scripts/migrate_blobs_to_db.py
