@@ -1,3 +1,4 @@
+import pytest
 from __future__ import annotations
 
 import io
@@ -102,6 +103,7 @@ def test_render_pdf_without_photo_or_template():
 
 
 def test_render_pdf_stamps_photo_on_first_page_only():
+    pytest.importorskip("reportlab")  # photo stamping needs the local extra
     base = render_pdf(["Hello"] + ["line"] * 80)
     stamped = render_pdf(["Hello"] + ["line"] * 80, photo_bytes=_png())
     assert stamped != base
