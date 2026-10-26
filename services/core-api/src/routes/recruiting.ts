@@ -606,83 +606,103 @@ const companyApplicationDto = (row: Record<string, unknown>): Record<string, unk
   return dto;
 };
 
+const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at";
+
+const existingApplication = (ctx: Ctx, postingId: string) => one(ctx.deps.query,
+  `SELECT ${APPLICATION_COLS}
+   FROM applications a JOIN jobs j ON j.id = a.job_id
+   WHERE a.user_id = $1 AND j.source_posting_id = $2
+   ORDER BY a.created_at DESC LIMIT 1`,
+  [ctx.user.id, postingId]);
+
+const idList = (value: unknown, field: string): string[] => {
+  const raw = value == null ? [] : value;
+  if (!Array.isArray(raw)) throw fieldError(field, "must be an array");
+  return raw.map((item) => requireUuid(String(item), field));
+};
+
+/**
+ * Job, application, event, document snapshots and file copies in one statement. Files are copied
+ * from sources inside Postgres, so their bytes never travel through the Worker. A job is only created
+ * when the caller has no application for the posting yet, which closes most of the double-apply window.
+ */
+const APPLY_SQL = `WITH job AS (
+    INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
+    SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
+    WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
+    RETURNING id
+  ), app AS (
+    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
+    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9 FROM job
+    RETURNING id
+  ), ev AS (
+    INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
+    SELECT gen_random_uuid(), $2, app.id, 'APPLIED', $13::jsonb, $9 FROM app
+  ), snaps AS (
+    INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at)
+    SELECT gen_random_uuid(), app.id, d.document_id, d.title, d.content, $9
+    FROM app, jsonb_to_recordset($14::jsonb) AS d(document_id uuid, title text, content text)
+  ), files AS (
+    INSERT INTO application_files (id, application_id, source_id, document_id, file_name, mime_type, size, page_count, storage_key, content, created_at)
+    SELECT gen_random_uuid(), app.id, s.id, NULL, COALESCE(s.file_name, ''), COALESCE(s.mime_type, 'application/octet-stream'), COALESCE(s.size, 0),
+      s.page_count, COALESCE(s.path, s.id::text), s.content, $9
+    FROM app, jsonb_array_elements_text($15::jsonb) AS r(id) JOIN sources s ON s.id = r.id::uuid AND s.user_id = $2
+  )
+  SELECT id FROM app`;
+
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
-  const id = await requireOpenPosting(ctx, idRaw);
+  const id = requireUuid(idRaw, "id");
+  const posting = await withPublicStatus((withStatus) => one(ctx.deps.query,
+    `SELECT p.company, p.title, p.description, p.requirements, p.deadline FROM job_postings p WHERE p.id = $1 AND ${openClause(withStatus)}`,
+    [id]));
+  if (!posting) throw notFound();
   if (ctx.user.accountType === "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "employer account required");
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "id"]);
-  const documentIds = body.documentIds == null ? [] : body.documentIds;
-  if (!Array.isArray(documentIds)) throw fieldError("documentIds", "must be an array");
-  const sourceIds = body.sourceIds == null ? [] : body.sourceIds;
-  if (!Array.isArray(sourceIds)) throw fieldError("sourceIds", "must be an array");
-  const owned: { id: string; title: string; content: unknown }[] = [];
-  for (const raw of documentIds) {
-    const docId = requireUuid(String(raw), "documentIds");
-    const doc = await one(ctx.deps.query,
-      `SELECT d.id, d.title, v.content FROM documents d
+  const documentIds = idList(body.documentIds, "documentIds");
+  const sourceIds = idList(body.sourceIds, "sourceIds");
+  const [docs, sources, existing] = await Promise.all([
+    documentIds.length ? query(ctx.deps.query,
+      `SELECT DISTINCT ON (d.id) d.id, d.title, v.content FROM documents d
        JOIN document_versions v ON v.document_id = d.id
-       WHERE d.id = $1 AND d.user_id = $2
-       ORDER BY v.number DESC, v.created_at DESC, v.id DESC LIMIT 1`,
-      [docId, ctx.user.id]);
-    if (!doc) throw notFound();
-    owned.push({ id: docId, title: String(doc.title ?? ""), content: doc.content });
-  }
-  const files: { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; storageKey: string; content: unknown }[] = [];
-  for (const raw of sourceIds) {
-    const sourceId = requireUuid(String(raw), "sourceIds");
-    const source = await one(ctx.deps.query,
-      `SELECT id, file_name, mime_type, size, path, content, to_jsonb(sources) ->> 'page_count' AS page_count
-       FROM sources WHERE id = $1 AND user_id = $2`,
-      [sourceId, ctx.user.id]);
-    if (!source) throw notFound();
-    const pages = source.page_count == null || source.page_count === "" ? null : Number(source.page_count);
-    files.push({
-      id: sourceId,
-      fileName: String(source.file_name ?? ""),
-      mimeType: String(source.mime_type ?? "application/octet-stream"),
-      size: Number(source.size ?? 0),
-      pageCount: pages != null && Number.isFinite(pages) ? pages : null,
-      storageKey: String(source.path ?? sourceId),
-      content: source.content ?? null,
-    });
-  }
-  const existing = await one(ctx.deps.query,
-    `SELECT a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at
-     FROM applications a JOIN jobs j ON j.id = a.job_id
-     WHERE a.user_id = $1 AND j.source_posting_id = $2
-     ORDER BY a.created_at DESC LIMIT 1`,
-    [ctx.user.id, id]);
+       WHERE d.user_id = $1 AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
+       ORDER BY d.id, v.number DESC, v.created_at DESC, v.id DESC`,
+      [ctx.user.id, JSON.stringify(documentIds)]) : null,
+    sourceIds.length ? query(ctx.deps.query,
+      "SELECT id FROM sources WHERE user_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+      [ctx.user.id, JSON.stringify(sourceIds)]) : null,
+    existingApplication(ctx, id),
+  ]);
+  const owned = new Map((docs?.rows ?? []).map((row) => [String(row.id), row]));
+  if (documentIds.some((docId) => !owned.has(docId))) throw notFound();
+  const ownedSources = new Set((sources?.rows ?? []).map((row) => String(row.id)));
+  if (sourceIds.some((sourceId) => !ownedSources.has(sourceId))) throw notFound();
   if (existing) return data(201, applicationDto(existing), ctx.rid);
-  const posting = await one(ctx.deps.query,
-    "SELECT company, title, description, requirements, deadline FROM job_postings WHERE id = $1",
-    [id]);
-  if (!posting) throw notFound();
   const fields = searchFields(`${String(posting.title)} ${String(posting.company)}`);
   const now = ctx.now.toISOString();
   const jobId = crypto.randomUUID();
   const applicationId = crypto.randomUUID();
-  await query(ctx.deps.query,
-    `INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
-     VALUES ($1,$2,1,$3,$4,'TEXT',NULL,$5,$6::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,$7,'',false,$8,$8,$9,$10,$11)`,
-    [jobId, ctx.user.id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
-      posting.deadline, now, id, fields.choseong, fields.jamo]);
-  await query(ctx.deps.query,
-    `INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
-     VALUES ($1,$2,1,$3,$4,$5,'APPLIED','',$6,NULL,false,$6,$6)`,
-    [applicationId, ctx.user.id, jobId, posting.company, posting.title, now]);
-  await query(ctx.deps.query,
-    "INSERT INTO application_events (id, user_id, application_id, type, payload, created_at) VALUES ($1,$2,$3,'APPLIED',$4::jsonb,$5)",
-    [crypto.randomUUID(), ctx.user.id, applicationId, JSON.stringify({ postingId: id, documentIds: owned.map((doc) => doc.id) }), now]);
-  for (const doc of owned) {
-    await query(ctx.deps.query,
-      "INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
-      [crypto.randomUUID(), applicationId, doc.id, doc.title, snapshotText(doc.content), now]);
+  const snapshots = documentIds.map((docId) => {
+    const doc = owned.get(docId)!;
+    return { document_id: docId, title: String(doc.title ?? ""), content: snapshotText(doc.content) };
+  });
+  let created: Record<string, unknown> | null;
+  try {
+    created = await one(ctx.deps.query, APPLY_SQL, [
+      jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
+      posting.deadline, now, fields.choseong, fields.jamo, applicationId,
+      JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
+    ]);
+  } catch (err) {
+    // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
+    if (!isUnique(err)) throw err;
+    created = null;
   }
-  for (const file of files) {
-    await query(ctx.deps.query,
-      `INSERT INTO application_files (id, application_id, source_id, document_id, file_name, mime_type, size, page_count, storage_key, content, created_at)
-       VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10)`,
-      [crypto.randomUUID(), applicationId, file.id, file.fileName, file.mimeType, file.size, file.pageCount, file.storageKey, file.content, now]);
+  if (!created) {
+    // A concurrent apply for the same posting won; answer with its application.
+    const winner = await existingApplication(ctx, id);
+    if (!winner) throw new HttpError(500, "INTERNAL", "internal error");
+    return data(201, applicationDto(winner), ctx.rid);
   }
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,

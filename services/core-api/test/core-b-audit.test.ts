@@ -331,3 +331,39 @@ test("a first experiment assignment is written and read back in one statement", 
   assert.equal(res.status, 200);
   assert.equal(calls.filter((c) => c.sql.includes("experiment_assignments")).length, 1);
 });
+
+const postingRow = { company: "Acme", title: "Backend", description: "Build", requirements: ["Go"], deadline: null };
+const appRow = { id: APP, revision: 1, job_id: E3, company: "Acme", title: "Backend", stage: "APPLIED", notes: "", applied_at: "2026-10-21T00:00:00Z", next_action_at: null, imported: false, created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z" };
+
+test("apply checks every document and source in one query each and writes in one statement", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const S1 = "50000000-0000-4000-8000-000000000001";
+  const S2 = "50000000-0000-4000-8000-000000000002";
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.includes("FROM documents d")) return [E1, E2].map((id) => ({ id, title: "Doc", content: { id } }));
+    if (sql.startsWith("SELECT id FROM sources")) return [{ id: S1 }, { id: S2 }];
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, { documentIds: [E1, E2], sourceIds: [S1, S2] }, "00000000-0000-4000-8000-000000000008"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const routeCalls = calls.filter((c) => !/rate_limits|access_tokens|idempotency_keys/.test(c.sql));
+  assert.equal(routeCalls.length, 5);
+  assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT")).length, 1);
+});
+
+test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {
+  const { handle } = await import("../src/handler.ts");
+  let lookups = 0;
+  const { query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS")) throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
+    if (sql.includes("FROM applications a JOIN jobs j")) return lookups++ === 0 ? [] : [appRow];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-000000000009"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
+});

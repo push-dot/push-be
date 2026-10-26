@@ -279,7 +279,11 @@ test("apply snapshots document json and a second apply does not snapshot again",
   let applied = false;
   const query = authed(seen, false, async (sql) => {
     if (sql.includes("job_postings") && sql.includes("closed_at IS NULL") && !sql.includes("INSERT")) {
-      return { rows: [{ id: POSTING }], rowCount: 1 };
+      return { rows: [{ company: "Acme", title: "Backend", description: "Build APIs", requirements: [], deadline: null }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO applications")) {
+      applied = true;
+      return { rows: [{ id: APP }], rowCount: 1 };
     }
     if (sql.includes("document_versions") || (sql.includes("FROM documents") && sql.includes("content"))) {
       return { rows: [{ id: DOC, title: "Resume", content: { summary: "hi" } }], rowCount: 1 };
@@ -305,7 +309,8 @@ test("apply snapshots document json and a second apply does not snapshot again",
   assert.equal(created.data.fitScore, null);
   const snapshot = seen.find((call) => call.sql.includes("INSERT INTO application_snapshots"));
   assert.ok(snapshot);
-  assert.equal(snapshot.params.includes(JSON.stringify({ summary: "hi" })), true);
+  const snapshots = JSON.parse(String(snapshot.params[13])) as { document_id: string; content: string }[];
+  assert.deepEqual(snapshots, [{ document_id: DOC, title: "Resume", content: JSON.stringify({ summary: "hi" }) }]);
   const second = await handle(
     post(`/api/v1/postings/${POSTING}/apply`, { documentIds: [DOC] }, "44444444-4444-4444-8444-444444444445"),
     env(),
