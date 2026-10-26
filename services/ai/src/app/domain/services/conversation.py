@@ -2,28 +2,19 @@ from __future__ import annotations
 from app.clock import utcnow
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from app.db import DB, NotFoundError
-from app.domain import entities as ent
-from app.domain.access_mode import normalize_access_mode, resolve_access_mode
+from app.db import DB
 from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
-from app.domain.errors import (
-    DomainError, internal, map_revision_err, not_found, revision_conflict,
-    validation_field,
-)
+from app.domain.errors import DomainError
 from app.domain.services.ai import AIGate
-from app.domain.validators import code_point_len
 from app.graphs.chat import build_chat_graph
 from app.graphs.chat import event_sink
 from app.graphs.freeze import freeze_state, thaw_state
-from app.jobs import (
-    external_jobs, get_job_scheduler, schedule_chat_job, set_job_scheduler,
-    sse_max_polls,
-)
+from app.jobs import get_job_scheduler, schedule_chat_job, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
@@ -396,260 +387,6 @@ class ConversationService:
                 await self.jobs.finish(job_id, "FAILED", str(e)[:500])
                 terminal = True
 
-    async def list(self, user_id: UUID, application_id: Optional[UUID], page):
-        try:
-            return await self.conversations.list(user_id, application_id, page)
-        except Exception:
-            raise internal()
-
-    async def get(self, user_id: UUID, id_: UUID) -> ent.Conversation:
-        try:
-            return await self.conversations.get(user_id, id_)
-        except NotFoundError:
-            raise not_found()
-        except Exception:
-            raise internal()
-
-    async def create(self, user_id: UUID, application_id: Optional[UUID],
-                     title: str) -> ent.Conversation:
-        if len(title) > 300:
-            raise validation_field("title", "title must be at most 300 characters")
-        if application_id is not None:
-            try:
-                await self.applications.get(user_id, application_id)
-            except NotFoundError:
-                raise not_found()
-            except Exception:
-                raise internal()
-        now = _now()
-        c = ent.Conversation(
-            id=uuid4(), user_id=user_id, revision=1, application_id=application_id,
-            title=title, created_at=now, updated_at=now)
-        try:
-            await self.conversations.create(c)
-        except Exception:
-            raise internal()
-        return c
-
-    async def patch(self, user_id: UUID, id_: UUID, expected: int,
-                    title: Optional[str], pinned: Optional[bool]) -> ent.Conversation:
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                v = await self.conversations.get(user_id, id_)
-            except NotFoundError:
-                raise not_found()
-            if v.revision != expected:
-                raise revision_conflict(v.revision)
-            if title is not None:
-                if len(title) > 300:
-                    raise validation_field(
-                        "title", "title must be at most 300 characters")
-                v.title = title
-            if pinned is not None:
-                v.pinned = pinned
-            v.updated_at = _now()
-            try:
-                await self.conversations.update(v, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            v.revision = expected + 1
-            out = v
-
-        await self.db.run(work)
-        return out
-
-    async def archive(self, user_id: UUID, id_: UUID,
-                      expected: int) -> ent.Conversation:
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                v = await self.conversations.get(user_id, id_)
-            except NotFoundError:
-                raise not_found()
-            if v.revision != expected:
-                raise revision_conflict(v.revision)
-            v.archived = True
-            v.updated_at = _now()
-            try:
-                await self.conversations.update(v, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            v.revision = expected + 1
-            out = v
-            for eid in await self.conversations.evidence_ids_in(user_id, id_):
-                if await self.conversations.evidence_refs_elsewhere(
-                        user_id, id_, eid):
-                    continue
-                try:
-                    e = await self.evidence.get(user_id, eid)
-                except NotFoundError:
-                    continue
-                if e.archived:
-                    continue
-                e.archived = True
-                e.updated_at = _now()
-                try:
-                    await self.evidence.update(e, e.revision)
-                except Exception:
-                    continue
-
-        await self.db.run(work)
-        return out
-
-    async def list_messages(self, user_id: UUID, conversation_id: UUID, page):
-        await self.get(user_id, conversation_id)
-        try:
-            return await self.conversations.list_messages(user_id, conversation_id, page)
-        except Exception:
-            raise internal()
-
-    async def post_message(self, user_id: UUID, conversation_id: UUID, text: str,
-                           context: dict, ai: Optional[ent.AiOptions],
-                           access_mode: str) -> ent.Operation:
-        access_mode = await self._canonical_access(user_id, access_mode)
-        self._validate_message(text, access_mode)
-        result = await self.graph.ainvoke(
-            self._chat_input(user_id, conversation_id, text, context, ai,
-                             access_mode),
-            config={"configurable": {"thread_id": str(conversation_id)}},
-        )
-        return result["operation"]
-
-    async def _canonical_access(self, user_id, raw: str) -> str:
-        try:
-            requested = normalize_access_mode(raw if raw else None)
-        except ValueError:
-            raise validation_field(
-                "accessMode",
-                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
-        if requested is not None:
-            return requested.value
-        saved = None
-        try:
-            row = await self.db.q().fetchrow(
-                "SELECT to_jsonb(user_settings)->>'ai_access_mode' AS ai_access_mode "
-                "FROM user_settings WHERE user_id = $1",
-                user_id,
-            )
-            if row is not None:
-                saved = row["ai_access_mode"]
-        except Exception:
-            saved = None
-        return resolve_access_mode(None, saved).value
-
-    def _validate_message(self, text: str, access_mode: str) -> None:
-        if not text or code_point_len(text) > 20000:
-            raise validation_field("text", "text must be 1-20000 characters")
-        if not ent.valid_access_mode(access_mode):
-            raise validation_field(
-                "accessMode",
-                "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS")
-
-    def _chat_input(self, user_id: UUID, conversation_id: UUID, text: str,
-                    context: dict, ai: Optional[ent.AiOptions],
-                    access_mode: str, intent: str | None = None,
-                    application_id=None) -> dict:
-        return {
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "text": text,
-            "context": context or {},
-            "ai": ai.model_dump(by_alias=True) if ai else None,
-            "access_mode": access_mode,
-            "operation": None,
-            **turn_from_payload({"intent": intent, "application_id": application_id}),
-        }
-
-    async def stream_message(self, user_id: UUID, conversation_id: UUID,
-                             text: str, context: dict,
-                             ai: Optional[ent.AiOptions], access_mode: str,
-                             intent: str | None = None,
-                             application_id=None):
-        access_mode = await self._canonical_access(user_id, access_mode)
-        self._validate_message(text, access_mode)
-        async for mode, chunk in self.graph.astream(
-                self._chat_input(user_id, conversation_id, text, context,
-                                 ai, access_mode, intent, application_id),
-                config={"configurable": {"thread_id": str(conversation_id)}},
-                stream_mode=["custom", "values"]):
-            if mode == "custom" and isinstance(chunk, dict) and "token" in chunk:
-                yield ("token", chunk["token"], None)
-            elif mode == "custom" and isinstance(chunk, dict) and "status" in chunk:
-                yield ("status", chunk["status"], None)
-            elif mode == "custom" and isinstance(chunk, dict):
-                live = _live_event(chunk)
-                if live is not None:
-                    yield (live[0], live[1], None)
-            elif mode == "values" and chunk.get("operation") is not None:
-                yield ("done", chunk["operation"], None)
-
-    async def active_job_id(self, user_id: UUID,
-                            conversation_id: UUID) -> Optional[UUID]:
-        await self.get(user_id, conversation_id)
-        return await self.jobs.active_for_conversation(
-            user_id, conversation_id)
-
-    async def stream_active(self, user_id: UUID, conversation_id: UUID,
-                            after: int = 0):
-        job_id = await self.active_job_id(user_id, conversation_id)
-        if job_id is None:
-            return
-        async for ev in self._pump_job_events(job_id, after):
-            yield ev
-
-    _PUMP_MAX_WAIT_S = 300.0
-
-    async def _pump_job_events(self, job_id: UUID, after: int = 0):
-        last_id = after
-        idle = 0
-        polls = 0
-        limit = sse_max_polls()
-        deadline = asyncio.get_running_loop().time() + self._PUMP_MAX_WAIT_S
-        while polls < limit:
-            polls += 1
-            if asyncio.get_running_loop().time() > deadline:
-                yield ("error", {"code": "INTERNAL",
-                                 "message": "job timed out"}, None)
-                return
-            rows = await self.jobs.events_since(job_id, last_id)
-            for r in rows:
-                last_id = r["id"]
-                t = r["type"]
-                p = r["payload"]
-                if t == "token":
-                    yield ("token", p.get("text", ""), r["id"])
-                elif t == "status":
-                    yield ("status", p.get("text", ""), r["id"])
-                elif t == "done":
-                    yield ("done", p if p.get("awaiting") else p.get("operation"), r["id"])
-                    return
-                elif t == "error":
-                    yield ("error", p.get("error") or {}, r["id"])
-                    return
-                elif t in _LIVE_EVENT_TYPES:
-                    yield (t, p if isinstance(p, dict) else {}, r["id"])
-                    if t == "cancelled":
-                        return
-            if rows:
-                idle = 0
-            else:
-                idle += 1
-                if idle >= 30:
-                    st = await self.jobs.status(job_id)
-                    if st == "FAILED":
-                        yield ("error", {"code": "INTERNAL",
-                                         "message": "job failed"}, None)
-                        return
-                    if st == "DONE":
-                        return
-                    idle = 0
-            await asyncio.sleep(0.25 if external_jobs() else 0.2)
-
     async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
         jid = UUID(str(job_id))
         if not claim:
@@ -672,7 +409,7 @@ class ConversationService:
         return "skip"
 
     async def exec_chat_node(self, job_id: str, name: str, claim: str = "") -> str:
-        from app.claimctx import LostClaim, claim_job, claim_token
+        from app.claimctx import claim_job, claim_token
         jid = UUID(str(job_id))
         token_ctx = claim_token.set(claim or "")
         job_ctx = claim_job.set(str(jid) if claim else "")

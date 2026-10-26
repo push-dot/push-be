@@ -8,11 +8,10 @@ import pytest
 from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.domain.services.ai import AIGate, AIService
-from tests.stubs import (FakeDB, StubAiUsageStore,
-                         StubApplicationStore, StubChatCompleter,
-                         StubConversationStore, StubOperationStore,
-                         StubUserStore)
-from tests.test_conversation import _conv, _svc as conv_svc
+from tests.stubs import (
+    FakeDB, StubAiUsageStore, StubApplicationStore, StubChatCompleter,
+    StubOperationStore, StubUserStore,
+)
 
 
 def _now():
@@ -232,28 +231,3 @@ async def test_generate_bad_application():
         await svc.generate(uuid4(), _managed(), "x", uuid4(), [])
     assert e.value.code == "NOT_FOUND"
 
-
-async def test_post_message_ai_completion():
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    convs = StubConversationStore(conv=conv)
-    usage = StubAiUsageStore()
-    chat = StubChatCompleter(text="real answer", in_tokens=7, out_tokens=9)
-    gate = _gate(managed_key="sk", chat=chat)
-    gate.usage = usage
-    svc = conv_svc(convs, gate=gate, usage=usage)
-    op = await svc.post_message(user_id, conv.id, "question", {},
-                                _managed(), "SUGGEST")
-    assert len(convs.messages) == 2
-    assert convs.messages[1].text == "real answer"
-    assert len(usage.items) == 1 and usage.items[0].operation_id == op.id
-
-
-async def test_post_message_no_ai_keeps_stub():
-    user_id = uuid4()
-    conv = _conv(user_id=user_id)
-    convs = StubConversationStore(conv=conv)
-    chat = StubChatCompleter(text="should not be used")
-    svc = conv_svc(convs, gate=_gate(managed_key="sk", chat=chat))
-    await svc.post_message(user_id, conv.id, "hi", {}, None, "SUGGEST")
-    assert convs.messages[1].text != "should not be used"
