@@ -13,8 +13,31 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Ai Generate */
-        post: operations["ai_generate_api_v1_ai_generate_post"];
+        /**
+         * Generate free-form AI text for an application
+         * @description Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations}.
+         */
+        post: operations["postAiGenerate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ai/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * AI job status
+         * @description Visible to the job owner and members of the job's company.
+         */
+        get: operations["getAiJobsById"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -28,8 +51,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Ai Models */
-        get: operations["ai_models_api_v1_ai_models_get"];
+        /** AI model catalog */
+        get: operations["getAiModels"];
         put?: never;
         post?: never;
         delete?: never;
@@ -45,8 +68,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Ai Usage */
-        get: operations["ai_usage_api_v1_ai_usage_get"];
+        /** AI usage records */
+        get: operations["getAiUsage"];
         put?: never;
         post?: never;
         delete?: never;
@@ -62,11 +85,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Applications */
-        get: operations["list_applications_api_v1_applications_get"];
+        /** List applications */
+        get: operations["getApplications"];
         put?: never;
-        /** Create Application */
-        post: operations["create_application_api_v1_applications_post"];
+        /**
+         * Create an application for a saved job
+         * @description Copies company and title from the job; starts in DISCOVERED.
+         */
+        post: operations["postApplications"];
         delete?: never;
         options?: never;
         head?: never;
@@ -82,8 +108,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Import Application */
-        post: operations["import_application_api_v1_applications_import_post"];
+        /**
+         * Record a past application
+         * @description Creates an imported application at the given stage (not DISCOVERED). confirmed must be true.
+         */
+        post: operations["postApplicationsImport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -97,15 +126,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Application */
-        get: operations["get_application_api_v1_applications__id__get"];
+        /** Get an application */
+        get: operations["getApplicationsById"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch Application */
-        patch: operations["patch_application_api_v1_applications__id__patch"];
+        /**
+         * Update an application
+         * @description Stage moves one step forward, or to REJECTED/WITHDRAWN; terminal stages are final. APPLIED is reached only through submissions. nextActionAt null clears it.
+         */
+        patch: operations["patchApplicationsById"];
         trace?: never;
     };
     "/api/v1/applications/{id}/checklist": {
@@ -115,8 +147,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Application Checklist */
-        get: operations["application_checklist_api_v1_applications__id__checklist_get"];
+        /** Get the application checklist */
+        get: operations["getApplicationsByIdChecklist"];
         put?: never;
         post?: never;
         delete?: never;
@@ -134,8 +166,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume Run */
-        post: operations["resume_run_api_v1_applications__id__resume_run_post"];
+        /** Run the resume workflow for an application */
+        post: operations["postApplicationsByIdResumeRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -151,8 +183,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Submission Draft */
-        post: operations["create_submission_draft_api_v1_applications__id__submission_drafts_post"];
+        /**
+         * Create a submission draft
+         * @description Only MANUAL_RECORD is enabled (ADAPTER returns 403 FEATURE_DISABLED). Every document version must belong to this application and be its document's finalized version (422 DOCUMENT_NOT_FINALIZED).
+         */
+        post: operations["postApplicationsByIdSubmissionDrafts"];
         delete?: never;
         options?: never;
         head?: never;
@@ -166,11 +201,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Submissions */
-        get: operations["list_submissions_api_v1_applications__id__submissions_get"];
+        /** List submissions */
+        get: operations["getApplicationsByIdSubmissions"];
         put?: never;
-        /** Submit Application */
-        post: operations["submit_application_api_v1_applications__id__submissions_post"];
+        /**
+         * Submit an application
+         * @description Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft, records a SUCCEEDED submission and moves the application to APPLIED. Manual drafts need confirmedSubmitted. Errors: 409 APPROVAL_REQUIRED, APPROVAL_STALE, INVALID_TRANSITION, REVISION_CONFLICT.
+         */
+        post: operations["postApplicationsByIdSubmissions"];
         delete?: never;
         options?: never;
         head?: never;
@@ -184,8 +222,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Application Timeline */
-        get: operations["application_timeline_api_v1_applications__id__timeline_get"];
+        /** List application timeline events */
+        get: operations["getApplicationsByIdTimeline"];
         put?: never;
         post?: never;
         delete?: never;
@@ -201,11 +239,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Approvals */
-        get: operations["list_approvals_api_v1_approvals_get"];
+        /** List approvals */
+        get: operations["getApprovals"];
         put?: never;
-        /** Create Approval */
-        post: operations["create_approval_api_v1_approvals_post"];
+        /**
+         * Request an approval
+         * @description Hashes the current target so a later change makes the approval stale. Expires after the default TTL.
+         */
+        post: operations["postApprovals"];
         delete?: never;
         options?: never;
         head?: never;
@@ -219,8 +260,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Approval */
-        get: operations["get_approval_api_v1_approvals__id__get"];
+        /** Get an approval with its target summary */
+        get: operations["getApprovalsById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -238,8 +279,108 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Decide Approval */
-        post: operations["decide_approval_api_v1_approvals__id__decision_post"];
+        /**
+         * Approve or deny
+         * @description Only EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE approvals; chat cards use POST /conversations/{id}/approvals/{approvalId}. An expired approval is marked EXPIRED and the call fails.
+         */
+        post: operations["postApprovalsByIdDecision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email login
+         * @description 401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.
+         */
+        post: operations["postAuthEmailLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request password reset link
+         * @description Always 202, whether or not the email exists.
+         */
+        post: operations["postAuthEmailPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set new password with reset token
+         * @description Revokes every session of the user.
+         */
+        post: operations["postAuthEmailPasswordResetConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/signup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email signup (sends verification link)
+         * @description Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         */
+        post: operations["postAuthEmailSignup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify email and create the account */
+        post: operations["postAuthEmailVerify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -255,8 +396,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Auth Exchange */
-        post: operations["auth_exchange_api_v1_auth_exchange_post"];
+        /**
+         * Exchange OAuth code for tokens
+         * @description Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.
+         */
+        post: operations["postAuthExchange"];
         delete?: never;
         options?: never;
         head?: never;
@@ -272,8 +416,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Auth Logout */
-        post: operations["auth_logout_api_v1_auth_logout_post"];
+        /** Log out (revoke refresh token) */
+        post: operations["postAuthLogout"];
         delete?: never;
         options?: never;
         head?: never;
@@ -287,8 +431,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Auth Me */
-        get: operations["auth_me_api_v1_auth_me_get"];
+        /**
+         * Current user
+         * @description Answered by the gateway with an ETag (If-None-Match gives 304). Core returns the same fields.
+         */
+        get: operations["getAuthMe"];
         put?: never;
         post?: never;
         delete?: never;
@@ -306,8 +453,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Auth Refresh */
-        post: operations["auth_refresh_api_v1_auth_refresh_post"];
+        /**
+         * Rotate refresh token
+         * @description Reusing a revoked refresh token revokes every session of the user.
+         */
+        post: operations["postAuthRefresh"];
         delete?: never;
         options?: never;
         head?: never;
@@ -321,8 +471,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Oauth Callback */
-        get: operations["oauth_callback_api_v1_auth__provider__callback_get"];
+        /**
+         * OAuth provider callback
+         * @description Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.
+         */
+        get: operations["getAuthByProviderCallback"];
         put?: never;
         post?: never;
         delete?: never;
@@ -338,8 +491,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Oauth Start */
-        get: operations["oauth_start_api_v1_auth__provider__start_get"];
+        /**
+         * Start OAuth login
+         * @description Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
+         */
+        get: operations["getAuthByProviderStart"];
         put?: never;
         post?: never;
         delete?: never;
@@ -355,8 +511,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Billing Status */
-        get: operations["billing_status_api_v1_billing_get"];
+        /**
+         * Billing status and credit balance
+         * @description EMPLOYER accounts get the company plan and balance (404 without a company).
+         */
+        get: operations["getBilling"];
         put?: never;
         post?: never;
         delete?: never;
@@ -374,8 +533,31 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Billing Checkout */
-        post: operations["billing_checkout_api_v1_billing_checkout_post"];
+        /**
+         * Create Stripe subscription checkout session
+         * @description PERSONAL: planId PRO or ULTRA (409 ALREADY_SUBSCRIBED with an active store subscription). EMPLOYER: company ADMIN only, planId BASIC, PRO or ULTRA.
+         */
+        post: operations["postBillingCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/iap/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify an App Store / Google Play purchase
+         * @description signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. Subscriptions activate the plan (409 ALREADY_SUBSCRIBED if already active); top-up products only add credits and return the current plan.
+         */
+        post: operations["postBillingIapVerify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -389,8 +571,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Billing Ledger */
-        get: operations["billing_ledger_api_v1_billing_ledger_get"];
+        /**
+         * Credit ledger
+         * @description EMPLOYER accounts see the company ledger.
+         */
+        get: operations["getBillingLedger"];
         put?: never;
         post?: never;
         delete?: never;
@@ -408,15 +593,18 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Billing Portal */
-        post: operations["billing_portal_api_v1_billing_portal_post"];
+        /**
+         * Create Stripe customer portal session
+         * @description 409 INVALID_TRANSITION when the user has no Stripe customer.
+         */
+        post: operations["postBillingPortal"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/billing/webhook": {
+    "/api/v1/billing/topup": {
         parameters: {
             query?: never;
             header?: never;
@@ -425,8 +613,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Billing Webhook */
-        post: operations["billing_webhook_api_v1_billing_webhook_post"];
+        /**
+         * Create Stripe credit top-up checkout session
+         * @description EMPLOYER: company ADMIN only, credits go to the company.
+         */
+        post: operations["postBillingTopup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -440,11 +631,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Calendar Events */
-        get: operations["list_calendar_events_api_v1_calendar_events_get"];
+        /**
+         * List calendar events in a time range
+         * @description Filters by startsAt within [from, to]; range at most 366 days. Ordered by createdAt desc.
+         */
+        get: operations["getCalendarEvents"];
         put?: never;
-        /** Create Calendar Event */
-        post: operations["create_calendar_event_api_v1_calendar_events_post"];
+        /** Create a calendar event */
+        post: operations["postCalendarEvents"];
         delete?: never;
         options?: never;
         head?: never;
@@ -461,12 +655,18 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete Calendar Event */
-        delete: operations["delete_calendar_event_api_v1_calendar_events__id__delete"];
+        /**
+         * Delete a calendar event
+         * @description Requires a JSON body with expectedRevision.
+         */
+        delete: operations["deleteCalendarEventsById"];
         options?: never;
         head?: never;
-        /** Patch Calendar Event */
-        patch: operations["patch_calendar_event_api_v1_calendar_events__id__patch"];
+        /**
+         * Update a calendar event
+         * @description Null or missing fields are left unchanged.
+         */
+        patch: operations["patchCalendarEventsById"];
         trace?: never;
     };
     "/api/v1/career-evidence": {
@@ -476,11 +676,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Evidence */
-        get: operations["list_evidence_api_v1_career_evidence_get"];
+        /** List active career evidence */
+        get: operations["getCareerEvidence"];
         put?: never;
-        /** Create Evidence */
-        post: operations["create_evidence_api_v1_career_evidence_post"];
+        /** Create career evidence */
+        post: operations["postCareerEvidence"];
         delete?: never;
         options?: never;
         head?: never;
@@ -496,8 +696,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Import Evidence */
-        post: operations["import_evidence_api_v1_career_evidence_import_post"];
+        /**
+         * Import career evidence from text or a source
+         * @description When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format returns INTEGRATION_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.
+         */
+        post: operations["postCareerEvidenceImport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -511,8 +714,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Evidence */
-        get: operations["get_evidence_api_v1_career_evidence__id__get"];
+        /** Get career evidence */
+        get: operations["getCareerEvidenceById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -530,8 +733,177 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Archive Evidence */
-        post: operations["archive_evidence_api_v1_career_evidence__id__archive_post"];
+        /**
+         * Archive career evidence
+         * @description Idempotent: already archived evidence is returned unchanged.
+         */
+        post: operations["postCareerEvidenceByIdArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/invites/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview an invite
+         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion.
+         */
+        get: operations["getCompaniesInvitesByToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/invites/{token}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an invite
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER.
+         */
+        post: operations["postCompaniesInvitesByTokenAccept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My company */
+        get: operations["getCompaniesMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update company profile
+         * @description ADMIN only. Only the listed keys are allowed; null clears a field.
+         */
+        patch: operations["patchCompaniesMe"];
+        trace?: never;
+    };
+    "/api/v1/companies/me/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List pending invites
+         * @description ADMIN only.
+         */
+        get: operations["getCompaniesMeInvites"];
+        put?: never;
+        /**
+         * Invite a member by email
+         * @description ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full; 409 CONFLICT if already a member.
+         */
+        post: operations["postCompaniesMeInvites"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List company members */
+        get: operations["getCompaniesMeMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a company member
+         * @description ADMIN only. 409 CONFLICT when removing the last ADMIN.
+         */
+        delete: operations["deleteCompaniesMeMembersByUserId"];
+        options?: never;
+        head?: never;
+        /**
+         * Transfer ADMIN role to a member
+         * @description ADMIN only. The caller becomes MEMBER.
+         */
+        patch: operations["patchCompaniesMeMembersByUserId"];
+        trace?: never;
+    };
+    "/api/v1/companies/me/postings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my company's postings
+         * @description All statuses unless filtered. 404 when the caller is not a company member. page.total is included.
+         */
+        get: operations["getCompaniesMePostings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify business registration and create company
+         * @description EMPLOYER only. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED); 409 COMPANY_EXISTS or CONFLICT (already in a company). Profile fields are absent in this response.
+         */
+        post: operations["postCompaniesVerify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -545,11 +917,37 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Conversations */
-        get: operations["list_conversations_api_v1_conversations_get"];
+        /**
+         * List conversations
+         * @description audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.
+         */
+        get: operations["getConversations"];
         put?: never;
-        /** Create Conversation */
-        post: operations["create_conversation_api_v1_conversations_post"];
+        /**
+         * Create a conversation
+         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.
+         */
+        post: operations["postConversations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/shared/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a shared conversation
+         * @description Returns the newest 500 messages, oldest first. Rate-limited per IP.
+         */
+        get: operations["getConversationsSharedByToken"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -569,8 +967,28 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch Conversation */
-        patch: operations["patch_conversation_api_v1_conversations__id__patch"];
+        /** Rename or pin a conversation */
+        patch: operations["patchConversationsById"];
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/approvals/{approvalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer a chat approval or choice card
+         * @description optionId must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.
+         */
+        post: operations["postConversationsByIdApprovalsByApprovalId"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/conversations/{id}/archive": {
@@ -582,8 +1000,68 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Archive Conversation */
-        post: operations["archive_conversation_api_v1_conversations__id__archive_post"];
+        /**
+         * Archive a conversation
+         * @description Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation.
+         */
+        post: operations["postConversationsByIdArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List document artifacts attached to messages */
+        get: operations["getConversationsByIdArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a conversation artifact
+         * @description artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension.
+         */
+        get: operations["getConversationsByIdArtifactsByArtifactId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload a PDF attachment
+         * @description Company conversations only (verified company, plan-gated pdf_attachment). PDF only, max 10 MiB (413 PAYLOAD_TOO_LARGE).
+         */
+        post: operations["postConversationsByIdAttachments"];
         delete?: never;
         options?: never;
         head?: never;
@@ -597,11 +1075,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Messages */
-        get: operations["list_messages_api_v1_conversations__id__messages_get"];
+        /**
+         * List messages
+         * @description Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's.
+         */
+        get: operations["getConversationsByIdMessages"];
         put?: never;
-        /** Post Message */
-        post: operations["post_message_api_v1_conversations__id__messages_post"];
+        /**
+         * Send a message (queue a chat job)
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
+         */
+        post: operations["postConversationsByIdMessages"];
         delete?: never;
         options?: never;
         head?: never;
@@ -617,8 +1101,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Post Message Stream */
-        post: operations["post_message_stream_api_v1_conversations__id__messages_stream_post"];
+        /**
+         * Send a message and stream the reply
+         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.
+         */
+        post: operations["postConversationsByIdMessagesStream"];
         delete?: never;
         options?: never;
         head?: never;
@@ -632,10 +1119,53 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Active Stream */
-        get: operations["get_active_stream_api_v1_conversations__id__messages_stream_active_get"];
+        /**
+         * Replay the active chat stream
+         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.
+         */
+        get: operations["getConversationsByIdMessagesStreamActive"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a share link
+         * @description Issues a new token; any previous token for the conversation stops working.
+         */
+        post: operations["postConversationsByIdShare"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/stream/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel the active chat job
+         * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event.
+         */
+        post: operations["postConversationsByIdStreamCancel"];
         delete?: never;
         options?: never;
         head?: never;
@@ -649,11 +1179,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Documents */
-        get: operations["list_documents_api_v1_documents_get"];
+        /** List documents */
+        get: operations["getDocuments"];
         put?: never;
-        /** Create Document */
-        post: operations["create_document_api_v1_documents_post"];
+        /** Create a document */
+        post: operations["postDocuments"];
         delete?: never;
         options?: never;
         head?: never;
@@ -667,15 +1197,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Document */
-        get: operations["get_document_api_v1_documents__id__get"];
+        /** Get a document */
+        get: operations["getDocumentsById"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch Document */
-        patch: operations["patch_document_api_v1_documents__id__patch"];
+        /**
+         * Update document title, template or language
+         * @description Null fields are left unchanged. Changing the template clears the finalized version and moves a FINALIZED document back to DRAFT. Archived documents return 409 INVALID_TRANSITION.
+         */
+        patch: operations["patchDocumentsById"];
         trace?: never;
     };
     "/api/v1/documents/{id}/archive": {
@@ -687,8 +1220,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Archive Document */
-        post: operations["archive_document_api_v1_documents__id__archive_post"];
+        /**
+         * Archive a document
+         * @description Idempotent: an already archived document is returned unchanged.
+         */
+        post: operations["postDocumentsByIdArchive"];
         delete?: never;
         options?: never;
         head?: never;
@@ -702,11 +1238,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Exports */
-        get: operations["list_exports_api_v1_documents__id__exports_get"];
+        /** List export records of a document */
+        get: operations["getDocumentsByIdExports"];
         put?: never;
-        /** Create Export */
-        post: operations["create_export_api_v1_documents__id__exports_post"];
+        /**
+         * Create an export record for the finalized version
+         * @description Snapshots the finalized version for client-side rendering (status READY_TO_RENDER). 422 DOCUMENT_NOT_FINALIZED when versionId is not the finalized version.
+         */
+        post: operations["postDocumentsByIdExports"];
         delete?: never;
         options?: never;
         head?: never;
@@ -722,8 +1261,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record Export Result */
-        post: operations["record_export_result_api_v1_documents__id__exports__exportId__result_post"];
+        /**
+         * Record the render result of an export
+         * @description Allowed once per export while status is READY_TO_RENDER; otherwise 409 INVALID_TRANSITION.
+         */
+        post: operations["postDocumentsByIdExportsByExportIdResult"];
         delete?: never;
         options?: never;
         head?: never;
@@ -739,8 +1281,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Finalize Document */
-        post: operations["finalize_document_api_v1_documents__id__finalize_post"];
+        /**
+         * Finalize a document version
+         * @description Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval.
+         */
+        post: operations["postDocumentsByIdFinalize"];
         delete?: never;
         options?: never;
         head?: never;
@@ -756,8 +1301,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate Document */
-        post: operations["generate_document_api_v1_documents__id__generate_post"];
+        /**
+         * Queue AI generation of a document
+         * @description Enqueues a document generation job; poll the job for the result. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated.
+         */
+        post: operations["postDocumentsByIdGenerate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -773,8 +1321,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Review Document */
-        post: operations["review_document_api_v1_documents__id__review_post"];
+        /** Review evidence support of a version */
+        post: operations["postDocumentsByIdReview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -790,8 +1338,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Revision */
-        post: operations["create_revision_api_v1_documents__id__revisions_post"];
+        /**
+         * Create an AI revision proposal for a selection
+         * @description Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). Apply it with /revisions/{revisionId}/apply.
+         */
+        post: operations["postDocumentsByIdRevisions"];
         delete?: never;
         options?: never;
         head?: never;
@@ -807,8 +1358,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply Revision */
-        post: operations["apply_revision_api_v1_documents__id__revisions__revisionId__apply_post"];
+        /**
+         * Apply a revision proposal as a new version
+         * @description 409 APPROVAL_STALE when the document moved past the proposal's source version, 409 INVALID_TRANSITION when already applied.
+         */
+        post: operations["postDocumentsByIdRevisionsByRevisionIdApply"];
         delete?: never;
         options?: never;
         head?: never;
@@ -822,11 +1376,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Versions */
-        get: operations["list_versions_api_v1_documents__id__versions_get"];
+        /** List document versions */
+        get: operations["getDocumentsByIdVersions"];
         put?: never;
-        /** Create Version */
-        post: operations["create_version_api_v1_documents__id__versions_post"];
+        /**
+         * Save a new document version
+         * @description content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT.
+         */
+        post: operations["postDocumentsByIdVersions"];
         delete?: never;
         options?: never;
         head?: never;
@@ -840,8 +1397,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Version */
-        get: operations["get_version_api_v1_documents__id__versions__versionId__get"];
+        /** Get a document version */
+        get: operations["getDocumentsByIdVersionsByVersionId"];
         put?: never;
         post?: never;
         delete?: never;
@@ -857,8 +1414,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Export Version */
-        get: operations["export_version_api_v1_documents__id__versions__versionId__export_get"];
+        /**
+         * Download the finalized version as PDF or DOCX
+         * @description Only the finalized version can be exported (422 DOCUMENT_NOT_FINALIZED).
+         */
+        get: operations["getDocumentsByIdVersionsByVersionIdExport"];
         put?: never;
         post?: never;
         delete?: never;
@@ -874,8 +1434,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Assignment */
-        get: operations["get_assignment_api_v1_experiments__key__assignment_get"];
+        /** Get or create the caller's experiment assignment */
+        get: operations["getExperimentsByKeyAssignment"];
         put?: never;
         post?: never;
         delete?: never;
@@ -893,8 +1453,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record Experiment Event */
-        post: operations["record_experiment_event_api_v1_experiments__key__events_post"];
+        /**
+         * Record an experiment event
+         * @description Not stored when the caller is not enrolled (exclusion group); still returns recorded true.
+         */
+        post: operations["postExperimentsByKeyEvents"];
         delete?: never;
         options?: never;
         head?: never;
@@ -908,8 +1471,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Experiment Results */
-        get: operations["experiment_results_api_v1_experiments__key__results_get"];
+        /** Get exposure/conversion results per variant */
+        get: operations["getExperimentsByKeyResults"];
         put?: never;
         post?: never;
         delete?: never;
@@ -925,8 +1488,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Experiment Stats */
-        get: operations["experiment_stats_api_v1_experiments__key__stats_get"];
+        /** Get event counts per variant */
+        get: operations["getExperimentsByKeyStats"];
         put?: never;
         post?: never;
         delete?: never;
@@ -942,8 +1505,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Healthz */
-        get: operations["_healthz_api_v1_healthz_get"];
+        /** Liveness check (rate limited per IP) */
+        get: operations["getHealthz"];
         put?: never;
         post?: never;
         delete?: never;
@@ -959,12 +1522,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Google Status */
-        get: operations["google_status_api_v1_integrations_google_get"];
+        /** Get Google integration status */
+        get: operations["getIntegrationsGoogle"];
         put?: never;
         post?: never;
-        /** Google Disconnect */
-        delete: operations["google_disconnect_api_v1_integrations_google_delete"];
+        /**
+         * Disconnect Google
+         * @description Revokes tokens (best effort) and deletes synced messages and Google calendar events.
+         */
+        delete: operations["deleteIntegrationsGoogle"];
         options?: never;
         head?: never;
         patch?: never;
@@ -977,8 +1543,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Google Callback */
-        get: operations["google_callback_api_v1_integrations_google_callback_get"];
+        /**
+         * Google OAuth callback
+         * @description Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds).
+         */
+        get: operations["getIntegrationsGoogleCallback"];
         put?: never;
         post?: never;
         delete?: never;
@@ -996,8 +1565,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Google Complete */
-        post: operations["google_complete_api_v1_integrations_google_complete_post"];
+        /**
+         * Complete Google connection
+         * @description Exchanges the one-time integration code with the PKCE verifier and stores the tokens.
+         */
+        post: operations["postIntegrationsGoogleComplete"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1013,8 +1585,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Google Connect */
-        post: operations["google_connect_api_v1_integrations_google_connect_post"];
+        /**
+         * Start Google OAuth connection
+         * @description Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes.
+         */
+        post: operations["postIntegrationsGoogleConnect"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1028,8 +1603,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Google Events */
-        get: operations["google_events_api_v1_integrations_google_events_get"];
+        /** List synced Google Calendar events */
+        get: operations["getIntegrationsGoogleEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1045,8 +1620,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Google Messages */
-        get: operations["google_messages_api_v1_integrations_google_messages_get"];
+        /**
+         * List synced Gmail messages
+         * @description 403 FEATURE_DISABLED unless Gmail beta is enabled.
+         */
+        get: operations["getIntegrationsGoogleMessages"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1064,8 +1642,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Google Link Message */
-        post: operations["google_link_message_api_v1_integrations_google_messages__id__link_post"];
+        /** Link a Gmail message to an application */
+        post: operations["postIntegrationsGoogleMessagesByIdLink"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1081,8 +1659,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Google Sync */
-        post: operations["google_sync_api_v1_integrations_google_sync_post"];
+        /**
+         * Sync Gmail and Google Calendar
+         * @description Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. 409 INTEGRATION_REQUIRED when not connected; 502 PROVIDER_ERROR on Google failures.
+         */
+        post: operations["postIntegrationsGoogleSync"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1096,8 +1677,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Job Sites */
-        get: operations["job_sites_api_v1_integrations_job_sites_get"];
+        /** Job site integrations catalog */
+        get: operations["getIntegrationsJobSites"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1113,11 +1694,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Interviews */
-        get: operations["list_interviews_api_v1_interviews_get"];
+        /** List interviews */
+        get: operations["getInterviews"];
         put?: never;
-        /** Create Interview */
-        post: operations["create_interview_api_v1_interviews_post"];
+        /**
+         * Schedule an interview
+         * @description Also creates a LOCAL INTERVIEW calendar event and an INTERVIEW timeline event.
+         */
+        post: operations["postInterviews"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1131,15 +1715,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Interview */
-        get: operations["get_interview_api_v1_interviews__id__get"];
+        /** Get an interview */
+        get: operations["getInterviewsById"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch Interview */
-        patch: operations["patch_interview_api_v1_interviews__id__patch"];
+        /**
+         * Update an interview
+         * @description Null or absent fields are left unchanged. Changing scheduledAt moves the linked calendar event.
+         */
+        patch: operations["patchInterviewsById"];
         trace?: never;
     };
     "/api/v1/interviews/{id}/prepare": {
@@ -1151,8 +1738,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Prepare Interview */
-        post: operations["prepare_interview_api_v1_interviews__id__prepare_post"];
+        /** Generate interview preparation */
+        post: operations["postInterviewsByIdPrepare"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1166,11 +1753,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Jobs */
-        get: operations["list_jobs_api_v1_jobs_get"];
+        /** List saved jobs */
+        get: operations["getJobs"];
         put?: never;
-        /** Create Job */
-        post: operations["create_job_api_v1_jobs_post"];
+        /** Save a job */
+        post: operations["postJobs"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1184,15 +1771,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Job */
-        get: operations["get_job_api_v1_jobs__id__get"];
+        /** Get a job */
+        get: operations["getJobsById"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch Job */
-        patch: operations["patch_job_api_v1_jobs__id__patch"];
+        /**
+         * Update a job
+         * @description Null or absent fields are left unchanged, except deadline: null clears it.
+         */
+        patch: operations["patchJobsById"];
         trace?: never;
     };
     "/api/v1/jobs/{id}/analyses": {
@@ -1202,8 +1792,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Analyses */
-        get: operations["list_analyses_api_v1_jobs__id__analyses_get"];
+        /** List gap analyses for a job */
+        get: operations["getJobsByIdAnalyses"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1221,12 +1811,411 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Analyze Job */
-        post: operations["analyze_job_api_v1_jobs__id__analyze_post"];
+        /**
+         * Analyze a job against career evidence
+         * @description Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS.
+         */
+        post: operations["postJobsByIdAnalyze"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete account
+         * @description Marks the account for deletion (logging in within 30 days restores it), cancels Stripe subscriptions and revokes all sessions. A sole company ADMIN also marks the company; an ADMIN with other members gets 409 ADMIN_TRANSFER_REQUIRED.
+         */
+        delete: operations["deleteMe"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/bookmarks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List bookmarked open postings */
+        get: operations["getMeBookmarks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/commented-posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List posts I commented on */
+        get: operations["getMeCommentedPosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get data consents */
+        get: operations["getMeConsents"];
+        /**
+         * Update data consents
+         * @description Setting referenceData false deletes the user's reference samples.
+         */
+        put: operations["putMeConsents"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a push device
+         * @description Moves the token away from any other account.
+         */
+        post: operations["postMeDevices"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/devices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Unregister a push device */
+        delete: operations["deleteMeDevicesById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/followers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List my followers */
+        get: operations["getMeFollowers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/follows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List users I follow */
+        get: operations["getMeFollows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List my links */
+        get: operations["getMeLinks"];
+        put?: never;
+        /**
+         * Add a link
+         * @description kind is inferred from the URL host when omitted.
+         */
+        post: operations["postMeLinks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/links/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a link */
+        delete: operations["deleteMeLinksById"];
+        options?: never;
+        head?: never;
+        /** Update a link */
+        patch: operations["patchMeLinksById"];
+        trace?: never;
+    };
+    "/api/v1/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List notifications */
+        get: operations["getMeNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark notifications read
+         * @description Send {all: true} to mark everything read, otherwise ids is required.
+         */
+        post: operations["postMeNotificationsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/unread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Count unread notifications */
+        get: operations["getMeNotificationsUnread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List my offers */
+        get: operations["getMeOffers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an offer
+         * @description When the recipient opens a SENT offer it becomes READ.
+         */
+        get: operations["getMeOffersById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an offer
+         * @description Recipient only. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.
+         */
+        post: operations["postMeOffersByIdAccept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decline an offer
+         * @description Recipient only. 409 when the offer is not SENT or READ.
+         */
+        post: operations["postMeOffersByIdDecline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List offer messages
+         * @description Newest first.
+         */
+        get: operations["getMeOffersByIdMessages"];
+        put?: never;
+        /**
+         * Send an offer message
+         * @description 409 unless the offer is ACCEPTED.
+         */
+        post: operations["postMeOffersByIdMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List my posts */
+        get: operations["getMePosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get my profile
+         * @description Creates an empty profile on first access.
+         */
+        get: operations["getMeProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update my profile */
+        patch: operations["patchMeProfile"];
+        trace?: never;
+    };
+    "/api/v1/me/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get my settings */
+        get: operations["getMeSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update my settings */
+        patch: operations["patchMeSettings"];
         trace?: never;
     };
     "/api/v1/operations/{id}": {
@@ -1236,8 +2225,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Operation */
-        get: operations["get_operation_api_v1_operations__id__get"];
+        /** Get an operation */
+        get: operations["getOperationsById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1255,8 +2244,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel Operation */
-        post: operations["cancel_operation_api_v1_operations__id__cancel_post"];
+        /** Cancel an operation */
+        post: operations["postOperationsByIdCancel"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1271,13 +2260,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Operation Events
-         * @description One-shot snapshot of the operation's current state, not a live feed.
-         *
-         *     Emits progress, then result/error if terminal, then closes. Clients poll
-         *     or re-request to observe further transitions.
+         * Operation state snapshot as SSE
+         * @description One-shot, not a live feed: emits progress, then result or error when terminal, then closes. Frames use `event: <name>` and `id: <operationId>:<sequence>`; data is {operationId, sequence, payload}. Poll to observe later transitions.
          */
-        get: operations["operation_events_api_v1_operations__id__events_get"];
+        get: operations["getOperationsByIdEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1295,8 +2281,380 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Operation Input */
-        post: operations["operation_input_api_v1_operations__id__input_post"];
+        /**
+         * Submit input to an operation awaiting it
+         * @description Only when status is NEEDS_INPUT; otherwise an invalid transition error.
+         */
+        post: operations["postOperationsByIdInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List open postings
+         * @description Only OPEN, not closed postings. The cursor only applies to sort=latest; deadline and popular ignore it. page.total is included.
+         */
+        get: operations["getPostings"];
+        put?: never;
+        /**
+         * Create a posting
+         * @description Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).
+         */
+        post: operations["postPostings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Filter facet counts for open postings
+         * @description Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.
+         */
+        get: operations["getPostingsFacets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open posting counts by location */
+        get: operations["getPostingsLocations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a posting
+         * @description Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). Member fields are present only for company members. Records a view for signed-in users.
+         */
+        get: operations["getPostingsById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update a posting
+         * @description Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN.
+         */
+        patch: operations["patchPostingsById"];
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/applicant-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Applicant counts by stage
+         * @description Company members of the posting only; others (including guests) get 404.
+         */
+        get: operations["getPostingsByIdApplicantCounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/applicants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List applicants of a posting
+         * @description Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total.
+         */
+        get: operations["getPostingsByIdApplicants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/applicants/{applicationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an applicant
+         * @description Company members of the posting only. Marks the application as seen by the company.
+         */
+        get: operations["getPostingsByIdApplicantsByApplicationId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change an applicant's stage
+         * @description Company members of the posting only. Same stage returns the application unchanged. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.
+         */
+        patch: operations["patchPostingsByIdApplicantsByApplicationId"];
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/applicants/{applicationId}/files/{fileId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download an applicant's attached file
+         * @description Company members of the posting only. Content-Type is the stored MIME type of the file; Content-Disposition is attachment.
+         */
+        get: operations["getPostingsByIdApplicantsByApplicationIdFilesByFileId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply to a posting
+         * @description Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise).
+         */
+        post: operations["postPostingsByIdApply"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/bookmark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bookmark a posting
+         * @description Open postings only. Idempotent.
+         */
+        post: operations["postPostingsByIdBookmark"];
+        /** Remove a posting bookmark */
+        delete: operations["deletePostingsByIdBookmark"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close a posting
+         * @description Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale.
+         */
+        post: operations["postPostingsByIdClose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/postings/{id}/fit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue a posting fit analysis
+         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
+         */
+        post: operations["postPostingsByIdFit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List posts
+         * @description sort=popular orders by view count and ignores the cursor.
+         */
+        get: operations["getPosts"];
+        put?: never;
+        /** Create a post */
+        post: operations["postPosts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/posts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a post
+         * @description Increments the view count.
+         */
+        get: operations["getPostsById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/posts/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List post comments
+         * @description Newest first.
+         */
+        get: operations["getPostsByIdComments"];
+        put?: never;
+        /** Comment on a post */
+        post: operations["postPostsByIdComments"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List public profiles
+         * @description Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings.
+         */
+        get: operations["getProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profiles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a profile */
+        get: operations["getProfilesById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profiles/{id}/offer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send an offer to a profile
+         * @description 403 when the profile is not open to offers, 409 when an offer was already sent. postingId must be an open posting of the sender's company.
+         */
+        post: operations["postProfilesByIdOffer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1310,8 +2668,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Projects */
-        get: operations["list_projects_api_v1_projects_get"];
+        /** List project blueprints */
+        get: operations["getProjects"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1329,8 +2687,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate Blueprints */
-        post: operations["generate_blueprints_api_v1_projects_blueprints_post"];
+        /** Generate project blueprints from a gap analysis */
+        post: operations["postProjectsBlueprints"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1344,8 +2702,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Project */
-        get: operations["get_project_api_v1_projects__id__get"];
+        /** Get a project blueprint */
+        get: operations["getProjectsById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1361,11 +2719,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Project Evidence */
-        get: operations["list_project_evidence_api_v1_projects__id__evidence_get"];
+        /** List project evidence */
+        get: operations["getProjectsByIdEvidence"];
         put?: never;
-        /** Create Project Evidence */
-        post: operations["create_project_evidence_api_v1_projects__id__evidence_post"];
+        /**
+         * Submit project evidence for a run
+         * @description The run must be VERIFYING or VERIFIED. Evidence starts PENDING.
+         */
+        post: operations["postProjectsByIdEvidence"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1381,8 +2742,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Verify Project Evidence */
-        post: operations["verify_project_evidence_api_v1_projects__id__evidence__evidenceId__verify_post"];
+        /**
+         * Verify project evidence
+         * @description Marks PENDING evidence VERIFIED when its recorded tests passed, and advances the run and blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.
+         */
+        post: operations["postProjectsByIdEvidenceByEvidenceIdVerify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1396,11 +2760,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Runs */
-        get: operations["list_runs_api_v1_projects__id__runs_get"];
+        /** List CLI runs */
+        get: operations["getProjectsByIdRuns"];
         put?: never;
-        /** Create Run */
-        post: operations["create_run_api_v1_projects__id__runs_post"];
+        /**
+         * Create a CLI run
+         * @description Blueprint must be SELECTED or IN_PROGRESS; a SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.
+         */
+        post: operations["postProjectsByIdRuns"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1416,8 +2783,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Launch Run */
-        post: operations["launch_run_api_v1_projects__id__runs__runId__launch_post"];
+        /**
+         * Report CLI run launch status
+         * @description Called by the bound device. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.
+         */
+        post: operations["postProjectsByIdRunsByRunIdLaunch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1433,8 +2803,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Recover Run */
-        post: operations["recover_run_api_v1_projects__id__runs__runId__recover_post"];
+        /**
+         * Recover a CLI run with unknown launch status
+         * @description REATTACH needs process (launch becomes STARTED); MARK_FAILED needs failureReason (run becomes FAILED).
+         */
+        post: operations["postProjectsByIdRunsByRunIdRecover"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1450,8 +2823,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Result Run */
-        post: operations["result_run_api_v1_projects__id__runs__runId__result_post"];
+        /**
+         * Report a CLI run result
+         * @description Requires a RUNNING run with STARTED launch. Exit code 0 moves the run to VERIFYING, otherwise FAILED.
+         */
+        post: operations["postProjectsByIdRunsByRunIdResult"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1467,8 +2843,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start Run */
-        post: operations["start_run_api_v1_projects__id__runs__runId__start_post"];
+        /**
+         * Start a CLI run
+         * @description Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING.
+         */
+        post: operations["postProjectsByIdRunsByRunIdStart"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1484,8 +2863,68 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Select Project */
-        post: operations["select_project_api_v1_projects__id__select_post"];
+        /**
+         * Select a project blueprint
+         * @description Allowed from DRAFT or SELECTED. Returns the blueprint and a starter file manifest.
+         */
+        post: operations["postProjectsByIdSelect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search postings, people or posts
+         * @description type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending.
+         */
+        get: operations["getSearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/search/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Result counts per search type */
+        get: operations["getSearchCounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/search/trending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trending search terms and skills
+         * @description terms: top 8 search terms of the last 7 days. skills: skill counts across open postings.
+         */
+        get: operations["getSearchTrending"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1499,10 +2938,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List the file library
+         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0.
+         */
+        get: operations["getSources"];
         put?: never;
-        /** Create Source */
-        post: operations["create_source_api_v1_sources_post"];
+        /**
+         * Upload a source file
+         * @description Max 20 MiB (413 PAYLOAD_TOO_LARGE). Allowed file types: application/pdf, DOCX, text/plain, text/markdown, application/octet-stream. Queues an ingest job.
+         */
+        post: operations["postSources"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1516,12 +2962,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Source */
-        get: operations["get_source_api_v1_sources__id__get"];
+        /** Get a source */
+        get: operations["getSourcesById"];
         put?: never;
         post?: never;
-        /** Delete Source */
-        delete: operations["delete_source_api_v1_sources__id__delete"];
+        /**
+         * Delete a source
+         * @description 409 INVALID_TRANSITION when career evidence references the source. Unpins it from the profile resume.
+         */
+        delete: operations["deleteSourcesById"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1534,11 +2983,86 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Source Content */
-        get: operations["get_source_content_api_v1_sources__id__content_get"];
+        /**
+         * Download source file bytes
+         * @description Content-Type is the stored mime type (text types get charset=utf-8).
+         */
+        get: operations["getSourcesByIdContent"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{id}/profile-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Parse a profile draft from a source */
+        get: operations["getSourcesByIdProfileDraft"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload an image
+         * @description multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes (JPEG, PNG, WebP or HEIC). 413 PAYLOAD_TOO_LARGE.
+         */
+        post: operations["postUploadsImages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/images/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download an uploaded image */
+        get: operations["getUploadsImagesByName"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/follow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Follow a user */
+        post: operations["postUsersByIdFollow"];
+        /** Unfollow a user */
+        delete: operations["deleteUsersByIdFollow"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1551,8 +3075,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Healthz */
-        get: operations["_healthz_healthz_get"];
+        /** Liveness check */
+        get: operations["getRootHealthz"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1565,154 +3089,1435 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
+        AccountAiUsage: {
+            costMicroCredits: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            inputTokens: number;
+            managed: boolean;
+            model: string;
+            operationId: string | null;
+            outputTokens: number;
+            provider: string;
+            /** @enum {string} */
+            status: "RESERVED" | "SETTLED" | "RELEASED";
         };
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
+        AiJob: {
+            /** Format: date-time */
+            createdAt: string;
+            /** @description Job error JSON or null */
+            error: unknown;
+            /** Format: uuid */
+            id: string;
+            /** @description payload.progress or null */
+            progress: unknown;
+            /** @description Job result JSON or null */
+            result: unknown;
+            /** @enum {string} */
+            status: "QUEUED" | "RUNNING" | "RETRY" | "DONE" | "FAILED" | "DEAD" | "CANCELLED";
+            /** @enum {string} */
+            type: "chat" | "employer_ai" | "document" | "fit" | "ingest" | "notify";
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AiModel: {
+            available: boolean;
+            label: string;
+            model: string;
+            /** @enum {string} */
+            provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
+            supportedEfforts: ("LOW" | "MEDIUM" | "HIGH" | "MAX")[];
+        };
+        Applicant: {
+            applicant: {
+                avatarUrl: string | null;
+                displayName: string;
+                headline: string | null;
+                jobCategory: string | null;
+                tenureYears: number | null;
+            };
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: date-time */
+            appliedAt: string;
+            documents: {
+                pages: number | null;
+                title: string;
+            }[];
+            /** @enum {string} */
+            stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+        };
+        ApplicantDetail: {
+            applicant: {
+                careers: unknown[];
+                displayName: string;
+                email: string;
+                headline: string;
+                skills: string[];
+            };
+            application: components["schemas"]["PostingsApplicantApplication"];
+            documents: {
+                content: string;
+                /** Format: uuid */
+                id: string;
+                title: string;
+            }[];
+        };
+        Application: {
+            appliedAt: string | null;
+            company: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description Latest gap analysis fit score; omitted when none */
+            fitScore?: number;
+            /** Format: uuid */
+            id: string;
+            imported: boolean;
+            /** Format: uuid */
+            jobId: string;
+            nextActionAt: string | null;
+            notes: string;
+            revision: number;
+            /** @enum {string} */
+            stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        Approval: {
+            applicationId: string | null;
+            consumedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            decidedAt: string | null;
+            expiresAt: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE */
+            kind: string;
+            payloadHash: string;
+            revision: number;
+            /** @description PENDING, APPROVED, DENIED, EXPIRED, CONSUMED (chat cards may be REJECTED) */
+            status: string;
+            /** Format: uuid */
+            targetId: string;
+            targetRevision: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        Artifact: {
+            id: string | null;
+            title: string;
+            type: string | null;
+        };
+        AuthTokens: {
+            accessToken: string;
+            /** @description Access token lifetime in seconds (900) */
+            expiresIn: number;
+            refreshToken: string;
+            user: {
+                /** @enum {string} */
+                accountType: "PERSONAL" | "EMPLOYER";
+                companyId: string | null;
+                companyRole: ("ADMIN" | "MEMBER") | null;
+                displayName: string;
+                /** Format: uuid */
+                id: string;
+                locale: string;
+            };
+        };
+        BillingStatus: {
+            /** @enum {string} */
+            audience: "PERSONAL" | "EMPLOYER";
+            balanceMicroCredits: number;
+            monthlyMicroCredits: number;
+            periodEndsAt: string | null;
+            plan: ("FREE" | "PRO" | "ULTRA" | "BASIC") | null;
+            reservedMicroCredits: number;
+            source: ("STRIPE" | "APP_STORE" | "GOOGLE_PLAY") | null;
+            /** @description Settled usage this UTC month */
+            spentMicroCredits: number;
+            /** @enum {string} */
+            subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
+        };
+        CalendarEvent: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            endsAt: string;
+            externalId: string | null;
+            /** Format: uuid */
+            id: string;
+            notes: string;
+            remindAt: string | null;
+            revision: number;
+            /** @description LOCAL or an external calendar source */
+            source: string;
+            /** Format: date-time */
+            startsAt: string;
+            timeZone: string;
+            title: string;
+            /** @enum {string} */
+            type: "INTERVIEW" | "DEADLINE" | "FOLLOW_UP" | "CUSTOM" | "COFFEE_CHAT";
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description Client provider and model are ignored; the plan selects the managed model. */
+        CareerAiOptions: {
+            /** @enum {string} */
+            effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+            model: string;
+            models?: {
+                [key: string]: unknown;
+            };
+            provider: string;
+            /**
+             * @description ULTRA plan only
+             * @default false
+             */
+            ultraResume: boolean;
+            /** @default false */
+            webSearch: boolean;
+        };
+        CareerApplicationChecklist: {
+            automationEnabled: boolean;
+            items: {
+                completed: boolean;
+                /** @enum {string} */
+                key: "evidence" | "analysis" | "document_finalized" | "applied" | "interview_prep";
+                label: string;
+            }[];
+        };
+        CareerApplicationEvent: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            payload: {
+                [key: string]: unknown;
+            };
+            /** @enum {string} */
+            type: "STAGE_CHANGED" | "IMPORTED" | "SUBMISSION" | "DOCUMENT_FINALIZED" | "APPROVAL" | "INTERVIEW";
+        };
+        CareerEvidence: {
+            archived: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "RESUME" | "GITHUB" | "CAREER" | "EDUCATION" | "SKILL" | "PROJECT";
+            provenance: {
+                contentHash: string;
+                projectEvidenceId: string | null;
+                sourceId: string | null;
+                sourceLocation: {
+                    end: number;
+                    start: number;
+                    unit: string;
+                } | null;
+            };
+            revision: number;
+            skills: string[];
+            sourceText: string;
+            sourceUrl: string | null;
+            supersedesId: string | null;
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @enum {string} */
+            verificationStatus: "USER_PROVIDED" | "PENDING" | "VERIFIED" | "REJECTED";
+        };
+        CareerGoogleCalendarEvent: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            endsAt: string;
+            externalId: string | null;
+            /** Format: uuid */
+            id: string;
+            notes: string;
+            revision: number;
+            /** @enum {string} */
+            source: "GOOGLE";
+            /** Format: date-time */
+            startsAt: string;
+            timeZone: string;
+            title: string;
+            /** @enum {string} */
+            type: "INTERVIEW" | "DEADLINE" | "FOLLOW_UP" | "CUSTOM";
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CareerGoogleMessage: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            receivedAt: string | null;
+            sender: string;
+            snippet: string;
+            subject: string;
+            threadId: string;
+        };
+        CareerProjectEvidence: {
+            careerEvidenceId: string | null;
+            commitSha: string | null;
+            commitUrl: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            metrics: {
+                name: string;
+                unit: string;
+                value: number;
+            }[];
+            /** Format: uuid */
+            projectId: string;
+            revision: number;
+            /** Format: uuid */
+            runId: string;
+            /** @enum {string} */
+            status: "PENDING" | "VERIFIED";
+            summary: string;
+            testResults: {
+                exitCode: number;
+                testCommand: string;
+                testOutput: string;
+            };
+            /** Format: date-time */
+            updatedAt: string;
+            verificationMethod: string | null;
+            verifiedAt: string | null;
+        };
+        CareerProjectManifest: {
+            blueprintRevision: number;
+            files: {
+                content: string;
+                /** @enum {string} */
+                encoding: "utf8";
+                path: string;
+                sha256: string;
+            }[];
+            /** Format: uuid */
+            projectId: string;
+        };
+        CareerSubmission: {
+            adapter: string | null;
+            /** Format: uuid */
+            applicationId: string;
+            approvalId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            documentVersionIds: string[];
+            errorCode: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            mode: "MANUAL_RECORD" | "ADAPTER";
+            receiptUrl: string | null;
+            status: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CareerSubmissionDraft: {
+            adapter: string | null;
+            /** Format: uuid */
+            applicationId: string;
+            applicationRevision: number;
+            confirmedSubmitted: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            documentVersionIds: string[];
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            mode: "MANUAL_RECORD" | "ADAPTER";
+            payloadHash: string;
+        };
+        Comment: {
+            author: {
+                displayName: string;
+                id: string;
+            };
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            parentId: string | null;
+        };
+        Company: {
+            bNo: string;
+            /** Format: uuid */
+            id: string;
+            industry?: string | null;
+            intro?: string | null;
+            logoKey?: string | null;
+            logoUrl?: string | null;
+            name: string;
+            plan: ("BASIC" | "PRO" | "ULTRA") | null;
+            representativeName?: string | null;
+            /** @enum {string} */
+            role: "ADMIN" | "MEMBER";
+            seats: {
+                /** @description PRO 2, ULTRA 5, otherwise 0 */
+                limit: number;
+                used: number;
+            };
+            verifiedAt: string | null;
+            website?: string | null;
+        };
+        CompanyInvite: {
+            email: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: uuid */
+            id: string;
+        };
+        CompanyMember: {
+            displayName: string;
+            email: string;
+            /** Format: date-time */
+            joinedAt: string;
+            /** @enum {string} */
+            role: "ADMIN" | "MEMBER";
+            /** Format: uuid */
+            userId: string;
+        };
+        Consents: {
+            referenceData: boolean;
+            updatedAt: string | null;
+        };
+        Conversation: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            pinned: boolean;
+            revision: number;
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        ConversationsApprovalAnswer: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            jobId?: string;
+            optionId: string;
+            /** @enum {string} */
+            status: "APPROVED" | "REJECTED";
+        };
+        /** @description Empty object when the target is gone or the kind has no summary */
+        ConversationsApprovalTarget: {
+            /** Format: uuid */
+            id: string;
+            kind: string;
+            title: string;
+            /** @enum {string} */
+            type: "EVIDENCE";
+        } | {
+            /** Format: uuid */
+            documentId: string;
+            /** Format: uuid */
+            id: string;
+            number: number;
+            /** @enum {string} */
+            type: "DOCUMENT_VERSION";
+        } | {
+            documentVersionIds: string[];
+            /** Format: uuid */
+            id: string;
+            mode: string;
+            /** @enum {string} */
+            type: "SUBMISSION_DRAFT";
+        } | {
+            arguments: string[];
+            executable: string;
+            /** Format: uuid */
+            id: string;
+            prompt: string;
+            provider: string;
+            /** @enum {string} */
+            type: "CLI_RUN";
+            workingDirectory: string;
+        } | Record<string, never>;
+        ConversationsListItem: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: {
+                displayName: string;
+            };
+            /** Format: uuid */
+            id: string;
+            lastMessagePreview: string;
+            pinned: boolean;
+            postingId: string | null;
+            revision: number;
+            /** @enum {string} */
+            status: "NEEDS_APPROVAL" | "RUNNING" | "DONE";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        ConversationsMessageAttachment: {
+            documentId?: string;
+            id: string;
+            title?: string;
+            /** @description e.g. DOCUMENT_VERSION, EVIDENCE */
             type: string;
         };
+        ConversationsOperationError: {
+            code: string;
+            message: string;
+            retryable: boolean;
+        };
+        ConversationsOperationEventError: {
+            /** Format: uuid */
+            operationId: string;
+            payload: components["schemas"]["ConversationsOperationError"] | null;
+            sequence: number;
+        };
+        ConversationsOperationEventProgress: {
+            /** Format: uuid */
+            operationId: string;
+            payload: {
+                progress: number | null;
+                status: string;
+                step: string;
+            };
+            sequence: number;
+        };
+        ConversationsOperationEventResult: {
+            /** Format: uuid */
+            operationId: string;
+            /** @description Operation result.value */
+            payload: unknown;
+            sequence: number;
+        };
+        Device: {
+            /** @enum {string} */
+            platform: "ios" | "android";
+            token: string;
+        };
+        Document: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            finalizedVersionId: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+            language: string;
+            latestVersionId: string | null;
+            revision: number;
+            /** @enum {string} */
+            status: "DRAFT" | "FINALIZED" | "ARCHIVED";
+            /** @enum {string} */
+            template: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        DocumentExport: {
+            blocks: components["schemas"]["DocumentsBlock"][];
+            /** @description TipTap JSON (root type doc; nodes doc, paragraph, heading, bulletList, orderedList, listItem, text; only link marks; paragraph, heading and listItem need attrs.blockId) */
+            content: {
+                [key: string]: unknown;
+            };
+            contentHash: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            documentId: string;
+            /** @enum {string} */
+            format: "PDF" | "DOCX";
+            /** Format: uuid */
+            id: string;
+            language: string;
+            rendererVersion: string;
+            result: components["schemas"]["DocumentsExportResult"] | null;
+            /** @enum {string} */
+            status: "READY_TO_RENDER" | "SUCCEEDED" | "FAILED";
+            template: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: uuid */
+            versionId: string;
+        };
+        DocumentVersion: {
+            applicationId: string | null;
+            blocks: components["schemas"]["DocumentsBlock"][];
+            changeNote: string;
+            /** @description TipTap JSON (root type doc; nodes doc, paragraph, heading, bulletList, orderedList, listItem, text; only link marks; paragraph, heading and listItem need attrs.blockId) */
+            content: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            documentId: string;
+            /** Format: uuid */
+            id: string;
+            number: number;
+            quality: components["schemas"]["DocumentsQuality"];
+        };
+        DocumentsAiOptions: {
+            effort: string;
+            model: string;
+            /** @default {} */
+            models: {
+                [key: string]: unknown;
+            };
+            provider: string;
+            /** @default false */
+            ultraResume: boolean;
+            /** @default false */
+            webSearch: boolean;
+        };
+        DocumentsBlock: {
+            /** @description SUPPORTED, NEEDS_REVIEW, UNSUPPORTED (empty string if never verified) */
+            claimStatus: string;
+            evidenceRefs: components["schemas"]["DocumentsEvidenceRef"][];
+            id: string;
+            text: string;
+        };
+        DocumentsEvidenceRef: {
+            end: number;
+            /** Format: uuid */
+            evidenceId: string;
+            start: number;
+        };
+        DocumentsExportResult: {
+            byteLength: number;
+            errorCode?: string;
+            pageCount?: number;
+            sha256: string;
+            validation: {
+                atsText: boolean;
+                koreanText: boolean;
+                links: boolean;
+            };
+        };
+        DocumentsLibraryItem: {
+            /** Format: date-time */
+            createdAt: string;
+            fileName: string;
+            /** Format: uuid */
+            id: string;
+            mimeType: string;
+            /** @description UPLOAD, AI, or the stored source origin */
+            origin: string;
+            pageCount: number | null;
+            size: number;
+        };
+        DocumentsProfileDraft: {
+            careers: {
+                company: string;
+                end: string;
+                start: string;
+                title: string;
+            }[];
+            displayName: string;
+            headline: string;
+            intro: string;
+            skills: string[];
+            tenureYears: number | null;
+        };
+        DocumentsQuality: {
+            ats: number | null;
+            evidenceFidelity: number | null;
+            issues: {
+                blockId?: string;
+                code: string;
+                message: string;
+                /** @description ERROR or WARN */
+                severity: string;
+            }[];
+            jobFit: number | null;
+            method: string;
+            readability: number | null;
+        };
+        DocumentsSourceUpload: {
+            fileName: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            jobId: string;
+            mimeType: string;
+            sha256: string;
+            size: number;
+            /** @enum {string} */
+            status: "STORED";
+        };
+        Error: {
+            error: {
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ... */
+                code: string;
+                details: {
+                    [key: string]: unknown;
+                } | null;
+                message: string;
+                requestId: string;
+            };
+        };
+        GoogleIntegration: {
+            /** @enum {string} */
+            calendarStatus: "CONNECTED" | "DISCONNECTED";
+            connected: boolean;
+            /** @description Server has Google client credentials */
+            enabled: boolean;
+            /** @enum {string} */
+            gmailStatus: "CONNECTED" | "DISCONNECTED" | "DISABLED";
+            lastSyncedAt: string | null;
+            scopes: string[];
+        };
+        Interview: {
+            /** Format: uuid */
+            applicationId: string;
+            companySources: {
+                accessedAt: string | null;
+                sourceText: string;
+                sourceUrl: string;
+            }[];
+            /** Format: date-time */
+            createdAt: string;
+            durationMinutes: number | null;
+            eventId: string | null;
+            evidenceIds: string[];
+            /** Format: uuid */
+            id: string;
+            notes: string;
+            reflection: string;
+            revision: number;
+            /** Format: date-time */
+            scheduledAt: string;
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        Job: {
+            company: string;
+            /** Format: date-time */
+            createdAt: string;
+            deadline: string | null;
+            /** Format: uuid */
+            id: string;
+            keywords: string[];
+            language: string;
+            preferred: string[];
+            requirements: string[];
+            revision: number;
+            risks: string[];
+            /** @enum {string} */
+            sourceKind: "URL" | "TEXT" | "DOM";
+            sourceText: string;
+            sourceUrl: string | null;
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        JobAnalysis: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            evidenceIds: string[];
+            fitScore: number | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            jobId: string;
+            jobRevision: number;
+            matched: {
+                evidenceIds: string[];
+                requirement: string;
+            }[];
+            /** @enum {string} */
+            method: "RULE_BASED" | "AI_ASSISTED";
+            missing: string[];
+            preferredMissing: string[];
+            risks: string[];
+            stale: boolean;
+        };
+        JobSite: {
+            checklist: string[];
+            enabled: boolean;
+            /** @enum {string} */
+            mode: "MANUAL_CHECKLIST";
+            permissionVerified: boolean;
+            /** @enum {string} */
+            provider: "WANTED" | "JUMPIT" | "JOBKOREA";
+            supportedFields: string[];
+        };
+        LedgerEntry: {
+            amountMicroCredits: number;
+            balanceAfter: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            referenceId: string | null;
+            /** @description Currently PURCHASE */
+            type: string;
+        };
+        Message: {
+            attachments: components["schemas"]["ConversationsMessageAttachment"][];
+            /** Format: uuid */
+            conversationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            operationId: string | null;
+            /** @description USER or ASSISTANT */
+            role: string;
+            text: string;
+        };
+        Notification: {
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            readAt: string | null;
+            /** @description Navigation target. Empty object when missing. */
+            target: {
+                id?: string;
+                /** @description offer, post, posting, calendar, activity (application id), conversation */
+                kind?: string;
+            } & {
+                [key: string]: unknown;
+            };
+            title: string;
+            /** @description OFFER, COMMENT, DEADLINE, AI_DONE, APPLICATION_STAGE */
+            type: string;
+        };
+        Offer: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            message: string;
+            posting: {
+                company: string;
+                /** Format: uuid */
+                id: string;
+                imageUrl: string | null;
+                title: string;
+            } | null;
+            readAt: string | null;
+            recipient: {
+                displayName: string;
+                id: string;
+            };
+            sender: {
+                avatarUrl: string | null;
+                companyName: string | null;
+                displayName: string;
+                headline: string;
+                id: string;
+            };
+            /** @enum {string} */
+            status: "SENT" | "READ" | "ACCEPTED" | "DECLINED";
+        };
+        OfferMessage: {
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            offerId: string;
+            sender: {
+                displayName: string;
+                id: string;
+            };
+        };
+        Operation: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            error: components["schemas"]["ConversationsOperationError"] | null;
+            /** Format: uuid */
+            id: string;
+            inputRequest: {
+                code: string;
+                fields: {
+                    label: string;
+                    name: string;
+                    type: string;
+                }[];
+                message: string;
+            } | null;
+            progress: number | null;
+            result: {
+                kind: string;
+                value: unknown;
+            } | null;
+            /** @enum {string} */
+            status: "QUEUED" | "RUNNING" | "NEEDS_INPUT" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+            /** @description EVIDENCE_IMPORT, JOB_ANALYSIS, DOCUMENT_GENERATE, DOCUMENT_REVISE, PROJECT_BLUEPRINTS, PROJECT_VERIFY, INTERVIEW_PREPARE, RESUME_WORKFLOW, AI_GENERATE, CHAT_MESSAGE, GOOGLE_SYNC, APPLICATION_SUBMIT */
+            type: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        Page: {
+            hasMore: boolean;
+            nextCursor: string | null;
+            total?: number;
+        };
+        Post: {
+            author: {
+                companyName: string | null;
+                displayName: string;
+                employer: boolean;
+                id: string;
+            };
+            body: string;
+            /** @enum {string} */
+            category: "work" | "dev" | "daily" | "career" | "talk" | "coffeechat" | "marketing";
+            commentCount: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            imageUrls: string[];
+            title: string;
+            viewCount: number;
+        };
+        Posting: {
+            applied: boolean;
+            bookmarked: boolean;
+            careerMax: number | null;
+            careerMin: number;
+            closedAt: string | null;
+            company: string;
+            /** Format: date-time */
+            createdAt: string;
+            deadline: string | null;
+            /** @enum {string} */
+            employmentType: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
+            /** Format: uuid */
+            id: string;
+            imageUrl: string | null;
+            /** @enum {string} */
+            jobCategory: "dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops";
+            location: string;
+            revision: number;
+            skills: string[];
+            sourceUrl: string | null;
+            /** @enum {string} */
+            status?: "DRAFT" | "OPEN" | "CLOSED";
+            title: string;
+        };
+        /** @description status, newApplicantCount and createdBy are present only for members of the owning company (always present on create, update and close responses). */
+        PostingDetail: components["schemas"]["Posting"] & {
+            applicantCount: number;
+            createdBy?: {
+                displayName: string;
+            } | null;
+            description: string;
+            /** @description Applicants the company has not opened yet */
+            newApplicantCount?: number;
+            preferred: string[];
+            requirements: string[];
+            /** @enum {string} */
+            status?: "DRAFT" | "OPEN" | "CLOSED";
+            workConditions: {
+                [key: string]: unknown;
+            };
+        };
+        PostingsApplicantApplication: {
+            appliedAt: string | null;
+            company: string;
+            /** Format: date-time */
+            createdAt: string;
+            fitScore: number | null;
+            /** Format: uuid */
+            id: string;
+            imported: boolean;
+            /** Format: uuid */
+            jobId: string;
+            nextActionAt: string | null;
+            revision: number;
+            /** @enum {string} */
+            stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PostingsCompanyPosting: components["schemas"]["Posting"] & {
+            applicantCount: number;
+            createdBy: {
+                displayName: string;
+            } | null;
+            /** @description Applicants the company has not opened yet */
+            newApplicantCount: number;
+            /** @enum {string} */
+            status: "DRAFT" | "OPEN" | "CLOSED";
+        };
+        Profile: {
+            avatarUrl: string | null;
+            careerStatus: ("satisfied" | "seeking" | "feedback") | null;
+            careers: components["schemas"]["SocialProfileCareer"][];
+            contact: string | null;
+            displayName: string;
+            followerCount: number;
+            headline: string;
+            intro: string;
+            jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
+            openToOffers: boolean;
+            resumeSourceId: string | null;
+            skills: string[];
+            tenureYears: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: uuid */
+            userId: string;
+        };
+        ProfileDetail: {
+            avatarUrl: string | null;
+            careerStatus: ("satisfied" | "seeking" | "feedback") | null;
+            careers: components["schemas"]["SocialProfileCareer"][];
+            contact: string | null;
+            displayName: string;
+            followerCount: number;
+            following: boolean;
+            headline: string;
+            intro: string;
+            jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
+            offered: boolean;
+            openToOffers: boolean;
+            resumeSourceId: string | null;
+            skills: string[];
+            tenureYears: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: uuid */
+            userId: string;
+        };
+        ProfileLink: {
+            aiRead: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            fitCount: number;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "job" | "github" | "portfolio" | "blog" | "other";
+            status: string;
+            title: string;
+            url: string;
+        };
+        Project: {
+            /** Format: uuid */
+            applicationId: string;
+            completionCriteria: string[];
+            /** Format: date-time */
+            createdAt: string;
+            estimatedEffort: {
+                maxHours: number;
+                minHours: number;
+            };
+            /** Format: uuid */
+            gapAnalysisId: string;
+            /** Format: uuid */
+            id: string;
+            metrics: {
+                measurement: string;
+                name: string;
+                target: number | null;
+                unit: string;
+            }[];
+            problem: string;
+            revision: number;
+            skills: string[];
+            solution: string;
+            /** @enum {string} */
+            state: "DRAFT" | "SELECTED" | "IN_PROGRESS" | "VERIFIED" | "ARCHIVED";
+            tasks: {
+                acceptance: string[];
+                description: string;
+                id: string;
+                title: string;
+            }[];
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        ProjectRun: {
+            /** Format: uuid */
+            applicationId: string;
+            approvalId: string | null;
+            arguments: string[];
+            commitSha: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            detectedVersion: string | null;
+            deviceId: string | null;
+            executable: string;
+            exitCode: number | null;
+            failureReason: string | null;
+            finishedAt: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            launchStatus: "NOT_CLAIMED" | "CLAIMED" | "STARTED" | "UNKNOWN" | "FINISHED";
+            payloadHash: string;
+            /** Format: uuid */
+            projectId: string;
+            prompt: string;
+            /** @enum {string} */
+            provider: "CODEX" | "CLAUDE_CODE" | "GROK_BUILD";
+            revision: number;
+            startedAt: string | null;
+            /** @enum {string} */
+            state: "DRAFT" | "APPROVAL_REQUIRED" | "RUNNING" | "VERIFYING" | "VERIFIED" | "FAILED";
+            stderrHash: string | null;
+            stdoutHash: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+            workingDirectory: string;
+        };
+        /** @description Posting for type=postings, Profile for type=people, Post for type=posts. */
+        SearchResult: components["schemas"]["Posting"] | components["schemas"]["Profile"] | components["schemas"]["Post"];
+        SocialProfileCareer: {
+            company: string;
+            description: string;
+            endedOn: string | null;
+            role: string;
+            startedOn: string | null;
+        };
+        SocialProfileCareerInput: {
+            company: string;
+            description?: string;
+            endedOn?: string | null;
+            role: string;
+            startedOn?: string | null;
+        };
+        Source: {
+            /** Format: date-time */
+            createdAt: string;
+            fileName: string;
+            /** Format: uuid */
+            id: string;
+            mimeType: string;
+            sha256: string;
+            size: number;
+            status: string;
+        };
+        UploadedImage: {
+            key: string;
+            /** @description /api/v1/uploads/images/<key> */
+            url: string;
+        };
+        User: {
+            /** @enum {string} */
+            accountType: "PERSONAL" | "EMPLOYER";
+            companyId: string | null;
+            companyRole: ("ADMIN" | "MEMBER") | null;
+            /** Format: date-time */
+            createdAt: string;
+            displayName: string;
+            /** @description Empty string when unknown */
+            email: string;
+            /** Format: uuid */
+            id: string;
+            locale: string;
+            /** @enum {string} */
+            plan: "FREE" | "PRO" | "ULTRA";
+            /** @description google, github, email, or empty */
+            provider: string;
+        };
+        UserSettings: {
+            /** @enum {string} */
+            aiAccessMode: "ALWAYS_ASK" | "AUTO" | "BYPASS";
+            allowAiReadMyFiles: boolean;
+            /** @enum {string} */
+            careerStatusVisibility: "everyone" | "followers" | "private";
+            chatRetentionDays: number | null;
+            confirmBeforeEdit: boolean;
+            /** @enum {string} */
+            contactVisibility: "accepted" | "followers" | "everyone" | "private";
+            /** @enum {string} */
+            defaultEffort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+            /** @enum {string} */
+            defaultTone: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
+            hideFromCurrentCompany: boolean;
+            locale: string;
+            notifyAiDone: boolean;
+            notifyApplicationStage: boolean;
+            notifyComment: boolean;
+            notifyDeadline: boolean;
+            notifyOffer: boolean;
+            profilePublic: boolean;
+        };
     };
-    responses: never;
-    parameters: never;
+    responses: {
+        /** @description Error */
+        Error: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+    };
+    parameters: {
+        /** @description UUID. A retry with the same key and body replays the first response. */
+        IdempotencyKey: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    ai_generate_api_v1_ai_generate_post: {
+    postAiGenerate: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai: components["schemas"]["CareerAiOptions"];
+                    /** Format: uuid */
+                    applicationId: string;
+                    evidenceIds?: string[];
+                    prompt: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    ai_models_api_v1_ai_models_get: {
+    getAiJobsById: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AiJob"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    ai_usage_api_v1_ai_usage_get: {
+    getAiModels: {
         parameters: {
-            query?: never;
+            query?: {
+                provider?: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AiModel"][];
+                    };
                 };
             };
+            /** @description Not Modified (If-None-Match matched the ETag) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
         };
     };
-    list_applications_api_v1_applications_get: {
+    getAiUsage: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                /** @description Inclusive lower bound on createdAt (RFC3339) */
+                from?: string;
+                /** @description Inclusive upper bound on createdAt (RFC3339) */
+                to?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AccountAiUsage"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    create_application_api_v1_applications_post: {
+    getApplications: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                stage?: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+                /** @description Case-insensitive match on company or title */
+                query?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Application"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postApplications: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    jobId: string;
+                    notes?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Application"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    import_application_api_v1_applications_import_post: {
+    postApplicationsImport: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description RFC3339 timestamp; naive values are treated as UTC */
+                    appliedAt: string;
+                    /** @constant */
+                    confirmed: true;
+                    /** Format: uuid */
+                    jobId: string;
+                    notes?: string;
+                    /** @enum {string} */
+                    stage: "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Application"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_application_api_v1_applications__id__get: {
+    getApplicationsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -1723,27 +4528,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Application"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    patch_application_api_v1_applications__id__patch: {
+    patchApplicationsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -1752,29 +4551,32 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                    nextActionAt?: string | null;
+                    notes?: string | null;
+                    stage?: ("DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN") | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Application"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    application_checklist_api_v1_applications__id__checklist_get: {
+    getApplicationsByIdChecklist: {
         parameters: {
             query?: never;
             header?: never;
@@ -1785,91 +4587,100 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerApplicationChecklist"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    resume_run_api_v1_applications__id__resume_run_post: {
+    postApplicationsByIdResumeRun: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai?: components["schemas"]["CareerAiOptions"] | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    create_submission_draft_api_v1_applications__id__submission_drafts_post: {
+    postApplicationsByIdSubmissionDrafts: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    adapter?: null;
+                    confirmedSubmitted?: boolean;
+                    documentVersionIds: string[];
+                    expectedRevision: number;
+                    /** @enum {string} */
+                    mode: "MANUAL_RECORD" | "ADAPTER";
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerSubmissionDraft"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_submissions_api_v1_applications__id__submissions_get: {
+    getApplicationsByIdSubmissions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -1878,60 +4689,66 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerSubmission"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    submit_application_api_v1_applications__id__submissions_post: {
+    postApplicationsByIdSubmissions: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    approvalId: string;
+                    /** Format: uuid */
+                    draftId: string;
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerSubmission"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    application_timeline_api_v1_applications__id__timeline_get: {
+    getApplicationsByIdTimeline: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -1940,67 +4757,89 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerApplicationEvent"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_approvals_api_v1_approvals_get: {
+    getApprovals: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+                status?: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "CONSUMED";
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Approval"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    create_approval_api_v1_approvals_post: {
+    postApprovals: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    applicationId?: string | null;
+                    /** @enum {string} */
+                    kind: "EVIDENCE_USE" | "DOCUMENT_FINALIZE" | "APPLICATION_SUBMIT" | "CLI_EXECUTE";
+                    /** Format: uuid */
+                    targetId: string;
+                    targetRevision?: number | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Approval"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_approval_api_v1_approvals__id__get: {
+    getApprovalsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -2011,522 +4850,274 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            approval: components["schemas"]["Approval"];
+                            target: components["schemas"]["ConversationsApprovalTarget"];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    decide_approval_api_v1_approvals__id__decision_post: {
+    postApprovalsByIdDecision: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "APPROVED" | "DENIED";
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Approval"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    auth_exchange_api_v1_auth_exchange_post: {
+    postAuthEmailLogin: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    password: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    auth_logout_api_v1_auth_logout_post: {
+    postAuthEmailPasswordReset: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** @constant */
+                            accepted: true;
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    auth_me_api_v1_auth_me_get: {
+    postAuthEmailPasswordResetConfirm: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description 8 to 128 code points */
+                    password: string;
+                    token: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    auth_refresh_api_v1_auth_refresh_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    oauth_callback_api_v1_auth__provider__callback_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                provider: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    oauth_start_api_v1_auth__provider__start_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                provider: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    billing_status_api_v1_billing_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    billing_checkout_api_v1_billing_checkout_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    billing_ledger_api_v1_billing_ledger_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    billing_portal_api_v1_billing_portal_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    billing_webhook_api_v1_billing_webhook_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    list_calendar_events_api_v1_calendar_events_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    create_calendar_event_api_v1_calendar_events_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    delete_calendar_event_api_v1_calendar_events__id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
+            /** @description No Content */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    patch_calendar_event_api_v1_calendar_events__id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_evidence_api_v1_career_evidence_get: {
+    postAuthEmailSignup: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    create_evidence_api_v1_career_evidence_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    accountType: "PERSONAL" | "EMPLOYER";
+                    consentReference?: boolean;
+                    displayName: string;
+                    /** Format: email */
+                    email: string;
+                    /** @description 8 to 128 code points */
+                    password: string;
                 };
             };
         };
-    };
-    import_evidence_api_v1_career_evidence_import_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** @constant */
+                            accepted: true;
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_evidence_api_v1_career_evidence__id__get: {
+    postAuthEmailVerify: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    archive_evidence_api_v1_career_evidence__id__archive_post: {
+    postAuthExchange: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    codeVerifier: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    refreshToken: string;
                 };
             };
         };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    list_conversations_api_v1_conversations_get: {
+    getAuthMe: {
         parameters: {
             query?: never;
             header?: never;
@@ -2535,18 +5126,119 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["User"];
+                    };
+                };
+            };
+            /** @description Not Modified (If-None-Match matched the ETag) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    refreshToken: string;
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    create_conversation_api_v1_conversations_post: {
+    getAuthByProviderCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+            };
+            header?: never;
+            path: {
+                provider: "google" | "github";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the app callback with ?code= */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAuthByProviderStart: {
+        parameters: {
+            query: {
+                accountType?: "PERSONAL" | "EMPLOYER";
+                codeChallengeMethod: "S256";
+                /** @description PKCE S256 challenge */
+                codeChallenge: string;
+                /** @description Final app callback that receives ?code= */
+                redirectUri: string;
+            };
+            header?: never;
+            path: {
+                provider: "google" | "github";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            authorizationUrl: string;
+                            /** Format: date-time */
+                            expiresAt: string;
+                            state: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBilling: {
         parameters: {
             query?: never;
             header?: never;
@@ -2555,18 +5247,267 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BillingStatus"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingCheckout: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    planId: "PRO" | "ULTRA" | "BASIC";
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            expiresAt: string | null;
+                            url: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingIapVerify: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    platform: "APP_STORE" | "GOOGLE_PLAY";
+                    productId: string;
+                    purchaseToken?: string;
+                    signedTransaction?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            periodEndsAt: string | null;
+                            plan: string | null;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBillingLedger: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LedgerEntry"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingPortal: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            url: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTopup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Credit units (quantity of the top-up price) */
+                    amount: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            url: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendarEvents: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                applicationId?: string;
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CalendarEvent"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postCalendarEvents: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    applicationId?: string | null;
+                    /**
+                     * Format: date-time
+                     * @description Must be after startsAt
+                     */
+                    endsAt: string;
+                    notes?: string;
+                    remindAt?: string | null;
+                    /** Format: date-time */
+                    startsAt: string;
+                    /**
+                     * @description IANA time zone
+                     * @default UTC
+                     */
+                    timeZone?: string;
+                    title: string;
+                    /** @enum {string} */
+                    type: "INTERVIEW" | "DEADLINE" | "FOLLOW_UP" | "CUSTOM" | "COFFEE_CHAT";
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CalendarEvent"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    patch_conversation_api_v1_conversations__id__patch: {
+    deleteCalendarEventsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -2575,122 +5516,169 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchCalendarEventsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    endsAt?: string | null;
+                    expectedRevision: number;
+                    notes?: string | null;
+                    startsAt?: string | null;
+                    timeZone?: string | null;
+                    title?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CalendarEvent"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    archive_conversation_api_v1_conversations__id__archive_post: {
+    getCareerEvidence: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                kind?: "RESUME" | "GITHUB" | "CAREER" | "EDUCATION" | "SKILL" | "PROJECT";
+                /** @description Substring match on title or source text */
+                query?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerEvidence"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_messages_api_v1_conversations__id__messages_get: {
+    postCareerEvidence: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                id: string;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "RESUME" | "GITHUB" | "CAREER" | "EDUCATION" | "SKILL" | "PROJECT";
+                    skills?: string[];
+                    sourceText: string;
+                    sourceUrl?: string | null;
+                    supersedesId?: string | null;
+                    title: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerEvidence"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    post_message_api_v1_conversations__id__messages_post: {
+    postCareerEvidenceImport: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                id: string;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    contentHash: string;
+                    /** @enum {string} */
+                    format: "TEXT" | "MARKDOWN" | "PDF" | "DOCX" | "GITHUB";
+                    kind: string;
+                    sourceId?: string | null;
+                    sourceUrl?: string | null;
+                    text: string;
+                    title: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    post_message_stream_api_v1_conversations__id__messages_stream_post: {
+    getCareerEvidenceById: {
         parameters: {
             query?: never;
             header?: never;
@@ -2701,58 +5689,112 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerEvidence"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    get_active_stream_api_v1_conversations__id__messages_stream_active_get: {
+    postCareerEvidenceByIdArchive: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerEvidence"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    getCompaniesInvitesByToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: {
+                            companyName: string;
+                            email: string;
+                            /** Format: date-time */
+                            expiresAt: string;
+                            inviterName: string;
+                            /** @enum {string} */
+                            inviterRole: "ADMIN" | "MEMBER";
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    list_documents_api_v1_documents_get: {
+    postCompaniesInvitesByTokenAccept: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCompaniesMe: {
         parameters: {
             query?: never;
             header?: never;
@@ -2761,18 +5803,54 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Company"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchCompaniesMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    industry?: string | null;
+                    intro?: string | null;
+                    logoKey?: string | null;
+                    representativeName?: string | null;
+                    website?: string | null;
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Company"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    create_document_api_v1_documents_post: {
+    getCompaniesMeInvites: {
         parameters: {
             query?: never;
             header?: never;
@@ -2781,363 +5859,1256 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CompanyInvite"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postCompaniesMeInvites: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            email: string;
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_document_api_v1_documents__id__get: {
+    getCompaniesMeMembers: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CompanyMember"][];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    patch_document_api_v1_documents__id__patch: {
+    deleteCompaniesMeMembersByUserId: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: string;
+                userId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchCompaniesMeMembersByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "ADMIN";
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCompaniesMePostings: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                status?: "DRAFT" | "OPEN" | "CLOSED";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["PostingsCompanyPosting"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    archive_document_api_v1_documents__id__archive_post: {
+    postCompaniesVerify: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                id: string;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Business name */
+                    bNm: string;
+                    /** @description Business registration number */
+                    bNo: string;
+                    /** @description Representative name */
+                    pNm: string;
+                    /** @description Opening date YYYYMMDD */
+                    startDt: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_exports_api_v1_documents__id__exports_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_export_api_v1_documents__id__exports_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Company"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversations: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+                /** @description Case-insensitive match on title or last message text */
+                q?: string;
+                audience?: "PERSONAL" | "EMPLOYER";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: components["schemas"]["ConversationsListItem"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversations: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    applicationId?: string | null;
+                    /** @enum {string} */
+                    audience?: "PERSONAL" | "EMPLOYER";
+                    /** @description EMPLOYER only */
+                    postingId?: string | null;
+                    title: string;
                 };
             };
         };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    record_export_result_api_v1_documents__id__exports__exportId__result_post: {
+    getConversationsSharedByToken: {
         parameters: {
             query?: never;
             header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            messages: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                role: string;
+                                text: string;
+                            }[];
+                            title: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchConversationsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                    pinned?: boolean | null;
+                    title?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdApprovalsByApprovalId: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+                approvalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    optionId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ConversationsApprovalAnswer"];
+                    };
+                };
+            };
+            /** @description Accepted; chat job resumed */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ConversationsApprovalAnswer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdArchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversationsByIdArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Artifact"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversationsByIdArtifactsByArtifactId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                    "application/octet-stream": string;
+                    "application/pdf": string;
+                    "text/markdown": string;
+                    "text/plain": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdAttachments: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            fileName: string;
+                            /** Format: uuid */
+                            id: string;
+                            /** @enum {string} */
+                            mimeType: "application/pdf";
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversationsByIdMessages: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Message"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdMessages: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting
+                     * @enum {string}
+                     */
+                    accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
+                    ai?: {
+                        /** @enum {string} */
+                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        model: string;
+                        models?: {
+                            [key: string]: unknown;
+                        };
+                        /** @enum {string} */
+                        provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
+                        /** @description Requires the ULTRA plan */
+                        ultraResume?: boolean;
+                        webSearch?: boolean;
+                    } | null;
+                    applicationId?: string | null;
+                    context?: {
+                        documentId?: string | null;
+                        evidenceIds?: string[];
+                        versionId?: string | null;
+                    };
+                    /** @enum {string} */
+                    intent?: "posting" | "review" | "interview" | "general";
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            applicationId: null;
+                            /** Format: date-time */
+                            createdAt: string;
+                            error: null;
+                            /** Format: uuid */
+                            id: string;
+                            inputRequest: null;
+                            progress: null;
+                            result: {
+                                /** @enum {string} */
+                                kind: "CHAT_MESSAGE";
+                                value: {
+                                    /** Format: uuid */
+                                    jobId: string;
+                                };
+                            };
+                            /** @enum {string} */
+                            status: "QUEUED";
+                            /** @enum {string} */
+                            type: "CHAT_MESSAGE";
+                            /** Format: date-time */
+                            updatedAt: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdMessagesStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting
+                     * @enum {string}
+                     */
+                    accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
+                    ai?: {
+                        /** @enum {string} */
+                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        model: string;
+                        models?: {
+                            [key: string]: unknown;
+                        };
+                        /** @enum {string} */
+                        provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
+                        /** @description Requires the ULTRA plan */
+                        ultraResume?: boolean;
+                        webSearch?: boolean;
+                    } | null;
+                    applicationId?: string | null;
+                    context?: {
+                        documentId?: string | null;
+                        evidenceIds?: string[];
+                        versionId?: string | null;
+                    };
+                    /** @enum {string} */
+                    intent?: "posting" | "review" | "interview" | "general";
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversationsByIdMessagesStreamActive: {
+        parameters: {
+            query?: {
+                /** @description Resume after this seq; the Last-Event-ID header is used when absent */
+                after?: number;
+            };
+            header?: {
+                "Last-Event-ID"?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description No active chat job */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdShare: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            path: string;
+                            token: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdStreamCancel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: uuid */
+                            jobId: string;
+                            /** @enum {string} */
+                            status: "CANCELLED";
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getDocuments: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocuments: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    applicationId: string;
+                    /** @enum {string} */
+                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+                    language: string;
+                    /**
+                     * @description Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.
+                     * @enum {string}
+                     */
+                    template?: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT";
+                    title: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getDocumentsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchDocumentsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                    language?: string | null;
+                    template?: ("SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT") | null;
+                    title?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdArchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getDocumentsByIdExports: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DocumentExport"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdExports: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    format: "PDF" | "DOCX";
+                    rendererVersion: string;
+                    /** Format: uuid */
+                    versionId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DocumentExport"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdExportsByExportIdResult: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 exportId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    byteLength: number;
+                    errorCode?: string | null;
+                    pageCount?: number | null;
+                    sha256: string;
+                    /** @enum {string} */
+                    status: "SUCCEEDED" | "FAILED";
+                    validation?: {
+                        atsText?: boolean;
+                        koreanText?: boolean;
+                        links?: boolean;
+                    };
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["DocumentExport"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    finalize_document_api_v1_documents__id__finalize_post: {
+    postDocumentsByIdFinalize: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    approvalId: string;
+                    expectedRevision: number;
+                    /** Format: uuid */
+                    versionId: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Document"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    generate_document_api_v1_documents__id__generate_post: {
+    postDocumentsByIdGenerate: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai?: components["schemas"]["DocumentsAiOptions"] | null;
+                    analysisId?: string | null;
+                    evidenceIds?: string[];
+                    expectedRevision: number;
+                    language?: string | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** Format: uuid */
+                            jobId: string;
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    review_document_api_v1_documents__id__review_post: {
+    postDocumentsByIdReview: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    versionId: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            blocks: components["schemas"]["DocumentsBlock"][];
+                            quality: components["schemas"]["DocumentsQuality"];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    create_revision_api_v1_documents__id__revisions_post: {
+    postDocumentsByIdRevisions: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    action: "REWRITE" | "SHORTEN" | "EMPHASIZE_METRICS" | "CHANGE_TONE" | "TAILOR_TO_JOB";
+                    ai?: components["schemas"]["DocumentsAiOptions"] | null;
+                    expectedRevision: number;
+                    instruction?: string;
+                    selection: {
+                        from: number;
+                        text: string;
+                        to: number;
+                    };
+                    /** Format: uuid */
+                    versionId: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    apply_revision_api_v1_documents__id__revisions__revisionId__apply_post: {
+    postDocumentsByIdRevisionsByRevisionIdApply: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 revisionId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            document: components["schemas"]["Document"];
+                            version: components["schemas"]["DocumentVersion"];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_versions_api_v1_documents__id__versions_get: {
+    getDocumentsByIdVersions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -3146,58 +7117,74 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["DocumentVersion"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    create_version_api_v1_documents__id__versions_post: {
+    postDocumentsByIdVersions: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    blocks?: {
+                        evidenceRefs?: {
+                            end: number;
+                            /** Format: uuid */
+                            evidenceId: string;
+                            start: number;
+                        }[];
+                        id: string;
+                        text: string;
+                    }[];
+                    changeNote?: string;
+                    /** @description TipTap JSON (root type doc; nodes doc, paragraph, heading, bulletList, orderedList, listItem, text; only link marks; paragraph, heading and listItem need attrs.blockId) */
+                    content: {
+                        [key: string]: unknown;
+                    };
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            document: components["schemas"]["Document"];
+                            version: components["schemas"]["DocumentVersion"];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    get_version_api_v1_documents__id__versions__versionId__get: {
+    getDocumentsByIdVersionsByVersionId: {
         parameters: {
             query?: never;
             header?: never;
@@ -3209,29 +7196,30 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["DocumentVersion"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    export_version_api_v1_documents__id__versions__versionId__export_get: {
+    getDocumentsByIdVersionsByVersionIdExport: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Case-insensitive */
+                format?: "PDF" | "DOCX";
+                /** @description PDF only; defaults to the document template */
+                template?: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT";
+                /** @description PDF only; 1 embeds the profile avatar */
+                photo?: "1";
+            };
             header?: never;
             path: {
                 id: string;
@@ -3241,27 +7229,20 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Rendered file (Content-Disposition attachment) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/pdf": string;
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    get_assignment_api_v1_experiments__key__assignment_get: {
+    getExperimentsByKeyAssignment: {
         parameters: {
             query?: never;
             header?: never;
@@ -3272,58 +7253,64 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** Format: date-time */
+                            createdAt: string;
+                            enrolled: boolean;
+                            experimentKey: string;
+                            variant: string;
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    record_experiment_event_api_v1_experiments__key__events_post: {
+    postExperimentsByKeyEvents: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 key: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    event: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** @constant */
+                            recorded: true;
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    experiment_results_api_v1_experiments__key__results_get: {
+    getExperimentsByKeyResults: {
         parameters: {
             query?: never;
             header?: never;
@@ -3334,27 +7321,30 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            key: string;
+                            status: string;
+                            variants: {
+                                converted: number;
+                                exposed: number;
+                                rate: number;
+                                variant: string;
+                            }[];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    experiment_stats_api_v1_experiments__key__stats_get: {
+    getExperimentsByKeyStats: {
         parameters: {
             query?: never;
             header?: never;
@@ -3365,27 +7355,30 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            key: string;
+                            status: string;
+                            /** @description variant to {event: count} */
+                            variants: {
+                                [key: string]: {
+                                    [key: string]: number;
+                                };
+                            };
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    _healthz_api_v1_healthz_get: {
+    getHealthz: {
         parameters: {
             query?: never;
             header?: never;
@@ -3394,18 +7387,24 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** @enum {string} */
+                            status: "ok";
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    google_status_api_v1_integrations_google_get: {
+    getIntegrationsGoogle: {
         parameters: {
             query?: never;
             header?: never;
@@ -3414,18 +7413,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["GoogleIntegration"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    google_disconnect_api_v1_integrations_google_delete: {
+    deleteIntegrationsGoogle: {
         parameters: {
             query?: never;
             header?: never;
@@ -3434,167 +7436,236 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description No Content */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            default: components["responses"]["Error"];
         };
     };
-    google_callback_api_v1_integrations_google_callback_get: {
+    getIntegrationsGoogleCallback: {
         parameters: {
-            query?: never;
+            query?: {
+                state?: string;
+                code?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Redirect to the client redirectUri with an integration code */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postIntegrationsGoogleComplete: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    codeVerifier: string;
+                    integrationCode: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["GoogleIntegration"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postIntegrationsGoogleConnect: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    codeChallenge: string;
+                    /** @enum {string} */
+                    codeChallengeMethod: "S256";
+                    /** @description push://integrations/google/callback or http(s)://localhost|127.0.0.1[:port]/integrations/google/callback */
+                    redirectUri: string;
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            authorizationUrl: string;
+                            /** Format: date-time */
+                            expiresAt: string;
+                            state: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    google_complete_api_v1_integrations_google_complete_post: {
+    getIntegrationsGoogleEvents: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                /** @description startsAt lower bound */
+                from?: string;
+                /** @description startsAt upper bound */
+                to?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerGoogleCalendarEvent"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    google_connect_api_v1_integrations_google_connect_post: {
+    getIntegrationsGoogleMessages: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerGoogleMessage"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    google_events_api_v1_integrations_google_events_get: {
+    postIntegrationsGoogleMessagesByIdLink: {
         parameters: {
             query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
-        };
-    };
-    google_messages_api_v1_integrations_google_messages_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    google_link_message_api_v1_integrations_google_messages__id__link_post: {
-        parameters: {
-            query?: never;
-            header?: never;
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    applicationId: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["CareerGoogleMessage"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    google_sync_api_v1_integrations_google_sync_post: {
+    postIntegrationsGoogleSync: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    job_sites_api_v1_integrations_job_sites_get: {
+    getIntegrationsJobSites: {
         parameters: {
             query?: never;
             header?: never;
@@ -3603,58 +7674,109 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["JobSite"][];
+                    };
                 };
             };
+            /** @description Not Modified (If-None-Match matched the ETag) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
         };
     };
-    list_interviews_api_v1_interviews_get: {
+    getInterviews: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+                /** @description scheduledAt lower bound */
+                from?: string;
+                /** @description scheduledAt upper bound */
+                to?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Interview"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    create_interview_api_v1_interviews_post: {
+    postInterviews: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    applicationId: string;
+                    companySources?: {
+                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        accessedAt: string;
+                        sourceText: string;
+                        /** Format: uri */
+                        sourceUrl: string;
+                    }[];
+                    durationMinutes?: number | null;
+                    evidenceIds?: string[];
+                    notes?: string;
+                    /** @description RFC3339 timestamp; naive values are treated as UTC */
+                    scheduledAt: string;
+                    /** @description IANA time zone */
+                    timeZone: string;
+                    title: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Interview"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_interview_api_v1_interviews__id__get: {
+    getInterviewsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -3665,27 +7787,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Interview"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    patch_interview_api_v1_interviews__id__patch: {
+    patchInterviewsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -3694,100 +7810,148 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    companySources?: {
+                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        accessedAt: string;
+                        sourceText: string;
+                        /** Format: uri */
+                        sourceUrl: string;
+                    }[] | null;
+                    expectedRevision: number;
+                    notes?: string | null;
+                    reflection?: string | null;
+                    scheduledAt?: string | null;
+                    title?: string | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Interview"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    prepare_interview_api_v1_interviews__id__prepare_post: {
+    postInterviewsByIdPrepare: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai?: components["schemas"]["CareerAiOptions"] | null;
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_jobs_api_v1_jobs_get: {
+    getJobs: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                /** @description Filter by archived; any value other than true means false */
+                archived?: "true" | "false";
+                /** @description Case-insensitive match on company or title */
+                query?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Job"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    create_job_api_v1_jobs_post: {
+    postJobs: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    company: string;
+                    deadline?: string | null;
+                    language: string;
+                    preferred?: string[];
+                    requirements?: string[];
+                    /** @enum {string} */
+                    sourceKind: "URL" | "TEXT" | "DOM";
+                    sourceText: string;
+                    sourceUrl?: string | null;
+                    title: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Job"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    get_job_api_v1_jobs__id__get: {
+    getJobsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -3798,27 +7962,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Job"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    patch_job_api_v1_jobs__id__patch: {
+    patchJobsById: {
         parameters: {
             query?: never;
             header?: never;
@@ -3827,31 +7985,40 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    company?: string | null;
+                    deadline?: string | null;
+                    expectedRevision: number;
+                    preferred?: string[] | null;
+                    requirements?: string[] | null;
+                    title?: string | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Job"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_analyses_api_v1_jobs__id__analyses_get: {
+    getJobsByIdAnalyses: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -3860,182 +8027,60 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["JobAnalysis"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    analyze_job_api_v1_jobs__id__analyze_post: {
+    postJobsByIdAnalyze: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai?: components["schemas"]["CareerAiOptions"] | null;
+                    /** Format: uuid */
+                    applicationId: string;
+                    evidenceIds?: string[];
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    get_operation_api_v1_operations__id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_operation_api_v1_operations__id__cancel_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    operation_events_api_v1_operations__id__events_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    operation_input_api_v1_operations__id__input_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_projects_api_v1_projects_get: {
+    deleteMe: {
         parameters: {
             query?: never;
             header?: never;
@@ -4044,18 +8089,73 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeBookmarks: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Posting"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    generate_blueprints_api_v1_projects_blueprints_post: {
+    getMeCommentedPosts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeConsents: {
         parameters: {
             query?: never;
             header?: never;
@@ -4064,145 +8164,1848 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    get_project_api_v1_projects__id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Consents"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_project_evidence_api_v1_projects__id__evidence_get: {
+    putMeConsents: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    referenceData: boolean;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Consents"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    create_project_evidence_api_v1_projects__id__evidence_post: {
+    postMeDevices: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                id: string;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    platform: "ios" | "android";
+                    token: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Device"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMeDevicesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeFollowers: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: components["schemas"]["Profile"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeFollows: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Profile"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeLinks: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                kind?: "job" | "github" | "portfolio" | "blog" | "other";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileLink"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeLinks: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    aiRead?: boolean | null;
+                    /** @enum {string} */
+                    kind?: "job" | "github" | "portfolio" | "blog" | "other";
+                    title?: string | null;
+                    /** Format: uri */
+                    url: string;
                 };
             };
         };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileLink"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    verify_project_evidence_api_v1_projects__id__evidence__evidenceId__verify_post: {
+    deleteMeLinksById: {
         parameters: {
             query?: never;
             header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchMeLinksById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    aiRead?: boolean;
+                    /** @enum {string} */
+                    kind?: "job" | "github" | "portfolio" | "blog" | "other";
+                    title?: string | null;
+                    /** Format: uri */
+                    url?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileLink"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeNotifications: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Notification"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeNotificationsRead: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    all?: boolean;
+                    ids?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeNotificationsUnread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            count: number;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeOffers: {
+        parameters: {
+            query: {
+                box: "received" | "sent";
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeOffersById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdAccept: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    reply?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdDecline: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeOffersByIdMessages: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["OfferMessage"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdMessages: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["OfferMessage"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMePosts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchMeProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    avatarKey?: string | null;
+                    careerStatus?: ("satisfied" | "seeking" | "feedback" | "") | null;
+                    careers?: components["schemas"]["SocialProfileCareerInput"][];
+                    contact?: string | null;
+                    displayName?: string;
+                    headline?: string | null;
+                    intro?: string | null;
+                    jobCategory?: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops" | "") | null;
+                    openToOffers?: boolean;
+                    resumeSourceId?: string | null;
+                    skills?: string[] | null;
+                    tenureYears?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UserSettings"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchMeSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    aiAccessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS";
+                    allowAiReadMyFiles?: boolean;
+                    /** @enum {string} */
+                    careerStatusVisibility?: "everyone" | "followers" | "private";
+                    chatRetentionDays?: number | null;
+                    confirmBeforeEdit?: boolean;
+                    /** @enum {string} */
+                    contactVisibility?: "accepted" | "followers" | "everyone" | "private";
+                    /** @enum {string} */
+                    defaultEffort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                    /** @enum {string} */
+                    defaultTone?: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
+                    hideFromCurrentCompany?: boolean;
+                    /** @enum {string} */
+                    locale?: "ko" | "en";
+                    notifyAiDone?: boolean;
+                    notifyApplicationStage?: boolean;
+                    notifyComment?: boolean;
+                    notifyDeadline?: boolean;
+                    notifyOffer?: boolean;
+                    profilePublic?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UserSettings"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getOperationsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postOperationsByIdCancel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getOperationsByIdEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Operation snapshot. Events: progress, result, error. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postOperationsByIdInput: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @default {} */
+                    fields?: {
+                        [key: string]: string;
+                    };
+                    sourceId?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostings: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                sort?: "latest" | "deadline" | "popular";
+                /** @description Only postings whose deadline falls within the next 7 days */
+                deadlineWithin?: "7";
+                /** @description Matches title or company (Hangul choseong/jamo aware) */
+                q?: string;
+                category?: string;
+                skills?: string;
+                careerYears?: string;
+                location?: string;
+                employmentType?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Posting"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Must be >= careerMin */
+                    careerMax?: number | null;
+                    careerMin: number;
+                    /** @description Defaults to the verified company name on create */
+                    company?: string;
+                    deadline?: string | null;
+                    description: string;
+                    /** @enum {string} */
+                    employmentType: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
+                    /** @description Key returned by the image upload endpoint; null or empty clears it */
+                    imageKey?: string | null;
+                    /** @enum {string} */
+                    jobCategory: "dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops";
+                    location: string;
+                    preferred?: string[];
+                    requirements?: string[];
+                    skills?: string[];
+                    /**
+                     * Format: uri
+                     * @description http(s) URL without credentials
+                     */
+                    sourceUrl?: string | null;
+                    /** @enum {string} */
+                    status?: "DRAFT" | "OPEN";
+                    title: string;
+                    workConditions?: {
+                        [key: string]: unknown;
+                    } | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PostingDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsFacets: {
+        parameters: {
+            query?: {
+                /** @description Matches title or company (Hangul choseong/jamo aware) */
+                q?: string;
+                category?: string;
+                skills?: string;
+                careerYears?: string;
+                location?: string;
+                employmentType?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            career: {
+                                count: number;
+                                id: string;
+                            }[];
+                            category: {
+                                count: number;
+                                id: string;
+                            }[];
+                            location: {
+                                count: number;
+                                id: string;
+                            }[];
+                            skills: {
+                                count: number;
+                                id: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsLocations: {
+        parameters: {
+            query?: {
+                /** @description Matches title or company (Hangul choseong/jamo aware) */
+                q?: string;
+                category?: string;
+                skills?: string;
+                careerYears?: string;
+                employmentType?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            count: number;
+                            location: string;
+                        }[];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PostingDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchPostingsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Must be >= careerMin */
+                    careerMax?: number | null;
+                    careerMin?: number;
+                    /** @description Defaults to the verified company name on create */
+                    company?: string;
+                    deadline?: string | null;
+                    description?: string;
+                    /** @enum {string} */
+                    employmentType?: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
+                    expectedRevision: number;
+                    /** @description Key returned by the image upload endpoint; null or empty clears it */
+                    imageKey?: string | null;
+                    /** @enum {string} */
+                    jobCategory?: "dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops";
+                    location?: string;
+                    preferred?: string[];
+                    requirements?: string[];
+                    skills?: string[];
+                    /**
+                     * Format: uri
+                     * @description http(s) URL without credentials
+                     */
+                    sourceUrl?: string | null;
+                    /** @enum {string} */
+                    status?: "DRAFT" | "OPEN";
+                    title?: string;
+                    workConditions?: {
+                        [key: string]: unknown;
+                    } | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PostingDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsByIdApplicantCounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            applied: number;
+                            interview: number;
+                            offer: number;
+                            rejected: number;
+                            screening: number;
+                            total: number;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsByIdApplicants: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                /** @description Exact stage filter */
+                stage?: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Applicant"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsByIdApplicantsByApplicationId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicantDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchPostingsByIdApplicantsByApplicationId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    stage: "SCREENING" | "INTERVIEW" | "OFFER" | "REJECTED";
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PostingsApplicantApplication"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostingsByIdApplicantsByApplicationIdFilesByFileId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                applicationId: string;
+                fileId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostingsByIdApply: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    documentIds?: string[];
+                    sourceIds?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Application"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostingsByIdBookmark: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deletePostingsByIdBookmark: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostingsByIdClose: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PostingDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostingsByIdFit: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    documentId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: uuid */
+                            jobId: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPosts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                sort?: "latest" | "popular";
+                period?: "week";
+                category?: "work" | "dev" | "daily" | "career" | "talk" | "coffeechat" | "marketing";
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPosts: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                    /** @enum {string} */
+                    category: "work" | "dev" | "daily" | "career" | "talk" | "coffeechat" | "marketing";
+                    imageKeys?: string[] | null;
+                    title: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getPostsByIdComments: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Comment"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostsByIdComments: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                    parentId?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Comment"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProfiles: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                q?: string;
+                category?: string;
+                tenure?: string;
+                status?: string;
+                /** @description recommended: same jobCategory as the caller; offers: profiles the caller sent offers to */
+                explore?: "recommended" | "offers";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Profile"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProfilesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postProfilesByIdOffer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    message: string;
+                    postingId?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjects: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                applicationId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Project"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postProjectsBlueprints: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    ai?: components["schemas"]["CareerAiOptions"] | null;
+                    /** Format: uuid */
+                    applicationId: string;
+                    /** Format: uuid */
+                    gapAnalysisId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Project"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectsByIdEvidence: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CareerProjectEvidence"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postProjectsByIdEvidence: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: uri
+                     * @description http(s) URL
+                     */
+                    commitUrl: string;
+                    exitCode: number;
+                    metrics?: {
+                        name: string;
+                        unit: string;
+                        value: number;
+                    }[];
+                    /** Format: uuid */
+                    runId: string;
+                    summary: string;
+                    testCommand: string;
+                    testOutput: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CareerProjectEvidence"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postProjectsByIdEvidenceByEvidenceIdVerify: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 evidenceId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Accepted */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["Operation"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    list_runs_api_v1_projects__id__runs_get: {
+    getProjectsByIdRuns: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -4211,217 +10014,329 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    create_run_api_v1_projects__id__runs_post: {
+    postProjectsByIdRuns: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    prompt: string;
+                    /** @enum {string} */
+                    provider: "CODEX" | "CLAUDE_CODE" | "GROK_BUILD";
+                    /** @description Absolute path */
+                    workingDirectory: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    launch_run_api_v1_projects__id__runs__runId__launch_post: {
+    postProjectsByIdRunsByRunIdLaunch: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 runId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    deviceId: string;
+                    expectedRevision: number;
+                    /** @enum {string} */
+                    launchStatus: "CLAIMED" | "STARTED" | "UNKNOWN";
+                    payloadHash: string;
+                    process?: {
+                        pid: number;
+                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        startedAt: string;
+                    } | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    recover_run_api_v1_projects__id__runs__runId__recover_post: {
+    postProjectsByIdRunsByRunIdRecover: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 runId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "REATTACH" | "MARK_FAILED";
+                    deviceId: string;
+                    expectedRevision: number;
+                    failureReason?: string | null;
+                    process?: {
+                        pid: number;
+                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        startedAt: string;
+                    } | null;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    result_run_api_v1_projects__id__runs__runId__result_post: {
+    postProjectsByIdRunsByRunIdResult: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 runId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    commitSha?: string | null;
+                    exitCode: number;
+                    expectedRevision: number;
+                    stderrHash: string;
+                    stdoutHash: string;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    start_run_api_v1_projects__id__runs__runId__start_post: {
+    postProjectsByIdRunsByRunIdStart: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 runId: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    approvalId: string;
+                    detectedVersion: string;
+                    deviceId: string;
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: components["schemas"]["ProjectRun"];
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    select_project_api_v1_projects__id__select_post: {
+    postProjectsByIdSelect: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            blueprint: components["schemas"]["Project"];
+                            manifest: components["schemas"]["CareerProjectManifest"];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    getSearch: {
+        parameters: {
+            query: {
+                /** @description Search term (must not be blank) */
+                q: string;
+                type?: "postings" | "people" | "posts";
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                category?: string;
+                tenure?: string;
+                status?: string;
+                /** @description type=people only */
+                explore?: "recommended" | "offers";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: components["schemas"]["SearchResult"][];
+                        page: components["schemas"]["Page"];
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
-    create_source_api_v1_sources_post: {
+    getSearchCounts: {
+        parameters: {
+            query: {
+                /** @description Search term (must not be blank) */
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            people: number;
+                            postings: number;
+                            posts: number;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSearchTrending: {
         parameters: {
             query?: never;
             header?: never;
@@ -4430,49 +10345,93 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    get_source_api_v1_sources__id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            skills: {
+                                count: number;
+                                id: string;
+                            }[];
+                            terms: {
+                                count: number;
+                                term: string;
+                            }[];
+                        };
+                    };
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    getSources: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                kind?: "UPLOAD" | "AI";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: components["schemas"]["DocumentsLibraryItem"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postSources: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    kind: string;
                 };
             };
         };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DocumentsSourceUpload"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    delete_source_api_v1_sources__id__delete: {
+    getSourcesById: {
         parameters: {
             query?: never;
             header?: never;
@@ -4483,25 +10442,42 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Source"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteSourcesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+            default: components["responses"]["Error"];
         };
     };
-    get_source_content_api_v1_sources__id__content_get: {
+    getSourcesByIdContent: {
         parameters: {
             query?: never;
             header?: never;
@@ -4512,27 +10488,148 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description File bytes */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "*/*": string;
                 };
             };
-            /** @description Validation Error */
-            422: {
+            default: components["responses"]["Error"];
+        };
+    };
+    getSourcesByIdProfileDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        data: components["schemas"]["DocumentsProfileDraft"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postUploadsImages: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
                 };
             };
         };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UploadedImage"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
     };
-    _healthz_healthz_get: {
+    getUploadsImagesByName: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Image bytes; content type follows the file extension */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/heic": string;
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postUsersByIdFollow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteUsersByIdFollow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getRootHealthz: {
         parameters: {
             query?: never;
             header?: never;
@@ -4541,15 +10638,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        data: {
+                            /** @enum {string} */
+                            status: "ok";
+                        };
+                    };
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
 }

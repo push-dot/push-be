@@ -1,6 +1,6 @@
 /**
- * Routes this worker answers itself, checked against the FastAPI OpenAPI
- * export. Response bodies stay hand-built: a cache hit must not call
+ * Routes this worker answers itself, checked against
+ * packages/contracts/openapi.json. Response bodies stay hand-built: a cache hit must not call
  * another worker, and the bytes are already covered by the gateway tests.
  */
 
