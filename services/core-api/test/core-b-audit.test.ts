@@ -367,3 +367,26 @@ test("apply answers with the winning application when a simultaneous apply hits 
   assert.equal(res.status, 201);
   assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
 });
+
+test("registering a device token unbinds it from any other account in the same statement", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder();
+  const res = await handle(postJson("/api/v1/me/devices", { token: "ExponentPushToken[abc]", platform: "ios" }, "00000000-0000-4000-8000-00000000000a"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const write = calls.find((c) => c.sql.includes("INSERT INTO user_devices"));
+  assert.ok(write);
+  assert.match(write.sql, /DELETE FROM user_devices WHERE token = \$2 AND user_id <> \$1/);
+});
+
+test("an offer may only attach a posting of the sender's own company", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings")) return sql.includes("company_members") ? [] : [{ id: POSTING }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/profiles/${APP}/offer`, { message: "join", postingId: POSTING }, "00000000-0000-4000-8000-00000000000b"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 404);
+  assert.equal(calls.some((c) => c.sql.startsWith("INSERT INTO offers")), false);
+});

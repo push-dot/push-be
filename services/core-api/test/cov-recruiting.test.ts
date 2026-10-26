@@ -137,7 +137,7 @@ test("devices: register upserts the caller's push token and delete removes it", 
   const res = await w.call("POST", "/api/v1/me/devices", { token: "ExponentPushToken[abc]", platform: "ios" });
   assert.equal(res.status, 201);
   assert.deepEqual(res.body.data, { token: "ExponentPushToken[abc]", platform: "ios" });
-  assert.deepEqual(w.seen.find((c) => c.sql.startsWith("INSERT INTO user_devices"))?.params.slice(0, 3), [ME, "ExponentPushToken[abc]", "ios"]);
+  assert.deepEqual(w.seen.find((c) => c.sql.includes("INSERT INTO user_devices"))?.params.slice(0, 3), [ME, "ExponentPushToken[abc]", "ios"]);
 
   const bad = await w.call("POST", "/api/v1/me/devices", { token: "t", platform: "web" });
   assert.equal(bad.status, 422);
@@ -202,7 +202,7 @@ const offerRow = (extra: Row = {}): Row => ({
 });
 
 const offerWorld = (opts: { posting?: boolean; profile?: Row | null; insert?: Error; pref?: boolean } = {}) => world((sql) => {
-  if (sql.startsWith("SELECT id FROM job_postings")) return opts.posting === false ? [] : [{ id: POSTING }];
+  if (sql.startsWith("SELECT p.id FROM job_postings p JOIN company_members")) return opts.posting === false ? [] : [{ id: POSTING }];
   if (sql.includes("FROM profiles p LEFT JOIN user_settings")) return opts.profile === null ? [] : [opts.profile ?? { user_id: OTHER, open_to_offers: true, profile_public: true }];
   if (sql.startsWith("INSERT INTO offers")) return opts.insert;
   if (sql.includes("AS enabled FROM user_settings")) return opts.pref === undefined ? [] : [{ enabled: opts.pref }];

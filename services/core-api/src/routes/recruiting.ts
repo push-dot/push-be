@@ -1549,7 +1549,10 @@ async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   let postingId: string | null = null;
   if (body.postingId != null && body.postingId !== "") {
     postingId = requireUuid(String(body.postingId), "postingId");
-    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1 AND closed_at IS NULL", [postingId]);
+    // Only the sender's own company's posting: attaching another company's posting would impersonate it.
+    const posting = await one(ctx.deps.query,
+      "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1 AND p.closed_at IS NULL",
+      [postingId, ctx.user.id]);
     if (!posting) throw notFound();
   }
   const profile = await one(ctx.deps.query,
@@ -1771,8 +1774,10 @@ async function registerDevice(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   const token = textOf(body.token, "token", 1, 4096);
   if (body.platform !== "ios" && body.platform !== "android") throw unprocessable("platform", "unsupported platform");
+  // A push token belongs to one device; after an account switch the old account must stop receiving its pushes.
   await query(ctx.deps.query,
-    "INSERT INTO user_devices (user_id, token, platform, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id, token) DO UPDATE SET platform = EXCLUDED.platform",
+    `WITH moved AS (DELETE FROM user_devices WHERE token = $2 AND user_id <> $1)
+     INSERT INTO user_devices (user_id, token, platform, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id, token) DO UPDATE SET platform = EXCLUDED.platform`,
     [ctx.user.id, token, body.platform, ctx.now.toISOString()]);
   return data(201, { token, platform: body.platform }, ctx.rid);
 }
