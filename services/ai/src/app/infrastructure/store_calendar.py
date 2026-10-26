@@ -72,7 +72,8 @@ class InterviewStore(Store):
     async def update_calendar_event(self, id_: UUID, title: str, starts_at, ends_at) -> None:
         await self.q().execute(
             "UPDATE calendar_events SET title = coalesce(nullif($2,''), title), "
-            "starts_at = $3, ends_at = $4, updated_at = now() WHERE id = $1",
+            "starts_at = $3, ends_at = $4, revision = revision + 1, updated_at = now() "
+            "WHERE id = $1",
             id_, title, starts_at, ends_at)
 
     async def count_by_application(self, user_id: UUID, application_id: UUID) -> int:

@@ -8,7 +8,7 @@ from fakeredis.aioredis import FakeRedis
 from app.domain import entities as ent
 from app.domain.services.ai import AIGate
 from app.infrastructure.store_ai import _USAGE_JOB_SQL
-from app.queue.credits import CreditBook, release, release_job, settle, settle_job
+from app.queue.credits import release_job, settle_job
 from app.queue.streams import Message, StreamQueue
 from app.queue.worker import Worker
 from tests.test_queue_worker import NOW, MemoryJobs
@@ -17,6 +17,66 @@ USER = UUID("33333333-3333-4333-8333-333333333333")
 JOB = UUID("11111111-1111-4111-8111-111111111111")
 AGAIN = UUID("22222222-2222-4222-8222-222222222222")
 USAGE = UUID("44444444-4444-4444-8444-444444444444")
+
+
+# In-memory reservation model mirroring credit_reservations semantics.
+class CreditBook:
+    def __init__(self):
+        self.ledger = {}
+        self.reservations = {}
+
+    def reserve(self, job_id, user_id, amount: int) -> None:
+        self.reservations[job_id] = {
+            "status": "RESERVED",
+            "amount": int(amount),
+            "user_id": user_id,
+            "settled": 0,
+            "usage": 0,
+        }
+
+    def add_usage(self, job_id, amount: int) -> None:
+        self.reservations[job_id]["usage"] = int(self.reservations[job_id].get("usage", 0)) + int(amount)
+
+    def available(self, user_id) -> int:
+        reserved = 0
+        settled = 0
+        for row in self.reservations.values():
+            if row["user_id"] != user_id:
+                continue
+            if row["status"] == "RESERVED":
+                reserved += int(row["amount"])
+            elif row["status"] == "SETTLED":
+                settled += int(row["settled"])
+        return int(self.ledger.get(user_id, 0)) - settled - reserved
+
+
+def apply_settle(status, amount: int, actual: int):
+    if status != "RESERVED":
+        return None
+    returned = int(amount) - int(actual)
+    if returned < 0:
+        return 0, int(actual)
+    return returned, int(actual)
+
+
+async def settle(book: CreditBook, job_id) -> int:
+    row = book.reservations.get(job_id)
+    if row is None:
+        return 0
+    decision = apply_settle(row["status"], row["amount"], row.get("usage", 0))
+    if decision is None:
+        return 0
+    returned, settled_micro = decision
+    row["status"] = "SETTLED"
+    row["settled"] = settled_micro
+    return returned
+
+
+async def release(book: CreditBook, job_id) -> None:
+    row = book.reservations.get(job_id)
+    if row is None or row["status"] != "RESERVED":
+        return
+    row["status"] = "RELEASED"
 
 
 def book(balance=100):
@@ -153,7 +213,7 @@ async def test_retry_does_not_charge_twice():
 
 
 @pytest.mark.asyncio
-async def test_byok_job_has_no_reservation_to_settle():
+async def test_job_without_a_reservation_settles_nothing():
     store = book(0)
     assert await settle(store, JOB) == 0
     assert store.available(USER) == 0
@@ -175,7 +235,7 @@ async def test_redis_reserve_records_usage_without_a_second_hold(monkeypatch):
 
     gate = AIGate.__new__(AIGate)
     gate.usage = Usage()
-    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", credential_mode="MANAGED", effort="low")
+    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", effort="low")
     usage_id = await gate._reserve(USER, ai, "system", "user", JOB)
     assert usage_id is not None
     assert seen[0][1] == JOB

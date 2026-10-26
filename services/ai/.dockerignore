@@ -7,3 +7,8 @@ tests
 .env
 .env.*
 data
+.venv-workers
+python_modules
+.wrangler
+.ruff_cache
+.mypy_cache

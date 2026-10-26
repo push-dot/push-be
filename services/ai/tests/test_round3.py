@@ -40,7 +40,7 @@ async def test_record_usage_attaches_by_usage_id_not_model():
         status=ent.USAGE_SETTLED, created_at=_now())
     usage = StubAiUsageStore([row])
     ai = ent.AiOptions(provider="OPENAI", model="openai/base-model",
-                       credential_mode="MANAGED", effort="LOW",
+                       effort="LOW",
                        models={"generate": "openai/override-model"})
     c = ent.AICompletion(text="ok", input_tokens=10, output_tokens=5)
     await record_usage(usage, user_id, op_id, ai, c, [usage_id])
@@ -57,7 +57,7 @@ async def test_record_usage_skips_unsettled_row():
         status=ent.USAGE_RELEASED, created_at=_now())
     usage = StubAiUsageStore([row])
     ai = ent.AiOptions(provider="OPENAI", model="openai/m",
-                       credential_mode="MANAGED", effort="LOW")
+                       effort="LOW")
     c = ent.AICompletion(text="ok", input_tokens=10, output_tokens=5)
     await record_usage(usage, user_id, op_id, ai, c, [usage_id])
     assert len(usage.items) == 1
@@ -136,29 +136,25 @@ class _FailMessageStore(StubConversationStore):
         raise RuntimeError("db down")
 
 
-async def test_byok_key_survives_requeue():
+async def test_failed_job_is_requeued():
     conv = ent.Conversation(id=uuid4(), user_id=uuid4(), revision=1,
                             title="t", created_at=_now(), updated_at=_now())
     convs = _FailMessageStore(conv=conv)
     r = _JobRunner(convs)
     job = r.job(conv.id, attempt=1)
     job["user_id"] = conv.user_id
-    r.svc._byok_keys[job["id"]] = "sk-test"
     await r.svc._run_job(job)
     assert r.jobs.requeued == [job["id"]]
-    assert r.svc._byok_keys.get(job["id"]) == "sk-test"
 
 
-async def test_byok_key_deleted_on_terminal():
+async def test_job_finishes_done():
     conv = ent.Conversation(id=uuid4(), user_id=uuid4(), revision=1,
                             title="t", created_at=_now(), updated_at=_now())
     convs = StubConversationStore(conv=conv)
     r = _JobRunner(convs)
     job = r.job(conv.id, attempt=1)
     job["user_id"] = conv.user_id
-    r.svc._byok_keys[job["id"]] = "sk-test"
     await r.svc._run_job(job)
-    assert job["id"] not in r.svc._byok_keys
     assert ("DONE", None) in r.jobs.finished
 
 

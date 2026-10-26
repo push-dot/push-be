@@ -9,5 +9,4 @@ data/
 python_modules/
 node_modules/
 pylock.toml
-uv.lock
 *.egg-info/

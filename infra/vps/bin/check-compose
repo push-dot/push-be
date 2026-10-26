@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Rejects a rendered compose config that could hand a container the host.
+# Usage: docker compose -f compose.yaml config --format json | check-compose
+# CI runs the repo copy; harden.sh installs a root-owned copy that push-deploy runs
+# before every `up`, so a commit cannot weaken the check it is deployed with.
+set -euo pipefail
+
+config="$(cat)"
+fail=0
+deny() {
+  echo "check-compose: $1" >&2
+  fail=1
+}
+
+if grep -qi 'docker\.sock' <<<"$config"; then deny "docker.sock is referenced"; fi
+if grep -qi 'dokploy' <<<"$config"; then deny "Dokploy is referenced"; fi
+
+while IFS= read -r problem; do
+  [ -n "$problem" ] && deny "$problem"
+done < <(jq -r '
+  . as $root |
+  (.services // {} | to_entries[] | .key as $s | .value as $v |
+  (if $v.privileged == true then "\($s): privileged" else empty end),
+  (["network_mode", "pid", "ipc", "uts", "userns_mode", "cgroup"][] as $k
+    | select(($v[$k] // "") == "host") | "\($s): \($k)=host"),
+  (if ($v.devices // []) | length > 0 then "\($s): devices are mapped" else empty end),
+  (if ($v.security_opt // []) | index("no-new-privileges:true") == null
+    then "\($s): missing no-new-privileges:true" else empty end),
+  (($v.security_opt // [])[] | select(test("unconfined")) | "\($s): security_opt \(.)"),
+  (if ($v.cap_drop // []) | index("ALL") == null then "\($s): cap_drop must include ALL" else empty end),
+  (($v.cap_add // [])[] | select(. != "CHOWN" or $s != "volume-init") | "\($s): cap_add \(.)"),
+  (if $v.read_only != true then "\($s): read_only is not true" else empty end),
+  (($v.user // "") as $u | select($s != "volume-init" and ($u == "" or ($u | test("^(0|root)(:|$)"))))
+    | "\($s): runs as root"),
+  (if $v.use_api_socket == true then "\($s): use_api_socket mounts the Docker API" else empty end),
+  (if $v.build == null and (($v.image // "") | test("@sha256:[0-9a-f]{64}$") | not)
+    then "\($s): image \($v.image // "?") is not pinned by digest" else empty end),
+  (if ($v.build.network // "") == "host" then "\($s): build.network=host" else empty end),
+  (if $v.build.privileged == true then "\($s): build.privileged" else empty end),
+  (if ($v.build.entitlements // []) | length > 0 then "\($s): build.entitlements" else empty end),
+  (($v.volumes // [])[] | select(.type == "bind" and .read_only != true)
+    | "\($s): writable bind mount \(.source)"),
+  (($v.ports // [])[] | select($s != "proxy" or ((.target | tostring) as $t | ($t != "80" and $t != "443")))
+    | "\($s): publishes port \(.published // "?"):\(.target)")),
+  # Top level: a named volume backed by a host path, or the host network.
+  ($root.volumes // {} | to_entries[] | select((.value.driver_opts // {}) | has("device") or ((.o // "") | test("bind")))
+    | "volume \(.key): driver_opts mount a host path"),
+  ($root.networks // {} | to_entries[] | select(.value.name == "host" or .value.driver == "host")
+    | "network \(.key): host network")
+' <<<"$config")
+
+if [ "$fail" != 0 ]; then exit 1; fi
+echo "check-compose: ok"

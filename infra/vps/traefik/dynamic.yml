@@ -1,0 +1,55 @@
+# Dynamic config. Host names come from the proxy container's AI_HOST and DISPATCH_HOST
+# through Traefik's Go templating, so this file holds no deployment values.
+http:
+  routers:
+    ai:
+      rule: 'Host(`{{ env "AI_HOST" }}`)'
+      entryPoints: [websecure]
+      service: ai
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+    dispatch:
+      rule: 'Host(`{{ env "DISPATCH_HOST" }}`)'
+      entryPoints: [websecure]
+      service: dispatch
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+
+  services:
+    ai:
+      loadBalancer:
+        servers:
+          - url: http://ai-worker:8080
+    dispatch:
+      loadBalancer:
+        servers:
+          - url: http://dispatcher:8091
+
+  middlewares:
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer
+        contentSecurityPolicy: "default-src 'none'; frame-ancestors 'none'"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+        customResponseHeaders:
+          Server: ""
+          X-Powered-By: ""
+    # Per client IP. Callers are Cloudflare Workers, which share egress IPs, so the limit
+    # is set to stop a single-source flood, not to meter users (the gateway does that).
+    rate-limit:
+      rateLimit:
+        average: 50
+        period: 1s
+        burst: 100
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

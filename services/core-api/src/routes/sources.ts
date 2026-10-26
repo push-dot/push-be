@@ -4,6 +4,7 @@ import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { pageOf, ts } from "../page.ts";
 import { encodeCursor, parseUtc } from "../time.ts";
 import type { Ctx } from "../types.ts";
+import { declaredTooLarge } from "./images.ts";
 
 const MAX_SOURCE_BYTES = 20 << 20;
 
@@ -26,6 +27,7 @@ const base64 = (bytes: Uint8Array): string => {
 };
 
 export const createSource = async (ctx: Ctx): Promise<Response> => {
+  if (declaredTooLarge(ctx.request, MAX_SOURCE_BYTES)) throw tooLarge();
   const form = await ctx.request.formData();
   const kind = form.get("kind");
   if (!kind || typeof kind !== "string") throw fieldError("kind", "required");
@@ -46,7 +48,6 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
     userId: ctx.user.id,
     plan: "FREE",
     payload: { sourceId: id },
-    byok: false,
   });
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher("q:ingest"));
   return data(201, {
@@ -72,36 +73,33 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
   const kind = ctx.url.searchParams.get("kind") || null;
   if (kind !== null && kind !== "UPLOAD" && kind !== "AI") throw fieldError("kind", "unsupported kind");
   const page = pageOf(ctx.url);
-  const items: LibraryItem[] = [];
-  if (kind !== "AI") {
-    const rows = await query(ctx.deps.query,
-      "SELECT id, file_name, mime_type, size, page_count, origin, created_at FROM sources WHERE user_id = $1 ORDER BY created_at DESC, id DESC",
-      [ctx.user.id]);
-    for (const row of rows.rows) {
-      items.push({
-        id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
-        pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
-        origin: row.origin ? String(row.origin) : "UPLOAD",
-      });
-    }
+  // Each side needs at most limit + 1 rows past the cursor; the merged page is cut from their union.
+  const params: unknown[] = [ctx.user.id];
+  let after = "";
+  if (page.cursor) {
+    params.push(page.cursor.createdAt, page.cursor.id);
+    after = " AND (created_at, id) < ($2, $3)";
   }
-  if (kind !== "UPLOAD") {
-    const rows = await query(ctx.deps.query,
-      "SELECT id, title, created_at FROM documents WHERE user_id = $1 ORDER BY created_at DESC, id DESC", [ctx.user.id]);
-    for (const row of rows.rows) {
-      items.push({
-        id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
-        createdAt: ts(row.created_at), origin: "AI",
-      });
-    }
-  }
-  items.sort(newerFirst);
-  const cursor = page.cursor;
-  const after = cursor
-    ? items.filter((item) => newerFirst(item, { id: cursor.id.toLowerCase(), createdAt: cursor.createdAt } as LibraryItem) > 0)
-    : items;
-  const hasMore = after.length > page.limit;
-  const slice = after.slice(0, page.limit);
+  params.push(page.limit + 1);
+  const tail = `${after} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  const [uploads, documents] = await Promise.all([
+    kind === "AI" ? null : query(ctx.deps.query,
+      "SELECT id, file_name, mime_type, size, page_count, origin, created_at FROM sources WHERE user_id = $1" + tail, params),
+    kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at FROM documents WHERE user_id = $1" + tail, params),
+  ]);
+  const items: LibraryItem[] = [
+    ...(uploads?.rows ?? []).map((row) => ({
+      id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
+      pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
+      origin: row.origin ? String(row.origin) : "UPLOAD",
+    })),
+    ...(documents?.rows ?? []).map((row) => ({
+      id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
+      createdAt: ts(row.created_at), origin: "AI",
+    })),
+  ].sort(newerFirst);
+  const hasMore = items.length > page.limit;
+  const slice = items.slice(0, page.limit);
   const last = slice[slice.length - 1];
   return pageBody(slice, hasMore && last ? encodeCursor(last.createdAt, last.id) : null, hasMore, ctx.rid);
 };
@@ -136,14 +134,24 @@ export const getSourceContent = async (ctx: Ctx, idRaw: string): Promise<Respons
   });
 };
 
+/**
+ * One round trip: find, check evidence references, delete. Migration 0018 made
+ * profiles.resume_source_id ON DELETE CASCADE, so deleting a pinned resume used to delete
+ * the whole profile; the pointer is cleared in the same statement first.
+ */
+const DELETE_SOURCE = `WITH src AS (SELECT id FROM sources WHERE id = $1::uuid AND user_id = $2),
+  used AS (SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $2 AND provenance->>'sourceId' = $1::uuid::text),
+  unpinned AS (UPDATE profiles SET resume_source_id = NULL FROM src, used
+    WHERE profiles.user_id = $2 AND profiles.resume_source_id = src.id AND used.n = 0),
+  gone AS (DELETE FROM sources USING used WHERE sources.id = $1::uuid AND sources.user_id = $2 AND used.n = 0 RETURNING sources.id)
+  SELECT (SELECT count(*) FROM src)::int AS found, (SELECT n FROM used) AS used, (SELECT count(*) FROM gone)::int AS deleted`;
+
 export const deleteSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
-  await loadSource(ctx, id);
-  const used = await one(ctx.deps.query,
-    "SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $1 AND provenance->>'sourceId' = $2", [ctx.user.id, id]);
-  if (Number(used?.n) > 0) throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence");
-  const gone = await query(ctx.deps.query, "DELETE FROM sources WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-  if (!gone.rowCount) throw notFound();
+  const row = await one(ctx.deps.query, DELETE_SOURCE, [id, ctx.user.id]);
+  if (!Number(row?.found)) throw notFound();
+  if (Number(row?.used) > 0) throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence");
+  if (!Number(row?.deleted)) throw notFound();
   return noContent(ctx.rid);
 };
 

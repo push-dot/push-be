@@ -336,6 +336,8 @@ const deadlineWindow = (ctx: Ctx, params: unknown[], where: string): string => {
 };
 
 const recordPostingView = async (ctx: Ctx, postingId: string): Promise<void> => {
+  // posting_views.user_id references users; the guest id has no row there.
+  if (ctx.user.id === GUEST_ID) return;
   try {
     const inserted = await one(ctx.deps.query,
       "INSERT INTO posting_views (user_id, posting_id, viewed_on) VALUES ($1,$2,$3::date) ON CONFLICT DO NOTHING RETURNING posting_id",
@@ -356,8 +358,7 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     where = appendPostingFilters(where, params, ctx.url, true);
     where = deadlineWindow(ctx, params, where);
     // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
-    const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
-    const total = Number(count?.total ?? 0);
+    const counted = one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
     // shortcut: deadline and popular ignore the cursor; (created_at, id) is not their rank
@@ -372,8 +373,8 @@ async function listPostings(ctx: Ctx): Promise<Response> {
         ? "COALESCE((to_jsonb(p) ->> 'view_count')::int, 0) DESC, p.created_at DESC, p.id DESC"
         : "p.created_at DESC, p.id DESC";
     sql += ` ORDER BY ${order} LIMIT $${params.length}`;
-    const rows = await query(ctx.deps.query, sql, params);
-    return { total, rows, page };
+    const [count, rows] = await Promise.all([counted, query(ctx.deps.query, sql, params)]);
+    return { total: Number(count?.total ?? 0), rows, page };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
@@ -444,10 +445,9 @@ const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: string; cou
 };
 
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
-  const career = await careerFacet(ctx);
-  const category = await categoryFacet(ctx);
-  const location = await locationFacet(ctx);
-  const skills = await skillRows(ctx, true);
+  const [career, category, location, skills] = await Promise.all([
+    careerFacet(ctx), categoryFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
+  ]);
   return data(200, { career, category, location, skills }, ctx.rid);
 };
 
@@ -604,83 +604,103 @@ const companyApplicationDto = (row: Record<string, unknown>): Record<string, unk
   return dto;
 };
 
+const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at";
+
+const existingApplication = (ctx: Ctx, postingId: string) => one(ctx.deps.query,
+  `SELECT ${APPLICATION_COLS}
+   FROM applications a JOIN jobs j ON j.id = a.job_id
+   WHERE a.user_id = $1 AND j.source_posting_id = $2
+   ORDER BY a.created_at DESC LIMIT 1`,
+  [ctx.user.id, postingId]);
+
+const idList = (value: unknown, field: string): string[] => {
+  const raw = value == null ? [] : value;
+  if (!Array.isArray(raw)) throw fieldError(field, "must be an array");
+  return raw.map((item) => requireUuid(String(item), field));
+};
+
+/**
+ * Job, application, event, document snapshots and file copies in one statement. Files are copied
+ * from sources inside Postgres, so their bytes never travel through the Worker. A job is only created
+ * when the caller has no application for the posting yet, which closes most of the double-apply window.
+ */
+const APPLY_SQL = `WITH job AS (
+    INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
+    SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
+    WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
+    RETURNING id
+  ), app AS (
+    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
+    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9 FROM job
+    RETURNING id
+  ), ev AS (
+    INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
+    SELECT gen_random_uuid(), $2, app.id, 'APPLIED', $13::jsonb, $9 FROM app
+  ), snaps AS (
+    INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at)
+    SELECT gen_random_uuid(), app.id, d.document_id, d.title, d.content, $9
+    FROM app, jsonb_to_recordset($14::jsonb) AS d(document_id uuid, title text, content text)
+  ), files AS (
+    INSERT INTO application_files (id, application_id, source_id, document_id, file_name, mime_type, size, page_count, storage_key, content, created_at)
+    SELECT gen_random_uuid(), app.id, s.id, NULL, COALESCE(s.file_name, ''), COALESCE(s.mime_type, 'application/octet-stream'), COALESCE(s.size, 0),
+      s.page_count, COALESCE(s.path, s.id::text), s.content, $9
+    FROM app, jsonb_array_elements_text($15::jsonb) AS r(id) JOIN sources s ON s.id = r.id::uuid AND s.user_id = $2
+  )
+  SELECT id FROM app`;
+
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
-  const id = await requireOpenPosting(ctx, idRaw);
+  const id = requireUuid(idRaw, "id");
+  const posting = await withPublicStatus((withStatus) => one(ctx.deps.query,
+    `SELECT p.company, p.title, p.description, p.requirements, p.deadline FROM job_postings p WHERE p.id = $1 AND ${openClause(withStatus)}`,
+    [id]));
+  if (!posting) throw notFound();
   if (ctx.user.accountType === "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "employer account required");
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "id"]);
-  const documentIds = body.documentIds == null ? [] : body.documentIds;
-  if (!Array.isArray(documentIds)) throw fieldError("documentIds", "must be an array");
-  const sourceIds = body.sourceIds == null ? [] : body.sourceIds;
-  if (!Array.isArray(sourceIds)) throw fieldError("sourceIds", "must be an array");
-  const owned: { id: string; title: string; content: unknown }[] = [];
-  for (const raw of documentIds) {
-    const docId = requireUuid(String(raw), "documentIds");
-    const doc = await one(ctx.deps.query,
-      `SELECT d.id, d.title, v.content FROM documents d
+  const documentIds = idList(body.documentIds, "documentIds");
+  const sourceIds = idList(body.sourceIds, "sourceIds");
+  const [docs, sources, existing] = await Promise.all([
+    documentIds.length ? query(ctx.deps.query,
+      `SELECT DISTINCT ON (d.id) d.id, d.title, v.content FROM documents d
        JOIN document_versions v ON v.document_id = d.id
-       WHERE d.id = $1 AND d.user_id = $2
-       ORDER BY v.number DESC, v.created_at DESC, v.id DESC LIMIT 1`,
-      [docId, ctx.user.id]);
-    if (!doc) throw notFound();
-    owned.push({ id: docId, title: String(doc.title ?? ""), content: doc.content });
-  }
-  const files: { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; storageKey: string; content: unknown }[] = [];
-  for (const raw of sourceIds) {
-    const sourceId = requireUuid(String(raw), "sourceIds");
-    const source = await one(ctx.deps.query,
-      `SELECT id, file_name, mime_type, size, path, content, to_jsonb(sources) ->> 'page_count' AS page_count
-       FROM sources WHERE id = $1 AND user_id = $2`,
-      [sourceId, ctx.user.id]);
-    if (!source) throw notFound();
-    const pages = source.page_count == null || source.page_count === "" ? null : Number(source.page_count);
-    files.push({
-      id: sourceId,
-      fileName: String(source.file_name ?? ""),
-      mimeType: String(source.mime_type ?? "application/octet-stream"),
-      size: Number(source.size ?? 0),
-      pageCount: pages != null && Number.isFinite(pages) ? pages : null,
-      storageKey: String(source.path ?? sourceId),
-      content: source.content ?? null,
-    });
-  }
-  const existing = await one(ctx.deps.query,
-    `SELECT a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at
-     FROM applications a JOIN jobs j ON j.id = a.job_id
-     WHERE a.user_id = $1 AND j.source_posting_id = $2
-     ORDER BY a.created_at DESC LIMIT 1`,
-    [ctx.user.id, id]);
+       WHERE d.user_id = $1 AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
+       ORDER BY d.id, v.number DESC, v.created_at DESC, v.id DESC`,
+      [ctx.user.id, JSON.stringify(documentIds)]) : null,
+    sourceIds.length ? query(ctx.deps.query,
+      "SELECT id FROM sources WHERE user_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+      [ctx.user.id, JSON.stringify(sourceIds)]) : null,
+    existingApplication(ctx, id),
+  ]);
+  const owned = new Map((docs?.rows ?? []).map((row) => [String(row.id), row]));
+  if (documentIds.some((docId) => !owned.has(docId))) throw notFound();
+  const ownedSources = new Set((sources?.rows ?? []).map((row) => String(row.id)));
+  if (sourceIds.some((sourceId) => !ownedSources.has(sourceId))) throw notFound();
   if (existing) return data(201, applicationDto(existing), ctx.rid);
-  const posting = await one(ctx.deps.query,
-    "SELECT company, title, description, requirements, deadline FROM job_postings WHERE id = $1",
-    [id]);
-  if (!posting) throw notFound();
   const fields = searchFields(`${String(posting.title)} ${String(posting.company)}`);
   const now = ctx.now.toISOString();
   const jobId = crypto.randomUUID();
   const applicationId = crypto.randomUUID();
-  await query(ctx.deps.query,
-    `INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
-     VALUES ($1,$2,1,$3,$4,'TEXT',NULL,$5,$6::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,$7,'',false,$8,$8,$9,$10,$11)`,
-    [jobId, ctx.user.id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
-      posting.deadline, now, id, fields.choseong, fields.jamo]);
-  await query(ctx.deps.query,
-    `INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
-     VALUES ($1,$2,1,$3,$4,$5,'APPLIED','',$6,NULL,false,$6,$6)`,
-    [applicationId, ctx.user.id, jobId, posting.company, posting.title, now]);
-  await query(ctx.deps.query,
-    "INSERT INTO application_events (id, user_id, application_id, type, payload, created_at) VALUES ($1,$2,$3,'APPLIED',$4::jsonb,$5)",
-    [crypto.randomUUID(), ctx.user.id, applicationId, JSON.stringify({ postingId: id, documentIds: owned.map((doc) => doc.id) }), now]);
-  for (const doc of owned) {
-    await query(ctx.deps.query,
-      "INSERT INTO application_snapshots (id, application_id, document_id, title, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
-      [crypto.randomUUID(), applicationId, doc.id, doc.title, snapshotText(doc.content), now]);
+  const snapshots = documentIds.map((docId) => {
+    const doc = owned.get(docId)!;
+    return { document_id: docId, title: String(doc.title ?? ""), content: snapshotText(doc.content) };
+  });
+  let created: Record<string, unknown> | null;
+  try {
+    created = await one(ctx.deps.query, APPLY_SQL, [
+      jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
+      posting.deadline, now, fields.choseong, fields.jamo, applicationId,
+      JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
+    ]);
+  } catch (err) {
+    // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
+    if (!isUnique(err)) throw err;
+    created = null;
   }
-  for (const file of files) {
-    await query(ctx.deps.query,
-      `INSERT INTO application_files (id, application_id, source_id, document_id, file_name, mime_type, size, page_count, storage_key, content, created_at)
-       VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10)`,
-      [crypto.randomUUID(), applicationId, file.id, file.fileName, file.mimeType, file.size, file.pageCount, file.storageKey, file.content, now]);
+  if (!created) {
+    // A concurrent apply for the same posting won; answer with its application.
+    const winner = await existingApplication(ctx, id);
+    if (!winner) throw new HttpError(500, "INTERNAL", "internal error");
+    return data(201, applicationDto(winner), ctx.rid);
   }
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
@@ -982,18 +1002,23 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   const applicationId = requireUuid(applicationRaw, "applicationId");
   await requirePostingMember(ctx, postingId);
   const application = await loadApplicant(ctx, postingId, applicationId);
-  try {
-    await query(ctx.deps.query,
-      "UPDATE applications SET company_seen_at = $2 WHERE id = $1 AND (to_jsonb(applications) ->> 'company_seen_at') IS NULL",
-      [applicationId, ctx.now.toISOString()]);
-  } catch (err) {
-    if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
-  }
-  const documents = await snapshotDocuments(ctx, applicationId);
-  const person = await one(ctx.deps.query,
-    `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
-     FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
-    [String(application.user_id)]);
+  const markSeen = async (): Promise<void> => {
+    try {
+      await query(ctx.deps.query,
+        "UPDATE applications SET company_seen_at = $2 WHERE id = $1 AND (to_jsonb(applications) ->> 'company_seen_at') IS NULL",
+        [applicationId, ctx.now.toISOString()]);
+    } catch (err) {
+      if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
+    }
+  };
+  const [, documents, person] = await Promise.all([
+    markSeen(),
+    snapshotDocuments(ctx, applicationId),
+    one(ctx.deps.query,
+      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
+      [String(application.user_id)]),
+  ]);
   return data(200, {
     application: companyApplicationDto(application),
     documents,
@@ -1005,6 +1030,13 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       skills: jsonList(person?.skills).map(String),
     },
   }, ctx.rid);
+};
+
+/** RFC 6266: an ASCII fallback plus the UTF-8 name, so non-Latin-1 names do not break the header. */
+const attachment = (fileName: string): string => {
+  const fallback = fileName.replace(/[^\x20-\x7e]|["\\]/g, "_") || "file";
+  const encoded = encodeURIComponent(fileName).replace(/['()*]/g, (ch) => "%" + ch.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 };
 
 const streamApplicationFile = async (ctx: Ctx, postingRaw: string, applicationRaw: string, fileRaw: string): Promise<Response> => {
@@ -1021,13 +1053,13 @@ const streamApplicationFile = async (ctx: Ctx, postingRaw: string, applicationRa
     [fileId, applicationId, postingId]);
   const bytes = fileBytes(row?.content);
   if (!row || !bytes) throw notFound();
-  const name = String(row.file_name ?? "file").replace(/["\r\n\\]/g, "");
   return new Response(bytes, {
     status: 200,
     headers: {
       "content-type": String(row.mime_type ?? "application/octet-stream"),
-      "content-disposition": `attachment; filename="${name}"`,
+      "content-disposition": attachment(String(row.file_name ?? "file")),
       "content-length": String(bytes.byteLength),
+      "x-content-type-options": "nosniff",
       "x-request-id": ctx.rid,
     },
   });
@@ -1113,20 +1145,22 @@ const searchCounts = async (ctx: Ctx): Promise<Response> => {
   const q = ctx.url.searchParams.get("q") || "";
   if (!q.trim()) throw fieldError("q", "required");
   if (codePoints(q) > 200) throw fieldError("q", "must be at most 200 characters");
-  await recordSearch(ctx, q);
   const forms = queryForms(q);
-  const postings = await withPublicStatus(async (withStatus) => {
-    const row = await one(ctx.deps.query,
-      `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
-      [ctx.user.id, forms.raw]);
-    return Number(row?.total ?? 0);
-  });
-  const peopleRow = await one(ctx.deps.query,
-    `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
-    [forms.raw]);
-  const postsRow = await one(ctx.deps.query,
-    "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
-    [forms.raw]);
+  const [, postings, peopleRow, postsRow] = await Promise.all([
+    recordSearch(ctx, q),
+    withPublicStatus(async (withStatus) => {
+      const row = await one(ctx.deps.query,
+        `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
+        [ctx.user.id, forms.raw]);
+      return Number(row?.total ?? 0);
+    }),
+    one(ctx.deps.query,
+      `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
+      [forms.raw]),
+    one(ctx.deps.query,
+      "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
+      [forms.raw]),
+  ]);
   return data(200, {
     postings,
     people: Number(peopleRow?.total ?? 0),
@@ -1367,8 +1401,7 @@ async function loadProfile(ctx: Ctx, userId: string): Promise<Record<string, unk
 
 async function getProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "userId");
-  const viewer = await viewerCompanyOf(ctx);
-  const row = await loadProfile(ctx, id);
+  const [viewer, row] = await Promise.all([viewerCompanyOf(ctx), loadProfile(ctx, id)]);
   if (!row) throw notFound();
   const self = id === ctx.user.id;
   if (!self && !asBool(row.profile_public)) throw notFound();
@@ -1520,7 +1553,10 @@ async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   let postingId: string | null = null;
   if (body.postingId != null && body.postingId !== "") {
     postingId = requireUuid(String(body.postingId), "postingId");
-    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1 AND closed_at IS NULL", [postingId]);
+    // Only the sender's own company's posting: attaching another company's posting would impersonate it.
+    const posting = await one(ctx.deps.query,
+      "SELECT p.id FROM job_postings p JOIN company_members m ON m.company_id = p.company_id AND m.user_id = $2 WHERE p.id = $1 AND p.closed_at IS NULL",
+      [postingId, ctx.user.id]);
     if (!posting) throw notFound();
   }
   const profile = await one(ctx.deps.query,
@@ -1594,7 +1630,9 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
   let reply = "";
   if (status === "ACCEPTED" && body.reply != null) reply = textOf(body.reply, "reply", 1, 2000);
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query, "UPDATE offers SET status = $2 WHERE id = $1", [row.id, status]);
+  const decided = await one(ctx.deps.query,
+    "UPDATE offers SET status = $2 WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id", [row.id, status]);
+  if (!decided) throw new HttpError(409, "CONFLICT", "offer is already closed");
   if (reply) {
     await query(ctx.deps.query,
       "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
@@ -1742,14 +1780,17 @@ async function registerDevice(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   const token = textOf(body.token, "token", 1, 4096);
   if (body.platform !== "ios" && body.platform !== "android") throw unprocessable("platform", "unsupported platform");
+  // A push token belongs to one device; after an account switch the old account must stop receiving its pushes.
   await query(ctx.deps.query,
-    "INSERT INTO user_devices (user_id, token, platform, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id, token) DO UPDATE SET platform = EXCLUDED.platform",
+    `WITH moved AS (DELETE FROM user_devices WHERE token = $2 AND user_id <> $1)
+     INSERT INTO user_devices (user_id, token, platform, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id, token) DO UPDATE SET platform = EXCLUDED.platform`,
     [ctx.user.id, token, body.platform, ctx.now.toISOString()]);
   return data(201, { token, platform: body.platform }, ctx.rid);
 }
 
 async function deleteDevice(ctx: Ctx, tokenRaw: string): Promise<Response> {
-  const token = decodeURIComponent(tokenRaw);
+  let token: string;
+  try { token = decodeURIComponent(tokenRaw); } catch { throw fieldError("token", "invalid device token"); }
   await query(ctx.deps.query, "DELETE FROM user_devices WHERE user_id = $1 AND token = $2", [ctx.user.id, token]);
   return noContent(ctx.rid);
 }

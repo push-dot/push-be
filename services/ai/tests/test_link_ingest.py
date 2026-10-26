@@ -212,3 +212,28 @@ async def test_github_url_is_not_a_job_link():
     assert query.rows == []
     assert query.inserts == []
     assert fetch.urls == []
+
+
+async def test_one_message_inserts_a_bounded_number_of_links():
+    from app.domain.link_ingest import MAX_URLS_PER_MESSAGE
+    query = Query()
+    text = " ".join(f"https://jobs.example/role/{n}" for n in range(500))
+    await _run(query, Fetch(query), text, {}, True)
+    assert len(query.inserts) == MAX_URLS_PER_MESSAGE
+
+
+async def test_older_message_check_is_one_query_for_many_urls():
+    from app.domain.link_ingest import older_message_counted
+
+    class Counting:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch(self, sql, *args):
+            self.calls.append(args)
+            return []
+
+    q = Counting()
+    text = " ".join(f"https://jobs.example/role/{n}" for n in range(5))
+    assert await older_message_counted(q, CONV_ID, None, text) is False
+    assert len(q.calls) == 1 and len(q.calls[0][2]) == 5

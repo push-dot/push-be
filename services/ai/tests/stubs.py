@@ -203,21 +203,6 @@ class StubCipher:
         return b"ct:" + plaintext.encode(), b"n"
 
 
-class StubAiKeyStore:
-    def __init__(self, key: Optional[ent.AiKey] = None):
-        self.key = key
-
-    async def get(self, user_id: UUID, provider: str):
-        if (self.key is None or self.key.provider != provider
-                or self.key.user_id != user_id):
-            raise NotFoundError()
-        return self.key
-
-    async def has(self, user_id: UUID, provider: str) -> bool:
-        return (self.key is not None and self.key.provider == provider
-                and self.key.user_id == user_id)
-
-
 class StubChatJobStore:
     def __init__(self, events: Optional[list] = None,
                  status: str = "RUNNING"):

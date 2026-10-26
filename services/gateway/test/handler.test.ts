@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { ownerOf } from "../src/routes/owner.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
@@ -27,7 +26,6 @@ function env(api?: FrontEnv["API"], core?: FrontEnv["API"]): FrontEnv {
 function deps(query: Query, extra: Partial<Deps> = {}): Deps {
   return {
     query,
-    cache: memoryCache(() => NOW.getTime()),
     sleep: async () => {},
     now: () => NOW,
     ...extra,
@@ -259,19 +257,15 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.match(text, /id: 8\ndata: \{"type": "done", "operation": \{"status": "SUCCEEDED"\}, "seq": 8\}/);
 });
 
-test("model catalog is cached and a live BYOK list is proxied", async () => {
+test("model catalog follows the deployed flags and validates provider", async () => {
   resetLimits();
-  const calls: string[] = [];
   const query: Query = async (sql) => {
-    calls.push(sql);
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("ai_keys")) return [{ has: false }];
     return [];
   };
-  const cache = memoryCache(() => NOW.getTime());
-  const d = deps(query, { cache });
+  const d = deps(query);
   const first = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -279,34 +273,21 @@ test("model catalog is cached and a live BYOK list is proxied", async () => {
   assert.equal(body.data.length, 5);
   assert.equal(body.data.find((m) => m.model.startsWith("opencode-go/"))?.available, false);
   assert.equal(body.data.find((m) => m.model === "openai/gpt-5.6-sol")?.available, true);
-  const before = calls.filter((sql) => sql.includes("ai_keys")).length;
   const second = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
-  }), env(), d);
+  }), { ...env(), MANAGED_GO: "1" }, d);
   assert.equal(second.status, 200);
-  assert.equal(calls.filter((sql) => sql.includes("ai_keys")).length, before);
+  const flagged = JSON.parse(await second.text()) as typeof body;
+  assert.equal(flagged.data.find((m) => m.model.startsWith("opencode-go/"))?.available, true);
   const bad = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=NOPE", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(bad.status, 400);
   assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
 
-  let proxied = 0;
-  const api = { async fetch() { proxied += 1; return new Response("{}", { status: 200 }); } };
-  const empty = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=OPENAI&credentialMode=BYOK", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(api), d);
-  assert.equal(empty.status, 200);
-  assert.equal(await empty.text(), '{"data": []}');
-  assert.equal(proxied, 0);
-  const live = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=OPENAI&credentialMode=BYOK", {
-    headers: { authorization: "Bearer secret-token", "x-byok-key": "sk-live" },
-  }), env(api), d);
-  assert.equal(live.status, 200);
-  assert.equal(proxied, 1);
 });
 
-test("job sites are served from cache after the first auth", async () => {
+test("job sites are built without any query beyond auth", async () => {
   resetLimits();
   let keyQueries = 0;
   const query: Query = async (sql) => {
@@ -331,7 +312,7 @@ test("job sites are served from cache after the first auth", async () => {
   assert.equal(keyQueries, 0);
 });
 
-test("chat enqueue and other writes are proxied, and key writes drop the model cache", async () => {
+test("chat enqueue and other writes are proxied", async () => {
   resetLimits();
   const calls: string[] = [];
   const query: Query = async (sql) => {
@@ -339,11 +320,9 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("ai_keys")) return [{ has: true }];
     return [];
   };
-  const cache = memoryCache(() => NOW.getTime());
-  const d = deps(query, { cache });
+  const d = deps(query);
   await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -386,18 +365,6 @@ test("chat enqueue and other writes are proxied, and key writes drop the model c
   }), env(python, core), d);
   assert.equal(hidden.status, 404);
 
-  const put = await handle(new Request("https://push-be.example/api/v1/ai/keys/OPENAI", {
-    method: "PUT",
-    headers: { authorization: "Bearer secret-token" },
-    body: '{"key":"sk-12345678"}',
-  }), env(python, core), d);
-  assert.equal(put.status, 200);
-  const after = calls.length;
-  const again = await handle(new Request("https://push-be.example/api/v1/ai/models", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(), d);
-  assert.equal(again.status, 200);
-  assert.ok(calls.length > after);
 });
 
 test("shared rate limit is one query with auth and a full bucket is not written again", async () => {
@@ -507,14 +474,13 @@ test("a full public counter does not write again", async () => {
   assert.equal(calls, 1);
 });
 
-test("a rejected python proxy and a broken cache still return a response", async () => {
+test("a rejected python proxy still returns a response", async () => {
   resetLimits();
   const auth: Query = async (sql) => {
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
     if (sql.includes("rate_limits")) return [{ hits: 1 }];
-    if (sql.includes("ai_keys")) return [{ has: false }];
     return [];
   };
   const failed = await handle(new Request("https://push-be.example/api/v1/conversations", {
@@ -543,17 +509,6 @@ test("a rejected python proxy and a broken cache still return a response", async
   assert.equal(empty.status, 204);
   assert.equal(empty.headers.get("access-control-allow-origin"), "http://localhost:5173");
   assert.equal(await empty.text(), "");
-
-  const cache = {
-    async match() { return undefined; },
-    async put() { throw new Error("cache put failed"); },
-    async delete() { return false; },
-  };
-  const models = await handle(new Request("https://push-be.example/api/v1/ai/models", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(), deps(auth, { cache }));
-  assert.equal(models.status, 200);
-  assert.match(await models.text(), /"data":/);
 });
 
 test("auth cache skips Neon until logout or the TTL", async () => {
@@ -1183,7 +1138,7 @@ test("company routes are owned by core", () => {
     assert.equal(ownerOf("PATCH", path), "core");
     assert.equal(ownerOf("DELETE", path), "core");
   }
-  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "deny");
 });
 
 test("billing top-up, iap, and store webhooks are owned by core", () => {
@@ -1193,10 +1148,10 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/ai-done"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/run"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "deny");
   assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
   assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "deny");
 });
 
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -1249,7 +1204,7 @@ test("employer conversation list sql filters by the caller company", async () =>
 
 test("conversation pdf upload is owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "deny");
 });
 
 const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";

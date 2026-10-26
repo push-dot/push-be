@@ -59,3 +59,36 @@ async def test_204_is_empty_object():
 
     client = CoreClient("https://core.example/", "sek", transport=httpx.MockTransport(handler))
     assert await client.call("DELETE", "/api/v1/postings/x/bookmark", user_id="user-1") == {}
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/documents/x/../../postings/p/apply",
+    "/api/v1/documents/%2e%2e/edits",
+    "/api/v1/documents/a%2Fb/edits",
+    "/api/v1/documents/./edits",
+    "https://evil.example/api",
+    "//evil.example/api",
+    "/api/v1/documents/x#frag",
+    "api/v1/no-leading-slash",
+])
+async def test_call_rejects_paths_that_could_reroute(path):
+    sent = []
+    client = CoreClient("https://core.example", "sek", transport=httpx.MockTransport(
+        lambda request: sent.append(request) or httpx.Response(200, json={})))
+    with pytest.raises(CoreError) as err:
+        await client.call("POST", path, user_id="u1")
+    assert err.value.code == "INVALID_ARGS"
+    assert sent == []
+
+
+async def test_apply_edit_rejects_non_uuid_document_id():
+    from app.domain.errors import DomainError
+    from app.harness.document_edits import apply_edit
+
+    sent = []
+    client = CoreClient("https://core.example", "sek", transport=httpx.MockTransport(
+        lambda request: sent.append(request) or httpx.Response(200, json={})))
+    with pytest.raises(DomainError) as err:
+        await apply_edit(client, "u1", {"documentId": "x/../../postings/p/apply?", "hunks": []})
+    assert err.value.code == "VALIDATION_ERROR"
+    assert sent == []

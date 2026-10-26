@@ -79,6 +79,7 @@ async def main() -> None:
     from app.queue.credits import release_job, settle_job
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
+    from app.workers.shutdown import stop_on_signals
 
     await ensure_ready(app)
     svc = app.state.deps.conversations
@@ -103,6 +104,7 @@ async def main() -> None:
         settle=settle,
         release=release,
     )
+    stop_on_signals(worker.stop)
     runs = [worker.run_forever()]
     if os.environ.get("SERVE_API") == "1":
         runs.append(serve_api(app, worker))

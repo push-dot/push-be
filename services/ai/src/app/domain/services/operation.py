@@ -1,12 +1,13 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import internal, invalid_transition, not_found
+from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_operations import OperationStore
 
 
@@ -18,6 +19,7 @@ class OperationService:
     def __init__(self, db: DB, evidence_svc):
         self.db = db
         self.ops = OperationStore(db)
+        self.locks = AiUsageStore(db)
         self.evidence = evidence_svc
 
     async def get(self, user_id: UUID, id_: UUID) -> ent.Operation:
@@ -34,6 +36,8 @@ class OperationService:
 
         async def work():
             nonlocal out
+            # Parallel submits (or a cancel) would otherwise both see NEEDS_INPUT and race.
+            await self.locks.lock_user(user_id)
             try:
                 op = await self.ops.get(user_id, id_)
             except NotFoundError:
@@ -62,6 +66,7 @@ class OperationService:
 
         async def work():
             nonlocal out
+            await self.locks.lock_user(user_id)
             try:
                 op = await self.ops.get(user_id, id_)
             except NotFoundError:

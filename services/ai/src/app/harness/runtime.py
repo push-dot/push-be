@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
+from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
-from app.graphs.chat import byok_key_var
-from app.harness.core_client import CoreClient, idempotency_key
-from app.harness.graph import _open_calls, build_harness_graph, turn_model
+from app.graphs.chat import _stable_ids
+from app.harness.core_client import idempotency_key
+from app.harness.document_edits import env_core
+from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.registry import REGISTRY
@@ -22,13 +25,6 @@ from app.harness.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
-
-
-def _core() -> CoreClient:
-    return CoreClient(
-        os.environ.get("CORE_ORIGIN", ""),
-        os.environ.get("INTERNAL_API_SECRET", ""),
-    )
 
 
 def _resume_state(payload: dict, conversation: dict) -> dict:
@@ -60,12 +56,23 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
     }
 
 
+def _user_message_id(job_id) -> str | None:
+    """The persisted user message id; a retried job replaces its HumanMessage instead of adding one."""
+    if not job_id:
+        return None
+    try:
+        return str(_stable_ids(job_id)[0])
+    except ValueError:
+        return None
+
+
 def _state(payload: dict, conversation: dict) -> dict:
     text = payload.get("text") or ""
     mode = resolve_access_mode(payload.get("access_mode"), None)
     company_id = conversation.get("company_id")
+    message_id = _user_message_id(payload.get("job_id"))
     return {
-        "messages": [HumanMessage(content=text)] if text else [],
+        "messages": [HumanMessage(content=text, id=message_id)] if text else [],
         "user_id": str(payload.get("user_id") or ""),
         "company_id": None if not company_id else str(company_id),
         "conversation_id": str(payload.get("conversation_id") or ""),
@@ -82,14 +89,13 @@ _RESUME_KEYS = (
 
 
 async def _turn_inputs(payload: dict) -> dict:
+    urls = find_urls(payload.get("text") or "")[:2]
+    bodies = await asyncio.gather(*(fetch_page_text(url) for url in urls), return_exceptions=True)
     pages = {}
-    for url in find_urls(payload.get("text") or "")[:2]:
-        try:
-            body = await fetch_page_text(url)
-        except Exception:
-            logging.getLogger(__name__).warning("page prefetch failed", exc_info=True)
-            continue
-        if body:
+    for url, body in zip(urls, bodies):
+        if isinstance(body, BaseException):
+            logging.getLogger(__name__).warning("page prefetch failed", exc_info=body)
+        elif body:
             pages[url] = body
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     return {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
@@ -111,9 +117,9 @@ def _pending(snapshot) -> dict | None:
     return None
 
 
-def _rejections(values: dict) -> list:
-    rejected = json.dumps({"rejected": True})
-    return [ToolMessage(content=rejected, tool_call_id=call["id"]) for call in _open_calls(values)]
+def _rejections(values: dict, result: dict | None = None) -> list:
+    content = json.dumps(result or {"rejected": True})
+    return [ToolMessage(content=content, tool_call_id=call["id"]) for call in _open_calls(values)]
 
 
 def _final_text(values: dict) -> str:
@@ -126,7 +132,7 @@ def _final_text(values: dict) -> str:
 class HarnessRuntime:
     def __init__(self, svc, model_cls=None):
         self.svc = svc
-        self._core = _core()
+        self._core = env_core()
         self._compiled: dict = {}
         self._model_cls = model_cls
 
@@ -210,7 +216,7 @@ class HarnessRuntime:
         gate = getattr(self.svc, "ai", None)
         cfg = gate._levers_config() if gate is not None and hasattr(gate, "_levers_config") else load_config()
         base = ent.AiOptions(**raw) if raw else ent.AiOptions(
-            provider="OPENAI", model="managed", credential_mode="MANAGED", effort="LOW")
+            provider="OPENAI", model="managed", effort="LOW")
         return apply_employer_turn(base, plan, payload.get("intent"), cfg)
 
     def _model(self, payload: dict, ai, turn: dict):
@@ -230,8 +236,6 @@ class HarnessRuntime:
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
             (bound_core, bound_core.set(self._core)),
         ]
-        if payload.get("resume") and not byok_key_var.get():
-            tokens.append((byok_key_var, byok_key_var.set(await self._job_byok(payload))))
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         run = self._resume_turn if spec.id == "resume" else self._chat_turn
         ok = False
@@ -248,15 +252,6 @@ class HarnessRuntime:
             for var, token in reversed(tokens):
                 var.reset(token)
 
-    async def _job_byok(self, payload: dict) -> str:
-        row = await self.svc.db.q().fetchrow(
-            "SELECT payload FROM chat_jobs WHERE id = $1", UUID(str(payload["job_id"])))
-        read = getattr(self.svc, "_byok_from_payload", None)
-        if row is None or read is None:
-            return ""
-        stored = row["payload"]
-        return read(payload["user_id"], json.loads(stored) if isinstance(stored, str) else stored)
-
     async def _chat_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
         snapshot = await graph.aget_state(config)
         waiting = _pending(snapshot)
@@ -269,12 +264,18 @@ class HarnessRuntime:
             state = _state(payload, conversation)
             if waiting is not None:
                 await self._reject_waiting(payload["conversation_id"])
-                state["messages"] = [*_rejections(snapshot.values), *state["messages"]]
+            # Heal calls a crashed turn left open too, or the provider rejects every later turn.
+            crashed = None if waiting is not None else {"error": "TOOL_FAILED"}
+            state["messages"] = [*_rejections(snapshot.values, crashed), *state["messages"]]
+        config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
-        async for item in self._stream_graph(graph, state, config, stream_mode):
-            if item[0] == "custom" and item[1].get("type") == "done":
-                interrupted = True
-            yield item
+        try:
+            async for item in self._stream_graph(graph, state, config, stream_mode):
+                if item[0] == "custom" and item[1].get("type") == "done":
+                    interrupted = True
+                yield item
+        except GraphRecursionError:
+            raise DomainError(500, INTERNAL, "tool loop hit its step limit") from None
         if not interrupted:
             values = (await graph.aget_state(config)).values
             operation = await self._persist(payload, _final_text(values), ai, turn)

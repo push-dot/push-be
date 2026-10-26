@@ -42,17 +42,6 @@ class UserStore(Store):
             "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at) "
             "VALUES ($1,'dev','dev','Dev User','ko',now()) ON CONFLICT (id) DO NOTHING", id_)
 
-    async def set_billing(self, user_id: UUID, plan: str, status: str,
-                          customer_id: Optional[str], period_ends_at) -> None:
-        await self.q().execute(
-            "UPDATE users SET plan=$2, subscription_status=$3, stripe_customer_id=$4, "
-            "period_ends_at=$5 WHERE id=$1",
-            user_id, plan, status, customer_id, period_ends_at)
-
-    async def set_stripe_customer(self, user_id: UUID, customer_id: str) -> None:
-        await self.q().execute(
-            "UPDATE users SET stripe_customer_id=$2 WHERE id=$1", user_id, customer_id)
-
 
 class SessionStore(Store):
     async def save_oauth_state(self, s: OAuthState) -> None:
@@ -94,11 +83,6 @@ class SessionStore(Store):
             "INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, "
             "created_at) VALUES ($1,$2,$3,$4,$5,$6)",
             t.id, t.user_id, t.token_hash, t.refresh_token_id, t.expires_at, t.created_at)
-
-    async def get_access_token(self, token_hash: str) -> AccessToken:
-        return to_model(AccessToken, await self.one(
-            "SELECT id, user_id, token_hash, refresh_token_id, expires_at, created_at "
-            "FROM access_tokens WHERE token_hash = $1", token_hash))
 
     async def get_user_by_access_token(self, token_hash: str):
         """User plus access-token expiry, in one query."""

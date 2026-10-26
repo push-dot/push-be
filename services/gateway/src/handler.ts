@@ -12,7 +12,7 @@ import { health } from "./routes/health.ts";
 import { listConversations, listMessages, streamActive, streamCancel, streamMessage } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
-import { invalidateAfterWrite, isInternalCall, proxy, proxyPython, purgeModelCache } from "./routes/proxy.ts";
+import { invalidateAfterWrite, isInternalCall, proxy, proxyPython } from "./routes/proxy.ts";
 
 export type { Deps, FrontEnv, Query } from "./types.ts";
 export { releaseExpired, resetLimits } from "./middleware/ratelimit.ts";
@@ -87,11 +87,6 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
       await invalidateAfterWrite(request, path, deps);
-    }
-  }
-  if (request.method === "PUT" || request.method === "DELETE") {
-    if (/^\/api\/v1\/ai\/keys\/[^/]+$/.test(path) && proxied.status >= 200 && proxied.status < 300) {
-      await purgeModelCache(request, deps);
     }
   }
   return proxied;

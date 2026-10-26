@@ -1,4 +1,4 @@
-import { base64ToBytes, bytesToBase64, encryptAes, masterKey } from "../crypto.ts";
+import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
 import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
@@ -9,7 +9,6 @@ import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
-const CREDENTIALS = new Set(["MANAGED", "BYOK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
@@ -21,8 +20,14 @@ const CANONICAL_ACCESS: Record<string, string> = {
   CONFIRM_ACTIONS: "ALWAYS_ASK",
 };
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
+const FORM_OVERHEAD_BYTES = 64 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
+const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
+const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
+  + " WHERE e.user_id = $1 AND e.archived = false"
+  + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
+  + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -69,6 +74,8 @@ const memberOfCaller = (companyExpr: string, userParam: string): string =>
 const visibleConversation = (idParam: string, userParam: string): string =>
   `id = ${idParam} AND (user_id = ${userParam} OR (${memberOfCaller("company_id", userParam)}))`;
 
+const COMPANY_APPLICATION = "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id JOIN job_postings p ON p.id = j.source_posting_id WHERE a.id = $1 AND p.company_id = $2";
+
 const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
   forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
   if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -83,19 +90,17 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
   if (!member || member.verified_at == null) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
-  if (postingId) {
-    const posting = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]);
-    if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  }
-  if (applicationId) {
-    const application = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1", [applicationId]);
-    if (!application) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  }
+  const companyId = String(member.company_id);
+  const [posting, application] = await Promise.all([
+    postingId ? one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]) : null,
+    applicationId ? one(ctx.deps.query, COMPANY_APPLICATION, [applicationId, companyId]) : null,
+  ]);
+  if ((postingId && !posting) || (applicationId && !application)) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
     "INSERT INTO conversations (id, user_id, revision, application_id, title, pinned, archived, created_at, updated_at, company_id, posting_id) VALUES ($1,$2,1,$3,$4,false,false,$5,$5,$6,$7)",
-    [id, ctx.user.id, applicationId, body.title, now, String(member.company_id), postingId]);
+    [id, ctx.user.id, applicationId, body.title, now, companyId, postingId]);
   return data(201, convDto({
     id, revision: 1, application_id: applicationId, title: body.title, pinned: false, created_at: now, updated_at: now,
   }), ctx.rid);
@@ -185,26 +190,10 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   if (current.company_id != null) {
     await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
   }
-  const refs = await query(ctx.deps.query,
-    "SELECT DISTINCT (a->>'id')::uuid AS eid FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id = $2 AND a->>'type' = 'EVIDENCE'",
-    [ctx.user.id, id]);
-  for (const ref of refs.rows) {
-    const eid = String(ref.eid);
-    const elsewhere = await one(ctx.deps.query,
-      "SELECT count(*) AS n FROM messages, jsonb_array_elements(attachments) a WHERE user_id = $1 AND conversation_id <> $2 AND a->>'type' = 'EVIDENCE' AND a->>'id' = $3",
-      [ctx.user.id, id, eid]);
-    if (Number(elsewhere?.n || 0) > 0) continue;
-    const evidence = await one(ctx.deps.query,
-      "SELECT id, revision, archived FROM career_evidence WHERE id = $1 AND user_id = $2",
-      [eid, ctx.user.id]);
-    if (!evidence || evidence.archived === true || evidence.archived === "t") continue;
-    try {
-      await query(ctx.deps.query,
-        "UPDATE career_evidence SET archived = true, revision = revision + 1, updated_at = $3 WHERE id = $1 AND user_id = $2 AND revision = $4 AND archived = false",
-        [eid, ctx.user.id, now, evidence.revision]);
-    } catch {
-      // A conflicting evidence write does not fail the archive.
-    }
+  try {
+    await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
+  } catch {
+    // A conflicting evidence write does not fail the archive.
   }
   return data(200, convDto(updated), ctx.rid);
 }
@@ -215,21 +204,16 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const ai = raw as Record<string, unknown>;
-  forbidExtra(ai, ["provider", "model", "credentialMode", "effort", "ultraResume", "webSearch", "models"]);
-  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.credentialMode !== "string" || typeof ai.effort !== "string") {
+  forbidExtra(ai, ["provider", "model", "effort", "ultraResume", "webSearch", "models"]);
+  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.effort !== "string") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   if (!AI_PROVIDERS.has(ai.provider)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });
   if (!ai.model) throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });
-  if (!CREDENTIALS.has(ai.credentialMode)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported credentialMode", { field: "ai.credentialMode" });
-  if (ai.credentialMode === "MANAGED" && ai.provider !== "OPENAI") {
-    throw new HttpError(400, "VALIDATION_ERROR", "MANAGED is only supported for OPENAI", { field: "ai.credentialMode" });
-  }
   if (!EFFORTS.has(ai.effort)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
   return {
     provider: ai.provider,
     model: ai.model,
-    credentialMode: ai.credentialMode,
     effort: ai.effort,
     ultraResume: ai.ultraResume === true,
     webSearch: ai.webSearch === true,
@@ -237,40 +221,30 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
   };
 }
 
-async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null, byok: string): Promise<void> {
+async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
   if (!ai) return;
-  if (ai.ultraResume === true || ai.credentialMode === "MANAGED") {
-    const user = await one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]);
-    if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
-      throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
-    }
-    if (ai.credentialMode === "MANAGED") {
-      const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
-      const spent = await one(ctx.deps.query,
-        "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
-        [ctx.user.id, start]);
-      const raw = user.plan == null ? "" : String(user.plan).trim();
-      const plan = raw === "" ? "FREE" : raw;
-      if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
-        throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
-      }
-      if (!flag(ctx.env.MANAGED_AI)) {
-        throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
-      }
-      return;
-    }
+  const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
+  const [user, spent] = await Promise.all([
+    one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]),
+    one(ctx.deps.query,
+      "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
+      [ctx.user.id, start]),
+  ]);
+  if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
+    throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
   }
-  if (byok) return;
-  const has = await one(ctx.deps.query,
-    "SELECT EXISTS(SELECT 1 FROM ai_keys WHERE user_id = $1 AND provider = $2) AS has",
-    [ctx.user.id, String(ai.provider)]);
-  if (!ctx.env.BYOK_MASTER_KEY || !has || has.has === false || has.has === "f") {
-    throw new HttpError(409, "INTEGRATION_REQUIRED", "no BYOK key configured for " + String(ai.provider));
+  const raw = user.plan == null ? "" : String(user.plan).trim();
+  const plan = raw === "" ? "FREE" : raw;
+  if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
+    throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
+  }
+  if (!flag(ctx.env.MANAGED_AI)) {
+    throw new HttpError(503, "NOT_CONFIGURED", "managed AI is not configured");
   }
 }
 
-async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): Promise<void> {
+async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -283,7 +257,7 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
     const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
       method: "POST",
       headers,
-      body: JSON.stringify({ jobId, byok }),
+      body: JSON.stringify({ jobId }),
     });
     if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
   } catch {
@@ -293,10 +267,10 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string, byok: string): P
 
 // The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
 // AI_ORIGIN is set. Clearing it schedules through the service binding again.
-export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Promise<void> => {
+export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
   const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
   if (origin) {
-    await wakeVps(ctx, origin, jobId, byok);
+    await wakeVps(ctx, origin, jobId);
     return;
   }
   if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
@@ -307,7 +281,7 @@ export const scheduleChatJob = async (ctx: Ctx, jobId: string, byok: string): Pr
       "x-push-internal": "1",
       "x-request-id": ctx.rid,
     },
-    body: JSON.stringify({ jobId, byok }),
+    body: JSON.stringify({ jobId }),
   }));
   if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
 };
@@ -317,7 +291,6 @@ const enqueueChatMessage = async (
   conversationId: string,
   payload: Record<string, unknown>,
   text: string,
-  byok: string,
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
@@ -341,7 +314,6 @@ const enqueueChatMessage = async (
     payload,
     idempotencyKey: headerKey || undefined,
     conversationId,
-    byok: byok.length > 0,
   });
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
@@ -372,14 +344,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
-  let canonical = CANONICAL_ACCESS[access] ?? "";
-  if (!access) {
-    const saved = await one(ctx.deps.query,
-      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
-      [ctx.user.id]);
-    canonical = CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
-  }
-  if (!canonical) {
+  if (access && !CANONICAL_ACCESS[access]) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
   let context: Record<string, unknown> = {};
@@ -409,11 +374,16 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  const byok = ctx.request.headers.get("x-byok-key") || "";
-  await allowChat(ctx, ai, byok);
-  const owned = await one(ctx.deps.query,
-    "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
-    [conversationId, ctx.user.id]);
+  const [saved, owned] = await Promise.all([
+    access ? null : one(ctx.deps.query,
+      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
+      [ctx.user.id]),
+    one(ctx.deps.query,
+      "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+      [conversationId, ctx.user.id]),
+    allowChat(ctx, ai),
+  ]);
+  const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
   if (owned && owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
@@ -421,13 +391,8 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const payload: Record<string, unknown> = {
     text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
   };
-  if (byok && ctx.env.BYOK_MASTER_KEY) {
-    const key = await masterKey(ctx.env.BYOK_MASTER_KEY);
-    const sealed = await encryptAes(key, byok, ctx.user.id, "chat-job");
-    payload._byok = { ct: bytesToBase64(sealed.ciphertext), nonce: bytesToBase64(sealed.nonce) };
-  }
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis") {
-    return enqueueChatMessage(ctx, conversationId, payload, body.text, byok);
+    return enqueueChatMessage(ctx, conversationId, payload, body.text);
   }
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
@@ -435,7 +400,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  await scheduleChatJob(ctx, jobId, byok);
+  await scheduleChatJob(ctx, jobId);
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
@@ -461,6 +426,9 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
   assertPlanAllows(row.plan, "pdf_attachment");
+  if (Number(ctx.request.headers.get("content-length") ?? 0) > PDF_MAX_BYTES + FORM_OVERHEAD_BYTES) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "file must be at most 10 MiB", { field: "file" });
+  }
   const form = await ctx.request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) {
@@ -596,6 +564,7 @@ export const getArtifact = async (ctx: Ctx, idRaw: string, nameRaw: string): Pro
     headers: {
       "content-type": ARTIFACT_TYPES[ext] ?? "application/octet-stream",
       "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "x-content-type-options": "nosniff",
       "x-request-id": ctx.rid,
     },
   });

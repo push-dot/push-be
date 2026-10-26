@@ -73,7 +73,8 @@ class _Query:
     async def fetch(self, sql, *args):
         self.calls.append((sql, args))
         if self.fail_union and "rag_chunks" in sql:
-            raise RuntimeError("rag_chunks missing")
+            from app.pgproto import PgError
+            raise PgError("42P01", "relation \"rag_chunks\" does not exist")
         return list(self.rows)
 
     async def execute(self, sql, *args):
@@ -89,6 +90,9 @@ class _DB:
 
     def q(self):
         return self.query
+
+    async def do(self, fn):
+        return await fn()
 
 
 def test_cloudflare_worker_forces_legacy(monkeypatch):
@@ -394,7 +398,7 @@ def test_rag_store_replace_and_missing_sql():
     source_id = uuid4()
     asyncio.run(store.replace(
         user_id, "link", source_id, "Blog", [("body", [0.2, 0.3])]))
-    assert "DELETE FROM rag_chunks" in query.calls[0][0]
+    assert "DELETE FROM rag_chunks" in query.calls[1][0]
     insert_sql, insert_rows = query.many[0]
     assert "INSERT INTO rag_chunks" in insert_sql
     assert insert_rows[0][2] == "link"
@@ -413,7 +417,8 @@ def test_rag_store_replace_and_missing_sql():
 
     class Boom:
         async def fetch(self, sql, *args):
-            raise RuntimeError("missing table")
+            from app.pgproto import PgError
+            raise PgError("42P01", "missing table")
 
     empty = asyncio.run(RagStore(_DB(Boom())).missing("resume", user_id, 1))
     assert empty == []
@@ -453,7 +458,7 @@ async def test_prepare_reply_keeps_the_rag_status_frame(monkeypatch):
             "attachments": [],
             "ai": {
                 "provider": "OPENAI", "model": "m",
-                "credential_mode": "MANAGED", "effort": "LOW",
+                "effort": "LOW",
             },
         })
     finally:
@@ -472,7 +477,7 @@ def _user(user_id):
 def _managed():
     return ent.AiOptions(
         provider="OPENAI", model="openai/gpt-test",
-        credential_mode="MANAGED", effort="LOW")
+        effort="LOW")
 
 
 class _FakeChatModel:
@@ -529,7 +534,7 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
 
     client.chat = legacy_chat
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     done = await gate.complete(user_id, _managed(), "sys", POISON)
@@ -539,36 +544,6 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
     assert holder["kwargs"]["model"] == "anthropic/claude-opus-5-5"
     assert holder["model"].messages[-1]["content"] == POISON
     assert "tools" not in holder["kwargs"]
-
-
-async def test_gate_claude_stays_on_anthropic(monkeypatch):
-    _langchain_env(monkeypatch)
-    from app.domain.services.ai import AIGate
-    from app.infrastructure.anthropic_client import AnthropicClient
-    from tests.stubs import FakeDB, StubAiKeyStore, StubCipher
-    holder = _patch_model(monkeypatch)
-    client = AnthropicClient()
-    called = {}
-
-    async def chat(api_key, model, system, user, reasoning="", extra_headers=None):
-        called["user"] = user
-        return ent.AICompletion(text="claude", input_tokens=1, output_tokens=1)
-
-    client.chat = chat
-    user_id = uuid4()
-    gate = AIGate(FakeDB(), "", StubCipher(plaintext="sk-claude"), client)
-    gate.users = StubUserStore(_user(user_id))
-    gate.usage = StubAiUsageStore()
-    gate.keys = StubAiKeyStore(ent.AiKey(
-        user_id=user_id, provider="CLAUDE", last_four="aude",
-        ciphertext=b"1", nonce=b"2", updated_at=_now()))
-    ai = ent.AiOptions(
-        provider="CLAUDE", model="claude-sonnet",
-        credential_mode="BYOK", effort="LOW")
-    done = await gate.complete(user_id, ai, "", "hello", byok_key="sk-claude")
-    assert done.text == "claude"
-    assert called["user"] == "hello"
-    assert holder == {}
 
 
 async def test_gate_import_error_falls_back(monkeypatch):
@@ -591,7 +566,7 @@ async def test_gate_import_error_falls_back(monkeypatch):
 
     client.chat = chat
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     done = await gate.complete(user_id, _managed(), "", "hi")
@@ -613,7 +588,7 @@ async def test_gate_stream_frames_stay_token_strings(monkeypatch):
 
     client.chat_stream = chat_stream
     user_id = uuid4()
-    gate = AIGate(FakeDB(), "sk-managed", None, client)
+    gate = AIGate(FakeDB(), "sk-managed", client)
     gate.users = StubUserStore(_user(user_id))
     gate.usage = StubAiUsageStore()
     usage = {}
@@ -637,3 +612,31 @@ async def test_smoke_one_chat_turn_under_both_flags():
     assert results[0]["text"] == "legacy-reply"
     assert results[1]["text"] == "langchain-reply"
     assert POISON not in results[1]["tool_description"]
+
+
+def test_chat_model_sets_timeout_retries_and_provider_routing():
+    from app.framework.models import chat_model
+
+    provider = {"ignore": ["DeepSeek"], "order": ["Together"]}
+    model = chat_model(api_key="k", model="m", base_url="u", reasoning="low",
+                       provider=provider, cls=_FakeChatModel)
+    assert model.kwargs["timeout"] == 60 and model.kwargs["max_retries"] == 1
+    assert model.kwargs["extra_body"] == {"reasoning": {"effort": "low"}, "provider": provider}
+
+
+async def test_langchain_paths_send_the_free_model_provider_routing(monkeypatch):
+    # The legacy OpenAIClient excluded DeepSeek's own endpoint for FREE; the LangChain path dropped it.
+    from types import SimpleNamespace
+
+    import app.framework.models as models
+
+    holder = _patch_model(monkeypatch)
+    chat = SimpleNamespace(base_url="https://openrouter.ai/api/v1", config=SimpleNamespace())
+    free = "deepseek/deepseek-v4.1-flash"
+    await models.complete_langchain(chat, "k", free, "s", "u")
+    assert holder["kwargs"]["provider"]["ignore"] == ["DeepSeek"]
+    async for _text in models.stream_langchain(chat, "k", free + ":online", "s", "u", {}):
+        pass
+    assert holder["kwargs"]["provider"]["ignore"] == ["DeepSeek"]
+    await models.complete_langchain(chat, "k", "openai/gpt-test", "s", "u")
+    assert holder["kwargs"]["provider"] is None

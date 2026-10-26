@@ -95,33 +95,36 @@ async def test_reset_and_nudge_sql_require_age():
 async def test_schedule_gives_each_run_its_own_claim():
     seen = []
 
-    async def sched(job_id, byok, claim):
-        seen.append((job_id, byok, claim))
+    async def sched(job_id, claim):
+        seen.append((job_id, claim))
 
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-1", "key")
-        await schedule_chat_job("job-1", "key")
+        await schedule_chat_job("job-1")
+        await schedule_chat_job("job-1")
     finally:
         set_job_scheduler(None)
     assert seen[0][0] == "job-1"
-    assert seen[0][1] == "key"
-    assert seen[0][2] and seen[0][2] != seen[1][2]
+    assert seen[0][1] and seen[0][1] != seen[1][1]
 
 
 @pytest.mark.asyncio
-async def test_schedule_still_accepts_a_two_argument_scheduler():
-    seen = []
+async def test_a_type_error_inside_the_scheduler_is_not_retried():
+    # The old 1-argument fallback re-ran the scheduler on any TypeError,
+    # starting a second run with no claim.
+    calls = []
 
-    async def sched(job_id, byok):
-        seen.append((job_id, byok))
+    async def sched(job_id, claim=""):
+        calls.append((job_id, claim))
+        raise TypeError("binding rejected the payload")
 
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-2", "")
+        with pytest.raises(TypeError):
+            await schedule_chat_job("job-2")
     finally:
         set_job_scheduler(None)
-    assert seen == [("job-2", "")]
+    assert len(calls) == 1 and calls[0][1]
 
 
 @pytest.mark.asyncio
@@ -133,8 +136,8 @@ async def test_workflow_params_carry_the_claim():
         async def create(self, body):
             seen["body"] = body
 
-    await _create_workflow(SimpleNamespace(CHAT_WORKFLOW=Binding()), "job", "k", "claim-1")
-    assert seen["body"]["params"] == {"jobId": "job", "byok": "k", "claim": "claim-1"}
+    await _create_workflow(SimpleNamespace(CHAT_WORKFLOW=Binding()), "job", "claim-1")
+    assert seen["body"]["params"] == {"jobId": "job", "claim": "claim-1"}
 
 
 @pytest.mark.asyncio
@@ -184,7 +187,7 @@ def test_usage_ids_are_stable_per_job():
     job = uuid4()
     assert usage_row_id(job, "chat") == usage_row_id(job, "chat")
     assert usage_row_id(job, "chat") != usage_row_id(job, "meter:embed")
-    assert usage_row_id(job, "byok") != usage_row_id(uuid4(), "byok")
+    assert usage_row_id(job, "chat") != usage_row_id(uuid4(), "chat")
     assert usage_row_id(None, "chat") != usage_row_id(None, "chat")
 
 
@@ -349,8 +352,7 @@ async def test_cron_and_second_workflow_cannot_steal_a_live_job():
 
         svc = ConversationService.__new__(ConversationService)
         svc.jobs = store
-        svc.ai = SimpleNamespace(cipher=None)
-        svc._byok_keys = {}
+        svc.ai = SimpleNamespace()
         svc.chat_nodes = {"generate_reply": node, "persist": node}
         assert await svc.claim_for_workflow(str(racing), "run-a") == "ok"
         assert await svc.claim_for_workflow(str(racing), "run-b") == "skip"
@@ -376,7 +378,7 @@ async def test_cron_and_second_workflow_cannot_steal_a_live_job():
 
         scheduled = []
 
-        async def sched(job_id, byok, claim):
+        async def sched(job_id, claim):
             scheduled.append((job_id, claim))
 
         set_job_scheduler(sched)

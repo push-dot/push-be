@@ -1,17 +1,16 @@
 from __future__ import annotations
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Generic, Optional, TypeVar
+from typing import Final
 from uuid import UUID
 
-DEFAULT_LIMIT = 50
-MAX_LIMIT = 100
-
-T = TypeVar("T")
+DEFAULT_LIMIT: Final = 50
+MAX_LIMIT: Final = 100
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Cursor:
     created_at: datetime
     id: UUID
@@ -26,18 +25,16 @@ class Cursor:
 def decode_cursor(s: str) -> Cursor:
     try:
         raw = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
-        parts = raw.decode().split("|", 1)
-        if len(parts) != 2:
-            raise ValueError("bad cursor")
-        return Cursor(created_at=datetime.fromisoformat(parts[0]), id=UUID(parts[1]))
-    except Exception:
-        raise ValueError("bad cursor")
+        created_at, id_ = raw.decode().split("|", 1)
+        return Cursor(created_at=datetime.fromisoformat(created_at), id=UUID(id_))
+    except ValueError:
+        raise ValueError("bad cursor") from None
 
 
-@dataclass
+@dataclass(slots=True)
 class PageRequest:
     limit: int = 0
-    cursor: Optional[Cursor] = None
+    cursor: Cursor | None = None
 
     def effective_limit(self) -> int:
         if self.limit <= 0:
@@ -45,17 +42,16 @@ class PageRequest:
         return min(self.limit, MAX_LIMIT)
 
 
-@dataclass
-class Page(Generic[T]):
+@dataclass(slots=True)
+class Page[T]:
     items: list[T] = field(default_factory=list)
-    next_cursor: Optional[str] = None
+    next_cursor: str | None = None
     has_more: bool = False
 
 
-def new_page(items: list[T], limit: int, cursor_of: Callable[[T], Cursor]) -> Page[T]:
-    p: Page[T] = Page(items=items or [])
-    if len(p.items) > limit:
-        p.items = p.items[:limit]
-        p.has_more = True
-        p.next_cursor = cursor_of(p.items[-1]).encode()
-    return p
+def new_page[T](items: list[T], limit: int, cursor_of: Callable[[T], Cursor]) -> Page[T]:
+    """`items` holds up to limit+1 rows; the extra row only signals another page."""
+    if len(items) <= limit:
+        return Page(items=items or [])
+    kept = items[:limit]
+    return Page(items=kept, next_cursor=cursor_of(kept[-1]).encode(), has_more=True)

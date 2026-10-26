@@ -146,9 +146,11 @@ class ConversationStore(Store):
 
     async def list_share_messages(self, conversation_id: UUID):
         return await self.q().fetch(
+            "SELECT role, text, created_at, id FROM ("
             "SELECT role, text, created_at, id FROM messages "
             "WHERE conversation_id = $1 "
-            "ORDER BY created_at ASC, id ASC",
+            "ORDER BY created_at DESC, id DESC LIMIT 500"
+            ") recent ORDER BY created_at ASC, id ASC",
             conversation_id)
 
     async def list_artifacts(self, conversation_id: UUID) -> list[dict]:

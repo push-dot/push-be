@@ -35,7 +35,6 @@ const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknow
     plan,
     payload,
     idempotencyKey: key ? type + ":" + key : undefined,
-    byok: false,
   });
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
   return data(202, { jobId }, ctx.rid);

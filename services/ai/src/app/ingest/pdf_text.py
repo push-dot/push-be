@@ -1,50 +1,23 @@
 from __future__ import annotations
 
-import asyncio
-import glob
 import io
-import os
-import tempfile
+from typing import Final
+
+# Bounds for untrusted uploads: a PDF can declare thousands of pages.
+MAX_PAGES: Final = 300
+MAX_CHARS: Final = 500_000
 
 
-def _extract_opendata(path: str) -> str:
-    import opendataloader_pdf
-    with tempfile.TemporaryDirectory() as tmp:
-        link = os.path.join(tmp, "source.pdf")
-        os.symlink(os.path.abspath(path), link)
-        out = os.path.join(tmp, "out")
-        os.makedirs(out)
-        opendataloader_pdf.convert(
-            input_path=link, output_dir=out, format="text", quiet=True)
-        txts = sorted(glob.glob(os.path.join(out, "*.txt")))
-        if not txts:
-            raise RuntimeError("pdf extraction produced no text output")
-        with open(txts[0], encoding="utf-8", errors="replace") as f:
-            return f.read()
-
-
-def _extract_pypdf(data: bytes) -> str:
+def extract_pdf_bytes(data: bytes, max_chars: int = MAX_CHARS, max_pages: int = MAX_PAGES) -> str:
+    """Page texts joined by newlines; stops once ``max_chars`` or ``max_pages`` is reached."""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
-    return "\n".join((page.extract_text() or "") for page in reader.pages)
-
-
-def extract_pdf_bytes(data: bytes) -> str:
-    return _extract_pypdf(data)
-
-
-def _extract(path: str) -> str:
-    if os.environ.get("CF_WORKER") == "1":
-        with open(path, "rb") as f:
-            return _extract_pypdf(f.read())
-    try:
-        return _extract_opendata(path)
-    except Exception:
-        with open(path, "rb") as f:
-            return _extract_pypdf(f.read())
-
-
-async def extract_pdf_text(path: str) -> str:
-    if os.environ.get("CF_WORKER") == "1":
-        return _extract(path)
-    return await asyncio.to_thread(_extract, path)
+    parts: list[str] = []
+    size = 0
+    for page in reader.pages[:max_pages]:
+        text = page.extract_text() or ""
+        parts.append(text)
+        size += len(text) + 1
+        if size > max_chars:
+            break
+    return "\n".join(parts)[:max_chars]

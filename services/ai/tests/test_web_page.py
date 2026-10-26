@@ -58,7 +58,7 @@ async def test_proxy_pipes_to_validated_ip(monkeypatch):
     echo_server = await asyncio.start_server(echo, "127.0.0.1", 0)
     echo_port = echo_server.sockets[0].getsockname()[1]
     monkeypatch.setattr(
-        web_page, "_assert_public_sync", lambda url: ["127.0.0.1"]
+        web_page, "_resolve_public", lambda host: ["127.0.0.1"]
     )
     server, port = await _start_egress_proxy()
     try:

@@ -10,6 +10,8 @@ import type { CoreEnv, Ctx } from "../types.ts";
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
 const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
 const TOLERANCE = 300;
+const MAX_TOPUP = 100_000;
+const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
 const UUID = /^[0-9a-f-]{36}$/i;
 
 async function readObject(request: Request): Promise<Record<string, unknown>> {
@@ -85,9 +87,11 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     const plan = employerPlanOf(company.plan);
     await grantMonthly(ctx, "EMPLOYER", plan, ctx.user.companyId);
     const { monthStart, monthEnd } = utcMonth(ctx.now);
-    const spentMicroCredits = await spentInMonth(ctx, EMPLOYER_SPEND, [monthStart, monthEnd, ctx.user.companyId]);
-    const available = await availableMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId);
-    const reserved = await reservedMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId);
+    const [spentMicroCredits, available, reserved] = await Promise.all([
+      spentInMonth(ctx, EMPLOYER_SPEND, [monthStart, monthEnd, ctx.user.companyId]),
+      availableMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId),
+      reservedMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId),
+    ]);
     return data(200, {
       subscriptionStatus: plan ? "ACTIVE" : "NONE",
       plan,
@@ -102,14 +106,13 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   }
   const plan = ctx.user.plan || null;
   await grantMonthly(ctx, "PERSONAL", plan, ctx.user.id);
-  const balUser = ctx.user.id;
   const { monthStart, monthEnd } = utcMonth(ctx.now);
-  const spentMicroCredits = await spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]);
-  const available = await availableMicro(ctx.deps.query, balUser);
-  const reserved = await reservedMicro(ctx.deps.query, balUser);
-  const iap = await one(ctx.deps.query,
-    "SELECT platform FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1",
-    [ctx.user.id]);
+  const [spentMicroCredits, available, reserved, iap] = await Promise.all([
+    spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]),
+    availableMicro(ctx.deps.query, ctx.user.id),
+    reservedMicro(ctx.deps.query, ctx.user.id),
+    one(ctx.deps.query, "SELECT platform FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1", [ctx.user.id]),
+  ]);
   const platform = iap?.platform == null ? "" : String(iap.platform);
   const source = platform === "APP_STORE" || platform === "GOOGLE_PLAY"
     ? platform
@@ -318,7 +321,9 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   if (!fresh) return data(200, { received: true }, ctx.rid);
   const obj = ((event.data as { object?: Record<string, unknown> } | undefined)?.object) || {};
   try {
-    if (event.type === "checkout.session.completed") await checkoutCompleted(ctx, obj);
+    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+      await checkoutCompleted(ctx, obj);
+    }
     else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
       await subscriptionChanged(ctx, String(event.type), obj);
     }
@@ -342,6 +347,7 @@ const positiveInt = (value: unknown): number | null => {
 };
 
 async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
+  if (obj.payment_status === "unpaid") return;
   const meta = metaOf(obj);
   if (meta.amountMicroCredits != null && String(meta.amountMicroCredits) !== "") {
     const micro = positiveInt(meta.amountMicroCredits);
@@ -378,33 +384,36 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
 async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
   const customer = String(obj.customer || "");
   if (!customer) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
-  const canceled = type === "customer.subscription.deleted" || obj.status === "canceled";
+  const canceled = type === "customer.subscription.deleted" || ENDED.has(String(obj.status ?? ""));
   const items = ((obj.items as { data?: { price?: { id?: string } }[] } | undefined)?.data) || [];
-  const employerPriceId = items[0]?.price?.id || "";
-  let employerPlan: string | null = null;
-  if (employerPriceId && employerPriceId === ctx.env.STRIPE_PRICE_EMPLOYER_BASIC) employerPlan = "BASIC";
-  else if (employerPriceId && employerPriceId === ctx.env.STRIPE_PRICE_EMPLOYER_PRO) employerPlan = "PRO";
-  else if (employerPriceId && employerPriceId === ctx.env.STRIPE_PRICE_EMPLOYER_ULTRA) employerPlan = "ULTRA";
+  const priceId = items[0]?.price?.id || "";
   const company = await one(ctx.deps.query,
     canceled
       ? "UPDATE companies SET plan = NULL WHERE stripe_customer_id = $1 RETURNING id"
       : "UPDATE companies SET plan = COALESCE($2, plan) WHERE stripe_customer_id = $1 RETURNING id",
-    canceled ? [customer] : [customer, employerPlan]);
+    canceled ? [customer] : [customer, priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
   if (company) return;
   const period = obj.current_period_end ? new Date(Number(obj.current_period_end) * 1000).toISOString() : null;
   const status = canceled ? "CANCELED" : "ACTIVE";
-  let plan: string | null = canceled ? "FREE" : null;
-  if (!canceled) {
-    const items = ((obj.items as { data?: { price?: { id?: string } }[] } | undefined)?.data) || [];
-    const price = items[0]?.price?.id || "";
-    if (price && price === ctx.env.STRIPE_PRICE_PRO) plan = "PRO";
-    else if (price && price === ctx.env.STRIPE_PRICE_ULTRA) plan = "ULTRA";
-  }
+  const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
   const updated = await one(ctx.deps.query,
     "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE stripe_customer_id = $1 RETURNING id",
     [customer, status, period, plan]);
   if (!updated) throw new HttpError(500, "INTERNAL", "internal error");
 }
+
+const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC) return "BASIC";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO) return "PRO";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA) return "ULTRA";
+  return null;
+};
+
+const personalPlanByPrice = (env: CoreEnv, priceId: string): "PRO" | "ULTRA" | null => {
+  if (priceId === env.STRIPE_PRICE_PRO) return "PRO";
+  if (priceId === env.STRIPE_PRICE_ULTRA) return "ULTRA";
+  return null;
+};
 
 const productKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP" | "UNKNOWN" | "MISSING" => {
   if (!env.IAP_PRODUCT_PRO && !env.IAP_PRODUCT_ULTRA && !env.IAP_PRODUCT_TOPUP) return "MISSING";
@@ -414,7 +423,21 @@ const productKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP"
   return "UNKNOWN";
 };
 
-const storePort = (ctx: Ctx): StoreReceipts => ctx.deps.stores ?? createStoreReceipts(ctx.env, ctx.deps.fetch ?? fetch);
+const storePort = (ctx: Ctx): StoreReceipts => ctx.deps.stores ?? createStoreReceipts(ctx.env, ctx.deps.fetch ?? fetch, ctx.now);
+
+// A store transaction belongs to the first account that verifies it; replaying it from another account is refused.
+const CLAIM_PURCHASE = "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = EXCLUDED.status, platform = EXCLUDED.platform WHERE iap_subscriptions.user_id = EXCLUDED.user_id RETURNING user_id";
+
+const claimPurchase = async (
+  ctx: Ctx,
+  platform: "APP_STORE" | "GOOGLE_PLAY",
+  receipt: { productId: string; originalTransactionId: string; expiresAt: string | null },
+  status: "ACTIVE" | "CONSUMED",
+): Promise<void> => {
+  const row = await one(ctx.deps.query, CLAIM_PURCHASE,
+    [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt, status]);
+  if (!row) throw new HttpError(409, "CONFLICT", "purchase belongs to another account");
+};
 
 const requireKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP" => {
   const kind = productKind(env, productId);
@@ -427,7 +450,7 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
   if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   const body = await readObject(ctx.request);
   const amount = body.amount;
-  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0) {
+  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_TOPUP) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be a positive integer", { field: "amount" });
   }
   const price = ctx.env.STRIPE_PRICE_TOPUP;
@@ -488,17 +511,18 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   const stores = storePort(ctx);
   const receipt = platform === "APP_STORE"
     ? await stores.verifyApple(String(body.signedTransaction))
-    : await stores.verifyGoogle(String(body.purchaseToken), body.productId);
+    : await stores.verifyGoogle(String(body.purchaseToken), body.productId, kind !== "TOPUP");
   if (requireKind(ctx.env, receipt.productId) !== kind) {
     throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
   }
+  if (kind !== "TOPUP" && receipt.expiresAt != null && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
+    throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
+  }
+  await claimPurchase(ctx, platform, receipt, kind === "TOPUP" ? "CONSUMED" : "ACTIVE");
   if (kind === "TOPUP") {
     await userLedger(ctx, ctx.user.id, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), receipt.originalTransactionId);
     return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
   }
-  await query(ctx.deps.query,
-    "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status) VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE') ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = 'ACTIVE', platform = EXCLUDED.platform",
-    [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt]);
   await query(ctx.deps.query,
     "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
     [ctx.user.id, kind, receipt.expiresAt]);

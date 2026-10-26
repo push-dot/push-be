@@ -1,7 +1,7 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, hashJson, pageBody, requireUuid } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const STAGE_ORDER = ["DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED"];
@@ -89,19 +89,6 @@ const submissionDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const listPage = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const loadApp = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${APP_SELECT} FROM applications WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
@@ -136,7 +123,7 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
     params.push("%" + q + "%", "%" + q + "%");
     where.push(`(company ILIKE $${params.length - 1} OR title ILIKE $${params.length})`);
   }
-  return listPage(ctx, APP_SELECT, "applications", where, params, page, appDto);
+  return listPage(ctx.deps.query, ctx.rid, APP_SELECT, "applications", where, params, page, appDto);
 };
 
 export const getApplication = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -240,7 +227,7 @@ export const applicationTimeline = async (ctx: Ctx, idRaw: string): Promise<Resp
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadApp(ctx, id);
-  return listPage(ctx, EVENT_COLS, "application_events", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, eventDto);
+  return listPage(ctx.deps.query, ctx.rid, EVENT_COLS, "application_events", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, eventDto);
 };
 
 export const applicationChecklist = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -284,10 +271,12 @@ export const createSubmissionDraft = async (ctx: Ctx, idRaw: string): Promise<Re
   if (adapter !== null) throw fieldError("adapter", "adapter is only valid with ADAPTER mode");
   const versionIds = uuids(values.documentVersionIds);
   if (!versionIds.length) throw fieldError("documentVersionIds", "at least one document version is required");
+  const loaded = await query(ctx.deps.query,
+    "SELECT v.id, v.application_id, d.finalized_version_id FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.user_id = $1 AND v.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+    [ctx.user.id, JSON.stringify(versionIds)]);
+  const versions = new Map(loaded.rows.map((row) => [String(row.id), row]));
   for (const vid of versionIds) {
-    const version = await one(ctx.deps.query,
-      "SELECT v.application_id, d.finalized_version_id FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.id = $1 AND v.user_id = $2",
-      [vid, ctx.user.id]);
+    const version = versions.get(vid);
     if (!version) throw fieldError("documentVersionIds", "version " + vid + " not found");
     if (String(version.application_id) !== appId) throw fieldError("documentVersionIds", "version " + vid + " belongs to another application");
     if (version.finalized_version_id == null || String(version.finalized_version_id) !== vid) {
@@ -372,7 +361,7 @@ export const listSubmissions = async (ctx: Ctx, idRaw: string): Promise<Response
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadApp(ctx, id);
-  return listPage(ctx, SUB_COLS, "submissions", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, submissionDto);
+  return listPage(ctx.deps.query, ctx.rid, SUB_COLS, "submissions", ["user_id = $1", "application_id = $2"], [ctx.user.id, id], page, submissionDto);
 };
 
 export const dispatchApplications = async (ctx: Ctx, path: string): Promise<Response | null> => {

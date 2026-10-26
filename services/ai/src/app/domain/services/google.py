@@ -3,7 +3,7 @@ from app.clock import utcnow
 import base64
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 from uuid import UUID, uuid4

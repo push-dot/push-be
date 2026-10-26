@@ -10,7 +10,7 @@ from pydantic.alias_generators import to_camel
 from app.domain.posting_fit import compute_fit
 from app.harness.core_client import idempotency_key
 from app.harness.policy import Tier
-from app.harness.tools import ToolContext, ToolSpec
+from app.harness.tools import OptionalId, ToolContext, ToolSpec
 
 Stage = Literal["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "REJECTED"]
 
@@ -83,8 +83,8 @@ class PostBody(BaseModel):
 
 
 class FitArgs(BaseModel):
-    posting_id: str = ""
-    document_id: str = ""
+    posting_id: OptionalId = None
+    document_id: OptionalId = None
     requirements: list[str] = []
     keywords: list[str] = []
     description: str = ""
@@ -132,10 +132,9 @@ def _kept(args, drop: set[str]) -> dict:
 
 
 async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    document_id = UUID(args.document_id) if args.document_id else UUID(int=0)
     return compute_fit(
         args.requirements, args.keywords, args.description,
-        document_id, args.content, "FREE")
+        args.document_id or UUID(int=0), args.content, "FREE")
 
 
 EMPLOYER_TOOLS = [

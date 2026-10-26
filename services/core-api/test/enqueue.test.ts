@@ -35,7 +35,6 @@ test("enqueue reserves credits, writes job and outbox in one transaction", async
     userId: USER,
     plan: "FREE",
     payload: { text: "hi" },
-    byok: false,
   });
   assert.equal(out.queue, "q:chat");
   assert.match(out.jobId, /^[0-9a-f-]{36}$/);
@@ -55,7 +54,6 @@ test("enqueue routes employer PRO to q:chat:priority", async () => {
     companyId: COMPANY,
     plan: "PRO",
     payload: {},
-    byok: false,
   });
   assert.equal(out.queue, "q:chat:priority");
   assert.equal(queueFor("employer_ai", "PRO", "EMPLOYER"), "q:chat:priority");
@@ -70,7 +68,6 @@ test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CRE
       userId: USER,
       plan: "FREE",
       payload: {},
-      byok: false,
     }),
     (err: unknown) => {
       assert.ok(err instanceof HttpError);
@@ -82,19 +79,14 @@ test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CRE
   assert.equal(calls.some((sql) => sql.includes("INSERT INTO ai_jobs")), false);
 });
 
-test("byok job reserves nothing", async () => {
-  const calls: string[] = [];
-  const out = await enqueueJob(funded(calls, 0n), {
-    type: "chat",
-    userId: USER,
-    plan: "FREE",
-    payload: {},
-    byok: true,
-  });
-  assert.equal(out.queue, "q:chat");
-  assert.equal(calls.some((sql) => sql.includes("billing_ledger")), false);
-  assert.equal(calls.some((sql) => sql.includes("credit_reservations")), false);
-  assert.match(calls.find((sql) => sql.includes("INSERT INTO ai_jobs")) || "", /INSERT INTO outbox/);
+test("every AI job reserves credits", async () => {
+  for (const type of ["chat", "employer_ai", "document", "fit"] as const) {
+    const calls: string[] = [];
+    await enqueueJob(funded(calls, 10_000_000n), {
+      type, userId: USER, companyId: type === "employer_ai" ? COMPANY : undefined, plan: "PRO", payload: {},
+    });
+    assert.match(calls.find((sql) => sql.includes("INSERT INTO ai_jobs")) || "", /INSERT INTO credit_reservations/, type);
+  }
 });
 
 test("same idempotencyKey returns the existing jobId", async () => {
@@ -110,7 +102,6 @@ test("same idempotencyKey returns the existing jobId", async () => {
     userId: USER,
     plan: "FREE",
     payload: {},
-    byok: false,
     idempotencyKey: "same-key",
   });
   assert.equal(out.jobId, "33333333-3333-4333-8333-333333333333");
@@ -167,7 +158,7 @@ test("enqueue grants the plan's monthly credits before reserving, so a new FREE 
     return null;
   }, calls);
   const out = await enqueueJob(q, {
-    type: "chat", userId: USER, plan: "FREE", payload: {}, byok: false, now: new Date("2026-10-22T00:00:00Z"),
+    type: "chat", userId: USER, plan: "FREE", payload: {}, now: new Date("2026-10-22T00:00:00Z"),
   });
   assert.equal(out.queue, "q:chat");
   assert.equal(grants.length, 1);
@@ -176,13 +167,10 @@ test("enqueue grants the plan's monthly credits before reserving, so a new FREE 
   assert.equal(grants[0][3], "monthly:2026-10");
 });
 
-test("employer jobs grant the company plan and BYOK jobs grant nothing", async () => {
+test("employer jobs grant the company plan", async () => {
   const calls: string[] = [];
   await enqueueJob(funded(calls, 10_000_000n), {
-    type: "employer_ai", userId: USER, companyId: COMPANY, plan: "PRO", payload: {}, byok: false, now: new Date("2026-10-22T00:00:00Z"),
+    type: "employer_ai", userId: USER, companyId: COMPANY, plan: "PRO", payload: {}, now: new Date("2026-10-22T00:00:00Z"),
   });
   assert.ok(calls.some((sql) => sql.includes("INSERT INTO billing_ledger") && sql.includes("company_id")));
-  const byok: string[] = [];
-  await enqueueJob(funded(byok, 0n), { type: "chat", userId: USER, plan: "FREE", payload: {}, byok: true });
-  assert.ok(!byok.some((sql) => sql.includes("INSERT INTO billing_ledger")));
 });

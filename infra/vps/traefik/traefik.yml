@@ -1,0 +1,45 @@
+# Static config. No Docker provider: routes come from dynamic.yml only, so the proxy
+# never needs docker.sock. The dashboard and API stay off.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: le
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        idleTimeout: 180s
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: false
+
+certificatesResolvers:
+  le:
+    acme:
+      storage: /acme/acme.json
+      tlsChallenge: {}
+
+api:
+  dashboard: false
+  insecure: false
+
+log:
+  level: INFO
+
+# Client IPs in the access log feed rate limiting and incident review (stdout, rotated by Docker).
+accessLog: {}

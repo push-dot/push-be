@@ -56,6 +56,25 @@ async def test_cache_hits_skip_remote():
 
 
 @pytest.mark.asyncio
+async def test_cache_dedupes_misses_and_rejects_short_replies():
+    calls = []
+
+    class Inner:
+        model = "m"
+        dim = 1
+
+        async def embed(self, texts):
+            calls.append(list(texts))
+            return [[1.0]] * (len(texts) - (1 if "drop" in texts else 0))
+
+    cached = CachedEmbedder(Inner(), FakeRedis(decode_responses=True))
+    assert await cached.embed(["x", "x", "y"]) == [[1.0], [1.0], [1.0]]
+    assert calls == [["x", "y"]]
+    with pytest.raises(ValueError, match="vectors"):
+        await cached.embed(["z", "drop"])
+
+
+@pytest.mark.asyncio
 async def test_factory_switches_to_api_provider(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "api")
     monkeypatch.setenv("EMBEDDING_API_KEY", "k")

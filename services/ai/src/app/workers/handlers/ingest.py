@@ -57,7 +57,10 @@ def make_ingest(query, store, ingestor, github_client):
         tenant = Tenant(user_id=user_id, company_id=company_id)
         if payload.get("url"):
             url = payload["url"]
-            text = await read_web(url)
+            try:
+                text = await read_web(url)
+            except ValueError as err:  # blocked host, 4xx, wrong type: retrying cannot help
+                raise JobFailed({"code": "VALIDATION_ERROR", "message": str(err)})
             return {"nodes": await ingestor.ingest_text(tenant, "link", uuid5(NAMESPACE_URL, url), text)}
         if payload.get("githubRepo"):
             repo = payload["githubRepo"]

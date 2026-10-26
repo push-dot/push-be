@@ -117,7 +117,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
   const body = JSON.stringify({
     text: "hello",
     accessMode: "SUGGEST",
-    ai: { provider: "OPENAI", model: "deepseek/deepseek-v4.1-flash", credentialMode: "MANAGED", effort: "LOW" },
+    ai: { provider: "OPENAI", model: "deepseek/deepseek-v4.1-flash", effort: "LOW" },
   });
   const denied = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
     method: "POST",
@@ -197,7 +197,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
     body: JSON.stringify({
       text: "hello",
       accessMode: "SUGGEST",
-      ai: { provider: "OPENAI", model: "opencode-go/deepseek-v4.1-flash", credentialMode: "MANAGED", effort: "LOW" },
+      ai: { provider: "OPENAI", model: "opencode-go/deepseek-v4.1-flash", effort: "LOW" },
     }),
   }), env({ API: api }), deps(paid));
   assert.equal(go.status, 202);

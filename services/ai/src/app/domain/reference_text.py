@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import re
 
-_EMAIL = re.compile(r"\S+@\S+")
-_PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,}\d)(?!\d)")
-_QUOTED = re.compile(r"[\"“「『][^\"”」』]+[\"”」』]")
+# Every repeat is bounded: evidence text reaches 100k characters, and an
+# unbounded `X+` before a suffix rescans the whole run from each start (O(n^2)).
+_W = r"[0-9A-Za-z가-힣.&+-]{1,64}"
+_EMAIL = re.compile(r"\S{1,64}@\S{1,255}")
+_PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,24}\d)(?!\d)")
+_QUOTED = re.compile(r"[\"“「『][^\"”」』]{1,500}[\"”」』]")
 _COMPANY = re.compile(
-    r"(?:주식회사|㈜|\(주\))\s*[0-9A-Za-z가-힣.&+-]+"
-    r"|[0-9A-Za-z가-힣.&+-]+\s*(?:주식회사|회사)"
-    r"|[0-9A-Za-z가-힣.&+-]+(?:\s+Co\.,)?\s*(?:Corporation|Corp|Inc|Ltd|Company)(?![A-Za-z])"
-    r"|[0-9A-Za-z가-힣.&+-]+\s*프로젝트"
-    r"|프로젝트\s*[0-9A-Za-z가-힣.&+-]+",
+    rf"(?:주식회사|㈜|\(주\))\s*{_W}"
+    rf"|{_W}\s*(?:주식회사|회사)"
+    rf"|{_W}(?:\s+Co\.,)?\s*(?:Corporation|Corp|Inc|Ltd|Company)(?![A-Za-z])"
+    rf"|{_W}\s*프로젝트"
+    rf"|프로젝트\s*{_W}",
     re.IGNORECASE,
 )
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _METRIC = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:%|퍼센트|배|건|명|원|만|억|개|시간|초|ms|회)")
+    r"\d{1,32}(?:\.\d{1,32})?\s*(?:%|퍼센트|배|건|명|원|만|억|개|시간|초|ms|회)")
 _LATIN = re.compile(r"[A-Za-z][A-Za-z0-9+#.]{3,}")
-_TECH = re.compile(r"[A-Za-z]+\d+|\d+[A-Za-z]+|[A-Za-z]+[+#]|[A-Za-z]+\.[A-Za-z]")
+# Only searched, so the shortest witness of each shape is enough (`go1`, `5G`, `C++`, `Node.js`).
+_TECH = re.compile(r"[A-Za-z]\d|\d[A-Za-z]|[A-Za-z][+#]|[A-Za-z]\.[A-Za-z]")
 _LINK = re.compile(
     r"통해|기반|활용|적용|경험|담당|수행|개선|해결|연결|개발|구현|운영|설계|도입|구축"
     r"|올렸|줄였|맡아|led|built|implemented|using",

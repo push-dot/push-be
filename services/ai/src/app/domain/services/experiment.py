@@ -1,7 +1,7 @@
 from __future__ import annotations
 from app.clock import utcnow
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
@@ -84,15 +84,6 @@ class ExperimentService:
                 variant=a.variant, event=event, created_at=_now()))
         except Exception:
             raise internal()
-
-    async def stats(self, key: str) -> dict:
-        exp = await self._get(key)
-        try:
-            counts = await self.experiments.event_counts(key)
-        except Exception:
-            raise internal()
-        variants = {v: counts.get(v, {}) for v in exp.variants}
-        return {"key": key, "status": exp.status, "variants": variants}
 
     async def results(self, key: str) -> dict:
         exp = await self._get(key)

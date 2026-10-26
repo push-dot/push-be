@@ -6,7 +6,6 @@ from dataclasses import replace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import ValidationError
@@ -14,13 +13,12 @@ from typing_extensions import TypedDict
 
 from app.framework.models import _content
 from app.graphs.chat_surface import insert_chat_approval
-from app.harness.core_client import CoreError
 from app.harness.graph import _CAP, turn_model
 from app.harness.policy import Tier
 from app.harness.resume.prompts import phase_prompt_for_harness
 from app.harness.resume.state import ResumeState
 from app.harness.resume.tools import RESUME_TOOLS, save_artifact
-from app.harness.tools import ToolContext
+from app.harness.tools import ToolContext, emit, run_tool
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
@@ -81,13 +79,6 @@ class ResumeGraphState(TypedDict, total=False):
     retry: bool
     reply: str
     reply_job: str
-
-
-def _emit(event: dict) -> None:
-    try:
-        get_stream_writer()(event)
-    except Exception:
-        return
 
 
 def _scenario_c(state: dict) -> bool:
@@ -243,11 +234,8 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
         args = tool.args_model.model_validate(call.get("args") or {})
     except ValidationError:
         return {"error": "INVALID_ARGS"}
-    try:
-        result = await tool.run(replace(ctx, tool_call_id=call["id"]), args)
-    except CoreError as err:
-        result = {"error": err.code}
-    _emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
+    result, _ok = await run_tool(tool, replace(ctx, tool_call_id=call["id"]), args)
+    emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
            "summary": tool.summarize(args), "tier": tool.tier.value})
     return result
 
@@ -311,7 +299,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         output = await _output(turn_model.get() or model, name, current, _context(db, current))
         stored = await _store_output(db, current, name, output)
         reply = _reply(name, output)
-        _emit({"token": reply})
+        emit({"token": reply})
         stored = {**stored, "reply": reply, "reply_job": current["job_id"]}
         retries = int((current.get("strategy") or {}).get("retries") or 0)
         if name == "strategy" and output.get("valid") is False and retries < 2:
@@ -324,12 +312,12 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         name = current["phase"]
         if not _must_stop(current, name):
             recommended = _GATES[name][0]
-            _emit(_choice(current, name, auto=True))
+            emit(_choice(current, name, auto=True))
             return _finish({**current, **_apply_answer(current, name, {"option_id": recommended})},
                            name, recommended)
         event = _choice(current, name, auto=False)
         if await _save_choice(db, current, event):
-            _emit(event)
+            emit(event)
         answer = interrupt({
             "approval_id": event["id"],
             "awaiting": "choice",

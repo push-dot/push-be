@@ -19,7 +19,6 @@ from app.graphs.resume_prompt import (
     wants_resume_flow)
 
 
-byok_key_var: ContextVar[str] = ContextVar("byok_key", default="")
 event_sink: ContextVar[list | None] = ContextVar("event_sink", default=None)
 
 
@@ -333,8 +332,7 @@ def bind_chat_nodes(svc):
         intent = state.get("intent")
         raw = state.get("ai")
         base = ent.AiOptions(**raw) if raw is not None else ent.AiOptions(
-            provider="OPENAI", model="managed",
-            credential_mode="MANAGED", effort="LOW")
+            provider="OPENAI", model="managed", effort="LOW")
         return apply_employer_turn(base, plan, intent, cfg), plan
 
     async def _reference_lines(state, conv, resume_flow, employer, company_plan):
@@ -350,7 +348,7 @@ def bind_chat_nodes(svc):
             app_id = state.get("application_id") or state.get("applicationId")
             if not app_id:
                 return []
-            owner = await store.application_owner(app_id)
+            owner = await store.application_owner(app_id, conv.company_id)
             if owner is None:
                 return []
             row = await store.context(owner)
@@ -590,7 +588,7 @@ def bind_chat_nodes(svc):
             if os.environ.get("LLM_STREAM", "1") == "0":
                 completion = await svc.ai.complete(
                     state["user_id"], opts, system, user_msg,
-                    byok_key=byok_key_var.get(), search_query=state["text"],
+                    search_query=state["text"],
                     job_id=state.get("job_id"))
                 text = completion.text or ""
                 step = 48
@@ -603,7 +601,6 @@ def bind_chat_nodes(svc):
                 usage.pop("finish", None)
                 async for tok in svc.ai.stream(
                         state["user_id"], opts, system, user_msg, usage,
-                        byok_key=byok_key_var.get(),
                         search_query=state["text"],
                         assistant_prefix="".join(parts) if round_ else "",
                         job_id=state.get("job_id")):

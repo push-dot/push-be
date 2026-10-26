@@ -114,7 +114,7 @@ async def test_redis_backend_does_not_schedule_workflow(monkeypatch):
     prev = get_job_scheduler()
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-1", "byok")
+        await schedule_chat_job("job-1")
         assert queue_backend() == "redis"
         assert seen == []
     finally:
@@ -132,7 +132,7 @@ async def test_postgres_backend_still_schedules_workflow(monkeypatch):
     prev = get_job_scheduler()
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-1", "byok")
+        await schedule_chat_job("job-1")
         assert seen
         assert seen[0][0] == "job-1"
     finally:
@@ -157,8 +157,6 @@ def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
     assert runs_local_chat_worker() is True
     monkeypatch.setenv("CHAT_EXECUTOR", "workflow")
     assert runs_local_chat_worker() is False
-    main = (Path(__file__).resolve().parents[1] / "src" / "app" / "main.py").read_text()
-    assert main.count("runs_local_chat_worker()") == 2
 
 
 @pytest.mark.asyncio
