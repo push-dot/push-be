@@ -7,7 +7,8 @@ dependencies = [
     "pydantic>=2.9",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
-    "langgraph>=0.2.60",
+    # Workers (Pyodide) resolves its own langgraph: ormsgpack>=1.12 (langgraph>=1.2.17) has no Pyodide wheel.
+    "langgraph>=0.2.60,<2",
     "pypdf>=5",
     "redis>=5",
 ]
@@ -17,16 +18,17 @@ dependencies = [
 # Cloudflare Python Workers (Pyodide) cannot load these; the Workers runtime
 # uses the Neon wire client, pure-Python AES-GCM, pypdf, and Browser Rendering.
 local = [
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.54.0",
     "asyncpg>=0.30",
     "cryptography>=43",
-    "langgraph-checkpoint-postgres>=2.0",
-    "psycopg[binary,pool]>=3.2",
+    "langgraph>=1.2.17,<2",
+    "langgraph-checkpoint-postgres>=3.2.0",
+    "psycopg[binary,pool]>=3.3.6",
     "opendataloader-pdf>=2.5.9,<3",
     "playwright>=1.63,<2",
     "reportlab>=4.0",
-    "langchain-core>=0.3,<1",
-    "langchain-openai>=0.2,<1",
+    "langchain-core>=1.7.0,<2",
+    "langchain-openai>=1.7.2,<2",
     "llama-index-core>=0.12,<0.13",
     "llama-index-vector-stores-postgres>=0.4,<0.5",
 ]
@@ -39,7 +41,7 @@ test = [
 # scripts/migrate.py from CI: asyncpg for TCP, websockets for Neon wss://.
 migrate = [
     "asyncpg>=0.30",
-    "websockets>=13,<17",
+    "websockets>=13,<18",
 ]
 
 [dependency-groups]

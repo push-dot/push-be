@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Python 3.14 (3.12+) · FastAPI · LangGraph · PostgreSQL 16 + pgvector · asyncpg
+  Python 3.15 (3.12+) · FastAPI · LangGraph · PostgreSQL 16 + pgvector · asyncpg
 </p>
 
 ---

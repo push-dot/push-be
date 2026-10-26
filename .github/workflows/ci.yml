@@ -74,7 +74,7 @@ jobs:
           printf '%s\n' "ai=$ai" "gateway=$gateway" "core=$core" "db=$db" \
             "deploy=$deploy" "vps=$vps" >> "$GITHUB_OUTPUT"
 
-  # 3.12 is the floor (requires-python, Workers); 3.14 is the VPS image (services/ai/Dockerfile).
+  # 3.12 is the floor (requires-python, Workers); 3.15 is the VPS image (services/ai/Dockerfile).
   test-ai:
     needs: changes
     if: needs.changes.outputs.ai == 'true' || needs.changes.outputs.vps == 'true'
@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.14"]
+        python: ["3.12", "3.15"]
     services:
       postgres:
         image: postgres:16.15@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
@@ -130,7 +130,7 @@ jobs:
           cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: uv sync --locked --no-dev --extra local --extra test --group lint --python 3.14
+        run: uv sync --locked --no-dev --extra local --extra test --group lint --python 3.15
       - name: ruff check
         working-directory: services/ai
         continue-on-error: true
@@ -153,7 +153,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -162,7 +162,7 @@ jobs:
         run: |
           npm ci
           npm run test:coverage -w push-be-front
-          npx tsc -p services/gateway --noEmit
+          npm run typecheck -w push-be-front
 
   test-db:
     needs: changes
@@ -214,7 +214,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -250,7 +250,7 @@ jobs:
         run: |
           npm ci
           npm run test:coverage -w push-be-core
-          npx tsc -p services/core-api --noEmit
+          npm run typecheck -w push-be-core
 
   bundle-core:
     needs: changes
@@ -261,7 +261,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -281,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -372,7 +372,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
