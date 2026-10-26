@@ -74,7 +74,7 @@ jobs:
           printf '%s\n' "ai=$ai" "gateway=$gateway" "core=$core" "db=$db" \
             "deploy=$deploy" "vps=$vps" >> "$GITHUB_OUTPUT"
 
-  # 3.12 is the floor (requires-python, Workers); 3.14 is the VPS image (services/ai/Dockerfile).
+  # 3.12 is the floor (requires-python, Workers); 3.15 is the VPS image (services/ai/Dockerfile).
   test-ai:
     needs: changes
     if: needs.changes.outputs.ai == 'true' || needs.changes.outputs.vps == 'true'
@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.14"]
+        python: ["3.12", "3.15"]
     services:
       postgres:
         image: postgres:16.15@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
@@ -130,7 +130,7 @@ jobs:
           cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: uv sync --locked --no-dev --extra local --extra test --group lint --python 3.14
+        run: uv sync --locked --no-dev --extra local --extra test --group lint --python 3.15
       - name: ruff check
         working-directory: services/ai
         continue-on-error: true
