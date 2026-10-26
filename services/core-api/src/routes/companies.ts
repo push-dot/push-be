@@ -15,6 +15,9 @@ const INVITE_SEAT = `WHERE (
        + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)
      ) < $7`;
 
+const TRANSFER_ADMIN = "UPDATE company_members SET role = CASE WHEN user_id = $2 THEN 'ADMIN' ELSE 'MEMBER' END WHERE company_id = $1 AND (user_id = $2 OR role = 'ADMIN')";
+const ACCEPT_INVITE = "WITH claimed AS (UPDATE company_invites SET accepted_at = $3 WHERE id = $1 AND accepted_at IS NULL RETURNING company_id) INSERT INTO company_members (company_id, user_id, role, created_at) SELECT company_id, $2, 'MEMBER', $3 FROM claimed RETURNING company_id";
+
 const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env, ctx.deps.fetch);
 
 const originOf = (ctx: Ctx): string => (ctx.env.APP_WEB_ORIGIN || "http://localhost:5174").replace(/\/+$/, "");
@@ -465,22 +468,22 @@ const acceptInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   if (inviteRow.deletion_requested_at != null) throw new HttpError(409, "CONFLICT", "company is pending deletion");
   const expires = Date.parse(String(inviteRow.expires_at));
   if (Number.isNaN(expires) || ctx.now.getTime() > expires) throw notFound();
-  const user = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]);
+  const [user, membership] = await Promise.all([
+    one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]),
+    one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1", [ctx.user.id]),
+  ]);
   const actual = user?.email == null ? "" : String(user.email).trim().toLowerCase();
   const expected = String(inviteRow.email ?? "").trim().toLowerCase();
   if (!actual || actual !== expected) throw new HttpError(403, "FORBIDDEN", "invite email does not match");
-  const membership = await one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1", [ctx.user.id]);
   if (membership) throw new HttpError(409, "CONFLICT", "already in a company");
-  const now = ctx.now.toISOString();
+  let joined: Record<string, unknown> | null;
   try {
-    await query(ctx.deps.query,
-      "INSERT INTO company_members (company_id, user_id, role, created_at) VALUES ($1,$2,$3,$4)",
-      [String(inviteRow.company_id), ctx.user.id, "MEMBER", now]);
+    joined = await one(ctx.deps.query, ACCEPT_INVITE, [String(inviteRow.id), ctx.user.id, ctx.now.toISOString()]);
   } catch (err) {
     if (isUnique(err)) throw new HttpError(409, "CONFLICT", "already in a company");
     throw err;
   }
-  await query(ctx.deps.query, "UPDATE company_invites SET accepted_at = $2 WHERE id = $1", [String(inviteRow.id), now]);
+  if (!joined) throw new HttpError(409, "CONFLICT", "invite already accepted");
   return noContent(ctx.rid);
 };
 
@@ -513,11 +516,16 @@ const transferAdmin = async (ctx: Ctx, userId: string): Promise<Response> => {
     "SELECT user_id, role FROM company_members WHERE company_id = $1 AND user_id = $2",
     [companyId, userId]);
   if (!target) throw notFound();
-  if (String(target.role) !== "ADMIN") {
-    await query(ctx.deps.query, "UPDATE company_members SET role = 'ADMIN' WHERE company_id = $1 AND user_id = $2", [companyId, userId]);
-    await query(ctx.deps.query, "UPDATE company_members SET role = 'MEMBER' WHERE company_id = $1 AND role = 'ADMIN' AND user_id <> $2", [companyId, userId]);
-  }
+  if (String(target.role) !== "ADMIN") await query(ctx.deps.query, TRANSFER_ADMIN, [companyId, userId]);
   return noContent(ctx.rid);
+};
+
+const inviteToken = (raw: string): string => {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw notFound();
+  }
 };
 
 export const dispatchCompanies = async (ctx: Ctx, path: string): Promise<Response | null> => {
@@ -529,9 +537,9 @@ export const dispatchCompanies = async (ctx: Ctx, path: string): Promise<Respons
   if (method === "GET" && path === "/api/v1/companies/me/invites") return listInvites(ctx);
   if (method === "POST" && path === "/api/v1/companies/me/invites") return invite(ctx);
   const preview = path.match(/^\/api\/v1\/companies\/invites\/([^/]+)$/);
-  if (method === "GET" && preview) return previewInvite(ctx, decodeURIComponent(preview[1]));
+  if (method === "GET" && preview) return previewInvite(ctx, inviteToken(preview[1]));
   const accept = path.match(/^\/api\/v1\/companies\/invites\/([^/]+)\/accept$/);
-  if (method === "POST" && accept) return acceptInvite(ctx, decodeURIComponent(accept[1]));
+  if (method === "POST" && accept) return acceptInvite(ctx, inviteToken(accept[1]));
   const member = path.match(/^\/api\/v1\/companies\/me\/members\/([^/]+)$/);
   if (!member) return null;
   const userId = member[1];

@@ -718,22 +718,35 @@ test("accept joins as MEMBER when the email matches", async () => {
     if (sql.includes("FROM company_invites") && sql.includes("token_hash")) {
       return { rows: [{ id: "inv", company_id: COMPANY, email: "ada@push.app", expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
     }
-    if (sql.startsWith("INSERT INTO company_members") || sql.includes("SET accepted_at")) return { rows: [], rowCount: 1 };
+    if (sql.includes("SET accepted_at")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
     if (sql.includes("FROM company_members")) return empty;
     return empty;
   });
   const res = await handle(post("/api/v1/companies/invites/fresh-token/accept", {}, "33333333-3333-4333-8333-333333333334"), env(), deps(query));
   assert.equal(res.status, 204);
   assert.equal(await res.text(), "");
-  const insert = seen.find((call) => call.sql.startsWith("INSERT INTO company_members"));
-  assert.ok(insert);
-  assert.equal(insert.params.includes(COMPANY), true);
-  assert.equal(insert.params.includes(USER), true);
-  assert.equal(insert.params.includes("MEMBER"), true);
   const accepted = seen.find((call) => call.sql.includes("SET accepted_at"));
   assert.ok(accepted);
-  assert.equal(accepted.params.includes("inv"), true);
-  assert.equal(accepted.params.includes(NOW.toISOString()), true);
+  assert.match(accepted.sql, /accepted_at IS NULL RETURNING company_id\) INSERT INTO company_members .* 'MEMBER'/);
+  assert.deepEqual(accepted.params, ["inv", USER, NOW.toISOString()]);
+});
+
+test("an invite accepted concurrently by another request is 409", async () => {
+  resetLimits();
+  const query = gate([], employer(), async (sql) => {
+    if (sql.includes("FROM company_invites") && sql.includes("token_hash")) {
+      return { rows: [{ id: "inv", company_id: COMPANY, email: "ada@push.app", expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
+    }
+    return empty;
+  });
+  const res = await handle(post("/api/v1/companies/invites/fresh-token/accept", {}, "33333333-3333-4333-8333-333333333335"), env(), deps(query));
+  assert.equal(res.status, 409);
+});
+
+test("a malformed invite token is 404, not 500", async () => {
+  resetLimits();
+  const res = await handle(new Request("https://core.example/api/v1/companies/invites/%E0%A4%A"), env(), deps(gate([], employer(), async () => empty)));
+  assert.equal(res.status, 404);
 });
 
 test("an already accepted invite is 409", async () => {
@@ -785,21 +798,16 @@ test("transfer promotes the member and demotes the previous admin", async () => 
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
     if (sql.includes("FROM company_members") && sql.includes("user_id = $2")) return { rows: [{ user_id: OTHER, role: "MEMBER" }], rowCount: 1 };
-    if (sql.includes("SET role = 'ADMIN'") || sql.includes("SET role = 'MEMBER'")) return { rows: [], rowCount: 1 };
+    if (sql.startsWith("UPDATE company_members")) return { rows: [], rowCount: 2 };
     return empty;
   });
   const res = await handle(patch(`/api/v1/companies/me/members/${OTHER}`, { role: "ADMIN" }), env(), deps(query));
   assert.equal(res.status, 204);
-  const promote = seen.find((call) => call.sql.includes("SET role = 'ADMIN'"));
-  const demote = seen.find((call) => call.sql.includes("SET role = 'MEMBER'"));
-  assert.ok(promote);
-  assert.ok(demote);
-  assert.equal(promote.params[0], COMPANY);
-  assert.equal(promote.params[1], OTHER);
-  assert.equal(demote.params[0], COMPANY);
-  assert.match(demote.sql, /user_id <> \$2/);
-  assert.match(demote.sql, /role = 'ADMIN'/);
-  assert.equal(demote.params[1], OTHER);
+  const updates = seen.filter((call) => call.sql.startsWith("UPDATE company_members"));
+  assert.equal(updates.length, 1);
+  assert.match(updates[0]?.sql ?? "", /CASE WHEN user_id = \$2 THEN 'ADMIN' ELSE 'MEMBER' END/);
+  assert.match(updates[0]?.sql ?? "", /\(user_id = \$2 OR role = 'ADMIN'\)/);
+  assert.deepEqual(updates[0]?.params, [COMPANY, OTHER]);
 });
 
 test("transfer rejects a non-admin role", async () => {
