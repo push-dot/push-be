@@ -155,6 +155,10 @@ class ApprovalService:
                 a = await self.approvals.get(user_id, id_)
             except NotFoundError:
                 raise not_found()
+            # Chat cards (TOOL_ACTION, DOCUMENT_EDIT, ...) are decided through core's
+            # conversation approval route, which also enqueues the resume job.
+            if not ent.valid_approval_kind(a.kind):
+                raise not_found()
             if a.revision != expected:
                 raise revision_conflict(a.revision)
             now = _now()

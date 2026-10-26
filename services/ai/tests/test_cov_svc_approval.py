@@ -433,3 +433,13 @@ async def test_denied_evidence_lists_only_this_users_refused_evidence_use():
     s.approvals.put(f.approval(A, application_id=other_app, status=ent.APPROVAL_DENIED))
     s.approvals.put(f.approval(B, application_id=app_id, status=ent.APPROVAL_DENIED))
     assert await s.denied_evidence(A, app_id) == {refused.target_id}
+
+
+async def test_chat_approval_kinds_are_not_decided_here():
+    # TOOL_ACTION cards belong to core's conversation approval flow.
+    s = _svc()
+    card = s.approvals.put(f.approval(A, kind="TOOL_ACTION"))
+    with pytest.raises(DomainError) as e:
+        await s.decide(A, card.id, 1, ent.APPROVAL_APPROVED)
+    assert e.value.code == "NOT_FOUND"
+    assert (await s.approvals.get(A, card.id)).status == ent.APPROVAL_PENDING
