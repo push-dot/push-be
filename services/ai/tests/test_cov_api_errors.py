@@ -50,6 +50,10 @@ def make_app():
     async def ok():
         return {"ok": True}
 
+    @app.get("/leak")
+    async def leak():
+        raise RuntimeError("connect postgres://u:hunter2@db/x failed token=abc123")
+
     return app
 
 
@@ -117,6 +121,23 @@ def test_request_id_generated_when_missing_or_too_long(client):
     assert r.headers["x-request-id"].startswith("req_")
 
 
+def test_request_id_with_unsafe_characters_is_replaced(client):
+    # The id is echoed into logs and a response header; keep it to a token charset.
+    for bad in ('a"b', "a b", "<script>", "a\x7fb"):
+        r = client.get("/ok", headers={"X-Request-Id": bad})
+        assert r.headers["x-request-id"].startswith("req_"), bad
+    r = client.get("/ok", headers={"X-Request-Id": "req_1a2B-3.c:4"})
+    assert r.headers["x-request-id"] == "req_1a2B-3.c:4"
+
+
+def test_unhandled_error_log_redacts_secrets(client, caplog):
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        r = client.get("/leak", headers={"X-Request-Id": "rid-leak"})
+    assert r.status_code == 500
+    assert "RuntimeError" in caplog.text and "rid-leak" in caplog.text
+    assert "hunter2" not in caplog.text and "abc123" not in caplog.text
+
+
 def test_request_is_logged_once_per_response(client, caplog):
     with caplog.at_level(logging.INFO, logger="app.api.errors"):
         client.get("/ok", headers={"X-Request-Id": "log-1"})
@@ -163,10 +184,30 @@ async def test_streamed_body_over_limit_rewrites_response():
 
     sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
     assert seen == ["http.request", "http.disconnect"]
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
     assert sent[0]["status"] == 413
-    assert sent[0]["headers"] == [(b"content-type", b"application/json")]
     assert json.loads(sent[1]["body"])["error"]["requestId"] == "rq"
-    assert sent[1]["more_body"] is False
+
+
+async def test_body_over_limit_is_413_when_the_app_sends_nothing():
+    # ApiMiddleware's idempotent path returns silently on http.disconnect.
+    async def app(scope, receive, send):
+        while (await receive())["type"] != "http.disconnect":
+            pass
+
+    sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+
+async def test_body_over_limit_is_413_when_the_app_raises_on_disconnect():
+    async def app(scope, receive, send):
+        await receive()
+        await receive()
+        raise RuntimeError("client disconnected")
+
+    sent = await _drive(BodyLimitMiddleware(app, 10), [b"x" * 6, b"x" * 6])
+    assert len(sent) == 2 and sent[0]["status"] == 413
 
 
 async def test_bad_content_length_is_ignored_and_small_body_passes():

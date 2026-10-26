@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +37,49 @@ CONSUME_SQL = (
     "RETURNING hits"
 )
 
+
+class SlidingWindow:
+    """In-process hit log per key over one window, bounded to ``max_keys``.
+
+    Keys are kept in last-use order. Past ``max_keys`` the least recently
+    used key is dropped in O(1), so a flood of new keys never costs a sweep.
+    """
+
+    __slots__ = ("window_s", "max_keys", "_hits")
+
+    def __init__(self, window_s: float = 60.0, max_keys: int = 10_000) -> None:
+        self.window_s = window_s
+        self.max_keys = max_keys
+        self._hits: dict[str, deque[float]] = {}
+
+    def __len__(self) -> int:
+        return len(self._hits)
+
+    def clear(self) -> None:
+        self._hits.clear()
+
+    def allow(self, key: str, limit: int, now: float) -> bool:
+        hits = self._hits.pop(key, None) or deque()
+        cutoff = now - self.window_s
+        while hits and hits[0] <= cutoff:
+            hits.popleft()
+        allowed = len(hits) < limit
+        if allowed:
+            hits.append(now)
+        self._hits[key] = hits
+        if len(self._hits) > self.max_keys:
+            del self._hits[next(iter(self._hits))]
+        return allowed
+
+
 _warned_missing = False
-_memory: dict[str, list[float]] = {}
+_memory = SlidingWindow()
 
 
 def reset_for_tests() -> None:
     global _warned_missing
     _warned_missing = False
     _memory.clear()
-
-
-def _memory_allow(key: str, limit: int, now: float) -> bool:
-    hits = _memory.setdefault(key, [])
-    cutoff = now - 60
-    while hits and hits[0] <= cutoff:
-        hits.pop(0)
-    if len(hits) >= limit:
-        return False
-    hits.append(now)
-    if len(_memory) > 10000:
-        stale = [k for k, v in _memory.items() if not v or v[-1] <= cutoff]
-        for k in stale:
-            _memory.pop(k, None)
-    return True
 
 
 def _missing_table(exc: BaseException) -> bool:
@@ -81,7 +102,7 @@ async def allow(pool, kind: str, key: str, limit: int,
     ident = key or "unknown"
     bucket = f"{kind}:{ident}:{window}"
     if pool is None:
-        return _memory_allow(bucket, limit, moment)
+        return _memory.allow(bucket, limit, moment)
     try:
         hits = await pool.fetchval(
             CONSUME_SQL, bucket, window * 60 + 120, limit)
@@ -97,7 +118,7 @@ async def allow(pool, kind: str, key: str, limit: int,
                     "limiter until migration 0015 is applied")
         else:
             logger.warning("rate limit query failed; using in-isolate limiter")
-        return _memory_allow(bucket, limit, moment)
+        return _memory.allow(bucket, limit, moment)
 
 
 async def sweep(pool) -> None:

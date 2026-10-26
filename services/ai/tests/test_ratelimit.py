@@ -57,3 +57,25 @@ async def test_sweep_ignores_a_missing_table():
     pool = _Pool(error=PgError("42P01", 'relation "rate_limits" does not exist'))
     await sweep(pool)
     assert pool.swept is True
+
+
+def test_sliding_window_counts_per_key_inside_the_window():
+    from app.ratelimit import SlidingWindow
+    rl = SlidingWindow(window_s=10)
+    assert rl.allow("a", 2, 0) and rl.allow("a", 2, 1)
+    assert not rl.allow("a", 2, 2)
+    assert rl.allow("b", 2, 2)
+    assert rl.allow("a", 2, 10.5)
+
+
+def test_sliding_window_drops_the_least_recently_used_key_in_constant_time():
+    # Past max_keys the old code rebuilt the whole dict on every request.
+    from app.ratelimit import SlidingWindow
+    rl = SlidingWindow(window_s=60, max_keys=3)
+    for key in ("a", "b", "c"):
+        assert rl.allow(key, 1, 0)
+    assert not rl.allow("a", 1, 1)  # touching "a" makes "b" the oldest
+    assert rl.allow("d", 1, 1)
+    assert len(rl) == 3
+    assert rl.allow("b", 1, 1)  # "b" was evicted, so its window restarted
+    assert not rl.allow("a", 1, 1)

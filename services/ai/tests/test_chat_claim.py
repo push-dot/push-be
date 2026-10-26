@@ -109,18 +109,22 @@ async def test_schedule_gives_each_run_its_own_claim():
 
 
 @pytest.mark.asyncio
-async def test_schedule_still_accepts_a_one_argument_scheduler():
-    seen = []
+async def test_a_type_error_inside_the_scheduler_is_not_retried():
+    # The old 1-argument fallback re-ran the scheduler on any TypeError,
+    # starting a second run with no claim.
+    calls = []
 
-    async def sched(job_id):
-        seen.append(job_id)
+    async def sched(job_id, claim=""):
+        calls.append((job_id, claim))
+        raise TypeError("binding rejected the payload")
 
     set_job_scheduler(sched)
     try:
-        await schedule_chat_job("job-2")
+        with pytest.raises(TypeError):
+            await schedule_chat_job("job-2")
     finally:
         set_job_scheduler(None)
-    assert seen == ["job-2"]
+    assert len(calls) == 1 and calls[0][1]
 
 
 @pytest.mark.asyncio

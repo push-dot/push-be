@@ -1,68 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
 
 from app.db import NotFoundError
-from app.domain.errors import DomainError, not_found
-from app.jsonutil import to_jsonable
+from app.domain.errors import not_found
 from app.infrastructure.store_conversations import ConversationStore
 from app.api.deps import current_user, data, param_id
 
 router = APIRouter()
-
-
-async def _sse_frames(gen, request: Request):
-    # EventSource reconnects with Last-Event-ID. Free-plan Workers close the
-    # response after a short poll budget; `retry` asks the client to resume.
-    yield "retry: 400\n\n"
-    try:
-        async for kind, payload, seq in gen:
-            if await request.is_disconnected():
-                break
-            if kind == "token":
-                body = {"type": "token", "text": payload}
-            elif kind == "status":
-                body = {"type": "status", "text": payload}
-            elif kind == "error":
-                body = {"type": "error", "error": payload}
-            elif kind == "done" and isinstance(payload, dict) and payload.get("awaiting"):
-                body = {"type": "done", "operation": to_jsonable(payload.get("operation")),
-                        "awaiting": payload["awaiting"]}
-            elif kind == "done":
-                body = {"type": "done", "operation": to_jsonable(payload)}
-            elif kind == "cancelled":
-                body = {"type": "cancelled"}
-            elif isinstance(payload, dict):
-                body = {"type": kind}
-                body.update({
-                    key: value for key, value in payload.items() if key != "type"})
-            else:
-                body = {"type": kind}
-            if seq is not None:
-                body["seq"] = seq
-            prefix = f"id: {seq}\n" if seq is not None else ""
-            yield prefix + "data: " + json.dumps(body) + "\n\n"
-    except DomainError as e:
-        yield "data: " + json.dumps(
-            {"type": "error",
-             "error": {"code": e.code, "message": e.message,
-                       "details": e.details}}) + "\n\n"
-    except Exception:
-        yield "data: " + json.dumps(
-            {"type": "error",
-             "error": {"code": "INTERNAL", "message": "internal error",
-                       "details": None}}) + "\n\n"
-
-
-def _sse_response(gen):
-    return StreamingResponse(
-        gen, media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _shares(request: Request) -> ConversationStore:

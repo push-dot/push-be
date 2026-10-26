@@ -77,36 +77,50 @@ def test_checkpointer_pool_holds_nothing_while_idle():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_closes_the_checkpointer_pool():
-    from app.main import _shutdown
+async def test_shutdown_stops_the_worker_first_and_closes_the_pool_last(monkeypatch):
+    import app.db
+    import app.main as main
+    from app.config import Config
+    from app.domain.services.conversation import ConversationService
     from fastapi import FastAPI
+    from tests.cov_fakes import FakeConn
 
     closed = []
 
-    class Conversations:
-        async def stop_worker(self):
-            closed.append("worker")
-
-    class Saver:
-        async def close(self):
-            closed.append("checkpointer")
-
-    class Client:
-        async def aclose(self):
-            closed.append("client")
-
-    class Pool:
+    class Pool(FakeConn):
         async def close(self):
             closed.append("pool")
 
-    app = FastAPI()
-    app.state._closers = (
-        Conversations(), Saver(),
-        Client(), Client(), Client(), Client(), Client(),
-        Pool(),
-    )
-    await _shutdown(app)
-    assert closed[0] == "worker"
-    assert "checkpointer" in closed
-    assert closed[-1] == "pool"
-    assert app.state._closers is None
+    class SaverPool:
+        async def close(self):
+            closed.append("checkpointer")
+
+    async def create_pool(url):
+        return Pool()
+
+    async def open_saver(url):
+        return "saver", SaverPool()
+
+    async def started(self):
+        return None
+
+    async def stopped(self):
+        closed.append("worker")
+
+    async def aclose(self):
+        closed.append("client")
+
+    monkeypatch.setenv("RUN_MIGRATIONS", "0")
+    monkeypatch.delenv("CHECKPOINTER", raising=False)
+    monkeypatch.setattr(main, "create_pool", create_pool)
+    monkeypatch.setattr(main, "external_jobs", lambda: False)
+    monkeypatch.setattr(main, "runs_local_chat_worker", lambda: True)
+    monkeypatch.setattr(app.db, "open_chat_checkpointer", open_saver)
+    monkeypatch.setattr(ConversationService, "start_worker", started)
+    monkeypatch.setattr(ConversationService, "stop_worker", stopped)
+    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+        monkeypatch.setattr(client, "aclose", aclose)
+    fa = FastAPI()
+    await main._bootstrap(fa, Config(database_url="d"))
+    await main._shutdown(fa)
+    assert closed == ["worker", "checkpointer"] + ["client"] * 5 + ["pool"]
