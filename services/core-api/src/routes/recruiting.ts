@@ -358,8 +358,7 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     where = appendPostingFilters(where, params, ctx.url, true);
     where = deadlineWindow(ctx, params, where);
     // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
-    const count = await one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
-    const total = Number(count?.total ?? 0);
+    const counted = one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
     // shortcut: deadline and popular ignore the cursor; (created_at, id) is not their rank
@@ -374,8 +373,8 @@ async function listPostings(ctx: Ctx): Promise<Response> {
         ? "COALESCE((to_jsonb(p) ->> 'view_count')::int, 0) DESC, p.created_at DESC, p.id DESC"
         : "p.created_at DESC, p.id DESC";
     sql += ` ORDER BY ${order} LIMIT $${params.length}`;
-    const rows = await query(ctx.deps.query, sql, params);
-    return { total, rows, page };
+    const [count, rows] = await Promise.all([counted, query(ctx.deps.query, sql, params)]);
+    return { total: Number(count?.total ?? 0), rows, page };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
@@ -446,10 +445,9 @@ const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: string; cou
 };
 
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
-  const career = await careerFacet(ctx);
-  const category = await categoryFacet(ctx);
-  const location = await locationFacet(ctx);
-  const skills = await skillRows(ctx, true);
+  const [career, category, location, skills] = await Promise.all([
+    careerFacet(ctx), categoryFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
+  ]);
   return data(200, { career, category, location, skills }, ctx.rid);
 };
 
@@ -1004,18 +1002,23 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   const applicationId = requireUuid(applicationRaw, "applicationId");
   await requirePostingMember(ctx, postingId);
   const application = await loadApplicant(ctx, postingId, applicationId);
-  try {
-    await query(ctx.deps.query,
-      "UPDATE applications SET company_seen_at = $2 WHERE id = $1 AND (to_jsonb(applications) ->> 'company_seen_at') IS NULL",
-      [applicationId, ctx.now.toISOString()]);
-  } catch (err) {
-    if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
-  }
-  const documents = await snapshotDocuments(ctx, applicationId);
-  const person = await one(ctx.deps.query,
-    `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
-     FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
-    [String(application.user_id)]);
+  const markSeen = async (): Promise<void> => {
+    try {
+      await query(ctx.deps.query,
+        "UPDATE applications SET company_seen_at = $2 WHERE id = $1 AND (to_jsonb(applications) ->> 'company_seen_at') IS NULL",
+        [applicationId, ctx.now.toISOString()]);
+    } catch (err) {
+      if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
+    }
+  };
+  const [, documents, person] = await Promise.all([
+    markSeen(),
+    snapshotDocuments(ctx, applicationId),
+    one(ctx.deps.query,
+      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
+      [String(application.user_id)]),
+  ]);
   return data(200, {
     application: companyApplicationDto(application),
     documents,
@@ -1142,20 +1145,22 @@ const searchCounts = async (ctx: Ctx): Promise<Response> => {
   const q = ctx.url.searchParams.get("q") || "";
   if (!q.trim()) throw fieldError("q", "required");
   if (codePoints(q) > 200) throw fieldError("q", "must be at most 200 characters");
-  await recordSearch(ctx, q);
   const forms = queryForms(q);
-  const postings = await withPublicStatus(async (withStatus) => {
-    const row = await one(ctx.deps.query,
-      `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
-      [ctx.user.id, forms.raw]);
-    return Number(row?.total ?? 0);
-  });
-  const peopleRow = await one(ctx.deps.query,
-    `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
-    [forms.raw]);
-  const postsRow = await one(ctx.deps.query,
-    "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
-    [forms.raw]);
+  const [, postings, peopleRow, postsRow] = await Promise.all([
+    recordSearch(ctx, q),
+    withPublicStatus(async (withStatus) => {
+      const row = await one(ctx.deps.query,
+        `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
+        [ctx.user.id, forms.raw]);
+      return Number(row?.total ?? 0);
+    }),
+    one(ctx.deps.query,
+      `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
+      [forms.raw]),
+    one(ctx.deps.query,
+      "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
+      [forms.raw]),
+  ]);
   return data(200, {
     postings,
     people: Number(peopleRow?.total ?? 0),
@@ -1396,8 +1401,7 @@ async function loadProfile(ctx: Ctx, userId: string): Promise<Record<string, unk
 
 async function getProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "userId");
-  const viewer = await viewerCompanyOf(ctx);
-  const row = await loadProfile(ctx, id);
+  const [viewer, row] = await Promise.all([viewerCompanyOf(ctx), loadProfile(ctx, id)]);
   if (!row) throw notFound();
   const self = id === ctx.user.id;
   if (!self && !asBool(row.profile_public)) throw notFound();
@@ -1626,7 +1630,9 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
   let reply = "";
   if (status === "ACCEPTED" && body.reply != null) reply = textOf(body.reply, "reply", 1, 2000);
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query, "UPDATE offers SET status = $2 WHERE id = $1", [row.id, status]);
+  const decided = await one(ctx.deps.query,
+    "UPDATE offers SET status = $2 WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id", [row.id, status]);
+  if (!decided) throw new HttpError(409, "CONFLICT", "offer is already closed");
   if (reply) {
     await query(ctx.deps.query,
       "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",

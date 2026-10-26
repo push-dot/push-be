@@ -390,3 +390,32 @@ test("an offer may only attach a posting of the sender's own company", async () 
   assert.equal(res.status, 404);
   assert.equal(calls.some((c) => c.sql.startsWith("INSERT INTO offers")), false);
 });
+
+test("a second accept that loses the race gets 409 instead of overwriting the decision", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const OFFER = "60000000-0000-4000-8000-000000000001";
+  const { query } = recorder((sql) => {
+    if (sql.startsWith("SELECT o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
+    if (sql.startsWith("UPDATE offers")) return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/me/offers/${OFFER}/decline`, {}, "00000000-0000-4000-8000-00000000000c"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 409);
+});
+
+test("posting facets run their four counts in parallel", async () => {
+  const { handle } = await import("../src/handler.ts");
+  let inFlight = 0;
+  let peak = 0;
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    inFlight -= 1;
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.equal(peak, 4);
+});
