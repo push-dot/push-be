@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "test": "npm test -w push-be-front && npm test -w push-be-core",
-    "typecheck": "tsc -p services/gateway --noEmit && tsc -p services/core-api --noEmit",
+    "typecheck": "npm run typecheck -w push-be-front && npm run typecheck -w push-be-core",
     "contracts": "npm run generate -w @push/contracts"
   }
 }
