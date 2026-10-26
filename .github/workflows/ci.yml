@@ -162,7 +162,7 @@ jobs:
         run: |
           npm ci
           npm run test:coverage -w push-be-front
-          npx tsc -p services/gateway --noEmit
+          npm run typecheck -w push-be-front
 
   test-db:
     needs: changes
@@ -250,7 +250,7 @@ jobs:
         run: |
           npm ci
           npm run test:coverage -w push-be-core
-          npx tsc -p services/core-api --noEmit
+          npm run typecheck -w push-be-core
 
   bundle-core:
     needs: changes
