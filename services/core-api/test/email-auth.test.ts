@@ -105,7 +105,19 @@ const createDb = () => {
       }
       return { rows: [], rowCount: 1 };
     }
-    if (sql.startsWith("INSERT INTO email_tokens")) {
+    if (sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        const row = tokens[i];
+        const owned = (params[1] != null && row.user_id === params[1]) || (params[2] != null && row.signup_id === params[2]);
+        if (owned && row.kind === params[3] && row.used_at == null) tokens.splice(i, 1);
+      }
+    }
+    if (sql.startsWith("DELETE FROM email_signups")) {
+      const index = signups.findIndex((row) => row.id === params[0]);
+      if (index >= 0) signups.splice(index, 1);
+      return { rows: [], rowCount: index >= 0 ? 1 : 0 };
+    }
+    if (sql.startsWith("INSERT INTO email_tokens") || sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
       tokens.push({
         id: params[0], user_id: params[1], signup_id: params[2], kind: params[3],
         token_hash: params[4], expires_at: params[5], used_at: null,
@@ -284,7 +296,7 @@ test("signup accepts a personal account and rejects a short password", async () 
   assert.equal(parts[1], "210000");
   assert.equal(Buffer.from(parts[2], "base64").length, 16);
   assert.equal(Buffer.from(parts[3], "base64").length, 32);
-  const tokenInsert = db.sqls.find((call) => call.sql.startsWith("INSERT INTO email_tokens"));
+  const tokenInsert = db.sqls.find((call) => call.sql.includes("INSERT INTO email_tokens"));
   assert.ok(tokenInsert);
   assert.equal(tokenInsert.params[1], null);
   assert.equal(tokenInsert.params[2], db.signups[0].id);
@@ -373,6 +385,7 @@ test("verify creates the email user and a second use is rejected", async () => {
     deps(db, mailer),
   );
   resetLimits();
+  const pendingHash = db.signups[0].password_hash;
   const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
   assert.equal(res.status, 200);
   const body = await res.json() as Session;
@@ -389,7 +402,8 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(inserted.params[6], EMAIL);
   assert.equal(inserted.params[7], NOW.toISOString());
   assert.equal(inserted.params[8], true);
-  assert.equal(inserted.params[9], db.signups[0].password_hash);
+  assert.equal(inserted.params[9], pendingHash);
+  assert.equal(db.signups.length, 0);
   assert.equal(db.consents.length, 1);
   assert.equal(db.consents[0].user_id, db.users[0].id);
   assert.equal(db.consents[0].reference_data, true);
@@ -445,7 +459,7 @@ test("password reset does not reveal unknown emails", async () => {
   assert.equal(known.status, 202);
   assert.equal(sent.length, 2);
   assert.match(sent[1].text, /\/auth\/reset\?token=/);
-  const reset = db.sqls.find((call) => call.sql.startsWith("INSERT INTO email_tokens") && call.params[3] === "RESET");
+  const reset = db.sqls.find((call) => call.sql.includes("INSERT INTO email_tokens") && call.params[3] === "RESET");
   assert.ok(reset);
   assert.equal(reset.params[1], db.users[0].id);
   assert.equal(reset.params[2], null);
@@ -473,7 +487,7 @@ test("password reset confirm changes the password and revokes refresh tokens", a
   );
   assert.equal(res.status, 204);
   assert.notEqual(db.users[0].password_hash, previous);
-  const revoke = db.sqls.slice(before).find((call) => call.sql.startsWith("UPDATE refresh_tokens") && call.sql.includes("revoked_at"));
+  const revoke = db.sqls.slice(before).find((call) => call.sql.includes("UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1"));
   assert.ok(revoke);
   assert.equal(revoke.params[0], userId);
   assert.ok(db.refresh.some((row) => row.user_id === userId));
@@ -916,4 +930,89 @@ test("mail without an idempotency key sends a uuid key", async () => {
   const mailer = createMailer({ RESEND_API_KEY: KEY, MAIL_FROM: FROM }, fetchImpl);
   await mailer.send({ to: EMAIL, subject: "s", text: "t", html: "h" });
   assert.match(header, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+});
+
+const counted = (db: ReturnType<typeof createDb>): Deps["query"] => {
+  const hits = new Map<string, number>();
+  return async (sql, params = []) => {
+    if (!sql.includes("rate_limits")) return db.query(sql, params);
+    const bucket = String(params[0]);
+    const used = hits.get(bucket) ?? 0;
+    if (used >= Number(params[2])) return { rows: [], rowCount: 0 };
+    hits.set(bucket, used + 1);
+    return { rows: [{ hits: used + 1 }], rowCount: 1 };
+  };
+};
+
+test("login is limited per email across addresses", async () => {
+  resetLimits();
+  const db = createDb();
+  const query = counted(db);
+  const statuses: number[] = [];
+  for (let i = 0; i < 11; i++) {
+    const res = await handle(post("/api/v1/auth/email/login", { email: "Victim@push.app", password: "guess" + i }, { "cf-connecting-ip": `10.0.0.${i}` }), env(), { query, now: () => NOW });
+    statuses.push(res.status);
+  }
+  assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
+  assert.equal(statuses[10], 429);
+});
+
+test("signup and reset mails are limited per email", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const query = counted(db);
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  const statuses: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const res = await handle(post("/api/v1/auth/email/signup", signupBody(), { "cf-connecting-ip": `10.0.1.${i}` }), env(), { query, now: () => NOW, mailer });
+    statuses.push(res.status);
+  }
+  assert.deepEqual(statuses, [202, 202, 202, 429]);
+  assert.equal(sent.length, 3);
+});
+
+test("a new reset link revokes the previous unused one", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
+  const stale = await handle(post("/api/v1/auth/email/password-reset/confirm", { token: tokenFrom(sent[1]), password: "newpass123" }), env(), deps(db, mailer));
+  assert.equal(stale.status, 401);
+  const fresh = await handle(post("/api/v1/auth/email/password-reset/confirm", { token: tokenFrom(sent[2]), password: "newpass123" }), env(), deps(db, mailer));
+  assert.equal(fresh.status, 204);
+});
+
+test("an unknown email still pays the password hash cost", async () => {
+  resetLimits();
+  const db = createDb();
+  db.users.push(userRow({ password_hash: "pbkdf2$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }));
+  const time = async (email: string): Promise<number> => {
+    const start = performance.now();
+    await handle(post("/api/v1/auth/email/login", { email, password: "wrong1234" }), env(), deps(db));
+    return performance.now() - start;
+  };
+  await time("warm@push.app");
+  const known = await time(EMAIL);
+  const unknown = await time("nobody@push.app");
+  assert.ok(unknown > known * 0.3, `unknown ${unknown}ms vs known ${known}ms`);
+});
+
+test("oauth callback consumes the state in one statement", async () => {
+  resetLimits();
+  const db = createDb();
+  await handle(new Request("https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=push://auth/callback"), env(), deps(db));
+  const state = String(db.states[0]?.state);
+  const fetchImpl = (async (input: RequestInfo | URL) => String(input).includes("token")
+    ? Response.json({ access_token: "at" })
+    : Response.json({ sub: "g1", email: EMAIL, email_verified: true })) as typeof fetch;
+  const res = await handle(new Request(`https://core.example/api/v1/auth/google/callback?code=c&state=${state}`), env(), deps(db, undefined, fetchImpl));
+  assert.equal(res.status, 302);
+  const stateCalls = calls(db, "oauth_states").filter((call) => !call.sql.startsWith("INSERT"));
+  assert.equal(stateCalls.length, 1);
+  assert.match(stateCalls[0]?.sql ?? "", /^DELETE FROM oauth_states WHERE state = \$1 RETURNING /);
 });
