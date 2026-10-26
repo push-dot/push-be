@@ -1,6 +1,6 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
