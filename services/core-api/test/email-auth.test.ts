@@ -758,7 +758,7 @@ test("a missing mail binding still accepts signup", async () => {
   console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
   try {
     const db = createDb();
-    const res = await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db));
+    const res = await handle(post("/api/v1/auth/email/signup", signupBody()), env({ APP_ENV: "development" }), deps(db));
     assert.equal(res.status, 202);
     assert.equal(logs.length, 1);
     assert.match(logs[0], /noreply@push.local/);
@@ -1015,4 +1015,20 @@ test("oauth callback consumes the state in one statement", async () => {
   const stateCalls = calls(db, "oauth_states").filter((call) => !call.sql.startsWith("INSERT"));
   assert.equal(stateCalls.length, 1);
   assert.match(stateCalls[0]?.sql ?? "", /^DELETE FROM oauth_states WHERE state = \$1 RETURNING /);
+});
+
+test("without a mail provider only development prints the link", async () => {
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    const mail = { to: EMAIL, subject: "s", text: "https://web/auth/reset?token=secret-token", html: "" };
+    await createMailer({ APP_ENV: "production" }).send(mail);
+    await createMailer({ APP_ENV: "development" }).send(mail);
+    assert.equal(logs.length, 2);
+    assert.equal(logs[0]?.includes("secret-token"), false);
+    assert.equal(logs[1]?.includes("secret-token"), true);
+  } finally {
+    console.log = original;
+  }
 });
