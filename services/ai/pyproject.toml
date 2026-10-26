@@ -39,7 +39,7 @@ test = [
 # scripts/migrate.py from CI: asyncpg for TCP, websockets for Neon wss://.
 migrate = [
     "asyncpg>=0.30",
-    "websockets>=13,<17",
+    "websockets>=17.3,<18",
 ]
 
 [dependency-groups]
