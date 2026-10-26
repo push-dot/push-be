@@ -6,19 +6,19 @@ from typing import Literal
 from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from langgraph.config import get_stream_writer
 from langgraph.types import interrupt
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.posting_fit import compute_fit
 from app.graphs.chat_surface import insert_chat_approval
 from app.harness.document_edits import apply_edit
 from app.harness.core_client import idempotency_key
-from app.harness.policy import Tier
-from app.harness.tools import ToolContext, ToolSpec
+from app.harness.policy import Decision, Tier, decide
+from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.jsonutil import to_jsonable
 
 bound_services: contextvars.ContextVar = contextvars.ContextVar(
@@ -106,8 +106,8 @@ class EditDocumentArgs(BaseModel):
 
 
 class FitArgs(BaseModel):
-    posting_id: str = ""
-    document_id: str = ""
+    posting_id: OptionalId = None
+    document_id: OptionalId = None
     requirements: list[str] = []
     keywords: list[str] = []
     description: str = ""
@@ -119,15 +119,8 @@ class CareerQuery(BaseModel):
 
 
 class PrepareArgs(BaseModel):
-    interview_id: str
+    interview_id: UUID
     expected_revision: int = 0
-
-
-def _emit(event: dict) -> None:
-    try:
-        get_stream_writer()(event)
-    except Exception:
-        return
 
 
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
@@ -180,8 +173,9 @@ def _diff(args: EditDocumentArgs) -> dict:
     }
 
 
-def _document_event(job_id: str, document_id: str) -> dict:
-    approval_id = str(uuid5(NAMESPACE_URL, "push:chat-approval:" + str(job_id)))
+def _document_event(job_id: str, tool_call_id: str, document_id: str) -> dict:
+    # tool_call_id keeps a second edit in the same job from reusing a resolved approval.
+    approval_id = str(uuid5(NAMESPACE_URL, f"push:chat-approval:{job_id}:{tool_call_id}"))
     return {
         "type": "approval",
         "id": approval_id,
@@ -196,8 +190,8 @@ def _document_event(job_id: str, document_id: str) -> dict:
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
-    if ctx.access_mode == "ALWAYS_ASK":
-        event = _document_event(ctx.job_id, str(args.document_id))
+    if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
+        event = _document_event(ctx.job_id, ctx.tool_call_id, str(args.document_id))
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
@@ -206,7 +200,7 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
                 ctx.db, ctx.user_id, ctx.conversation_id, event, str(args.document_id))
             await ctx.db.q().execute(
                 "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
-            _emit(event)
+            emit(event)
         answer = interrupt({
             "approval_id": event["id"],
             "awaiting": "approval",
@@ -219,18 +213,16 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
         applied = await apply_edit(ctx.core, ctx.user_id, diff)
     except DomainError as err:
         return {"error": err.code}
-    _emit(diff)
+    emit(diff)
     return {"diff": diff, "versionId": str((applied.get("version") or {}).get("id") or "")}
 
 
 async def _resume_row(ctx: ToolContext):
-    try:
-        return await ctx.db.q().fetchrow(
-            "SELECT resume_state FROM conversations WHERE id = $1",
-            ctx.conversation_id,
-        )
-    except Exception:
-        return None
+    # A failed read must not look like "no resume flow" and overwrite an active one.
+    return await ctx.db.q().fetchrow(
+        "SELECT resume_state FROM conversations WHERE id = $1",
+        ctx.conversation_id,
+    )
 
 
 def _resume_status(row) -> str:
@@ -261,7 +253,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
                 {"id": "cancel", "label": "그만하기"},
             ],
         }
-        _emit(choice)
+        emit(choice)
         return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}
     await ctx.db.q().execute(
@@ -282,10 +274,9 @@ async def _list_applications(ctx: ToolContext, _args: EmptyArgs) -> dict:
 
 
 async def _get_fit_score(_ctx: ToolContext, args: FitArgs) -> dict:
-    document_id = UUID(args.document_id) if args.document_id else UUID(int=0)
     return compute_fit(
         args.requirements, args.keywords, args.description,
-        document_id, args.content, "FREE")
+        args.document_id or UUID(int=0), args.content, "FREE")
 
 
 async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:
@@ -294,7 +285,7 @@ async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:
     if interviews is None:
         return {"error": "UNAVAILABLE"}
     op = await interviews.prepare(
-        UUID(ctx.user_id), UUID(args.interview_id), args.expected_revision, None)
+        UUID(ctx.user_id), args.interview_id, args.expected_revision, None)
     return to_jsonable(op)
 
 

@@ -51,7 +51,7 @@ async def test_final_resume_is_stored_in_the_database(tmp_path, monkeypatch):
     monkeypatch.setenv("PUSH_RESUME_DIR", str(tmp_path))
     events = []
     monkeypatch.setattr(
-        "app.harness.resume.tools.get_stream_writer",
+        "app.harness.tools.get_stream_writer",
         lambda: events.append,
     )
     user_id = uuid4()

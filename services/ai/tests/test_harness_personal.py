@@ -158,7 +158,7 @@ async def test_core_ids_cannot_rewrite_the_path():
 
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "bookmark_posting")
     graph = build_harness_graph(
-        HarnessSpec(id="personal", audience="PERSONAL", prompt="p", tools=[tool]),
+        HarnessSpec(id="personal", prompt="p", tools=[tool]),
         MemorySaver(),
         model=ScriptedChat([{"tool_calls": [{
             "name": "bookmark_posting",
@@ -244,7 +244,6 @@ def _edit_graph(mode: str, db, core=None):
     return build_harness_graph(
         type(REGISTRY["personal"])(
             id="personal",
-            audience="PERSONAL",
             prompt="p",
             tools=[tool],
         ),
@@ -347,6 +346,9 @@ class _ResumeDB:
     def q(self):
         return self
 
+    async def fetchrow(self, sql, *args):
+        return None
+
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
         return "UPDATE 1"
@@ -380,7 +382,7 @@ async def test_edit_document_id_cannot_rewrite_the_path():
 
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "edit_document")
     graph = build_harness_graph(
-        HarnessSpec(id="personal", audience="PERSONAL", prompt="p", tools=[tool]),
+        HarnessSpec(id="personal", prompt="p", tools=[tool]),
         MemorySaver(),
         model=ScriptedChat([{"tool_calls": [{
             "name": "edit_document",

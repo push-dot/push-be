@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Final
+
 from app.domain import entities as ent
+from app.domain.plan_levers import provider_for
 from app.framework.flag import use_langchain
 from app.framework.prompts import render_messages
 
@@ -10,8 +13,20 @@ def openai_compatible(chat) -> bool:
     return isinstance(chat, OpenAIClient)
 
 
+# SDK defaults are a 600s timeout and 2 retries; provider errors fail the job without a queue retry.
+_TIMEOUT_SECONDS: Final = 60
+_MAX_RETRIES: Final = 1
+
+
+def provider_of(chat, model: str) -> dict | None:
+    """OpenRouter provider routing, the same rule OpenAIClient applies to its own requests."""
+    config = getattr(chat, "config", None)
+    return None if config is None else provider_for(model, config)
+
+
 def chat_model(*, api_key: str, model: str, base_url: str,
-               reasoning: str = "", headers: dict | None = None, cls=None):
+               reasoning: str = "", headers: dict | None = None,
+               provider: dict | None = None, cls=None):
     """OpenAI-compatible chat model. Tools are not bound to this call."""
     if cls is None:
         from langchain_openai import ChatOpenAI
@@ -23,9 +38,16 @@ def chat_model(*, api_key: str, model: str, base_url: str,
         "streaming": True,
         "stream_usage": True,
         "max_tokens": 65536,
+        "timeout": _TIMEOUT_SECONDS,
+        "max_retries": _MAX_RETRIES,
     }
+    extra_body: dict = {}
     if reasoning:
-        kwargs["extra_body"] = {"reasoning": {"effort": reasoning}}
+        extra_body["reasoning"] = {"effort": reasoning}
+    if provider:
+        extra_body["provider"] = provider
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     if headers:
         kwargs["default_headers"] = headers
     return cls(**kwargs)
@@ -66,7 +88,7 @@ async def complete_langchain(chat, key: str, model: str, system: str,
                              headers: dict | None = None) -> ent.AICompletion:
     lc = chat_model(
         api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-        reasoning=reasoning, headers=headers)
+        reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
     messages = render_messages(system, user)
     result = await lc.ainvoke(messages)
     usage: dict = {}
@@ -83,7 +105,7 @@ async def stream_langchain(chat, key: str, model: str, system: str, user: str,
                            assistant_prefix: str = ""):
     lc = chat_model(
         api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-        reasoning=reasoning, headers=headers)
+        reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
     messages = render_messages(system, user, assistant_prefix)
     async for chunk in lc.astream(messages):
         _apply_usage(chunk, usage)
