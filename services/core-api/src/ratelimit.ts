@@ -7,31 +7,29 @@ const CONSUME_SQL = (
   + "WHERE rate_limits.hits < $3 RETURNING hits"
 );
 
-const memory = new Map<string, number[]>();
+// Fallback counters for the current minute only; a new minute clears them so the map stays bounded.
+const memory = new Map<string, number>();
+let memoryWindow = -1;
 
 export function resetLimits(): void {
   memory.clear();
+  memoryWindow = -1;
 }
 
-function memoryAllow(bucket: string, limit: number, now: number): boolean {
-  const hits = memory.get(bucket) || [];
-  const cutoff = now - 60_000;
-  const kept = hits.filter((t) => t > cutoff);
-  if (kept.length >= limit) {
-    memory.set(bucket, kept);
-    return false;
+export const memoryBuckets = (): number => memory.size;
+
+function memoryAllow(bucket: string, limit: number, window: number): boolean {
+  if (window !== memoryWindow) {
+    memory.clear();
+    memoryWindow = window;
   }
-  kept.push(now);
-  memory.set(bucket, kept);
+  const hits = memory.get(bucket) ?? 0;
+  if (hits >= limit) return false;
+  memory.set(bucket, hits + 1);
   return true;
 }
 
-function missingTable(err: unknown): boolean {
-  const text = String((err as { message?: string })?.message || err).toLowerCase();
-  const code = (err as { code?: string })?.code || "";
-  return code === "42P01" || (text.includes("rate_limits") && text.includes("does not exist"));
-}
-
+/** A failed counter must not take the route down; the in-isolate window is the same fallback the Python worker uses. */
 export async function allow(q: Query, kind: string, key: string, limit: number, nowMs: number): Promise<boolean> {
   const window = Math.floor(nowMs / 1000 / 60);
   const bucket = `${kind}:${key || "unknown"}:${window}`;
@@ -39,11 +37,7 @@ export async function allow(q: Query, kind: string, key: string, limit: number, 
     const result = await query(q, CONSUME_SQL, [bucket, window * 60 + 120, limit]);
     if (result.rows.length === 0) return false;
     return Number(result.rows[0].hits) <= limit;
-  } catch (err) {
-    if (!missingTable(err)) {
-      // A failed counter must not take the route down. The in-isolate
-      // window is the same fallback the Python worker uses.
-    }
-    return memoryAllow(bucket, limit, nowMs);
+  } catch {
+    return memoryAllow(bucket, limit, window);
   }
 }

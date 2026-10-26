@@ -137,7 +137,7 @@ test("devices: register upserts the caller's push token and delete removes it", 
   const res = await w.call("POST", "/api/v1/me/devices", { token: "ExponentPushToken[abc]", platform: "ios" });
   assert.equal(res.status, 201);
   assert.deepEqual(res.body.data, { token: "ExponentPushToken[abc]", platform: "ios" });
-  assert.deepEqual(w.seen.find((c) => c.sql.startsWith("INSERT INTO user_devices"))?.params.slice(0, 3), [ME, "ExponentPushToken[abc]", "ios"]);
+  assert.deepEqual(w.seen.find((c) => c.sql.includes("INSERT INTO user_devices"))?.params.slice(0, 3), [ME, "ExponentPushToken[abc]", "ios"]);
 
   const bad = await w.call("POST", "/api/v1/me/devices", { token: "t", platform: "web" });
   assert.equal(bad.status, 422);
@@ -153,8 +153,8 @@ test("notifications: unread count, list mapping and pagination", async () => {
     if (sql.startsWith("SELECT count(*)::int AS count FROM notifications")) return [{ count: "4" }];
     if (sql.includes("FROM notifications WHERE user_id = $1")) {
       return [
-        { id: "n2", type: "OFFER", title: "새 제안", body: null, target: '{"kind":"offer","id":"o1"}', read_at: null, created_at: "2026-10-02T00:00:00Z" },
-        { id: "n1", type: null, title: null, body: "b", target: "[1]", read_at: "2026-10-02T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+        { id: "f2000000-0000-4000-8000-000000000002", type: "OFFER", title: "새 제안", body: null, target: '{"kind":"offer","id":"o1"}', read_at: null, created_at: "2026-10-02T00:00:00Z" },
+        { id: "f2000000-0000-4000-8000-000000000001", type: null, title: null, body: "b", target: "[1]", read_at: "2026-10-02T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
       ].slice(0, Number(params.at(-1)));
     }
     return undefined;
@@ -164,7 +164,7 @@ test("notifications: unread count, list mapping and pagination", async () => {
   assert.deepEqual(w.seen.at(-1)!.params, [ME]);
 
   const list = await w.call("GET", "/api/v1/me/notifications?limit=1");
-  assert.deepEqual(list.body.data, [{ id: "n2", type: "OFFER", title: "새 제안", body: "", target: { kind: "offer", id: "o1" }, readAt: null, createdAt: "2026-10-02T00:00:00Z" }]);
+  assert.deepEqual(list.body.data, [{ id: "f2000000-0000-4000-8000-000000000002", type: "OFFER", title: "새 제안", body: "", target: { kind: "offer", id: "o1" }, readAt: null, createdAt: "2026-10-02T00:00:00Z" }]);
   assert.equal(list.body.page?.hasMore, true);
   await w.call("GET", `/api/v1/me/notifications?cursor=${list.body.page!.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /AND \(created_at, id\) < \(\$2, \$3\)/);
@@ -202,7 +202,7 @@ const offerRow = (extra: Row = {}): Row => ({
 });
 
 const offerWorld = (opts: { posting?: boolean; profile?: Row | null; insert?: Error; pref?: boolean } = {}) => world((sql) => {
-  if (sql.startsWith("SELECT id FROM job_postings")) return opts.posting === false ? [] : [{ id: POSTING }];
+  if (sql.startsWith("SELECT p.id FROM job_postings p JOIN company_members")) return opts.posting === false ? [] : [{ id: POSTING }];
   if (sql.includes("FROM profiles p LEFT JOIN user_settings")) return opts.profile === null ? [] : [opts.profile ?? { user_id: OTHER, open_to_offers: true, profile_public: true }];
   if (sql.startsWith("INSERT INTO offers")) return opts.insert;
   if (sql.includes("AS enabled FROM user_settings")) return opts.pref === undefined ? [] : [{ enabled: opts.pref }];
@@ -261,15 +261,15 @@ test("offers: messages are listed only for a participant and paginate", async ()
     if (sql.startsWith("SELECT o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
     if (sql.includes("FROM offer_messages m")) {
       return [
-        { id: "m2", offer_id: OFFER, sender_id: OTHER, sender_name: "Bob", body: "hey", created_at: "2026-10-22T00:00:02Z" },
-        { id: "m1", offer_id: OFFER, sender_id: ME, sender_name: "Ada", body: null, created_at: "2026-10-22T00:00:01Z" },
+        { id: "f3000000-0000-4000-8000-000000000002", offer_id: OFFER, sender_id: OTHER, sender_name: "Bob", body: "hey", created_at: "2026-10-22T00:00:02Z" },
+        { id: "f3000000-0000-4000-8000-000000000001", offer_id: OFFER, sender_id: ME, sender_name: "Ada", body: null, created_at: "2026-10-22T00:00:01Z" },
       ].slice(0, Number(params.at(-1)));
     }
     return undefined;
   });
   const res = await w.call("GET", `/api/v1/me/offers/${OFFER}/messages?limit=1`);
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.data, [{ id: "m2", offerId: OFFER, sender: { id: OTHER, displayName: "Bob" }, body: "hey", createdAt: "2026-10-22T00:00:02Z" }]);
+  assert.deepEqual(res.body.data, [{ id: "f3000000-0000-4000-8000-000000000002", offerId: OFFER, sender: { id: OTHER, displayName: "Bob" }, body: "hey", createdAt: "2026-10-22T00:00:02Z" }]);
   assert.equal(res.body.page?.hasMore, true);
   const lookup = w.seen.find((c) => c.sql.startsWith("SELECT o.id"))!;
   assert.match(lookup.sql, /WHERE o\.id = \$1 AND \(o\.sender_id = \$2 OR o\.profile_user_id = \$2\)$/);

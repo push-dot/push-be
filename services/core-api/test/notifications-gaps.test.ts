@@ -191,6 +191,7 @@ test("accepting an offer and sending a message notify the other person", async (
     post(`/api/v1/me/offers/${OFFER}/accept`, {}, "55555555-5555-4555-8555-555555555555"),
     env(),
     deps(authed(seen, async (sql) => {
+      if (sql.startsWith("UPDATE offers")) return { rows: [{ id: offerRow.id }], rowCount: 1 };
       if (sql.includes("FROM offers")) return { rows: [offerRow], rowCount: 1 };
       if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
       return empty;

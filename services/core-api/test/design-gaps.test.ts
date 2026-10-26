@@ -59,17 +59,10 @@ test("apply snapshots an owned source and a member can stream that file", async 
     env(),
     deps(authed(seen, false, async (sql) => {
       if (sql.includes("job_postings") && sql.includes("closed_at IS NULL") && !sql.includes("INSERT")) {
-        return { rows: [{ id: POSTING }], rowCount: 1 };
+        return { rows: [{ company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null }], rowCount: 1 };
       }
-      if (sql.includes("FROM sources")) {
-        return {
-          rows: [{
-            id: SOURCE, file_name: "resume.pdf", mime_type: "application/pdf", size: 4,
-            path: "sources/resume.pdf", content: PDF, page_count: 2,
-          }],
-          rowCount: 1,
-        };
-      }
+      if (sql.includes("INSERT INTO application_files")) return { rows: [{ id: APP }], rowCount: 1 };
+      if (sql.startsWith("SELECT id FROM sources")) return { rows: [{ id: SOURCE }], rowCount: 1 };
       if (sql.includes("applications") && sql.includes("source_posting_id") && !sql.includes("INSERT")) return empty;
       if (sql.includes("FROM job_postings")) {
         return { rows: [{ company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null }], rowCount: 1 };
@@ -78,14 +71,13 @@ test("apply snapshots an owned source and a member can stream that file", async 
     })),
   );
   assert.equal(res.status, 201);
+  // The file is copied from sources inside Postgres; its bytes never pass through the Worker.
   const copied = seen.find((call) => call.sql.includes("INSERT INTO application_files"));
   assert.ok(copied);
-  assert.equal(copied.params.includes("resume.pdf"), true);
-  assert.equal(copied.params.includes("application/pdf"), true);
-  assert.equal(copied.params.includes(4), true);
-  assert.equal(copied.params.includes(2), true);
-  assert.equal(copied.params.includes(PDF), true);
-  assert.equal(copied.params.includes("sources/resume.pdf"), true);
+  assert.match(copied.sql, /JOIN sources s ON s\.id = r\.id::uuid AND s\.user_id = \$2/);
+  assert.match(copied.sql, /s\.file_name.*s\.mime_type.*s\.size.*s\.page_count.*s\.path.*s\.content/s);
+  assert.equal(copied.params.includes(JSON.stringify([SOURCE])), true);
+  assert.equal(copied.params.includes(PDF), false);
 
   resetLimits();
   const streamSeen: Call[] = [];

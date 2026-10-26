@@ -1,8 +1,8 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { base64ToBytes, bytesToBase64, decryptAes, encryptAes, masterKey, verifyPkce } from "../crypto.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, noContent, pageBody, parseUuid, randomToken } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, noContent, parseUuid, randomToken } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import { formatJsonTimestamp, pyJson } from "../time.ts";
 import type { Ctx } from "../types.ts";
 
@@ -14,6 +14,7 @@ const APP_CALLBACK = "push://integrations/google/callback";
 const WEB_CALLBACK = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/integrations\/google\/callback$/;
 const STATE_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 60 * 1000;
+const GMAIL_FETCH_CONCURRENCY = 10;
 const GI_COLS = "user_id, encode(access_ciphertext, 'base64') AS access_ciphertext, encode(access_nonce, 'base64') AS access_nonce, encode(refresh_ciphertext, 'base64') AS refresh_ciphertext, encode(refresh_nonce, 'base64') AS refresh_nonce, scopes, token_expires_at, gmail_history_id, calendar_sync_token, last_synced_at, created_at, updated_at";
 const GM_COLS = "id, user_id, external_id, thread_id, application_id, sender, subject, snippet, received_at, created_at";
 const EVENT_COLS = "id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at";
@@ -112,19 +113,6 @@ const eventDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const pageOfRows = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const requireConnection = async (ctx: Ctx): Promise<Integration> => {
   const gi = await loadIntegration(ctx);
@@ -222,6 +210,43 @@ const revoke = async (ctx: Ctx, token: string): Promise<void> => {
   await http(ctx)("https://oauth2.googleapis.com/revoke?token=" + encodeURIComponent(token), { method: "POST" });
 };
 
+/** Runs `task` over `items`, at most `size` at a time, keeping input order. */
+const inBatches = async <T, R>(items: T[], size: number, task: (item: T) => Promise<R>): Promise<R[]> => {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(task)));
+  return out;
+};
+
+/** Last occurrence wins, as the old one-row-at-a-time upserts did; one statement cannot touch a row twice. */
+const lastById = <T extends { id: string }>(items: T[]): T[] => [...new Map(items.map((item) => [item.id, item])).values()];
+
+const SYNC_SQL = `WITH msg AS (
+    INSERT INTO google_messages (${GM_COLS})
+    SELECT m.id, $1, m.external_id, m.thread_id, NULL, m.sender, m.subject, m.snippet, m.received_at, $2
+    FROM jsonb_to_recordset($3::jsonb) AS m(id uuid, external_id text, thread_id text, sender text, subject text, snippet text, received_at timestamptz)
+    ON CONFLICT (user_id, external_id) DO UPDATE SET thread_id = EXCLUDED.thread_id, sender = EXCLUDED.sender, subject = EXCLUDED.subject, snippet = EXCLUDED.snippet, received_at = EXCLUDED.received_at
+  ), gone AS (
+    DELETE FROM calendar_events WHERE user_id = $1 AND source = 'GOOGLE' AND external_id IN (SELECT jsonb_array_elements_text($4::jsonb))
+  )
+  INSERT INTO calendar_events (${EVENT_COLS})
+  SELECT e.id, $1, 1, NULL, 'CUSTOM', e.title, e.starts_at, e.ends_at, e.time_zone, 'GOOGLE', e.external_id, '', $2, $2
+  FROM jsonb_to_recordset($5::jsonb) AS e(id uuid, title text, starts_at timestamptz, ends_at timestamptz, time_zone text, external_id text)
+  ON CONFLICT (user_id, external_id) WHERE external_id IS NOT NULL DO UPDATE SET title = EXCLUDED.title, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, time_zone = EXCLUDED.time_zone, notes = '', revision = calendar_events.revision + 1, updated_at = EXCLUDED.updated_at`;
+
+/** Every synced message and event in one round trip instead of one per row. */
+const persistSync = async (ctx: Ctx, messages: MessageMeta[], events: GoogleEvent[], now: string | null): Promise<void> => {
+  const rows = lastById(messages).map((m) => ({
+    id: crypto.randomUUID(), external_id: m.id, thread_id: m.threadId, sender: m.sender, subject: m.subject, snippet: m.snippet, received_at: m.receivedAt,
+  }));
+  const latest = lastById(events);
+  const cancelled = latest.filter((ev) => ev.status === "cancelled").map((ev) => ev.id);
+  const upserts = latest.filter((ev) => ev.status !== "cancelled").map((ev) => ({
+    id: crypto.randomUUID(), title: ev.summary, starts_at: ev.startsAt, time_zone: ev.timeZone || "UTC", external_id: ev.id,
+    ends_at: Date.parse(ev.endsAt) <= Date.parse(ev.startsAt) ? formatJsonTimestamp(new Date(Date.parse(ev.startsAt) + 3600_000)) : ev.endsAt,
+  }));
+  await query(ctx.deps.query, SYNC_SQL, [ctx.user.id, now, JSON.stringify(rows), JSON.stringify(cancelled), JSON.stringify(upserts)]);
+};
+
 // Routes.
 
 export const googleStatus = async (ctx: Ctx): Promise<Response> => data(200, statusOf(ctx, await loadIntegration(ctx)), ctx.rid);
@@ -256,10 +281,10 @@ export const googleCallback = async (ctx: Ctx): Promise<Response> => {
   const key = await cipher(ctx);
   const state = ctx.url.searchParams.get("state") || "";
   const code = ctx.url.searchParams.get("code") || "";
+  // One statement consumes the state, so two callbacks racing on it cannot both pass.
   const rec = await one(ctx.deps.query,
-    "SELECT state, provider, code_challenge, redirect_uri, final_uri, expires_at, created_at, user_id, purpose FROM oauth_states WHERE state = $1", [state]);
+    "DELETE FROM oauth_states WHERE state = $1 RETURNING state, provider, code_challenge, redirect_uri, final_uri, expires_at, created_at, user_id, purpose", [state]);
   if (!rec) throw unauthenticated("invalid state");
-  await query(ctx.deps.query, "DELETE FROM oauth_states WHERE state = $1", [state]);
   if (ctx.now.getTime() > Date.parse(String(ts(rec.expires_at))) || rec.purpose !== "GOOGLE" || rec.user_id == null) {
     throw unauthenticated("state expired");
   }
@@ -394,8 +419,8 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
     for (let i = 0; i < 5; i += 1) {
       let listed: { ids: string[]; next: string; history: string } = { ids: [], next: "", history: "" };
       try { listed = await listMessageIds(ctx, token, pageToken); } catch { await fail("PROVIDER_ERROR", "gmail message list failed"); }
-      for (const id of listed.ids) {
-        try { messages.push(await getMessage(ctx, token, id)); } catch { await fail("PROVIDER_ERROR", "gmail message fetch failed"); }
+      try { messages.push(...await inBatches(listed.ids, GMAIL_FETCH_CONCURRENCY, (id) => getMessage(ctx, token, id))); } catch {
+        await fail("PROVIDER_ERROR", "gmail message fetch failed");
       }
       if (listed.history && listed.history !== "0") historyId = listed.history;
       if (!listed.next) break;
@@ -415,21 +440,7 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
   }
   const result = { kind: "GOOGLE_SYNC", value: { messages: messages.length, events: events.length, lastSyncedAt: now } };
   try {
-    for (const m of messages) {
-      await query(ctx.deps.query,
-        `INSERT INTO google_messages (${GM_COLS}) VALUES ($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9) ON CONFLICT (user_id, external_id) DO UPDATE SET thread_id = $4, sender = $5, subject = $6, snippet = $7, received_at = $8`,
-        [crypto.randomUUID(), ctx.user.id, m.id, m.threadId, m.sender, m.subject, m.snippet, m.receivedAt, now]);
-    }
-    for (const ev of events) {
-      if (ev.status === "cancelled") {
-        await query(ctx.deps.query, "DELETE FROM calendar_events WHERE user_id = $1 AND external_id = $2 AND source = 'GOOGLE'", [ctx.user.id, ev.id]);
-        continue;
-      }
-      const ends = Date.parse(ev.endsAt) <= Date.parse(ev.startsAt) ? formatJsonTimestamp(new Date(Date.parse(ev.startsAt) + 3600_000)) : ev.endsAt;
-      await query(ctx.deps.query,
-        `INSERT INTO calendar_events (${EVENT_COLS}) VALUES ($1,$2,1,NULL,'CUSTOM',$3,$4,$5,$6,'GOOGLE',$7,'',$8,$8) ON CONFLICT (user_id, external_id) WHERE external_id IS NOT NULL DO UPDATE SET title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = '', revision = calendar_events.revision + 1, updated_at = $8`,
-        [crypto.randomUUID(), ctx.user.id, ev.summary, ev.startsAt, ends, ev.timeZone || "UTC", ev.id, now]);
-    }
+    await persistSync(ctx, messages, events, now);
     await putIntegration(ctx, { ...gi, gmail_history_id: historyId, calendar_sync_token: syncToken, last_synced_at: now, updated_at: now });
     await query(ctx.deps.query, "UPDATE operations SET status = 'SUCCEEDED', result = $2::jsonb, updated_at = $3 WHERE id = $1",
       [op.id, JSON.stringify(result), now]);
@@ -464,7 +475,7 @@ export const googleMessages = async (ctx: Ctx): Promise<Response> => {
     params.push(applicationId);
     where.push(`application_id = $${params.length}`);
   }
-  return pageOfRows(ctx, GM_COLS, "google_messages", where, params, page, messageDto);
+  return listPage(ctx.deps.query, ctx.rid, GM_COLS, "google_messages", where, params, page, messageDto);
 };
 
 export const googleEvents = async (ctx: Ctx): Promise<Response> => {
@@ -482,7 +493,7 @@ export const googleEvents = async (ctx: Ctx): Promise<Response> => {
   }
   params.push("GOOGLE");
   where.push(`source = $${params.length}`);
-  return pageOfRows(ctx, EVENT_COLS, "calendar_events", where, params, page, eventDto);
+  return listPage(ctx.deps.query, ctx.rid, EVENT_COLS, "calendar_events", where, params, page, eventDto);
 };
 
 export const googleLinkMessage = async (ctx: Ctx, idRaw: string): Promise<Response> => {

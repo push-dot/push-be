@@ -139,9 +139,13 @@ export const createInterview = async (ctx: Ctx): Promise<Response> => {
   const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id]);
   if (!app) throw notFound();
   const evidenceIds = (values.evidenceIds as string[] | undefined) ?? [];
-  for (const eid of evidenceIds) {
-    const found = await one(ctx.deps.query, "SELECT id FROM career_evidence WHERE id = $1 AND user_id = $2", [eid, ctx.user.id]);
-    if (!found) throw fieldError("evidenceIds", "evidence " + eid + " not found");
+  if (evidenceIds.length) {
+    const found = await query(ctx.deps.query,
+      "SELECT id FROM career_evidence WHERE user_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+      [ctx.user.id, JSON.stringify(evidenceIds)]);
+    const owned = new Set(found.rows.map((row) => String(row.id)));
+    const missing = evidenceIds.find((eid) => !owned.has(eid));
+    if (missing) throw fieldError("evidenceIds", "evidence " + missing + " not found");
   }
   const tz = String(values.timeZone) || "UTC";
   if (!validTz(tz)) throw fieldError("timeZone", "invalid IANA time zone");
