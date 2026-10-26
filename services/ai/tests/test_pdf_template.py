@@ -203,15 +203,6 @@ async def test_create_stores_classic_as_simple():
     assert loaded.template == "SIMPLE"
 
 
-async def test_patch_stores_compact_as_ats():
-    doc = _document("MODERN")
-    svc = _service(_Store(doc))
-    patched = await svc.patch(USER_ID, doc.id, 1, None, "COMPACT", None)
-    loaded = await svc.get(USER_ID, doc.id)
-    assert patched.template == "ATS"
-    assert loaded.template == "ATS"
-
-
 async def test_create_rejects_an_unknown_template():
     svc = _service(_Store())
     with pytest.raises(DomainError) as caught:

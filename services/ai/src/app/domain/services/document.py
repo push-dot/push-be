@@ -3,7 +3,7 @@ from app.clock import utcnow
 import copy
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -11,7 +11,7 @@ from app.db import DB, NotFoundError
 from app.domain import content as dc
 from app.domain import entities as ent
 from app.domain.errors import (
-    approval_stale, document_not_finalized, internal,
+    document_not_finalized, internal,
     invalid_transition, map_revision_err, not_found, revision_conflict,
     unsupported_claim, validation_field,
 )
@@ -33,8 +33,6 @@ def _now() -> datetime:
 EXPORT_PDF = "PDF"
 EXPORT_DOCX = "DOCX"
 EXPORT_READY_TO_RENDER = "READY_TO_RENDER"
-EXPORT_SUCCEEDED = "SUCCEEDED"
-EXPORT_FAILED = "FAILED"
 
 
 MAX_DOCUMENT_TITLE = 300
@@ -64,20 +62,6 @@ def compute_quality(blocks: list[ent.Block], method: str) -> ent.Quality:
                 message="evidence span does not literally appear in block text"))
     fidelity = (len(blocks) - unsupported) * 100 // len(blocks) if blocks else None
     return ent.Quality(evidence_fidelity=fidelity, method=method, issues=issues)
-
-
-def _replaced(src: ent.DocumentVersion, edits: list[tuple[str, str]]):
-    content = copy.deepcopy(src.content)
-    blocks = copy.deepcopy(src.blocks)
-    for old, new in edits:
-        applied = [False]
-        dc.replace_in_node(content, old, new, applied)
-        if not applied[0]:
-            return content, blocks, False
-        for b in blocks:
-            if old in b.text:
-                b.text = b.text.replace(old, new, 1)
-    return content, blocks, bool(edits)
 
 
 @dataclass
@@ -147,42 +131,6 @@ class DocumentService:
             raise invalid_transition("document is archived")
         return d
 
-    async def patch(self, user_id: UUID, id_: UUID, expected: int,
-                    title: Optional[str], template: Optional[str],
-                    language: Optional[str]) -> ent.Document:
-        out = None
-
-        async def work():
-            nonlocal out
-            d = await self._get_mutable(user_id, id_)
-            if d.revision != expected:
-                raise revision_conflict(d.revision)
-            if title is not None:
-                if not 1 <= len(title) <= 300:
-                    raise validation_field("title", "title must be 1-300 characters")
-                d.title = title
-            if template is not None:
-                if not ent.valid_document_template(template):
-                    raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
-                stored = ent.stored_document_template(template)
-                if stored != d.template:
-                    d.template = stored
-                    d.finalized_version_id = None
-                    if d.status == ent.DOC_FINALIZED:
-                        d.status = ent.DOC_DRAFT
-            if language is not None:
-                d.language = language
-            d.updated_at = _now()
-            try:
-                await self.documents.update(d, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            d.revision = expected + 1
-            out = d
-
-        await self.db.run(work)
-        return out
-
     async def _verify_blocks(self, user_id: UUID, application_id: UUID,
                              blocks: list[ent.Block]) -> dict:
         loaded: dict = {}
@@ -249,13 +197,6 @@ class DocumentService:
 
         await self.db.run(work)
         return out_doc, out_ver
-
-    async def list_versions(self, user_id: UUID, doc_id: UUID, page):
-        await self.get(user_id, doc_id)
-        try:
-            return await self.documents.list_versions(user_id, doc_id, page)
-        except Exception:
-            raise internal()
 
     async def get_version(self, user_id: UUID, doc_id: UUID,
                           version_id: UUID) -> ent.DocumentVersion:
@@ -380,79 +321,6 @@ class DocumentService:
         await self.db.run(work)
         return op
 
-    async def apply_revision(self, user_id: UUID, doc_id: UUID, proposal_id: UUID,
-                             expected: int) -> tuple[ent.Document, ent.DocumentVersion]:
-        out_doc = out_ver = None
-
-        async def work():
-            nonlocal out_doc, out_ver
-            d = await self._get_mutable(user_id, doc_id)
-            if d.revision != expected:
-                raise revision_conflict(d.revision)
-            try:
-                p = await self.documents.get_proposal(user_id, doc_id, proposal_id)
-            except NotFoundError:
-                raise not_found()
-            if p.applied_at is not None:
-                raise invalid_transition("proposal already applied")
-            if (d.latest_version_id is None
-                    or d.latest_version_id != p.source_version_id
-                    or p.source_revision != d.revision):
-                raise approval_stale(
-                    "document changed since the proposal was created")
-            try:
-                src = await self.documents.get_version(
-                    user_id, doc_id, p.source_version_id)
-            except Exception:
-                raise internal()
-            new_content, new_blocks, applied = _replaced(
-                src, [(p.selection.text, p.replacement)])
-            if not applied:
-                raise approval_stale(
-                    "selection text no longer present in the version")
-            v = await self._save_edit(user_id, d, expected, new_content, new_blocks,
-                                      "applied proposal " + str(p.id))
-            await self.documents.mark_proposal_applied(p.id, v.created_at)
-            out_doc, out_ver = d, v
-
-        await self.db.run(work)
-        return out_doc, out_ver
-
-    async def _save_edit(self, user_id: UUID, d: ent.Document, expected: int,
-                         content: dict, blocks: list[ent.Block], note: str) -> ent.DocumentVersion:
-        dc.validate_document_content(content, blocks)
-        await self._verify_blocks(user_id, d.application_id, blocks)
-        num = await self.documents.next_version_number(d.id)
-        now = _now()
-        v = ent.DocumentVersion(
-            id=uuid4(), user_id=user_id, document_id=d.id,
-            application_id=d.application_id, number=num, content=content,
-            blocks=blocks, change_note=note,
-            quality=compute_quality(blocks, ent.METHOD_RULE_BASED),
-            created_at=now)
-        await self.documents.create_version(v)
-        d.latest_version_id = v.id
-        d.finalized_version_id = None
-        if d.status == ent.DOC_FINALIZED:
-            d.status = ent.DOC_DRAFT
-        d.updated_at = now
-        try:
-            await self.documents.update(d, expected)
-        except Exception as err:
-            raise map_revision_err(err)
-        d.revision = expected + 1
-        return v
-
-    async def review(self, user_id: UUID, doc_id: UUID,
-                     version_id: UUID) -> ent.DocumentVersion:
-        v = await self.get_version(user_id, doc_id, version_id)
-        blocks = copy.deepcopy(v.blocks)
-        d = await self.get(user_id, doc_id)
-        await self._verify_blocks(user_id, d.application_id, blocks)
-        v.blocks = blocks
-        v.quality = compute_quality(blocks, ent.METHOD_RULE_BASED)
-        return v
-
     def _version_hash(self, v: ent.DocumentVersion) -> str:
         return hash_json({"kind": ent.APPROVAL_DOCUMENT_FINALIZE, "versionId": v.id,
                           "content": v.content, "blocks": v.blocks})
@@ -504,33 +372,6 @@ class DocumentService:
         await self.db.run(work)
         return out
 
-    async def archive(self, user_id: UUID, doc_id: UUID,
-                      expected: int) -> ent.Document:
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                d = await self.documents.get(user_id, doc_id)
-            except NotFoundError:
-                raise not_found()
-            if d.revision != expected:
-                raise revision_conflict(d.revision)
-            if d.status == ent.DOC_ARCHIVED:
-                out = d
-                return
-            d.status = ent.DOC_ARCHIVED
-            d.updated_at = _now()
-            try:
-                await self.documents.update(d, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            d.revision = expected + 1
-            out = d
-
-        await self.db.run(work)
-        return out
-
     async def create_export(self, user_id: UUID, doc_id: UUID, version_id: UUID,
                             format_: str, renderer_version: str) -> ent.DocumentExport:
         if format_ not in (EXPORT_PDF, EXPORT_DOCX):
@@ -562,54 +403,6 @@ class DocumentService:
                 status=EXPORT_READY_TO_RENDER, renderer_version=renderer_version,
                 created_at=now, updated_at=now)
             await self.documents.create_export(e)
-            out = e
-
-        await self.db.run(work)
-        return out
-
-    async def get_export(self, user_id: UUID, doc_id: UUID,
-                         export_id: UUID) -> ent.DocumentExport:
-        await self.get(user_id, doc_id)
-        try:
-            return await self.documents.get_export(user_id, doc_id, export_id)
-        except NotFoundError:
-            raise not_found()
-        except Exception:
-            raise internal()
-
-    async def list_exports(self, user_id: UUID, doc_id: UUID, page):
-        await self.get(user_id, doc_id)
-        try:
-            return await self.documents.list_exports(user_id, doc_id, page)
-        except Exception:
-            raise internal()
-
-    async def record_export_result(self, user_id: UUID, doc_id: UUID, export_id: UUID,
-                                   sha256: str, byte_length: int,
-                                   page_count: Optional[int],
-                                   validation_: ent.ExportValidation, status: str,
-                                   error_code: Optional[str]) -> ent.DocumentExport:
-        if status not in (EXPORT_SUCCEEDED, EXPORT_FAILED):
-            raise validation_field("status", "must be SUCCEEDED or FAILED")
-        if not sha256 or byte_length < 0:
-            raise validation_field(
-                "sha256", "sha256 and non-negative byteLength are required")
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                e = await self.documents.get_export(user_id, doc_id, export_id)
-            except NotFoundError:
-                raise not_found()
-            if e.status != EXPORT_READY_TO_RENDER:
-                raise invalid_transition("export result already recorded")
-            e.status = status
-            e.result = ent.ExportResult(
-                sha256=sha256, byte_length=byte_length, page_count=page_count,
-                validation=validation_, error_code=error_code)
-            e.updated_at = _now()
-            await self.documents.update_export_result(e)
             out = e
 
         await self.db.run(work)
