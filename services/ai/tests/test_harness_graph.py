@@ -57,7 +57,6 @@ def _spec(runs: list, bookmark_error: Exception | None = None) -> HarnessSpec:
 
     return HarnessSpec(
         id="personal",
-        audience="PERSONAL",
         prompt="help",
         tools=[
             ToolSpec("bookmark_posting", Tier.SAFE_WRITE, IdArgs, bookmark, summary),
@@ -257,3 +256,47 @@ async def test_tool_card_args_with_uuids_are_json():
         args=Uuid(id="11111111-1111-4111-8111-111111111111"), tool_call_id="t")
     assert created
     assert event["args"] == {"id": "11111111-1111-4111-8111-111111111111"}
+
+
+async def test_unexpected_tool_exception_becomes_tool_failed_result():
+    # An escaping exception left the AIMessage's tool call unanswered and killed the thread.
+    runs = []
+    model = ScriptedChat([
+        {"tool_calls": [_call("bookmark_posting", "c1")]},
+        {"content": "sorry"},
+    ])
+    graph, _db = _graph(model, runs, ValueError("badly formed id"))
+    events = await _events(graph, _input("BYPASS"))
+    assert any(event.get("result") == {"error": "TOOL_FAILED"} and event.get("state") == "err"
+               for event in events)
+    answer = model.seen[-1][-1]
+    assert isinstance(answer, ToolMessage) and answer.tool_call_id == "c1"
+    assert json.loads(answer.content) == {"error": "TOOL_FAILED"}
+
+
+async def test_domain_error_from_a_tool_becomes_its_code():
+    from app.domain.errors import DomainError
+
+    runs = []
+    model = ScriptedChat([
+        {"tool_calls": [_call("bookmark_posting", "c1")]},
+        {"content": "sorry"},
+    ])
+    graph, _db = _graph(model, runs, DomainError(404, "NOT_FOUND", "gone"))
+    events = await _events(graph, _input("BYPASS"))
+    assert any(event.get("result") == {"error": "NOT_FOUND"} for event in events)
+    assert json.loads(model.seen[-1][-1].content) == {"error": "NOT_FOUND"}
+
+
+async def test_unknown_tool_calls_count_toward_the_cap_and_finish_within_the_step_limit():
+    # Unknown calls used to cost a graph step each without counting: 30 of them hit
+    # GraphRecursionError. Now 8 count, the rest are answered in one step.
+    calls = [_call("no_such_tool", f"u{i}") for i in range(30)]
+    model = ScriptedChat([{"tool_calls": calls}, {"content": "끝"}])
+    graph, _db = _graph(model, [])
+    await _events(graph, _input("BYPASS"))
+    state = await graph.aget_state(_config())
+    answers = [m for m in state.values["messages"] if isinstance(m, ToolMessage)]
+    assert sorted(m.tool_call_id for m in answers) == sorted(f"u{i}" for i in range(30))
+    assert sum(m.content == "도구 호출 한도" for m in answers) == 22
+    assert state.values["tool_calls_used"] == 8

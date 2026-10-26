@@ -9,12 +9,13 @@ call. A cron trigger nudges anything left PENDING.
 from __future__ import annotations
 
 import os
-from typing import Awaitable, Callable, Optional
-from uuid import uuid4
+from collections.abc import Awaitable, Callable
+from uuid import UUID, uuid4
 
-# (job_id, claim). A 1-argument scheduler still works.
-Scheduler = Callable[..., Awaitable[None]]
-_scheduler: Optional[Scheduler] = None
+type Scheduler = Callable[[str, str], Awaitable[None]]
+"""Called with (job_id, claim)."""
+
+_scheduler: Scheduler | None = None
 
 
 def external_jobs() -> bool:
@@ -33,12 +34,12 @@ def remote_executor() -> bool:
     return bool(os.environ.get("AI_ORIGIN", "").strip())
 
 
-def set_job_scheduler(fn: Scheduler) -> None:
+def set_job_scheduler(fn: Scheduler | None) -> None:
     global _scheduler
     _scheduler = fn
 
 
-def get_job_scheduler() -> Optional[Scheduler]:
+def get_job_scheduler() -> Scheduler | None:
     return _scheduler
 
 
@@ -50,16 +51,10 @@ def runs_local_chat_worker() -> bool:
     return not external_jobs() and queue_backend() != "redis"
 
 
-async def schedule_chat_job(job_id) -> None:
-    if queue_backend() == "redis":
+async def schedule_chat_job(job_id: str | UUID) -> None:
+    if queue_backend() == "redis" or _scheduler is None:
         return
-    if _scheduler is None:
-        return
-    claim = str(uuid4())
-    try:
-        await _scheduler(str(job_id), claim)
-    except TypeError:
-        await _scheduler(str(job_id))
+    await _scheduler(str(job_id), str(uuid4()))
 
 
 def sse_max_polls() -> int:

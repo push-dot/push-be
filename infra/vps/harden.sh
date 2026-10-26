@@ -131,6 +131,12 @@ if ! command -v docker >/dev/null || ! [ -f /etc/apt/sources.list.d/docker.list 
   done
   install -d -m 0755 /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  # Published at https://docs.docker.com/engine/install/ubuntu/. A swapped key would sign any package.
+  fpr="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '$1 == "fpr" {print $10; exit}')"
+  if [ "$fpr" != 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 ]; then
+    rm -f /etc/apt/keyrings/docker.asc
+    die "Docker apt key fingerprint is ${fpr:-missing}, expected 9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+  fi
   chmod 0644 /etc/apt/keyrings/docker.asc
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
     >/etc/apt/sources.list.d/docker.list

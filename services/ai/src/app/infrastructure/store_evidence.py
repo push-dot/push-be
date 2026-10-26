@@ -6,7 +6,7 @@ from app.db import NotFoundError
 from app.domain.entities import CareerEvidence, Source
 from app.domain.pagination import Cursor, Page
 from app.jsonutil import dump
-from app.infrastructure.store_common import Conds, Store, list_page, to_model
+from app.infrastructure.store_common import Conds, Store, like_contains, list_page, to_model
 
 _EVIDENCE_COLS = ("id, user_id, revision, kind, title, source_text, source_url, skills, "
                   "verification_status, provenance, supersedes_id, archived, created_at, updated_at")
@@ -33,7 +33,8 @@ class EvidenceStore(Store):
         if kind:
             c.add("kind = {}", kind)
         if query:
-            c.add("(title ILIKE {} OR source_text ILIKE {})", "%" + query + "%", "%" + query + "%")
+            c.add("(title ILIKE {} ESCAPE '\\' OR source_text ILIKE {} ESCAPE '\\')",
+                  like_contains(query), like_contains(query))
         c.cursor(page)
         sql, args = c.query(_EVIDENCE_COLS, "career_evidence", page.effective_limit())
         rows = await self.q().fetch(sql, *args)
@@ -53,12 +54,6 @@ class EvidenceStore(Store):
     async def count(self, user_id: UUID) -> int:
         return await self.q().fetchval(
             "SELECT count(*) FROM career_evidence WHERE user_id = $1 AND NOT archived", user_id)
-
-    async def list_by_ids(self, user_id: UUID, ids: list[UUID]) -> list[CareerEvidence]:
-        rows = await self.q().fetch(
-            f"SELECT {_EVIDENCE_COLS} FROM career_evidence WHERE user_id = $1 AND id = ANY($2)",
-            user_id, ids)
-        return [to_model(CareerEvidence, r) for r in rows]
 
 
 class SourceStore(Store):
@@ -85,9 +80,3 @@ class SourceStore(Store):
             id_, user_id)
         data = row["content"]
         return bytes(data) if data else b""
-
-    async def referenced(self, user_id: UUID, id_: UUID) -> bool:
-        n = await self.q().fetchval(
-            "SELECT count(*) FROM career_evidence WHERE user_id = $1 AND provenance->>'sourceId' = $2",
-            user_id, str(id_))
-        return n > 0

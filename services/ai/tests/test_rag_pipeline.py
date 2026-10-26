@@ -89,6 +89,16 @@ async def test_pipeline_splits_512_64_and_attaches_tenant_metadata():
     assert len(rows[0]["embedding"]) == 3
 
 
+@pytest.mark.asyncio
+async def test_pipeline_caps_text_before_embedding(monkeypatch):
+    import app.rag.pipeline as pipeline
+    monkeypatch.setattr(pipeline, "MAX_INGEST_CHARS", 2000)
+    store = MemoryStore()
+    await Ingestor(store, Embedder()).ingest_text(Tenant(user_id=USER), "source", SOURCE, long_text())
+    rows = store.rows[("source", SOURCE, "BAAI/bge-m3")]
+    assert sum(len(r["text"]) for r in rows) <= 2000 + 64 * 10
+
+
 def test_ingest_requires_tenant():
     with pytest.raises(ValueError):
         Tenant()

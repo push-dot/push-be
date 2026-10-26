@@ -10,6 +10,10 @@ const HEIC_BRANDS = new Set(["heic", "heix", "heif", "mif1", "msf1"]);
 
 const tooLarge = (): HttpError => new HttpError(413, "PAYLOAD_TOO_LARGE", "request body too large");
 
+// Multipart framing adds a few hundred bytes; 64 KiB of slack keeps a file at the limit acceptable.
+export const declaredTooLarge = (request: Request, maxFileBytes: number): boolean =>
+  Number(request.headers.get("content-length") || 0) > maxFileBytes + (64 << 10);
+
 const ascii = (bytes: Uint8Array, from: number, to: number): string => String.fromCharCode(...bytes.subarray(from, to));
 
 const sniff = (b: Uint8Array): string | null => {
@@ -39,6 +43,7 @@ const base64 = (bytes: Uint8Array): string => {
 };
 
 export const uploadImage = async (ctx: Ctx): Promise<Response> => {
+  if (declaredTooLarge(ctx.request, MAX_IMAGE_BYTES)) throw tooLarge();
   const form = await ctx.request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) throw fieldError("file", "required");
@@ -68,6 +73,6 @@ export const isImageRead = (method: string, path: string): boolean =>
 
 export const dispatchImages = async (ctx: Ctx, path: string): Promise<Response | null> => {
   if (path === "/api/v1/uploads/images") return ctx.request.method === "POST" ? uploadImage(ctx) : null;
-  if (isImageRead(ctx.request.method, path)) return getImage(ctx, decodeURIComponent(path.slice("/api/v1/uploads/images/".length)));
+  if (isImageRead(ctx.request.method, path)) return getImage(ctx, path.slice("/api/v1/uploads/images/".length));
   return null;
 };

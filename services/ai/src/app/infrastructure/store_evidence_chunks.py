@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Optional
 from uuid import UUID, uuid4
 
 from app.db import DB
+from app.infrastructure.store_rag import EVIDENCE_SEARCH, lock_source, vector_literal
 
 
 class EvidenceChunkStore:
@@ -21,27 +21,24 @@ class EvidenceChunkStore:
 
     async def replace_chunks(self, user_id: UUID, evidence_id: UUID,
                              chunks: list[tuple[str, list[float]]]) -> None:
-        await self.db.q().execute(
-            "DELETE FROM evidence_chunks WHERE evidence_id=$1", evidence_id)
-        if not chunks:
-            return
-        await self.db.q().executemany(
-            "INSERT INTO evidence_chunks "
-            "(id, user_id, evidence_id, seq, text, embedding) "
-            "VALUES ($1,$2,$3,$4,$5,$6::vector)",
-            [(uuid4(), user_id, evidence_id, i, t,
-              "[" + ",".join(str(x) for x in v) + "]")
-             for i, (t, v) in enumerate(chunks)])
+        async def work():
+            await lock_source(self.db, f"evidence:{evidence_id}")
+            await self.db.q().execute(
+                "DELETE FROM evidence_chunks WHERE evidence_id=$1 AND user_id=$2",
+                evidence_id, user_id)
+            if not chunks:
+                return
+            await self.db.q().executemany(
+                "INSERT INTO evidence_chunks "
+                "(id, user_id, evidence_id, seq, text, embedding) "
+                "VALUES ($1,$2,$3,$4,$5,$6::vector)",
+                [(uuid4(), user_id, evidence_id, i, t, vector_literal(v))
+                 for i, (t, v) in enumerate(chunks)])
+
+        await self.db.do(work)
 
     async def search(self, user_id: UUID, vector: list[float],
                      k: int = 6) -> list[dict]:
-        vec = "[" + ",".join(str(x) for x in vector) + "]"
         rows = await self.db.q().fetch(
-            "SELECT c.text, c.evidence_id, e.title, "
-            "       c.embedding <=> $2::vector AS dist "
-            "FROM evidence_chunks c "
-            "JOIN career_evidence e ON e.id = c.evidence_id "
-            "WHERE c.user_id=$1 AND NOT e.archived "
-            "AND c.embedding IS NOT NULL "
-            "ORDER BY dist LIMIT $3", user_id, vec, k)
+            EVIDENCE_SEARCH, user_id, vector_literal(vector), k)
         return [dict(r) for r in rows]

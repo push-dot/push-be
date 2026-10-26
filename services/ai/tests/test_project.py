@@ -12,7 +12,7 @@ from app.domain.services.project import (
     ProjectService, PEV_VERIFIED, RUN_VERIFIED, RUN_VERIFYING,
 )
 from app.infrastructure.store_projects import ProjectStore
-from tests.stubs import FakeDB, StubOperationStore, StubUserStore
+from tests.stubs import FakeDB, StubAiUsageStore, StubOperationStore, StubUserStore
 
 
 def _now():
@@ -124,6 +124,7 @@ def _blueprint_service(plan, held: int):
         gate.users.user.plan = None
     svc = ProjectService(FakeDB(), None, gate)
     svc.projects = projects
+    svc.locks = StubAiUsageStore()
     svc.ops = StubOperationStore()
 
     class _Apps:

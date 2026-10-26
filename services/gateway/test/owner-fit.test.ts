@@ -18,5 +18,5 @@ test("posting fit, document generate and ai job status go to core", () => {
 
 test("conversation approval answers go to core", () => {
   assert.equal(ownerOf("POST", `/api/v1/conversations/${ID}/approvals/${ID}`), "core");
-  assert.equal(ownerOf("GET", `/api/v1/conversations/${ID}/approvals/${ID}`), "python");
+  assert.equal(ownerOf("GET", `/api/v1/conversations/${ID}/approvals/${ID}`), "deny");
 });

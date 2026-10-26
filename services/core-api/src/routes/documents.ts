@@ -4,8 +4,8 @@ import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
 } from "../document-content.ts";
-import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, requireUuid } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, language, status, latest_version_id, finalized_version_id, created_at, updated_at";
@@ -86,19 +86,6 @@ const exportDto = (row: Row): Row => ({
   updatedAt: ts(row.updated_at),
 });
 
-const pageOfRows = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const loadDocument = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
@@ -128,7 +115,14 @@ const failedUpdate = async (ctx: Ctx, table: string, id: string): Promise<never>
 
 /** `_verify_blocks`: sets each block's claim status; returns evidence ids in first-seen order. */
 const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
-  const loaded = new Map<string, Row>();
+  const wanted = [...new Set(blocks.flatMap((b) => b.evidenceRefs.map((ref) => ref.evidenceId)))];
+  const rows = wanted.length
+    ? (await query(ctx.deps.query,
+      "SELECT id, source_text, archived FROM career_evidence WHERE user_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+      [ctx.user.id, JSON.stringify(wanted)])).rows
+    : [];
+  const evidence = new Map(rows.map((row) => [String(row.id), row]));
+  const seen = new Set<string>();
   for (const b of blocks) {
     if (!b.evidenceRefs.length) {
       b.claimStatus = "UNSUPPORTED";
@@ -136,13 +130,9 @@ const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
     }
     let status = "SUPPORTED";
     for (const ref of b.evidenceRefs) {
-      let e = loaded.get(ref.evidenceId);
-      if (!e) {
-        const row = await one(ctx.deps.query, "SELECT id, source_text, archived FROM career_evidence WHERE id = $1 AND user_id = $2", [ref.evidenceId, ctx.user.id]);
-        if (!row) throw fieldError("blocks", "evidence " + ref.evidenceId + " not found");
-        e = row;
-        loaded.set(ref.evidenceId, row);
-      }
+      const e = evidence.get(ref.evidenceId);
+      if (!e) throw fieldError("blocks", "evidence " + ref.evidenceId + " not found");
+      seen.add(ref.evidenceId);
       if (e.archived) throw fieldError("blocks", "evidence " + ref.evidenceId + " is archived");
       const span = codePointSlice(String(e.source_text), ref.start, ref.end);
       if (span === null) throw fieldError("blocks", "evidenceRef range out of bounds for " + ref.evidenceId);
@@ -150,7 +140,7 @@ const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
     }
     b.claimStatus = status;
   }
-  return [...loaded.keys()];
+  return [...seen];
 };
 
 /**
@@ -174,7 +164,7 @@ const saveVersion = async (
      ins AS (INSERT INTO document_versions (${VERSION_COLS})
        SELECT $3, $2, $1, $6, (SELECT COALESCE(MAX(number), 0) + 1 FROM document_versions WHERE document_id = $1), $7::jsonb, $8::jsonb, $9, $10::jsonb, $4
        FROM upd RETURNING number),
-     used AS (UPDATE revision_proposals SET applied_at = $4 FROM upd WHERE revision_proposals.id = $11 AND $11::uuid IS NOT NULL)
+     used AS (UPDATE revision_proposals SET applied_at = $4 FROM upd WHERE revision_proposals.id = $11 AND revision_proposals.user_id = $2 AND $11::uuid IS NOT NULL)
      SELECT number FROM ins`,
     [docId, ctx.user.id, versionId, now, expected, doc.application_id ?? null, JSON.stringify(content), JSON.stringify(blocks),
       note, JSON.stringify(quality), extra?.proposalId ?? null]);
@@ -226,7 +216,7 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
     params.push(value);
     where.push(`${column} = $${params.length}`);
   }
-  return pageOfRows(ctx, DOC_COLS, "documents", where, params, page, documentDto);
+  return listPage(ctx.deps.query, ctx.rid, DOC_COLS, "documents", where, params, page, documentDto);
 };
 
 export const createDocument = async (ctx: Ctx): Promise<Response> => {
@@ -298,7 +288,7 @@ export const listVersions = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadDocument(ctx, id);
-  return pageOfRows(ctx, VERSION_COLS, "document_versions", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, versionDto);
+  return listPage(ctx.deps.query, ctx.rid, VERSION_COLS, "document_versions", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, versionDto);
 };
 
 export const getVersion = async (ctx: Ctx, idRaw: string, versionRaw: string): Promise<Response> => {
@@ -387,12 +377,14 @@ export const finalizeDocument = async (ctx: Ctx, idRaw: string): Promise<Respons
   const evidenceIds = await verifyBlocks(ctx, blocks);
   for (const b of blocks) if (b.claimStatus !== "SUPPORTED") throw new HttpError(409, "UNSUPPORTED_CLAIM", "block " + b.id + " is " + b.claimStatus);
   const appId = doc.application_id == null ? null : String(doc.application_id);
-  for (const eid of evidenceIds) {
-    const use = await one(ctx.deps.query,
-      "SELECT status FROM approvals WHERE user_id = $1 AND kind = 'EVIDENCE_USE' AND application_id IS NOT DISTINCT FROM $2::uuid AND target_id = $3 AND status IN ('APPROVED','PENDING') AND (expires_at IS NULL OR expires_at > $4) ORDER BY created_at DESC LIMIT 1",
-      [ctx.user.id, appId, eid, ts(ctx.now)]);
-    if (!use || use.status !== "APPROVED") throw approvalRequired("EVIDENCE_USE approval required for evidence " + eid);
-  }
+  const uses = evidenceIds.length
+    ? (await query(ctx.deps.query,
+      "SELECT DISTINCT ON (target_id) target_id, status FROM approvals WHERE user_id = $1 AND kind = 'EVIDENCE_USE' AND application_id IS NOT DISTINCT FROM $2::uuid AND target_id IN (SELECT jsonb_array_elements_text($3::jsonb)::uuid) AND status IN ('APPROVED','PENDING') AND (expires_at IS NULL OR expires_at > $4) ORDER BY target_id, created_at DESC",
+      [ctx.user.id, appId, JSON.stringify(evidenceIds), ts(ctx.now)])).rows
+    : [];
+  const latestUse = new Map(uses.map((row) => [String(row.target_id), String(row.status)]));
+  const unapproved = evidenceIds.find((eid) => latestUse.get(eid) !== "APPROVED");
+  if (unapproved) throw approvalRequired("EVIDENCE_USE approval required for evidence " + unapproved);
   const approval = await one(ctx.deps.query,
     "SELECT revision, kind, application_id, target_id, payload_hash, status, expires_at FROM approvals WHERE id = $1 AND user_id = $2",
     [approvalId, ctx.user.id]);
@@ -472,7 +464,7 @@ export const listExports = async (ctx: Ctx, idRaw: string): Promise<Response> =>
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadDocument(ctx, id);
-  return pageOfRows(ctx, EXPORT_COLS, "document_exports", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, exportDto);
+  return listPage(ctx.deps.query, ctx.rid, EXPORT_COLS, "document_exports", ["user_id = $1", "document_id = $2"], [ctx.user.id, id], page, exportDto);
 };
 
 export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: string): Promise<Response> => {
@@ -502,8 +494,10 @@ export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: str
     errorCode: values.errorCode ?? null,
   });
   const now = ts(ctx.now);
-  await query(ctx.deps.query, "UPDATE document_exports SET status = $2, result = $3::jsonb, updated_at = $4 WHERE id = $1",
-    [exportId, status, JSON.stringify(result), now]);
+  const recorded = await one(ctx.deps.query,
+    "UPDATE document_exports SET status = $2, result = $3::jsonb, updated_at = $4 WHERE id = $1 AND user_id = $5 AND status = 'READY_TO_RENDER' RETURNING id",
+    [exportId, status, JSON.stringify(result), now, ctx.user.id]);
+  if (!recorded) throw transition("export result already recorded");
   return data(200, exportDto({ ...row, status, result, updated_at: now }), ctx.rid);
 };
 

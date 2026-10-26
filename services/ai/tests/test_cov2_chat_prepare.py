@@ -58,8 +58,8 @@ def refs(monkeypatch):
         def __init__(self, db):
             pass
 
-        async def application_owner(self, app_id):
-            cfg["calls"].append(("owner", app_id))
+        async def application_owner(self, app_id, company_id):
+            cfg["calls"].append(("owner", app_id, company_id))
             return cfg["owner"]
 
         async def context(self, user_id):
@@ -359,6 +359,7 @@ async def test_employer_review_reference_lines_stop_when_data_is_missing(
         state["application_id"] = uuid4()
     out, _ = await _prepare(svc, state)
     assert [call[0] for call in refs["calls"]] == expected_calls
+    assert all(call[2] == c.company_id for call in refs["calls"] if call[0] == "owner")
     assert "건 수치" not in out["prompt_system"]
 
 

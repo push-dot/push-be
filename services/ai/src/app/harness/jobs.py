@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from contextlib import aclosing
+from time import monotonic
+from typing import Final
 from uuid import UUID
 
 from app.domain.errors import DomainError
 from app.harness.document_edits import apply_edit, env_core
 
+_CANCEL_CHECK_SECONDS: Final = 1.0
 
 class _ApprovedEdit:
     def __init__(self, svc, user_id, diff: dict):
@@ -74,24 +78,33 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict | None:
         **({"resume": payload["resume"]} if payload.get("resume") else {}),
     }
     result: dict = {}
+    checked_at = -_CANCEL_CHECK_SECONDS
+    stream = source.astream(
+        state, config={"configurable": {"thread_id": str(job["conversation_id"])}},
+        stream_mode=["custom", "values"])
     try:
-        async for mode, chunk in source.astream(
-                state, config={"configurable": {"thread_id": str(job["conversation_id"])}},
-                stream_mode=["custom", "values"]):
-            if await cancelled(job["id"]):
-                await ctx.emit("cancelled", {})
-                raise JobCancelled()
-            if mode == "custom" and isinstance(chunk, dict):
-                if "token" in chunk:
-                    await ctx.emit("token", {"text": chunk["token"]})
-                elif "status" in chunk:
-                    await ctx.emit("status", {"text": chunk["status"]})
-                elif (live := _live_event(chunk)) is not None:
-                    await ctx.emit(*live)
-            elif mode == "values" and isinstance(chunk, dict) and chunk.get("operation"):
-                operation = to_jsonable(chunk["operation"])
-                result = {"operationId": str(operation.get("id") or "")}
-                await ctx.emit("done", {"operation": operation})
+        # aclosing: close the graph stream here, in this Context, so its contextvar resets succeed.
+        async with aclosing(stream):
+            async for mode, chunk in stream:
+                final = mode == "values" and isinstance(chunk, dict) and bool(chunk.get("operation"))
+                ending = final or (isinstance(chunk, dict) and chunk.get("type") == "done")
+                # One cancelled() query per second instead of per token, and always before done.
+                if ending or monotonic() - checked_at >= _CANCEL_CHECK_SECONDS:
+                    checked_at = monotonic()
+                    if await cancelled(job["id"]):
+                        await ctx.emit("cancelled", {})
+                        raise JobCancelled()
+                if mode == "custom" and isinstance(chunk, dict):
+                    if "token" in chunk:
+                        await ctx.emit("token", {"text": chunk["token"]})
+                    elif "status" in chunk:
+                        await ctx.emit("status", {"text": chunk["status"]})
+                    elif (live := _live_event(chunk)) is not None:
+                        await ctx.emit(*live)
+                elif final:
+                    operation = to_jsonable(chunk["operation"])
+                    result = {"operationId": str(operation.get("id") or "")}
+                    await ctx.emit("done", {"operation": operation})
     except DomainError as err:
         error = {"code": err.code, "message": err.message, "details": err.details}
         await ctx.emit("error", {"error": error})

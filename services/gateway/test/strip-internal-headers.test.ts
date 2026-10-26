@@ -104,3 +104,84 @@ test("act-as-only core routes go to core", () => {
   assert.equal(ownerOf("GET", "/api/v1/conversations/c1/artifacts/05_final_resume.pdf"), "core");
   assert.equal(ownerOf("GET", "/api/v1/conversations/c1/artifacts"), "python");
 });
+
+const capture = () => {
+  const seen: Request[] = [];
+  const binding = {
+    fetch: async (request: Request) => {
+      seen.push(request);
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  return { seen, binding };
+};
+
+const spoofed = {
+  "x-push-ai-secret": "client-guess",
+  "x-push-dispatch-secret": "client-guess",
+  "x-push-user": USER,
+};
+
+test("client copies of any x-push header are dropped on every route", async () => {
+  resetLimits();
+  const { seen, binding } = capture();
+  const env = { API: binding, CORE: binding, APP_ENV: "production", INTERNAL_API_SECRET: "secret" } as FrontEnv;
+  const deps = { query: async () => [] } as Deps;
+  await handle(new Request("https://push-be.example/api/v1/me/bookmarks", { headers: spoofed }), env, deps);
+  await handle(new Request("https://push-be.example/api/v1/me/bookmarks", {
+    headers: { ...spoofed, "x-push-internal-secret": "secret", "x-push-act-as": USER },
+  }), env, deps);
+  await handle(new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST", headers: { ...spoofed, "content-type": "application/json" }, body: "{}",
+  }), env, deps);
+  assert.equal(seen.length, 3);
+  for (const request of seen) {
+    for (const name of Object.keys(spoofed)) assert.equal(request.headers.get(name), null, name);
+  }
+  assert.equal(seen[1].headers.get("x-push-act-as"), USER);
+});
+
+test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing secret", async () => {
+  resetLimits();
+  const sent: Array<{ url: string; secret: string | null }> = [];
+  const deps = {
+    query: async () => [],
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({ url: String(input), secret: new Headers(init?.headers).get("x-push-ai-secret") });
+      return new Response("{}", { status: 202 });
+    },
+  } as Deps;
+  const { binding } = capture();
+  const post = () => new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST", headers: { "content-type": "application/json", "x-push-ai-secret": "client-guess" }, body: "{}",
+  });
+  const base = { API: binding, CORE: binding, APP_ENV: "production" };
+
+  const ok = await handle(post(), { ...base, AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv, deps);
+  assert.equal(ok.status, 202);
+  assert.deepEqual(sent, [{ url: "https://ai.example.test/api/v1/ai/generate", secret: "real" }]);
+
+  const noSecret = await handle(post(), { ...base, AI_ORIGIN: "https://ai.example.test" } as FrontEnv, deps);
+  assert.equal(noSecret.status, 500);
+  const plain = await handle(post(), { ...base, AI_ORIGIN: "http://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv, deps);
+  assert.equal(plain.status, 500);
+  assert.equal(sent.length, 1);
+});
+
+test("a declared body over 20 MiB is refused before it is read or forwarded", async () => {
+  resetLimits();
+  const { seen, binding } = capture();
+  const env = { API: binding, CORE: binding, APP_ENV: "production" } as FrontEnv;
+  const deps = { query: async () => [] } as Deps;
+  const big = await handle(new Request("https://push-be.example/api/v1/sources", {
+    method: "POST", headers: { "content-length": String((20 << 20) + 1) }, body: "x",
+  }), env, deps);
+  assert.equal(big.status, 413);
+  assert.equal((await big.json() as { error: { code: string } }).error.code, "PAYLOAD_TOO_LARGE");
+  const small = await handle(new Request("https://push-be.example/api/v1/sources", {
+    method: "POST", headers: { "content-type": "application/json" }, body: '{"a":1}',
+  }), env, deps);
+  assert.equal(small.status, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(await seen[0].text(), '{"a":1}');
+});

@@ -57,8 +57,8 @@ class GoogleClient:
             "refresh_token": refresh_token, "grant_type": "refresh_token"})
 
     async def revoke_token(self, token: str) -> None:
-        await self._client.post(
-            "https://oauth2.googleapis.com/revoke?token=" + quote(token, safe=""))
+        # Form body, not query string: request URLs end up in httpx INFO logs.
+        await self._client.post("https://oauth2.googleapis.com/revoke", data={"token": token})
 
     async def _get_json(self, access_token: str, url: str):
         resp = await self._client.get(

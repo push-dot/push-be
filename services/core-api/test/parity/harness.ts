@@ -91,16 +91,18 @@ const replay = (log: Logged[][], caseIndex: () => number): Query => {
   };
 };
 
+/** Slots are taken when a query is issued, the order replay reads them in, even when queries run in parallel. */
 const recording = (live: Query, log: Logged[][], caseIndex: () => number): Query => async (sql, params = []) => {
   const index = caseIndex();
   log[index] ||= [];
+  const at = log[index].push({ sql }) - 1;
   try {
     const result = await live(sql, params);
-    log[index].push({ sql, rows: structuredClone(result.rows), rowCount: result.rowCount });
+    log[index][at] = { sql, rows: structuredClone(result.rows), rowCount: result.rowCount };
     return result;
   } catch (err) {
     const e = err as { code?: string; message?: string };
-    log[index].push({ sql, error: { code: e.code, message: String(e.message) } });
+    log[index][at] = { sql, error: { code: e.code, message: String(e.message) } };
     throw err;
   }
 };

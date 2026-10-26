@@ -15,6 +15,10 @@ const USER_BY_ID = "SELECT id, display_name, locale, plan, subscription_status, 
 const USER_BY_TOKEN_BASE = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, u.email, u.provider, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 const USER_BY_TOKEN = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscription_status, u.stripe_customer_id, u.period_ends_at, u.created_at, u.is_employer, u.email, u.provider, (SELECT company_id FROM company_members WHERE company_members.user_id = u.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = u.id) AS company_role, t.expires_at AS token_expires_at FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1";
 
+const REVOKE_ALL = "WITH refreshed AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL) UPDATE access_tokens SET expires_at = $2 WHERE user_id = $1";
+const ROTATE_REFRESH = "WITH revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id), expired AS (UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM revoked)) SELECT id FROM revoked";
+const LOGOUT = "WITH target AS (SELECT id FROM refresh_tokens WHERE token_hash = $1), revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id IN (SELECT id FROM target) AND revoked_at IS NULL) UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM target)";
+
 const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: unknown[]): Promise<Record<string, unknown> | null> => {
   try {
     return await one(ctx.deps.query, sql, params);
@@ -169,10 +173,12 @@ export async function issue(ctx: Ctx, userId: string): Promise<Record<string, un
   const refreshExp = new Date(ctx.now.getTime() + REFRESH_MS).toISOString();
   const accessExp = new Date(ctx.now.getTime() + ACCESS_TTL * 1000).toISOString();
   const created = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    "WITH rt AS (INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at) VALUES ($1,$2,$3,$4,NULL,$5) RETURNING id) INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, created_at) SELECT $6,$2,$7,rt.id,$8,$5 FROM rt",
-    [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp]);
-  const row = await userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [userId]);
+  const [, row] = await Promise.all([
+    query(ctx.deps.query,
+      "WITH rt AS (INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at) VALUES ($1,$2,$3,$4,NULL,$5) RETURNING id) INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, created_at) SELECT $6,$2,$7,rt.id,$8,$5 FROM rt",
+      [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp]),
+    userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [userId]),
+  ]);
   if (!row) throw new HttpError(500, "INTERNAL", "internal error");
   return sessionBody(access, refresh, userFrom(row));
 }
@@ -245,10 +251,9 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
   const code = ctx.url.searchParams.get("code") || "";
   const state = ctx.url.searchParams.get("state") || "";
   const rec = await one(ctx.deps.query,
-    "SELECT state, provider, code_challenge, redirect_uri, final_uri, expires_at, account_type FROM oauth_states WHERE state = $1",
+    "DELETE FROM oauth_states WHERE state = $1 RETURNING state, provider, code_challenge, redirect_uri, final_uri, expires_at, account_type",
     [state]);
   if (!rec) throw new HttpError(401, "UNAUTHENTICATED", "invalid state");
-  await query(ctx.deps.query, "DELETE FROM oauth_states WHERE state = $1", [state]);
   if (ctx.now.getTime() > Date.parse(String(rec.expires_at)) || String(rec.provider) !== provider) {
     throw new HttpError(401, "UNAUTHENTICATED", "state expired");
   }
@@ -381,9 +386,7 @@ export async function exchange(ctx: Ctx): Promise<Response> {
 }
 
 export async function revokeAll(ctx: Ctx, userId: string): Promise<void> {
-  const at = ctx.now.toISOString();
-  await query(ctx.deps.query, "UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL", [userId, at]);
-  await query(ctx.deps.query, "UPDATE access_tokens SET expires_at = $2 WHERE user_id = $1", [userId, at]);
+  await query(ctx.deps.query, REVOKE_ALL, [userId, ctx.now.toISOString()]);
 }
 
 export async function refresh(ctx: Ctx): Promise<Response> {
@@ -401,29 +404,18 @@ export async function refresh(ctx: Ctx): Promise<Response> {
   if (ctx.now.getTime() > Date.parse(String(rec.expires_at))) {
     throw new HttpError(401, "TOKEN_EXPIRED", "access token expired");
   }
-  const revoked = await one(ctx.deps.query,
-    "UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id",
-    [String(rec.id), ctx.now.toISOString()]);
+  const revoked = await one(ctx.deps.query, ROTATE_REFRESH, [String(rec.id), ctx.now.toISOString()]);
   if (!revoked) {
     await revokeAll(ctx, String(rec.user_id));
     throw new HttpError(401, "UNAUTHENTICATED", "refresh token revoked");
   }
-  await query(ctx.deps.query, "UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id = $1", [String(rec.id), ctx.now.toISOString()]);
   return data(200, await issue(ctx, String(rec.user_id)), ctx.rid);
 }
 
 export async function logout(ctx: Ctx): Promise<Response> {
   const body = await readJson(ctx.request);
   const token = requireString(body, "refreshToken");
-  if (token) {
-    const hash = await sha256Hex(token);
-    const rec = await one(ctx.deps.query, "SELECT id FROM refresh_tokens WHERE token_hash = $1", [hash]);
-    if (rec) {
-      const at = ctx.now.toISOString();
-      await query(ctx.deps.query, "UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL", [String(rec.id), at]);
-      await query(ctx.deps.query, "UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id = $1", [String(rec.id), at]);
-    }
-  }
+  if (token) await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString()]);
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }
 

@@ -43,3 +43,9 @@ def test_extract_pdf_bytes_keeps_blank_pages_as_empty_lines():
 def test_extract_pdf_bytes_raises_on_non_pdf():
     with pytest.raises(PdfReadError):
         extract_pdf_bytes(b"not a pdf at all")
+
+
+def test_extract_pdf_bytes_stops_at_page_and_char_caps():
+    data = _pdf(*(f"page {i}" for i in range(10)))
+    assert extract_pdf_bytes(data, max_pages=3).split() == ["page", "0", "page", "1", "page", "2"]
+    assert len(extract_pdf_bytes(data, max_chars=10)) == 10

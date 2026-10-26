@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.api import middleware as mw
-from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error, _RateLimiter
+from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error
 from app.domain.entities import IdempotencyRecord, User
 from app.domain.errors import token_expired
 
@@ -119,13 +119,20 @@ def _err(body):
 
 def test_public_paths():
     assert _is_public("/api/v1/healthz")
-    assert _is_public("/api/v1/auth/google/start")
     assert _is_public("/api/v1/conversations/shared/abc")
     assert not _is_public("/api/v1/conversations/shared/abc", "POST")
-    assert _is_public("/api/v1/uploads/images/a.png")
-    assert not _is_public("/api/v1/uploads/images/../x")
-    assert not _is_public("/api/v1/uploads/images/a.png", "POST")
     assert not _is_public("/api/v1/documents")
+
+
+@pytest.mark.parametrize("path", [
+    # Served by push-be-core; this service has no handler for them.
+    "/api/v1/auth/exchange", "/api/v1/auth/google/start",
+    "/api/v1/auth/github/callback", "/api/v1/billing/webhook",
+    "/api/v1/integrations/google/callback", "/api/v1/uploads/images/a.png",
+])
+def test_core_owned_paths_are_not_public_here(path):
+    assert not _is_public(path)
+    assert not _is_public(path, "POST")
 
 
 def test_client_ip_prefers_cloudflare_then_forwarded_then_peer():
@@ -133,16 +140,6 @@ def test_client_ip_prefers_cloudflare_then_forwarded_then_peer():
     assert _client_ip({"headers": [(b"x-forwarded-for", b"2.2.2.2, 3.3.3.3")]}) == "2.2.2.2"
     assert _client_ip({"headers": [], "client": ("4.4.4.4", 5)}) == "4.4.4.4"
     assert _client_ip({"headers": []}) == ""
-
-
-def test_rate_limiter_window_and_prune(monkeypatch):
-    rl = _RateLimiter(2, 10)
-    assert rl.allow("a", 0) and rl.allow("a", 1)
-    assert not rl.allow("a", 2)
-    assert rl.allow("a", 10.5)
-    rl.hits = {str(i): [] for i in range(10001)}
-    assert rl.allow("z", 100)
-    assert list(rl.hits) == ["z"]
 
 
 def test_public_error_redacts_secrets():
@@ -215,10 +212,10 @@ async def test_auth_backend_failure_is_500_without_leaking():
 async def test_user_rate_limit():
     app, _ = inner(200)
     m = ApiMiddleware(app)
-    m._user_rl = _RateLimiter(1, 60)
     d = deps()
     hdr = {"Authorization": "Bearer t"}
-    assert (await call(m, d, "GET", headers=hdr))[0] == 200
+    for _ in range(600):
+        assert (await call(m, d, "GET", headers=hdr))[0] == 200
     status, _, body = await call(m, d, "GET", headers=hdr)
     assert status == 429 and _err(body)["code"] == "RATE_LIMITED"
 

@@ -57,10 +57,6 @@ def plan_required(msg: str) -> DomainError:
     return DomainError(403, PLAN_REQUIRED, msg)
 
 
-def insufficient_scope(msg: str) -> DomainError:
-    return DomainError(403, INSUFFICIENT_SCOPE, msg)
-
-
 def not_found() -> DomainError:
     return DomainError(404, NOT_FOUND, "resource not found")
 
@@ -89,18 +85,6 @@ def integration_required(msg: str) -> DomainError:
     return DomainError(409, INTEGRATION_REQUIRED, msg)
 
 
-def idempotency_conflict() -> DomainError:
-    return DomainError(409, IDEMPOTENCY_CONFLICT, "idempotency key was used with a different request")
-
-
-def payload_too_large() -> DomainError:
-    return DomainError(413, PAYLOAD_TOO_LARGE, "request body too large")
-
-
-def verification_failed(msg: str) -> DomainError:
-    return DomainError(422, VERIFICATION_FAILED, msg)
-
-
 def document_not_finalized(msg: str) -> DomainError:
     return DomainError(422, DOCUMENT_NOT_FINALIZED, msg)
 
@@ -111,10 +95,6 @@ def provider_error(msg: str) -> DomainError:
 
 def not_configured(msg: str) -> DomainError:
     return DomainError(503, NOT_CONFIGURED, msg)
-
-
-def temporarily_unavailable(msg: str) -> DomainError:
-    return DomainError(503, TEMPORARILY_UNAVAILABLE, msg)
 
 
 def internal() -> DomainError:

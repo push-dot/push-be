@@ -55,7 +55,7 @@ async def test_runs():
     run = entity(CliRun, user_id=USER, arguments=["-y"])
     r = row(_RUN_COLS, CliRun, user_id=USER, arguments=None)
     rows = [row(_RUN_COLS, CliRun, user_id=USER)]
-    db, conn = fake_db(None, r, r, r, rows, "UPDATE 0", None)
+    db, conn = fake_db(None, r, r, rows, "UPDATE 0", None)
     s = ProjectStore(db)
     await s.create_run(run)
     assert len(conn.last[2]) == 25 and conn.last[2][8] == ["-y"]
@@ -65,8 +65,6 @@ async def test_runs():
     assert_scoped(conn.last, USER)
     await s.get_run(USER, UUID(int=0), r["id"])
     assert conn.last[2] == (r["id"], USER) and "project_id" not in conn.last[1].split("WHERE")[1]
-    await s.get_run_by_id(USER, r["id"])
-    assert_scoped(conn.last, USER)
     p = await s.list_runs(USER, PROJECT, page())
     assert conn.last[2] == (USER, PROJECT, 51) and len(p.items) == 1
     with pytest.raises(NotFoundError):

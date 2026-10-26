@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.db import ConflictError, NotFoundError
+from app.domain.errors import DomainError
 from app.domain.entities import (
     Block, Document, DocumentExport, DocumentVersion, ExportResult, ExportValidation,
     RevisionProposal,
@@ -71,12 +72,15 @@ async def test_get_version_with_and_without_document_filter():
 
 async def test_list_versions_and_next_number():
     rows = [row(_VERSION_COLS, DocumentVersion, user_id=USER) for _ in range(2)]
-    db, conn = fake_db(rows, 3)
+    db, conn = fake_db(rows, DOC, 3)
     s = DocumentStore(db)
     p = await s.list_versions(USER, DOC, page(1))
     assert_scoped(conn.calls[0], USER)
     assert conn.calls[0][2] == (USER, DOC, 2) and p.has_more
     assert await s.next_version_number(DOC) == 4
+    lock, mx = conn.calls[1:]
+    assert lock[1] == "SELECT id FROM documents WHERE id = $1 FOR UPDATE"
+    assert lock[2] == (DOC,) and "MAX(number)" in mx[1]
 
 
 async def test_proposals():
@@ -105,7 +109,7 @@ async def test_exports():
     e2 = entity(DocumentExport, user_id=USER, result=_result())
     r = row(_EXPORT_COLS, DocumentExport, user_id=USER, blocks=None)
     rows = [row(_EXPORT_COLS, DocumentExport, user_id=USER)]
-    db, conn = fake_db(None, None, r, rows, None, None, 1)
+    db, conn = fake_db(None, None, r, rows, "UPDATE 1", "UPDATE 1", 1)
     s = DocumentStore(db)
     await s.create_export(e)
     assert conn.last[2][12] is None
@@ -119,8 +123,17 @@ async def test_exports():
     assert conn.last[2] == (USER, DOC, 51) and len(p.items) == 1
     await s.update_export_result(e)
     assert conn.last[2][2] is None
+    assert_scoped(conn.last, USER)
+    assert "status = 'READY_TO_RENDER'" in conn.last[1]
     await s.update_export_result(e2)
     assert conn.last[2][2]["byteLength"] == 1
     app_id = uuid4()
     assert await s.count_finalized_by_application(USER, app_id) == 1
     assert_scoped(conn.last, USER)
+
+
+async def test_update_export_result_refuses_recorded_export():
+    db, _ = fake_db("UPDATE 0")
+    with pytest.raises(DomainError) as err:
+        await DocumentStore(db).update_export_result(entity(DocumentExport, user_id=USER))
+    assert err.value.status == 409

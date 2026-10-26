@@ -421,3 +421,11 @@ async def test_generate_rejects_another_users_application():
     assert (await _code(s.generate(uuid4(), _ai(), "p", app.id, []))
             ).code == "NOT_FOUND"
     assert chat.got == {} and s.ops.created == []
+
+
+async def test_cancelled_completion_releases_its_reservation():
+    import asyncio
+    g = _gate(chat=StubChatCompleter(err=asyncio.CancelledError()))
+    with pytest.raises(asyncio.CancelledError):
+        await g.complete(uuid4(), _ai(), "", "hi")
+    assert [u.status for u in g.usage.items] == [ent.USAGE_RELEASED]

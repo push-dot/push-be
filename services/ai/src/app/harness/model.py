@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Final
+
 from langchain_core.messages import AIMessage
 
 from app.domain import entities as ent
 from app.domain.errors import DomainError, provider_error
-from app.framework.models import _apply_usage, chat_model
+from app.framework.models import _apply_usage, chat_model, provider_of
 from app.graphs.chat import stub_reply
+
+# Whole-call ceiling; long reasoning drafts can stream for minutes but never forever.
+_CALL_TIMEOUT_SECONDS: Final = 180
 
 
 def tool_schema(tool) -> dict:
@@ -59,10 +65,12 @@ class GateModel:
                 self.user_id, self.ai, "", text, self.job_id)
         reasoning = self.ai.effort.lower()
         lc = chat_model(api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-                        reasoning=reasoning, headers=headers, cls=self.cls)
+                        reasoning=reasoning, headers=headers,
+                        provider=provider_of(chat, model), cls=self.cls)
         runnable = lc.bind_tools([tool_schema(tool) for tool in self.tools]) if self.tools else lc
         try:
-            reply = await runnable.ainvoke(messages)
+            async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
+                reply = await runnable.ainvoke(messages)
         except DomainError:
             raise
         except Exception:
@@ -78,7 +86,8 @@ async def settle_turn(gate, turn: dict, ok: bool) -> None:
     usage_id = turn.get("usage_id")
     if usage_id is None:
         return
-    if ok:
+    # Tokens already spent are billed even when the turn fails; otherwise failures are free runs.
+    if ok or turn.get("input_tokens", 0) or turn.get("output_tokens", 0):
         await gate._settle(usage_id, turn.get("model") or "",
                            turn.get("input_tokens", 0), turn.get("output_tokens", 0))
     else:

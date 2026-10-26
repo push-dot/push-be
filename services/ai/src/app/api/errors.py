@@ -2,22 +2,37 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+import traceback
 import uuid
+from http import HTTPStatus
+from typing import Any, Final
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
-from starlette.types import Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.domain.errors import DomainError
 
 logger = logging.getLogger(__name__)
 
+_URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:]+:[^@\s/]+@", re.I)
+_SECRET_ASSIGN: Final = re.compile(
+    r"(?i)(password|secret|token|api_key|database_url)=([^\s,;]+)")
+# Echoed into logs and the x-request-id header; anything else gets a fresh id.
+_REQUEST_ID: Final = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+def redact(text: str) -> str:
+    """Strip URL credentials and ``key=value`` secrets before logging."""
+    return _SECRET_ASSIGN.sub(r"\1=***", _URL_USERINFO.sub(r"\1", text))
+
 
 def error_body(code: str, message: str, request_id: str,
-               details=None) -> dict:
+               details: Any = None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message,
                       "requestId": request_id, "details": details}}
 
@@ -57,22 +72,28 @@ _STATUS_CODES = {
 }
 
 
+def _status_phrase(status: int) -> str:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return "Error"
+
+
 async def http_error_handler(request: Request, exc: HTTPException):
     code = _STATUS_CODES.get(exc.status_code,
                              "INTERNAL" if exc.status_code >= 500
                              else "VALIDATION_ERROR")
-    import http as _http
-    message = _http.HTTPStatus(exc.status_code).phrase \
-        if exc.status_code in _http.HTTPStatus._value2member_map_ \
-        else "Error"
+    message = _status_phrase(exc.status_code)
     return JSONResponse(
         status_code=exc.status_code,
         content=error_body(code, message, request_id_of(request)))
 
 
 async def unhandled_error_handler(request: Request, exc: Exception):
-    logger.exception("unhandled error rid=%s %s %s",
-                     request_id_of(request), request.method, request.url.path)
+    # The traceback is formatted here so its text goes through redact().
+    logger.error("unhandled error rid=%s %s %s\n%s",
+                 request_id_of(request), request.method, request.url.path,
+                 redact("".join(traceback.format_exception(exc))))
     return JSONResponse(
         status_code=500,
         content=error_body("INTERNAL", "internal error",
@@ -80,23 +101,23 @@ async def unhandled_error_handler(request: Request, exc: Exception):
 
 
 class RequestIDMiddleware:
-    def __init__(self, app):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         headers = dict(scope.get("headers") or [])
         rid = headers.get(b"x-request-id", b"").decode(errors="replace")
-        if not rid or len(rid) > 128:
-            rid = "req_" + str(uuid.uuid4())
+        if not _REQUEST_ID.fullmatch(rid):
+            rid = f"req_{uuid.uuid4()}"
         scope.setdefault("state", {})["request_id"] = rid
 
         status = 0
         started = time.perf_counter()
 
-        async def send_with_rid(message: Message):
+        async def send_with_rid(message: Message) -> None:
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
@@ -117,11 +138,11 @@ class RequestIDMiddleware:
 
 
 class BodyLimitMiddleware:
-    def __init__(self, app, limit: int):
+    def __init__(self, app: ASGIApp, limit: int) -> None:
         self.app = app
         self.limit = limit
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -135,6 +156,7 @@ class BodyLimitMiddleware:
             return
         received = 0
         overflow = False
+        started = False
 
         async def counting_receive() -> Message:
             nonlocal received, overflow
@@ -146,20 +168,25 @@ class BodyLimitMiddleware:
                     return {"type": "http.disconnect"}
             return message
 
-        async def guarded_send(message: Message):
-            if overflow and message["type"] == "http.response.start":
-                message["status"] = 413
-                message["headers"] = [(b"content-type", b"application/json")]
-            elif overflow and message["type"] == "http.response.body":
-                message["body"] = json.dumps(error_body(
-                    "PAYLOAD_TOO_LARGE", "request body too large",
-                    (scope.get("state") or {}).get("request_id", ""))).encode()
-                message["more_body"] = False
+        async def guarded_send(message: Message) -> None:
+            nonlocal started
+            if overflow and not started:
+                return  # the 413 below replaces whatever the app answers
+            if message["type"] == "http.response.start":
+                started = True
             await send(message)
 
-        await self.app(scope, counting_receive, guarded_send)
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            if not overflow or started:
+                raise
+        # Handlers that return silently on disconnect would otherwise leave
+        # the client without any response.
+        if overflow and not started:
+            await self._too_large(scope, send)
 
-    async def _too_large(self, scope: Scope, send: Send):
+    async def _too_large(self, scope: Scope, send: Send) -> None:
         body = json.dumps(error_body(
             "PAYLOAD_TOO_LARGE", "request body too large",
             (scope.get("state") or {}).get("request_id", ""))).encode()

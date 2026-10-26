@@ -79,6 +79,7 @@ async def test_calendar_event_writes():
     await s.update_calendar_event(e.id, "", NOW, NOW)
     assert conn.last[2] == (e.id, "", NOW, NOW)
     assert "coalesce(nullif($2,''), title)" in conn.last[1]
+    assert "revision = revision + 1" in conn.last[1]
     app_id = uuid4()
     assert await s.count_by_application(USER, app_id) == 2
     assert_scoped(conn.last, USER)

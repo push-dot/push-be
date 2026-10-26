@@ -101,11 +101,6 @@ class ProjectStore(Store):
             args.append(project_id)
         return _run(await self.one(sql, *args))
 
-    async def get_run_by_id(self, user_id: UUID, run_id: UUID) -> CliRun:
-        return _run(await self.one(
-            f"SELECT {_RUN_COLS} FROM cli_runs WHERE id = $1 AND user_id = $2",
-            run_id, user_id))
-
     async def list_runs(self, user_id: UUID, project_id: UUID, page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)

@@ -1,58 +1,4 @@
-/** Cache API wrapper. Tests pass an in-memory store; production uses `caches.default`. */
-
-import type { CacheStore, Deps } from "../types.ts";
-
-export type { CacheStore };
-
-export function memoryCache(now: () => number = Date.now): CacheStore {
-  const map = new Map<string, { body: string; expires: number }>();
-  return {
-    async match(req) {
-      const hit = map.get(req.url);
-      if (!hit) return undefined;
-      if (hit.expires <= now()) {
-        map.delete(req.url);
-        return undefined;
-      }
-      return new Response(hit.body, { headers: { "content-type": "application/json" } });
-    },
-    async put(req, res) {
-      const cc = res.headers.get("cache-control") || "";
-      const m = cc.match(/max-age=(\d+)/);
-      const ttl = (m ? Number(m[1]) : 600) * 1000;
-      map.set(req.url, { body: await res.clone().text(), expires: now() + ttl });
-    },
-    async delete(req) {
-      return map.delete(req.url);
-    },
-  };
-}
-
-export function workersCache(): CacheStore | undefined {
-  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
-  if (!cache) return undefined;
-  return {
-    async match(req) {
-      const hit = await cache.match(req);
-      return hit ?? undefined;
-    },
-    async put(req, res) {
-      await cache.put(req, res);
-    },
-    async delete(req) {
-      return cache.delete(req);
-    },
-  };
-}
-
-export function modelCacheUrl(authHash: string, provider: string): string {
-  const q = new URLSearchParams();
-  if (provider) q.set("provider", provider);
-  const qs = q.toString();
-  return `https://cache.push-be.internal/v1/models/${authHash}${qs ? "?" + qs : ""}`;
-}
-
-export const JOB_SITES_CACHE_URL = "https://cache.push-be.internal/v1/job-sites";
+/** Isolate-local auth cache, the TTL clamp, and the ETag hash. */
 
 /** Clamp a TTL in seconds. `0` disables that cache. */
 export function clampTtl(raw: string | undefined, fallback: number, max: number): number {
@@ -123,16 +69,4 @@ export function createIsolateCache(): IsolateCache {
       auth.delete(hash);
     },
   };
-}
-
-export function cacheOf(deps: Deps): CacheStore {
-  return deps.cache ?? workersCache() ?? memoryCache();
-}
-
-export async function putCache(cache: CacheStore, req: Request, res: Response): Promise<void> {
-  try {
-    await cache.put(req, res);
-  } catch {
-    // A cache failure must not become an uncaught Worker exception or a 500.
-  }
 }

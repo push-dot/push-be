@@ -3,12 +3,6 @@
  * worker entry, the rate limiter, and the handlers do not depend on each other.
  */
 
-export interface CacheStore {
-  match(req: Request): Promise<Response | undefined>;
-  put(req: Request, res: Response): Promise<void>;
-  delete(req: Request): Promise<boolean>;
-}
-
 export interface Query {
   (text: string, params: unknown[]): Promise<Record<string, unknown>[]>;
 }
@@ -36,7 +30,6 @@ export interface FrontEnv {
 
 export interface Deps {
   query: Query;
-  cache?: CacheStore;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
   limits?: { user: number; public: number; windowMs: number };

@@ -136,28 +136,6 @@ async def test_record_event_rejects_empty_event():
     assert e.value.code == "VALIDATION_ERROR"
 
 
-async def test_stats_counts_events_per_variant():
-    store = StubExperimentStore({"onboarding": _experiment()})
-    svc = _svc(store)
-    user_a = uuid4()
-    await svc.assignment(user_a, "onboarding")
-    await svc.record_event(user_a, "onboarding", "exposure")
-    await svc.record_event(user_a, "onboarding", "exposure")
-    await svc.record_event(user_a, "onboarding", "conversion")
-    stats = await svc.stats("onboarding")
-    variant = store.assignments[("onboarding", user_a)].variant
-    assert stats["variants"][variant]["exposure"] == 2
-    assert stats["variants"][variant]["conversion"] == 1
-
-
-async def test_stats_includes_zero_counts_for_all_variants():
-    store = StubExperimentStore({"onboarding": _experiment()})
-    svc = _svc(store)
-    stats = await svc.stats("onboarding")
-    assert stats["variants"]["A"] == {}
-    assert stats["variants"]["B"] == {}
-
-
 async def test_seed_upserts_experiments():
     store = StubExperimentStore()
     svc = _svc(store)

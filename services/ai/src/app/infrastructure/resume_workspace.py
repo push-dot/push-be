@@ -3,6 +3,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from uuid import UUID
 
 _BLOCK = re.compile(r"```\w*\n# file: ([\w.\-]+)\n(.*?)```", re.DOTALL)
 _MARKER = "# file: "
@@ -82,7 +83,6 @@ async def sync_documents(svc, user_id, conv,
         return await _sync_documents_db(svc, user_id, conv, saved)
     import json
     import logging
-    from uuid import UUID
     d = await asyncio.to_thread(workspace_dir, conv.id, conv.title or "")
     map_file = d / ".docs.json"
     mapping: dict = await asyncio.to_thread(_load_mapping, map_file)
@@ -158,7 +158,14 @@ def _slug(title: str) -> str:
 
 
 def workspace_dir(conversation_id, title: str = "") -> Path:
-    d = _root() / (_slug(title) + "-" + str(conversation_id)[:8])
+    # Keyed by the full id: the old "<title slug>-<8 hex>" name moved when the
+    # title changed and could be shared by two users' conversations.
+    d = _root() / str(UUID(str(conversation_id)))
+    if not d.exists():
+        # shortcut: adopts the pre-fix directory only while the title is unchanged; delete after 2026-12
+        legacy = _root() / (_slug(title) + "-" + str(conversation_id)[:8])
+        if legacy.is_dir():
+            legacy.rename(d)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -397,7 +404,6 @@ def _md_to_pdf_plain(md: str, out) -> None:
 async def _sync_documents_db(svc, user_id, conv, saved: list[str]) -> list[dict]:
     import json
     import logging
-    from uuid import UUID
     raw = await read_artifact(svc.db, conv.id, ".docs.json")
     try:
         mapping = json.loads(raw) if raw else {}

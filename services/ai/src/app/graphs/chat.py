@@ -348,7 +348,7 @@ def bind_chat_nodes(svc):
             app_id = state.get("application_id") or state.get("applicationId")
             if not app_id:
                 return []
-            owner = await store.application_owner(app_id)
+            owner = await store.application_owner(app_id, conv.company_id)
             if owner is None:
                 return []
             row = await store.context(owner)

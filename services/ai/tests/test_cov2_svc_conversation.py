@@ -336,13 +336,47 @@ async def test_run_job_crash_requeues_with_backoff():
     assert jobs.delays == [4.0] and jobs.finished == [] and jobs.events == []
 
 
-async def test_run_job_crash_on_last_attempt_fails_with_truncated_message():
+async def test_run_job_crash_on_last_attempt_fails_without_leaking_the_cause():
     jobs = _RunJobs()
     svc = _run_svc(jobs, _Graph(err=RuntimeError("x" * 900)))
     await svc._run_job(_job(jobs, attempt=3))
     (ev,) = jobs.events
-    assert ev["payload"]["error"] == {"code": "INTERNAL", "message": "x" * 500}
+    # The client sees a generic error; the job row keeps the truncated cause.
+    assert ev["payload"]["error"] == {"code": "INTERNAL", "message": "internal error"}
     assert jobs.finished == [("FAILED", "x" * 500)] and jobs.delays == []
+
+
+async def test_worker_loop_claims_only_when_a_run_slot_is_free(monkeypatch):
+    monkeypatch.setattr(conv_mod, "STALE_SWEEP_S", 10**9)
+    release = asyncio.Event()
+    claims = []
+
+    class Jobs:
+        async def claim(self):
+            claims.append(1)
+            if len(claims) > 50:
+                raise asyncio.CancelledError()  # old loop: claims without bound
+            await asyncio.sleep(0)
+            return {"id": uuid4()}
+
+    svc = _svc(Jobs())
+    svc._sem = asyncio.Semaphore(1)
+
+    async def run_job(j):
+        await release.wait()
+
+    svc._run_job = run_job
+    loop = asyncio.create_task(svc._worker_loop())
+    await asyncio.sleep(0.05)
+    assert claims == [1]  # the second claim waits for the busy slot
+    assert not loop.done()
+    release.set()
+    await asyncio.sleep(0.01)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+    assert len(claims) >= 2
+    await asyncio.gather(*svc._inflight)
 
 
 # ---- exec_chat_node --------------------------------------------------------
@@ -413,6 +447,13 @@ async def test_lost_claim_owner_check(status, result):
         result
     assert jobs.claim_seen == ("run-b", str(jid))
     assert (claim_token.get(), claim_job.get()) == ("", "")
+
+
+async def test_cancelled_job_is_skipped_without_running_the_node():
+    jobs = _StepJobs(status="CANCELLED")
+    svc = _step_svc(jobs, generate_reply=_never)
+    assert await svc.exec_chat_node(str(uuid4()), "generate_reply", "") == "skip"
+    assert jobs.events == [] and jobs.finished == []
 
 
 async def test_missing_job_is_skipped():

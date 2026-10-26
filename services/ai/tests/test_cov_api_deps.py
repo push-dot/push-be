@@ -56,7 +56,8 @@ class M(BaseModel):
 async def test_bind_json():
     assert (await d.bind_json(req(body=b'{"a": 1}'), M)).a == 1
     for body, msg in [(b"", "request body required"), (b"{", "invalid request body"),
-                      (b'{"a": "x"}', "invalid request body")]:
+                      (b'{"a": "x"}', "invalid request body"),
+                      (b"{\"a\": \"\xff\"}", "invalid request body")]:
         with pytest.raises(DomainError) as e:
             await d.bind_json(req(body=body), M)
         assert e.value.status == 400 and e.value.message.startswith(msg)
@@ -98,17 +99,6 @@ def test_optional_query_uuid():
     assert _field(e)[2] == "applicationId"
 
 
-def test_optional_query_time_and_rfc3339():
-    assert d.optional_query_time(req(), "from") is None
-    assert d.optional_query_time(req("from=2026-01-02T03:04:05Z"), "from") == NOW
-    naive = d.parse_rfc3339("2026-01-02T03:04:05")
-    assert naive == NOW and naive.tzinfo is timezone.utc
-    assert d.parse_rfc3339("2026-01-02T12:04:05+09:00") == NOW
-    with pytest.raises(DomainError) as e:
-        d.optional_query_time(req("from=yesterday"), "from")
-    assert _field(e)[2] == "from"
-
-
 def test_data_and_page_body():
     u = uuid4()
     r = d.data(201, {"id": u, "at": NOW})
@@ -116,21 +106,3 @@ def test_data_and_page_body():
     assert json.loads(r.body) == {"data": {"id": str(u), "at": "2026-01-02T03:04:05Z"}}
     r = d.page_body(Page(items=[1, 2], next_cursor="c", has_more=True))
     assert json.loads(r.body) == {"data": [1, 2], "page": {"nextCursor": "c", "hasMore": True}}
-
-
-def test_parse_deadline():
-    assert d.parse_deadline("2026-01-02", False) == (None, False)
-    assert d.parse_deadline(None, True) == (None, True)
-    assert d.parse_deadline("2026-01-02", True) == (datetime(2026, 1, 2, tzinfo=timezone.utc), True)
-    for bad in ("2026-1-2", "02/01/2026", "2026-02-30", 5):
-        with pytest.raises(DomainError) as e:
-            d.parse_deadline(bad, True)
-        assert _field(e)[2] == "deadline"
-
-
-def test_parse_time_field():
-    assert d.parse_time_field("2026-01-02T03:04:05Z", "startsAt") == NOW
-    for bad in (None, 5, "soon"):
-        with pytest.raises(DomainError) as e:
-            d.parse_time_field(bad, "startsAt")
-        assert _field(e)[2] == "startsAt"

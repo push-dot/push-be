@@ -16,8 +16,8 @@
 | 이그레스 | 호스트와 컨테이너 모두 SMTP(25, 465, 587, 2525), RFC1918·CGNAT·link-local(클라우드 메타데이터)로 나가는 연결을 버린다. 새 TCP 연결은 컨테이너 IP당 초당 20개(버스트 200), 호스트 전체 초당 30개(버스트 300)로 제한한다. 버린 패킷은 `push-fw-` 접두어로 커널 로그에 남는다 | `bin/push-firewall` |
 | 방화벽 유지 | `push-firewall.service`가 부팅할 때마다 Docker보다 먼저 규칙을 만든다. `docker.service`는 이 유닛이 성공해야 시작한다 | `harden.sh` |
 | 프록시 | Traefik v3, file provider만 쓴다(docker.sock 없음). Let's Encrypt TLS, HSTS 등 보안 헤더, 출처 IP당 초당 50요청(버스트 100) 제한, TLS 1.2 이상 | `traefik/` |
-| 컨테이너 | 모두 non-root, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit`, 메모리 한도. host 네트워크·docker.sock·privileged 없음. Redis는 비밀번호를 쓰고 내부 네트워크에만 있다 | `compose.yaml` |
-| compose 검사 | 렌더한 설정에 docker.sock, privileged, host 네임스페이스, 쓰기 가능한 bind, 프록시 외 포트, Dokploy가 있으면 거부한다. CI와 VPS 배포 직전에 모두 돌린다. VPS 사본은 root 소유라 커밋으로 바꿀 수 없다 | `bin/check-compose` |
+| 컨테이너 | 이미지는 모두 다이제스트로 고정한다. 모두 non-root, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit`, 메모리 한도. host 네트워크·docker.sock·privileged 없음. Redis는 비밀번호를 쓰고 내부 네트워크에만 있다 | `compose.yaml` |
+| compose 검사 | 렌더한 설정에 docker.sock, `use_api_socket`, privileged, host 네임스페이스·네트워크, 쓰기 가능한 bind, 호스트 경로를 가리키는 볼륨(`driver_opts`), root 사용자(`root:root` 포함), 빌드의 host 네트워크·privileged·entitlements, 다이제스트 없는 이미지, 프록시 외 포트, Dokploy가 있으면 거부한다. CI와 VPS 배포 직전에 모두 돌린다. VPS 사본은 root 소유라 커밋으로 바꿀 수 없다 | `bin/check-compose` |
 | SSH | root 로그인과 비밀번호 로그인을 끈다. `deploy`만 들어올 수 있다. 키 파일은 root 소유 `/etc/ssh/authorized_keys/deploy`라서 `deploy` 셸로 키를 추가할 수 없다. CI 키는 `push-deploy` 강제 명령에 묶여 셸을 얻지 못한다. 포워딩을 모두 끄고 지원되는 강한 KEX·암호·MAC만 남긴다 | `harden.sh`, `bin/push-deploy` |
 | 무차별 대입 | fail2ban `sshd`(3회 실패 시 1시간, 반복하면 최대 1주), `recidive`. 방화벽에서도 SSH 새 연결을 출처당 분당 6개로 제한한다. 프록시 jail은 두지 않는다. 호출자가 Cloudflare Worker라서 공유 IP를 막으면 서비스가 멈춘다 | `harden.sh` |
 | 커널 | `rp_filter`, 리다이렉트 거부, `tcp_syncookies`, `kptr_restrict=2`, `dmesg_restrict`, `ptrace_scope=2`, 비특권 BPF 금지, `/dev/shm` `noexec` 등 | `harden.sh` |
@@ -46,7 +46,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 | `INTERNAL_API_SECRET` | VPS, `push-be-python`, `push-be-core`, `push-be` |
 | `DISPATCH_SECRET` | VPS, `push-be-core` |
 | `ADMIN_TOKEN` | VPS 디스패처 `/admin/*` |
-| `BYOK_MASTER_KEY` | VPS, `push-be-python`, `push-be-core` |
+| `BYOK_MASTER_KEY` | VPS, `push-be-python`, `push-be-core`. Google 연동 OAuth 토큰 암호화 키(이름만 예전 그대로) |
 | `OPENROUTER_API_KEY` | VPS, `push-be-python` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | VPS, `push-be-core` |
 | `GOOGLE_CLIENT_SECRET` | VPS, `push-be-core` |
@@ -54,9 +54,9 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 
 선택 시크릿(비어 있으면 건너뛴다): `RESEND_API_KEY`(VPS, `push-be-core`), `DISCORD_ALERT_WEBHOOK_URL`, `OPENAI_API_KEY`, `EMBEDDING_API_KEY`, `EXPO_ACCESS_TOKEN`.
 
-필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`.
+필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `VPS_SSH_HOST_KEY`(`harden.sh`가 출력한 `ssh-ed25519 AAAA…`. CI는 이 키만 믿는다. 처음 본 키를 믿지 않는다).
 
-선택 변수: `VPS_SSH_HOST_KEY`(권장. `harden.sh`가 출력한 `ssh-ed25519 AAAA…`. 없으면 CI가 처음 본 호스트 키를 믿고 경고를 남긴다), `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RAG_ENGINE`, `RERANK_PROVIDER`, `AI_HARNESS`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
+선택 변수: `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RAG_ENGINE`, `RERANK_PROVIDER`, `AI_HARNESS`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
 
 CI가 하는 일:
 
@@ -84,9 +84,9 @@ CI가 하는 일:
 8. `main`에 푸시하거나 CI를 다시 실행해 배포한다.
 9. 경보 경로를 확인한다. 콘솔에서 `rm /var/lib/push-watchdog/*.base && systemctl start push-watchdog`를 실행하면 Discord(또는 메일)에 `baseline recorded; alerts are armed`가 온다.
 
-`harden.sh`는 다시 실행해도 안전하다. 실행할 때마다 키 목록을 통째로 바꾸고, 설정 파일을 다시 쓰고, 감시 기준선을 새로 잡는다. root가 필요하므로 Hostinger 콘솔에서 실행한다.
+`harden.sh`는 다시 실행해도 안전하다. VPS의 `check-compose`와 `push-watchdog`은 root 소유 사본이라 저장소에서 바꿔도 `harden.sh`를 다시 실행해야 반영된다. Docker 저장소 키는 공개된 지문(`9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`)과 다르면 설치를 멈춘다. 실행할 때마다 키 목록을 통째로 바꾸고, 설정 파일을 다시 쓰고, 감시 기준선을 새로 잡는다. root가 필요하므로 Hostinger 콘솔에서 실행한다.
 
-Neon 스키마는 여전히 수동이다. `db/migrations/0024_vectors_1024.sql`까지 적용한 뒤 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
+Neon 스키마는 여전히 수동이다. `db/migrations/0028_fk_actions_hot_indexes.sql`까지 적용한다. 0027·0028은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
 ```bash
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml \
   exec ai-worker python scripts/migrate_blobs_to_db.py
@@ -99,7 +99,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | --- | --- |
 | 앱 비밀값(`DATABASE_URL`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `REDIS_PASSWORD`, API 키, OAuth·Stripe 비밀) | 발급처에서 새 값을 만든다 → GitHub 시크릿을 바꾼다 → 배포를 다시 실행한다. CI가 VPS `.env`와 세 Worker를 한 번에 바꾼다. 여러 곳이 같은 값을 쓰는 비밀은 배포하는 몇 분 동안 맞지 않을 수 있다 |
 | `DATABASE_URL` | Neon에서 역할 비밀번호를 재설정한다. 이전 값은 그 즉시 막힌다. 바로 위 방법으로 배포한다 |
-| `BYOK_MASTER_KEY` | 바꾸면 저장된 사용자 키를 복호화할 수 없다. 재암호화 마이그레이션 없이 바꾸지 않는다 |
+| `BYOK_MASTER_KEY` | 바꾸면 저장된 Google 연동 토큰을 복호화할 수 없다. 재암호화 마이그레이션 없이 바꾸지 않는다 |
 | CI 배포 키 | `ssh-keygen -t ed25519 -C push-deploy-<날짜>`로 새 키를 만든다 → `keys/push-deploy.pub`를 바꾼다 → 콘솔에서 `harden.sh --deploy-key <새 .pub> --admin-key …`를 다시 실행한다(이전 키는 지워진다) → `VPS_SSH_KEY` 시크릿을 새 개인 키로 바꾼다 |
 | 관리자 키 | `harden.sh`를 새 `--admin-key`로 다시 실행한다. 빼면 그 키는 지워진다 |
 | VPS 재설치 | 새 VPS 준비를 처음부터 한다. 호스트 키가 바뀌므로 `VPS_SSH_HOST_KEY`도 바꾼다 |
@@ -115,6 +115,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | `binaries` | `/usr/local/bin`, `/usr/local/sbin`, `/usr/local/lib/push`, `/etc/docker`가 바뀌었다 |
 | `users` | 계정이나 `root`·`sudo`·`adm`·`docker` 그룹 구성원이 바뀌었다 |
 | `listeners` | 호스트에 새 리스닝 소켓이 생겼다 |
+| `containers` | 처음 보는 컨테이너가 떴거나, 컨테이너의 이미지·privileged·호스트 네임스페이스·추가 권한이 바뀌었다. 이미지 다이제스트를 올린 배포 직후 한 번은 정상이다 |
 | `procs` | `/tmp`, `/var/tmp`, `/dev/shm`, `/root`, `/home`에서 실행 중인 프로세스나 masscan·xmrig 같은 이름이 있다 |
 | `firewall` | 방화벽이 나가는 연결을 버렸다. `*-LIMIT`은 연결 속도 초과(스캐너), `*-DROP`은 SMTP·사설망 시도다. `PUSH chains are missing`은 규칙이 사라졌다는 뜻이다 |
 

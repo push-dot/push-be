@@ -6,53 +6,33 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Final
 from uuid import UUID, uuid4
 
 from starlette.types import Message, Receive, Scope, Send
 
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
-from app.api.errors import error_body
-from app.ratelimit import allow as allow_shared
+from app.api.errors import error_body, redact
+from app.ratelimit import SlidingWindow, allow as allow_shared
 
-_PUBLIC_EXACT = {
-    "/api/v1/healthz",
-    "/api/v1/auth/exchange",
-    "/api/v1/auth/refresh",
-    "/api/v1/auth/logout",
-    "/api/v1/integrations/google/callback",
-    "/api/v1/billing/webhook",
-}
-_PUBLIC_PATTERN = re.compile(r"^/api/v1/auth/[^/]+/(start|callback)$")
-_PUBLIC_SHARE = re.compile(r"^/api/v1/conversations/shared/[^/]+$")
-_IDEMPOTENCY_EXEMPT = _PUBLIC_EXACT
+# Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
+# webhooks and image bytes are served by push-be-core, not this service.
+_PUBLIC_EXACT: Final = frozenset({"/api/v1/healthz"})
+_PUBLIC_SHARE: Final = re.compile(r"^/api/v1/conversations/shared/[^/]+$")
 _PENDING_TTL = timedelta(minutes=5)
 
 logger = logging.getLogger(__name__)
-_URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:]+:[^@\s/]+@", re.I)
-_SECRET_ASSIGN = re.compile(
-    r"(?i)(password|secret|token|api_key|database_url)=([^\s,;]+)")
 
 
 def _public_error(exc: BaseException) -> str:
     """Exception text safe to log. Connection strings and secrets are redacted."""
-    text = f"{type(exc).__name__}: {exc}"
-    text = _URL_USERINFO.sub(r"\1", text)
-    text = _SECRET_ASSIGN.sub(r"\1=***", text)
-    return text[:400]
+    return redact(f"{type(exc).__name__}: {exc}")[:400]
 
 
 def _is_public(path: str, method: str = "GET") -> bool:
-    if path in _PUBLIC_EXACT or _PUBLIC_PATTERN.match(path):
-        return True
-    if method == "GET" and _PUBLIC_SHARE.match(path):
-        return True
-    # Image bytes are loaded by <img>. POST /uploads/images stays authenticated.
-    return (
-        method == "GET"
-        and path.startswith("/api/v1/uploads/images/")
-        and ".." not in path
-    )
+    return path in _PUBLIC_EXACT or (
+        method == "GET" and _PUBLIC_SHARE.match(path) is not None)
 
 
 def _client_ip(scope: Scope) -> str:
@@ -66,30 +46,11 @@ def _client_ip(scope: Scope) -> str:
     return (scope.get("client") or ("", 0))[0] or ""
 
 
-class _RateLimiter:
-    def __init__(self, limit: int, window_s: float):
-        self.limit = limit
-        self.window = window_s
-        self.hits: dict[str, list[float]] = {}
-
-    def allow(self, key: str, now: float) -> bool:
-        hits = self.hits.setdefault(key, [])
-        cutoff = now - self.window
-        while hits and hits[0] <= cutoff:
-            hits.pop(0)
-        if len(hits) >= self.limit:
-            return False
-        hits.append(now)
-        if len(self.hits) > 10000:
-            self.hits = {k: v for k, v in self.hits.items() if v}
-        return True
-
-
 class ApiMiddleware:
     def __init__(self, app):
         self.app = app
-        self._user_rl = _RateLimiter(600, 60)
-        self._public_rl = _RateLimiter(60, 60)
+        self._user_rl = SlidingWindow()
+        self._public_rl = SlidingWindow()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -99,8 +60,6 @@ class ApiMiddleware:
         if deps is None:
             await self.app(scope, receive, send)
             return
-        self.auth = deps.auth
-        self.idem = deps.idem
         path = scope.get("path", "")
         if not path.startswith("/api/v1"):
             await self.app(scope, receive, send)
@@ -122,7 +81,7 @@ class ApiMiddleware:
                               "missing bearer token", rid)
             return
         try:
-            user = await self.auth.resolve_access_token(authz[7:])
+            user = await deps.auth.resolve_access_token(authz[7:])
         except DomainError as e:
             logger.warning(
                 "auth rejected rid=%s path=%s code=%s status=%s",
@@ -142,23 +101,22 @@ class ApiMiddleware:
                               "too many requests", rid)
             return
 
-        if (scope["method"] != "POST" or path in _IDEMPOTENCY_EXEMPT
-                or path.endswith("/stream")):
+        if scope["method"] != "POST" or path.endswith("/stream"):
             await self.app(scope, receive, send)
             return
-        await self._idempotent(scope, receive, send, user, path, rid)
+        await self._idempotent(scope, receive, send, deps.idem, user, path, rid)
 
     async def _limited(self, scope: Scope, kind: str, key: str,
-                       memory: _RateLimiter, limit: int, now: float) -> bool:
+                       memory: SlidingWindow, limit: int, now: float) -> bool:
         # Local uvicorn and the test suite stay on the in-process window.
         # Workers set CF_WORKER and share one Neon counter across isolates.
         if os.environ.get("CF_WORKER") == "1":
             pool = getattr(getattr(scope["app"].state, "db", None), "pool", None)
             return await allow_shared(pool, kind, key, limit, now)
-        return memory.allow(key or "unknown", now)
+        return memory.allow(key or "unknown", limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
-                          user, path: str, rid: str):
+                          idem, user, path: str, rid: str) -> None:
         headers = dict(scope.get("headers") or [])
         key_raw = headers.get(b"idempotency-key", b"").decode(errors="replace")
         try:
@@ -183,7 +141,7 @@ class ApiMiddleware:
             request_hash=request_hash,
             created_at=datetime.now(timezone.utc))
         try:
-            inserted = await self.idem.insert_pending(rec)
+            inserted = await idem.insert_pending(rec)
         except Exception as e:
             logger.error(
                 "idempotency insert failed rid=%s path=%s err=%s",
@@ -192,7 +150,7 @@ class ApiMiddleware:
             return
         if not inserted:
             try:
-                existing = await self.idem.get(user.id, "POST", path, key)
+                existing = await idem.get(user.id, "POST", path, key)
             except Exception as e:
                 logger.error(
                     "idempotency read failed rid=%s path=%s err=%s",
@@ -202,8 +160,8 @@ class ApiMiddleware:
             if existing.response_status is None and datetime.now(
                     timezone.utc) - existing.created_at > _PENDING_TTL:
                 try:
-                    await self.idem.delete_pending(existing.id)
-                    inserted = await self.idem.insert_pending(rec)
+                    await idem.delete_pending(existing.id)
+                    inserted = await idem.insert_pending(rec)
                 except Exception:
                     logger.exception("idempotency stale pending cleanup failed")
                     inserted = False
@@ -257,7 +215,7 @@ class ApiMiddleware:
             handler_failed = True
         if handler_failed or not (200 <= status < 300):
             try:
-                await self.idem.delete_pending(rec.id)
+                await idem.delete_pending(rec.id)
             except Exception:
                 logger.exception("idempotency delete_pending failed rid=%s", rid)
         else:
@@ -265,7 +223,7 @@ class ApiMiddleware:
                 [k.decode("latin-1"), v.decode("latin-1")]
                 for k, v in (start_message.get("headers") or [])]
             try:
-                await self.idem.complete(rec.id, status, bytes(captured),
+                await idem.complete(rec.id, status, bytes(captured),
                                          resp_headers)
             except Exception:
                 logger.exception("idempotency complete failed rid=%s", rid)

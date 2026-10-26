@@ -16,6 +16,3 @@ def hash_bytes(data: bytes) -> str:
 def code_point_len(s: str) -> int:
     return len(s)
 
-
-def truncate_runes(s: str, n: int) -> str:
-    return s[:n]

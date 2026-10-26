@@ -4,6 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from app.domain.entities import Document, DocumentExport, DocumentVersion, RevisionProposal
+from app.domain.errors import invalid_transition
 from app.domain.pagination import Cursor, Page
 from app.jsonutil import dump
 from app.infrastructure.store_common import Conds, Store, list_page, to_model
@@ -96,6 +97,9 @@ class DocumentStore(Store):
                         lambda v: Cursor(v.created_at, v.id))
 
     async def next_version_number(self, document_id: UUID) -> int:
+        # Row lock serialises writers; the loser then fails the revision check with 409.
+        await self.q().fetchval(
+            "SELECT id FROM documents WHERE id = $1 FOR UPDATE", document_id)
         n = await self.q().fetchval(
             "SELECT COALESCE(MAX(number), 0) FROM document_versions WHERE document_id = $1",
             document_id)
@@ -141,9 +145,12 @@ class DocumentStore(Store):
                         lambda e: Cursor(e.created_at, e.id))
 
     async def update_export_result(self, e: DocumentExport) -> None:
-        await self.q().execute(
-            "UPDATE document_exports SET status = $2, result = $3, updated_at = $4 WHERE id = $1",
-            e.id, e.status, dump(e.result) if e.result else None, e.updated_at)
+        tag = await self.q().execute(
+            "UPDATE document_exports SET status = $2, result = $3, updated_at = $4 "
+            "WHERE id = $1 AND user_id = $5 AND status = 'READY_TO_RENDER'",
+            e.id, e.status, dump(e.result) if e.result else None, e.updated_at, e.user_id)
+        if tag.split()[-1] == "0":
+            raise invalid_transition("export result already recorded")
 
     async def count_finalized_by_application(self, user_id: UUID, application_id: UUID) -> int:
         return await self.q().fetchval(

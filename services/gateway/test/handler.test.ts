@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { memoryCache } from "../src/middleware/cache.ts";
 import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { ownerOf } from "../src/routes/owner.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
@@ -27,7 +26,6 @@ function env(api?: FrontEnv["API"], core?: FrontEnv["API"]): FrontEnv {
 function deps(query: Query, extra: Partial<Deps> = {}): Deps {
   return {
     query,
-    cache: memoryCache(() => NOW.getTime()),
     sleep: async () => {},
     now: () => NOW,
     ...extra,
@@ -259,7 +257,7 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.match(text, /id: 8\ndata: \{"type": "done", "operation": \{"status": "SUCCEEDED"\}, "seq": 8\}/);
 });
 
-test("model catalog is cached per token and validates provider", async () => {
+test("model catalog follows the deployed flags and validates provider", async () => {
   resetLimits();
   const query: Query = async (sql) => {
     if (sql.includes("access_tokens")) {
@@ -267,8 +265,7 @@ test("model catalog is cached per token and validates provider", async () => {
     }
     return [];
   };
-  const cache = memoryCache(() => NOW.getTime());
-  const d = deps(query, { cache });
+  const d = deps(query);
   const first = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -280,7 +277,8 @@ test("model catalog is cached per token and validates provider", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), { ...env(), MANAGED_GO: "1" }, d);
   assert.equal(second.status, 200);
-  assert.deepEqual(JSON.parse(await second.text()), body);
+  const flagged = JSON.parse(await second.text()) as typeof body;
+  assert.equal(flagged.data.find((m) => m.model.startsWith("opencode-go/"))?.available, true);
   const bad = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=NOPE", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -289,7 +287,7 @@ test("model catalog is cached per token and validates provider", async () => {
 
 });
 
-test("job sites are served from cache after the first auth", async () => {
+test("job sites are built without any query beyond auth", async () => {
   resetLimits();
   let keyQueries = 0;
   const query: Query = async (sql) => {
@@ -324,8 +322,7 @@ test("chat enqueue and other writes are proxied", async () => {
     }
     return [];
   };
-  const cache = memoryCache(() => NOW.getTime());
-  const d = deps(query, { cache });
+  const d = deps(query);
   await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -477,7 +474,7 @@ test("a full public counter does not write again", async () => {
   assert.equal(calls, 1);
 });
 
-test("a rejected python proxy and a broken cache still return a response", async () => {
+test("a rejected python proxy still returns a response", async () => {
   resetLimits();
   const auth: Query = async (sql) => {
     if (sql.includes("access_tokens")) {
@@ -512,17 +509,6 @@ test("a rejected python proxy and a broken cache still return a response", async
   assert.equal(empty.status, 204);
   assert.equal(empty.headers.get("access-control-allow-origin"), "http://localhost:5173");
   assert.equal(await empty.text(), "");
-
-  const cache = {
-    async match() { return undefined; },
-    async put() { throw new Error("cache put failed"); },
-    async delete() { return false; },
-  };
-  const models = await handle(new Request("https://push-be.example/api/v1/ai/models", {
-    headers: { authorization: "Bearer secret-token" },
-  }), env(), deps(auth, { cache }));
-  assert.equal(models.status, 200);
-  assert.match(await models.text(), /"data":/);
 });
 
 test("auth cache skips Neon until logout or the TTL", async () => {
@@ -1152,7 +1138,7 @@ test("company routes are owned by core", () => {
     assert.equal(ownerOf("PATCH", path), "core");
     assert.equal(ownerOf("DELETE", path), "core");
   }
-  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/companies-extra"), "deny");
 });
 
 test("billing top-up, iap, and store webhooks are owned by core", () => {
@@ -1162,10 +1148,10 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/billing/webhook/google-play"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/ai-done"), "core");
   assert.equal(ownerOf("POST", "/api/v1/internal/notifications/run"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "deny");
   assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
   assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "deny");
 });
 
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -1218,7 +1204,7 @@ test("employer conversation list sql filters by the caller company", async () =>
 
 test("conversation pdf upload is owned by core", () => {
   assert.equal(ownerOf("POST", "/api/v1/conversations/" + USER + "/attachments"), "core");
-  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/conversations/" + USER + "/attachments"), "deny");
 });
 
 const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";

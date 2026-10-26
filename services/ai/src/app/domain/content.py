@@ -78,15 +78,6 @@ def validate_document_content(content, blocks: list[Block]) -> None:
                 "content", "content node " + bid + " has no matching block")
 
 
-def extract_block_text(content) -> dict:
-    if not isinstance(content, dict):
-        raise validation("content must be valid TipTap JSON")
-    extracted: dict = {}
-    order: list = []
-    _walk(content, extracted, order)
-    return extracted
-
-
 def code_point_slice(s: str, start: int, end: int):
     if start < 0 or end < 0 or start >= end:
         return None
@@ -107,13 +98,3 @@ def build_excerpt_content(entries: list) -> tuple[dict, list[Block]]:
             claim_status="SUPPORTED"))
     return {"type": "doc", "content": nodes}, blocks
 
-
-def replace_in_node(n: dict, old: str, new: str, state: list) -> None:
-    if state[0]:
-        return
-    if n.get("type") == "text" and old in (n.get("text") or ""):
-        n["text"] = n["text"].replace(old, new, 1)
-        state[0] = True
-        return
-    for c in n.get("content") or []:
-        replace_in_node(c, old, new, state)

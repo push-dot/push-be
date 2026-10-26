@@ -179,7 +179,7 @@ def test_shared_get_is_public_and_share_post_is_not():
     assert not _is_public(f"/api/v1/conversations/{CONV_ID}/share", "POST")
     assert not _is_public(f"/api/v1/conversations/{CONV_ID}/artifacts", "GET")
     assert _is_public("/api/v1/healthz", "GET")
-    assert _is_public("/api/v1/uploads/images/a.png", "GET")
+    assert not _is_public("/api/v1/uploads/images/a.png", "GET")  # core serves images
 
 
 def test_create_returns_token_and_path():

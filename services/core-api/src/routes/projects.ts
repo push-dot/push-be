@@ -1,7 +1,7 @@
 import { parseTimeField, strictBody, strictObject } from "../body.ts";
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, requireUuid, sha256Hex } from "../http.ts";
-import { pageOf, pageResult, ts, type Page } from "../page.ts";
+import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid, sha256Hex } from "../http.ts";
+import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
 const BP_COLS = "id, user_id, revision, application_id, gap_analysis_id, title, skills, problem, solution, tasks, completion_criteria, metrics, estimated_effort, state, created_at, updated_at";
@@ -105,19 +105,6 @@ const evidenceDto = (row: Row): Row => {
   };
 };
 
-const pageOfRows = async (ctx: Ctx, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row): Promise<Response> => {
-  const args = [...params];
-  const conds = [...where];
-  if (page.cursor) {
-    args.push(page.cursor.createdAt, page.cursor.id);
-    conds.push(`(created_at, id) < ($${args.length - 1}, $${args.length})`);
-  }
-  args.push(page.limit + 1);
-  const rows = await query(ctx.deps.query,
-    `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
-  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, ctx.rid);
-};
 
 const loadBlueprint = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${BP_COLS} FROM project_blueprints WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
@@ -185,7 +172,7 @@ export const listProjects = async (ctx: Ctx): Promise<Response> => {
     params.push(app);
     where.push(`application_id = $${params.length}`);
   }
-  return pageOfRows(ctx, BP_COLS, "project_blueprints", where, params, pageOf(ctx.url), blueprintDto);
+  return listPage(ctx.deps.query, ctx.rid, BP_COLS, "project_blueprints", where, params, pageOf(ctx.url), blueprintDto);
 };
 
 export const getProject = async (ctx: Ctx, idRaw: string): Promise<Response> =>
@@ -211,7 +198,7 @@ export const listRuns = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadBlueprint(ctx, id);
-  return pageOfRows(ctx, RUN_COLS, "cli_runs", ["user_id = $1", "project_id = $2"], [ctx.user.id, id], page, runDto);
+  return listPage(ctx.deps.query, ctx.rid, RUN_COLS, "cli_runs", ["user_id = $1", "project_id = $2"], [ctx.user.id, id], page, runDto);
 };
 
 export const createRun = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -238,12 +225,14 @@ export const createRun = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     state: "APPROVAL_REQUIRED", launch_status: "NOT_CLAIMED", created_at: now, updated_at: now,
   };
   const done = await one(ctx.deps.query,
-    `WITH run AS (INSERT INTO cli_runs (${RUN_COLS}) VALUES ($1,$2,1,$3,$4,$5,$6,$7,'[]'::jsonb,$8,$9,'APPROVAL_REQUIRED','NOT_CLAIMED',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,$10,$10) RETURNING id),
+    `WITH ok AS (SELECT 1 FROM project_blueprints WHERE id = $3 AND user_id = $2 AND ($12 = false OR (state = 'SELECTED' AND revision = $11))),
+     run AS (INSERT INTO cli_runs (${RUN_COLS}) SELECT $1,$2,1,$3,$4,$5,$6,$7,'[]'::jsonb,$8,$9,'APPROVAL_REQUIRED','NOT_CLAIMED',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,$10,$10 FROM ok RETURNING id),
      bp AS (UPDATE project_blueprints SET revision = revision + 1, state = 'IN_PROGRESS', updated_at = $10
        FROM run WHERE project_blueprints.id = $3 AND project_blueprints.user_id = $2 AND project_blueprints.state = 'SELECTED' AND project_blueprints.revision = $11 RETURNING project_blueprints.id)
      SELECT (SELECT count(*) FROM run)::int AS runs, (SELECT count(*) FROM bp)::int AS moved`,
-    [run.id, ctx.user.id, projectId, bp.application_id, provider, dir, executable, prompt, run.payload_hash, now, Number(bp.revision)]);
-  if (bp.state === "SELECTED" && Number(done?.moved) !== 1) await failedUpdate(ctx, "project_blueprints", projectId);
+    [run.id, ctx.user.id, projectId, bp.application_id, provider, dir, executable, prompt, run.payload_hash, now, Number(bp.revision), bp.state === "SELECTED"]);
+  // Python runs insert and move in one transaction; the guard keeps a lost race from leaving a run behind.
+  if (Number(done?.runs) !== 1 || (bp.state === "SELECTED" && Number(done?.moved) !== 1)) await failedUpdate(ctx, "project_blueprints", projectId);
   return data(201, runDto(run), ctx.rid);
 };
 
@@ -423,7 +412,7 @@ export const listProjectEvidence = async (ctx: Ctx, idRaw: string): Promise<Resp
   const id = requireUuid(idRaw, "id");
   const page = pageOf(ctx.url);
   await loadBlueprint(ctx, id);
-  return pageOfRows(ctx, PEV_COLS, "project_evidence", ["user_id = $1", "project_id = $2"], [ctx.user.id, id], page, evidenceDto);
+  return listPage(ctx.deps.query, ctx.rid, PEV_COLS, "project_evidence", ["user_id = $1", "project_id = $2"], [ctx.user.id, id], page, evidenceDto);
 };
 
 export const dispatchProjects = async (ctx: Ctx, path: string): Promise<Response | null> => {

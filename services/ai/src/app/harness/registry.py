@@ -18,19 +18,16 @@ def _prompt(name: str) -> str:
 REGISTRY: dict[str, HarnessSpec] = {
     "personal": HarnessSpec(
         id="personal",
-        audience="PERSONAL",
         prompt=_prompt("personal"),
         tools=PERSONAL_TOOLS,
     ),
     "employer": HarnessSpec(
         id="employer",
-        audience="EMPLOYER",
         prompt=_prompt("employer") + "\n" + posting_system_prompt(),
         tools=EMPLOYER_TOOLS,
     ),
     "resume": HarnessSpec(
         id="resume",
-        audience="PERSONAL",
         prompt="서류는 한 단계씩 확인하고, 그만하기를 고르면 흐름을 끝나요.",
         tools=RESUME_TOOLS,
     ),

@@ -161,31 +161,38 @@ def _parse_ts(text: str) -> datetime:
     return dt
 
 
-def _parse_array(text: str) -> list[str]:
+def _parse_array(text: str) -> list[str | None]:
+    """One-dimensional array literal. An unquoted ``NULL`` is SQL NULL."""
     if text in ("{}", ""):
         return []
     inner = text[1:-1] if text.startswith("{") else text
-    out: list[str] = []
+    out: list[str | None] = []
     buf: list[str] = []
     quoted = False
+    was_quoted = False
+
+    def element() -> str | None:
+        value = "".join(buf)
+        return None if value == "NULL" and not was_quoted else value
+
     i = 0
     while i < len(inner):
         ch = inner[i]
-        if ch == '"' and not quoted:
-            quoted = True
-        elif ch == '"' and quoted:
-            quoted = False
+        if ch == '"':
+            quoted = not quoted
+            was_quoted = True
         elif ch == "\\" and quoted:
             i += 1
             if i < len(inner):
                 buf.append(inner[i])
         elif ch == "," and not quoted:
-            out.append("".join(buf))
+            out.append(element())
             buf = []
+            was_quoted = False
         else:
             buf.append(ch)
         i += 1
-    out.append("".join(buf))
+    out.append(element())
     return out
 
 
@@ -218,11 +225,11 @@ def _decode_text(oid: int, text: Optional[str]) -> Any:
         except ValueError:
             return text.encode()
     if oid == _UUIDARRAY:
-        return [UUID(x) for x in _parse_array(text)]
+        return [None if x is None else UUID(x) for x in _parse_array(text)]
     if oid in (_TEXTARRAY, _JSONBARRAY):
         return _parse_array(text)
     if oid in (_INT4ARRAY, _INT8ARRAY):
-        return [int(x) for x in _parse_array(text) if x]
+        return [None if x is None else int(x) for x in _parse_array(text) if x != ""]
     return text
 
 
@@ -255,10 +262,28 @@ def _bind_param(value: Any) -> tuple[int, Optional[bytes]]:
         if all(isinstance(v, bool) or isinstance(v, int) for v in value):
             body = "{" + ",".join(str(int(v)) for v in value) + "}"
             return _INT8ARRAY, body.encode()
-        body = "{" + ",".join(
-            '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"' for v in value) + "}"
-        return _TEXTARRAY, body.encode()
+        return _TEXTARRAY, ("{" + ",".join(map(_array_item, value)) + "}").encode()
     return 0, str(value).encode()
+
+
+def _array_item(v: Any) -> str:
+    if v is None:
+        return "NULL"
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _raise_first_error(replies: list[tuple[bytes, bytes]]) -> None:
+    for kind, payload in replies:
+        if kind == b"E":
+            raise _pg_error(_parse_error_fields(payload))
+
+
+def _command_tag(replies: list[tuple[bytes, bytes]]) -> str:
+    tag = ""
+    for kind, payload in replies:
+        if kind == b"C":
+            tag = payload.split(b"\x00", 1)[0].decode()
+    return tag
 
 
 class ByteStream:
@@ -470,7 +495,11 @@ class PgConnection:
         self.password = password
         self.database = database
         self.closed = False
-        self._pushback: Optional[tuple[bytes, bytes]] = None
+        self._released = False
+        self._pushback: tuple[bytes, bytes] | None = None
+        # One request/response exchange at a time. Two tasks sharing the
+        # connection (gather inside a transaction) would read each other's rows.
+        self._lock = asyncio.Lock()
 
     async def start(self) -> None:
         params = b"".join((
@@ -557,42 +586,52 @@ class PgConnection:
             self.password, bare, server_first, final_wo)
         client_final = final_wo + ",p=" + proof
         await self.stream.write(b"p" + _frame(client_final.encode()))
+        verified = False
         while True:
             kind, payload = await self._read()
             if kind == b"E":
                 raise _pg_error(_parse_error_fields(payload))
-            if kind != b"R":
-                self._pushback = (kind, payload)
-                return
-            code = struct.unpack("!i", payload[:4])[0]
+            code = struct.unpack("!i", payload[:4])[0] if kind == b"R" else None
             if code == 12:
                 got = _parse_scram_attrs(payload[4:].decode()).get("v", "")
                 expect = base64.b64encode(server_sig).decode()
-                if got and not hmac.compare_digest(got, expect):
+                if not hmac.compare_digest(got.encode(), expect.encode()):
                     raise PgError("28000", "SCRAM server signature mismatch")
+                verified = True
                 continue
-            if code == 0:
-                return
-            raise PgError("08006", f"unexpected SASL auth code {code}")
+            if code is not None and code != 0:
+                raise PgError("08006", f"unexpected SASL auth code {code}")
+            # RFC 5802: the server is authenticated only by its signature.
+            if not verified:
+                raise PgError("28000", "SCRAM server signature missing")
+            if code is None:
+                self._pushback = (kind, payload)
+            return
+
+    async def _roundtrip(self, packet: bytes) -> list[tuple[bytes, bytes]]:
+        """Send one request and read every reply up to ReadyForQuery.
+
+        Replies are read in full before any is decoded. An exchange cut
+        short (cancel, timeout, transport error) closes the connection, so
+        unread replies can never answer the next query.
+        """
+        async with self._lock:
+            if self.closed:
+                raise ConnectionError("database connection closed")
+            try:
+                await self.stream.write(packet)
+                replies: list[tuple[bytes, bytes]] = []
+                while (reply := await self._read())[0] != b"Z":
+                    replies.append(reply)
+                return replies
+            except BaseException:
+                self.closed = True
+                raise
 
     async def simple(self, sql: str) -> str:
-        payload = sql.encode() + b"\x00"
-        await self.stream.write(b"Q" + _frame(payload))
-        tag = ""
-        err: Optional[PgError] = None
-        while True:
-            kind, payload = await self._read()
-            if kind == b"Z":
-                break
-            if kind == b"C":
-                tag = payload.split(b"\x00", 1)[0].decode()
-            elif kind == b"E":
-                err = _pg_error(_parse_error_fields(payload))
-            elif kind in (b"T", b"D", b"N", b"S", b"n", b"I"):
-                continue
-        if err is not None:
-            raise err
-        return tag
+        replies = await self._roundtrip(b"Q" + _frame(_cstr(sql)))
+        _raise_first_error(replies)
+        return _command_tag(replies)
 
     async def execute(self, sql: str, *args) -> str:
         _rows, tag = await self._extended(sql, args)
@@ -623,23 +662,16 @@ class PgConnection:
         """Parse *sql* and return the parameter types Postgres inferred."""
         parse = (_cstr("") + _cstr(sql) + _i16(len(oids))
                  + b"".join(_i32(o) for o in oids))
-        await self.stream.write(
+        replies = await self._roundtrip(
             b"P" + _frame(parse) + b"D" + _frame(b"S" + _cstr(""))
             + b"S" + _frame(b""))
+        _raise_first_error(replies)
         inferred = list(oids)
-        err: Optional[PgError] = None
-        while True:
-            kind, payload = await self._read()
-            if kind == b"Z":
-                break
+        for kind, payload in replies:
             if kind == b"t":
                 n = struct.unpack("!h", payload[:2])[0]
                 inferred = [struct.unpack("!i", payload[2 + 4 * i:6 + 4 * i])[0]
                             for i in range(n)]
-            elif kind == b"E":
-                err = _pg_error(_parse_error_fields(payload))
-        if err is not None:
-            raise err
         return inferred
 
     async def _extended(self, sql: str, args: tuple) -> tuple[list[Row], str]:
@@ -679,37 +711,27 @@ class PgConnection:
             + b"E" + _frame(execute)
             + b"S" + _frame(b"")
         )
-        await self.stream.write(packet)
+        replies = await self._roundtrip(packet)
+        _raise_first_error(replies)
         rows: list[Row] = []
         cols: list[tuple[str, int]] = []
-        tag = ""
-        err: Optional[PgError] = None
-        while True:
-            kind, payload = await self._read()
-            if kind == b"Z":
-                break
+        for kind, payload in replies:
             if kind == b"T":
                 cols = _row_description(payload)
             elif kind == b"D":
                 rows.append(_data_row(payload, cols))
-            elif kind == b"C":
-                tag = payload.split(b"\x00", 1)[0].decode()
-            elif kind == b"E":
-                err = _pg_error(_parse_error_fields(payload))
-            elif kind in (b"1", b"2", b"n", b"N", b"S", b"I", b"t"):
-                continue
-        if err is not None:
-            raise err
-        return rows, tag
+        return rows, _command_tag(replies)
 
     async def close(self) -> None:
-        if self.closed:
+        if self._released:
             return
-        self.closed = True
-        try:
-            await self.stream.write(b"X" + _frame(b""))
-        except Exception:
-            pass
+        self._released = True
+        if not self.closed:
+            self.closed = True
+            try:
+                await self.stream.write(b"X" + _frame(b""))
+            except Exception:
+                pass
         await self.stream.close()
 
 
@@ -813,9 +835,12 @@ class PgPool:
 
     async def _ensure_locked(self, state: _ScopeState) -> PgConnection:
         conn = state.conn
-        if conn is None or conn.closed:
-            state.conn = await connect(self.database_url, self.transport)
-            state.conn.scope = state
+        if conn is not None and not conn.closed:
+            return conn
+        state.conn = None
+        if conn is not None:
+            await conn.close()  # releases the stream of a broken exchange
+        state.conn = await connect(self.database_url, self.transport)
         return state.conn
 
     async def _drop_state(self, state: _ScopeState) -> None:

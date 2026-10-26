@@ -6,7 +6,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 
 from app.queue.backoff import backoff_seconds
-from app.queue.config import HEARTBEAT_LIMIT_S, visibility_limits
+from app.queue.config import heartbeat_limits, visibility_limits
 from app.queue.dispatcher import Dispatcher, kick_app
 from app.queue.streams import StreamQueue
 
@@ -38,17 +38,33 @@ class MemoryDB:
         return [job for job in self.jobs if job["status"] == "RUNNING"]
 
     async def mark_retry(self, ids, now):
+        out = []
         for job in self.jobs:
             if job["id"] in set(ids) and job["status"] == "RUNNING":
-                job["status"] = "RETRY"
+                job["attempts"] += 1
+                job["status"] = "DEAD" if job["attempts"] >= job["max_attempts"] else "RETRY"
                 job["run_after"] = now
                 job["updated_at"] = now
+                out.append({"id": job["id"], "queue": job["queue"], "status": job["status"]})
+        return out
 
     async def pending_jobs(self, now):
         return [
             job for job in self.jobs
-            if job["status"] in ("QUEUED", "RETRY", "PENDING") and job["run_after"] <= now
+            if job["status"] in ("QUEUED", "RETRY") and job["run_after"] <= now
         ]
+
+    async def reconcile_credits(self, now):
+        return 0
+
+    async def purge_finished(self, now):
+        return 0
+
+    async def expire_approvals(self, now):
+        return None
+
+    async def neon_stats(self):
+        return {"dbSizeBytes": 0, "ragNodes": 0}
 
 
 def opener(holder, jobs, outbox):
@@ -64,8 +80,11 @@ def dispatcher(redis, jobs=None, outbox=None, holder=None):
     return Dispatcher(StreamQueue(redis), opener(state, jobs or [], outbox or []), SECRET), state
 
 
-def job(id_, type_, queue, status, heartbeat_at=None, run_after=None, updated_at=None):
+def job(id_, type_, queue, status, heartbeat_at=None, run_after=None, updated_at=None,
+        attempts=0, max_attempts=4):
     return {
+        "attempts": attempts,
+        "max_attempts": max_attempts,
         "id": id_,
         "type": type_,
         "queue": queue,
@@ -162,8 +181,8 @@ async def test_heartbeat_limit_reads_env_override(monkeypatch):
 async def test_stale_running_job_returns_to_retry():
     redis = FakeRedis(decode_responses=True)
     jobs = [
-        job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=HEARTBEAT_LIMIT_S["chat"] + 1)),
-        job(DOC, "document", "q:document", "RUNNING", NOW - timedelta(seconds=HEARTBEAT_LIMIT_S["document"] - 1)),
+        job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1)),
+        job(DOC, "document", "q:document", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["document"] - 1)),
     ]
     box, _ = dispatcher(redis, jobs=jobs)
     await box.run_once(NOW)
@@ -205,3 +224,78 @@ def test_kick_rejects_without_secret():
     assert wrong.status_code == 401
     assert outbox[0]["dispatched_at"] is None
     assert holder["opened"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_job_is_requeued_even_after_its_message_was_acked():
+    # A reclaimer that saw RUNNING acks the dead worker's message; the job must not strand.
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await queue.add("q:chat", CHAT)
+    (msg,) = await queue.read("ai", "dead-worker", ["q:chat"], 1, 0)
+    await queue.ack("q:chat", "ai", msg.id)
+    stale = NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", stale, updated_at=stale)]
+    box, _ = dispatcher(redis, jobs=jobs)
+    stats = await box.run_once(NOW)
+    assert stats.requeued == 1
+    assert jobs[0]["status"] == "RETRY"
+    assert jobs[0]["attempts"] == 1
+    (again,) = await queue.read("ai", "worker-b", ["q:chat"], 1, 0)
+    assert again.job_id == CHAT
+
+
+@pytest.mark.asyncio
+async def test_job_that_keeps_losing_its_worker_goes_dead():
+    redis = FakeRedis(decode_responses=True)
+    stale = NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", stale, attempts=3, max_attempts=4)]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    assert jobs[0]["status"] == "DEAD"
+    assert await stream_job_ids(redis, "q:dead") == [str(CHAT)]
+    assert await stream_job_ids(redis, "q:chat") == []
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_ignores_acked_history():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await queue.add("q:chat", CHAT)
+    (msg,) = await queue.read("ai", "w", ["q:chat"], 1, 0)
+    await queue.ack("q:chat", "ai", msg.id)
+    old = NOW - timedelta(seconds=visibility_limits()["q:chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "RETRY", updated_at=old)]
+    box, _ = dispatcher(redis, jobs=jobs)
+    assert (await box.run_once(NOW)).rehydrated == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_promoters_add_each_due_job_once():
+    import asyncio
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    moved = await asyncio.gather(queue.promote_due(NOW), StreamQueue(redis).promote_due(NOW))
+    assert sorted(moved) == [0, 1]
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+
+
+@pytest.mark.asyncio
+async def test_maintenance_pass_reconciles_credits():
+    redis = FakeRedis(decode_responses=True)
+    seen = []
+
+    class Recording(MemoryDB):
+        async def reconcile_credits(self, now):
+            seen.append(now)
+            return 2
+
+    holder = {"live": 0, "opened": 0}
+
+    async def open_db():
+        return Recording(holder, [], [])
+
+    box = Dispatcher(StreamQueue(redis), open_db, SECRET)
+    await box.run_once(NOW, maintain=True)
+    assert seen == [NOW]

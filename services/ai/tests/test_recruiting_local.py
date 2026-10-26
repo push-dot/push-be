@@ -50,6 +50,29 @@ def test_shared_secret_constant_time_length():
 
 
 @pytest.mark.asyncio
+async def test_shared_secret_rejects_non_ascii_header_with_401(monkeypatch):
+    # str compare_digest raises TypeError on non-ASCII; that used to surface as a 500.
+    monkeypatch.setenv("AI_SHARED_SECRET", "s3cret")
+
+    async def app(scope, receive, send):
+        raise AssertionError("must not reach the app")
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    await SharedSecretMiddleware(app)(
+        {"type": "http", "path": "/api/v1/jobs", "method": "GET", "state": {},
+         "headers": [(b"x-push-ai-secret", "s3crét".encode())]},
+        receive, send)
+    assert sent[0]["status"] == 401
+
+
+@pytest.mark.asyncio
 async def test_shared_secret_middleware(monkeypatch):
     monkeypatch.setenv("AI_SHARED_SECRET", "s3cret")
     called = {"ok": False}

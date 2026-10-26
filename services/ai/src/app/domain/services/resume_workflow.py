@@ -1,6 +1,6 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -12,7 +12,7 @@ from app.domain.errors import DomainError, not_found, validation_field
 from app.domain.pagination import PageRequest
 from app.domain.services.application import ApplicationService
 from app.domain.services.approval import ApprovalService
-from app.domain.services.document import DocumentService
+from app.domain.services.document import MAX_DOCUMENT_TITLE, DocumentService
 from app.domain.services.evidence import EvidenceService
 from app.domain.services.job import JobService
 from app.infrastructure.store_operations import OperationStore
@@ -56,9 +56,8 @@ class ResumeWorkflowService:
         except NotFoundError:
             raise not_found()
         pool = await self._evidence_pool(user_id)
-        if not pool:
-            raise validation_field(
-                "evidenceIds", "이력서/근거를 먼저 등록하세요")
+        denied = await self.approvals.denied_evidence(user_id, app.id)
+        eids = []
         for e in pool:
             try:
                 await self.approvals.require_evidence_use(
@@ -66,13 +65,19 @@ class ResumeWorkflowService:
             except DomainError as err:
                 if err.code != "APPROVAL_REQUIRED":
                     raise
+                # Auto-approve only evidence the user has not refused for this application.
+                if e.id in denied:
+                    continue
                 await self._approve(
                     user_id, ent.APPROVAL_EVIDENCE_USE, app.id, e.id)
-        eids = [e.id for e in pool]
+            eids.append(e.id)
+        if not eids:
+            raise validation_field(
+                "evidenceIds", "이력서/근거를 먼저 등록하세요")
         analyze_op = await self.jobs.analyze(
             user_id, j.id, app.id, j.revision, eids, ai)
         analysis = analyze_op.result.value
-        title = app.company + " " + app.title + " 이력서"
+        title = f"{app.company} {app.title}"[:MAX_DOCUMENT_TITLE - 4] + " 이력서"
         d = await self.documents.create(
             user_id, app.id, title, "RESUME", "CLASSIC", "ko")
         gen_op = await self.documents.generate(

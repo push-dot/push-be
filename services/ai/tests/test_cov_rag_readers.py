@@ -185,3 +185,29 @@ async def test_read_github_rejects_newline_and_dot_segments(repo):
         with pytest.raises(ValueError, match="owner/name"):
             await read_github(client, repo)
     assert seen == []
+
+
+def test_docx_text_refuses_a_zip_bomb_without_inflating_it(monkeypatch):
+    monkeypatch.setattr(readers, "MAX_DOCX_XML", 1000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "<w:document " + W + ">" + " " * 100_000 + "</w:document>")
+    with pytest.raises(ValueError, match="too large"):
+        docx_text(buf.getvalue())
+
+
+def test_docx_text_caps_inflation_when_declared_size_lies(monkeypatch):
+    monkeypatch.setattr(readers, "MAX_DOCX_XML", 1000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "<w:document " + W + ">" + " " * 100_000 + "</w:document>")
+    real_getinfo = zipfile.ZipFile.getinfo
+
+    def lying(self, name):
+        info = real_getinfo(self, name)
+        info.file_size = 10  # forged header
+        return info
+
+    monkeypatch.setattr(zipfile.ZipFile, "getinfo", lying)
+    with pytest.raises(zipfile.BadZipFile):
+        docx_text(buf.getvalue())

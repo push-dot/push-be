@@ -116,6 +116,9 @@ async def test_share_queries():
     assert await s.share_by_hash("h") == {"conversation_id": conv, "title": "t"}
     assert await s.list_share_messages(conv) == [{"role": "USER"}]
     assert conn.last[2] == (conv,)
+    inner, outer = conn.last[1].split(") recent ", 1)
+    assert inner.endswith("ORDER BY created_at DESC, id DESC LIMIT 500")
+    assert outer == "ORDER BY created_at ASC, id ASC"
 
 
 def test_artifact_item_filters():

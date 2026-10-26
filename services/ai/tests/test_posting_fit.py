@@ -70,23 +70,24 @@ class _Db:
         self.plan = plan
         self.cache = {}
         self.inserts = 0
+        self.edits = 0
 
     def q(self):
         return self
 
     async def fetchrow(self, sql, *args):
-        if "posting_fit_cache" in sql:
-            return self.cache.get((args[0], args[1], args[2]))
-        if "job_postings" in sql:
-            if self.posting is not None and args and args[0] == self.posting["id"]:
-                return self.posting
-            return None
-        if "documents" in sql:
-            if self.document is not None and args and args[0] == self.document["id"]:
-                return self.document
-            return None
-        if "users" in sql:
-            return {"plan": self.plan}
+        user_id, posting_id, document_id = args
+        if "FROM posting_fit_cache" in sql:
+            hit = self.cache.get(args)
+            # Mirrors created_at >= documents.updated_at.
+            return hit if hit is not None and hit["edits"] == self.edits else None
+        if "FROM job_postings" in sql:
+            p, d = self.posting, self.document
+            if p is None or d is None or p["id"] != posting_id or d["id"] != document_id:
+                return None
+            if d["user_id"] != user_id:
+                return None
+            return {**p, "content": d["content"], "plan": self.plan}
         return None
 
     async def execute(self, sql, *args):
@@ -99,6 +100,7 @@ class _Db:
             "parts": parts,
             "top_gap": args[5],
             "plan": args[6],
+            "edits": self.edits,
         }
 
 
@@ -145,6 +147,19 @@ def test_second_call_does_not_recompute(monkeypatch):
     assert second == first
     assert calls["n"] == 1
     assert db.inserts == 1
+
+
+def test_document_edit_invalidates_the_cached_fit():
+    db = _Db(_posting(), _document(), "PRO")
+    _fit(db)
+    db.edits += 1  # the document was saved after the score was cached
+    _fit(db)
+    assert db.inserts == 2
+
+
+def test_fit_inputs_load_in_one_query_scoped_to_the_user():
+    from app.infrastructure.posting_fit_cache import _INPUTS
+    assert "d.user_id = $1" in _INPUTS and "users u" in _INPUTS
 
 
 def test_blank_db_plan_is_free():

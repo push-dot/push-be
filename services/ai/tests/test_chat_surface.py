@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from app.api.routers.conversations import _sse_frames
 from app.domain import entities as ent
 from app.domain.services.conversation import ConversationService
 from app.graphs.chat import bind_chat_nodes, event_sink
@@ -420,47 +419,6 @@ async def test_persist_applies_the_diff_when_confirm_is_false(monkeypatch):
     }]
 
 
-def _data_frames(frames: list[str]) -> list[dict]:
-    found = []
-    for frame in frames:
-        for line in frame.splitlines():
-            if line.startswith("data: "):
-                found.append(json.loads(line[len("data: "):]))
-    return found
-
-
-class _Open:
-    async def is_disconnected(self):
-        return False
-
-
-async def test_sse_frames_forwards_tool_and_future():
-    async def gen():
-        yield ("tool", {"name": "read", "state": "run", "summary": "file"}, 3)
-        yield ("future", {"note": "later"}, 4)
-        yield ("cancelled", {}, 5)
-        yield ("done", {"status": "SUCCEEDED"}, 6)
-        yield ("error", {"code": "INTERNAL", "message": "no"}, 7)
-
-    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
-    assert frames[0] == {
-        "type": "tool", "name": "read", "state": "run", "summary": "file", "seq": 3}
-    assert frames[1] == {"type": "future", "note": "later", "seq": 4}
-    assert frames[2] == {"type": "cancelled", "seq": 5}
-    assert frames[3] == {
-        "type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 6}
-    assert frames[4] == {
-        "type": "error", "error": {"code": "INTERNAL", "message": "no"}, "seq": 7}
-
-
-async def test_sse_frames_done_awaiting():
-    async def gen():
-        yield ("done", {"awaiting": "choice"}, 8)
-
-    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
-    assert frames[-1] == {"type": "done", "operation": None, "awaiting": "choice", "seq": 8}
-
-
 async def test_persist_survives_a_conflicting_auto_edit(monkeypatch):
     from app.domain.errors import revision_conflict
     user_id = uuid4()
@@ -486,9 +444,3 @@ async def test_persist_survives_a_conflicting_auto_edit(monkeypatch):
         event_sink.reset(token)
 
 
-async def test_sse_frames_done_awaiting_keeps_the_operation():
-    async def gen():
-        yield ("done", {"awaiting": "choice", "operation": {"status": "SUCCEEDED"}}, 9)
-
-    frames = _data_frames([frame async for frame in _sse_frames(gen(), _Open())])
-    assert frames[-1] == {"type": "done", "operation": {"status": "SUCCEEDED"}, "awaiting": "choice", "seq": 9}

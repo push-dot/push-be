@@ -158,7 +158,7 @@ async def test_core_ids_cannot_rewrite_the_path():
 
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "bookmark_posting")
     graph = build_harness_graph(
-        HarnessSpec(id="personal", audience="PERSONAL", prompt="p", tools=[tool]),
+        HarnessSpec(id="personal", prompt="p", tools=[tool]),
         MemorySaver(),
         model=ScriptedChat([{"tool_calls": [{
             "name": "bookmark_posting",
@@ -244,7 +244,6 @@ def _edit_graph(mode: str, db, core=None):
     return build_harness_graph(
         type(REGISTRY["personal"])(
             id="personal",
-            audience="PERSONAL",
             prompt="p",
             tools=[tool],
         ),
@@ -347,6 +346,9 @@ class _ResumeDB:
     def q(self):
         return self
 
+    async def fetchrow(self, sql, *args):
+        return None
+
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
         return "UPDATE 1"
@@ -368,3 +370,37 @@ async def test_start_document_marks_resume_active():
     assert result["resume_state"]["status"] == "active"
     assert "resume_state" in db.calls[0][0]
     assert db.calls[0][1][0] == "conv-1"
+
+
+async def test_edit_document_id_cannot_rewrite_the_path():
+    # Prompt injection: a SAFE_WRITE edit must not be steered onto a RISKY_WRITE route.
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": {}})
+
+    tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "edit_document")
+    graph = build_harness_graph(
+        HarnessSpec(id="personal", prompt="p", tools=[tool]),
+        MemorySaver(),
+        model=ScriptedChat([{"tool_calls": [{
+            "name": "edit_document",
+            "id": "c1",
+            "type": "tool_call",
+            "args": {"document_id": f"x/../../postings/{O}/apply?", "after": "hi"},
+        }]}, {"content": "done"}]),
+        db=None,
+        core=CoreClient("http://core.test", "secret", httpx.MockTransport(handler)),
+    )
+    async for _event in astream_harness(graph, {
+        "messages": [{"role": "user", "content": "고쳐"}],
+        "user_id": "user-1",
+        "conversation_id": "conv-1",
+        "job_id": "job-1",
+        "access_mode": "AUTO",
+    }, {"configurable": {"thread_id": "conv-1"}}):
+        pass
+    assert seen == []
+    state = await graph.aget_state({"configurable": {"thread_id": "conv-1"}})
+    assert '"INVALID_ARGS"' in state.values["messages"][-2].content

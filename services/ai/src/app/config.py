@@ -1,15 +1,19 @@
 from __future__ import annotations
+
 import json
 import os
 from dataclasses import dataclass, field
+from typing import Any, Final
 from uuid import UUID
+
+DEFAULT_DEV_USER_ID: Final = UUID("00000000-0000-4000-8000-000000000001")
 
 
 def env(key: str, default: str = "") -> str:
     return os.environ.get(key) or default
 
 
-def env_json(key: str) -> list:
+def env_json(key: str) -> list[Any]:
     raw = env(key)
     if not raw:
         return []
@@ -20,19 +24,20 @@ def env_json(key: str) -> list:
     return out if isinstance(out, list) else []
 
 
-@dataclass
+@dataclass(slots=True)
 class OAuthProviderConfig:
     client_id: str = ""
     client_secret: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class Config:
     port: str = "8080"
-    app_env: str = "development"
+    # Fail closed: DEV_AUTH_TOKEN works only where APP_ENV=development is set.
+    app_env: str = "production"
     database_url: str = ""
     dev_auth_token: str = ""
-    dev_user_id: UUID = UUID("00000000-0000-4000-8000-000000000001")
+    dev_user_id: UUID = DEFAULT_DEV_USER_ID
     google: OAuthProviderConfig = field(default_factory=OAuthProviderConfig)
     github: OAuthProviderConfig = field(default_factory=OAuthProviderConfig)
     managed_ai_key: str = ""
@@ -49,8 +54,8 @@ class Config:
     stripe_portal_url: str = "push://billing/portal"
     storage_dir: str = "./data/sources"
     gmail_beta: bool = False
-    job_site_adapters: dict = field(default_factory=dict)
-    experiments: list = field(default_factory=list)
+    job_site_adapters: dict[str, Any] = field(default_factory=dict)
+    experiments: list[Any] = field(default_factory=list)
     model_free: str = "deepseek/deepseek-v4.1-flash"
     model_pro: str = "anthropic/claude-sonnet-5-5"
     model_ultra: str = "anthropic/claude-opus-5-5"
@@ -62,9 +67,9 @@ class Config:
 
 def load_config() -> Config:
     try:
-        dev_user = UUID(env("DEV_USER_ID", "00000000-0000-4000-8000-000000000001"))
+        dev_user = UUID(env("DEV_USER_ID", str(DEFAULT_DEV_USER_ID)))
     except ValueError:
-        dev_user = UUID("00000000-0000-4000-8000-000000000001")
+        dev_user = DEFAULT_DEV_USER_ID
     db_url = os.environ.get("DATABASE_URL") or (
         "postgres://"
         + env("PGUSER", "push") + ":" + env("PGPASSWORD", "push")
@@ -73,7 +78,7 @@ def load_config() -> Config:
     )
     return Config(
         port=env("PORT") or env("LISTEN_ADDR", "8080").lstrip(":"),
-        app_env=env("APP_ENV", "development"),
+        app_env=env("APP_ENV", "production"),
         database_url=db_url,
         dev_auth_token=os.environ.get("DEV_AUTH_TOKEN", ""),
         dev_user_id=dev_user,

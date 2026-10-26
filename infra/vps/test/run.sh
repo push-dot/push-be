@@ -27,7 +27,9 @@ out="$(docker compose -f test/bad-compose.yaml config --format json | bin/check-
   echo "check-compose accepted test/bad-compose.yaml" >&2
   exit 1
 }
-for want in "docker.sock" "Dokploy" "priv: privileged" "hostnet: network_mode=host" "exposed: publishes port" "runs as root" "read_only"; do
+for want in "docker.sock" "Dokploy" "priv: privileged" "hostnet: network_mode=host" "exposed: publishes port" \
+  "sock: runs as root" "rootuser: runs as root" "read_only" "apisock: use_api_socket" "priv: image busybox is not pinned" \
+  "volume hostroot: driver_opts" "network hostnet: host network" "buildhost: build.network=host" "buildhost: build.privileged"; do
   grep -qF "$want" <<<"$out" || { echo "check-compose missed: $want" >&2; echo "$out" >&2; exit 1; }
 done
 echo "infra/vps checks passed"

@@ -169,7 +169,7 @@ async def test_edit_document_always_ask_skip_leaves_the_document(monkeypatch):
 
 async def test_edit_document_always_ask_without_an_answer_is_skipped(monkeypatch):
     monkeypatch.setattr(tools, "interrupt", lambda payload: None)
-    out = await _run("edit_document", {"document_id": "d1"},
+    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1"},
                      ctx=_ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK"))
     assert out == {"skipped": True}
 
@@ -194,7 +194,7 @@ class _ResumeDB:
 @pytest.fixture
 def emitted(monkeypatch):
     out = []
-    monkeypatch.setattr(tools, "get_stream_writer", lambda: out.append)
+    monkeypatch.setattr("app.harness.tools.get_stream_writer", lambda: out.append)
     return out
 
 
@@ -212,13 +212,21 @@ async def test_start_document_offers_a_choice_when_resume_json_is_active(emitted
     {"resume_state": "{not json"},
     {"resume_state": json.dumps(["active"])},
     {"resume_state": None},
-    RuntimeError("db down"),
 ])
 async def test_start_document_starts_fresh_when_state_is_unreadable(row, emitted):
     db = _ResumeDB(row)
     out = await _run("start_document", {}, ctx=_ctx(db=db))
     assert out == {"harness": "resume", "resume_state": {"status": "active", "phase": "mode_select"}}
     assert db.executed[0][1][0] == CONV
+    assert emitted == []
+
+
+async def test_start_document_db_error_propagates_and_writes_nothing(emitted):
+    # A failed read must not overwrite an active resume flow with a fresh one.
+    db = _ResumeDB(RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        await _run("start_document", {}, ctx=_ctx(db=db))
+    assert db.executed == []
     assert emitted == []
 
 
@@ -258,3 +266,29 @@ async def test_prepare_interview_works_with_the_production_chat_service():
     svc = ConversationService(FakeDB(), None)
     assert await _run("prepare_interview", {"interview_id": str(uuid4())}, svc=svc) != {
         "error": "UNAVAILABLE"}
+
+
+async def test_each_edit_in_a_job_gets_its_own_approval(monkeypatch):
+    # Without the tool call id, a second edit in the job reused the first, already resolved approval.
+    asked = []
+    monkeypatch.setattr(tools, "interrupt", lambda payload: asked.append(payload) or {"option_id": "skip"})
+    monkeypatch.setattr("app.harness.tools.get_stream_writer", lambda: lambda _event: None)
+    for call_id in ("call-1", "call-2"):
+        ctx = _ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK")
+        ctx.tool_call_id = call_id
+        await _run("edit_document", {"document_id": str(uuid4())}, ctx=ctx)
+    assert asked[0]["approval_id"] != asked[1]["approval_id"]
+
+
+@pytest.mark.parametrize("model", [tools.FitArgs, tools.PrepareArgs])
+def test_model_supplied_ids_must_be_uuids(model):
+    from pydantic import ValidationError
+    field = "interview_id" if model is tools.PrepareArgs else "document_id"
+    with pytest.raises(ValidationError):
+        model.model_validate({field: "../../x"})
+
+
+async def test_fit_score_treats_empty_ids_as_none():
+    assert tools.FitArgs.model_validate({"posting_id": "", "document_id": ""}).document_id is None
+    out = await _run("get_fit_score", {"document_id": "", "requirements": ["python"], "content": "python"})
+    assert isinstance(out, dict) and "error" not in out

@@ -6,14 +6,13 @@ import re
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from langgraph.config import get_stream_writer
 from pydantic import BaseModel
 
 from app.domain.posting_fit import compute_fit
 from app.harness.policy import Tier
 from app.ingest.pdf_text import extract_pdf_bytes
 from app.ingest.web_page import fetch_github_context, github_usernames
-from app.harness.tools import ToolContext, ToolSpec
+from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 
 _FINAL_MD = re.compile(r"05_final_\w+\.md")
 
@@ -42,7 +41,7 @@ class FitArgs(BaseModel):
     requirements: list[str] = []
     keywords: list[str] = []
     description: str = ""
-    document_id: str = ""
+    document_id: OptionalId = None
     content: str = ""
 
 
@@ -99,17 +98,9 @@ async def _posting(ctx: ToolContext, args: PostingArgs) -> dict:
 
 
 async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    document_id = UUID(args.document_id) if args.document_id else UUID(int=0)
     return compute_fit(
         args.requirements, args.keywords, args.description,
-        document_id, args.content, "FREE")
-
-
-def _emit(event: dict) -> None:
-    try:
-        get_stream_writer()(event)
-    except Exception:
-        return
+        args.document_id or UUID(int=0), args.content, "FREE")
 
 
 def _artifact_id(ctx: ToolContext, name: str) -> str:
@@ -170,10 +161,10 @@ async def save_artifact(ctx: ToolContext, name: str, content: str) -> str:
     from app.infrastructure.resume_workspace import md_to_pdf
 
     buf = io.BytesIO()
-    md_to_pdf(body, buf)
+    await asyncio.to_thread(md_to_pdf, body, buf)
     await _put_pdf(ctx, name[:-3] + ".pdf", buf.getvalue())
     document_id = await _document_id(ctx, name)
-    _emit({
+    emit({
         "type": "file",
         "name": name,
         "mime": "text/markdown",

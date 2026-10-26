@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.clock import utcnow
-from datetime import datetime, timedelta, timezone
+import hmac
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
@@ -194,7 +195,8 @@ class AuthService:
         await self.db.run(work)
 
     async def resolve_access_token(self, token: str) -> ent.User:
-        if self.app_env == "development" and self.dev_token and token == self.dev_token:
+        if (self.app_env == "development" and self.dev_token
+                and hmac.compare_digest(token.encode(), self.dev_token.encode())):
             try:
                 return await self.users.get(self.dev_user_id)
             except NotFoundError:

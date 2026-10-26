@@ -39,12 +39,18 @@ const allowed = async (ctx: Ctx, userId: string, column: string): Promise<boolea
   return !pref || asBool(pref.enabled);
 };
 
-const claim = async (ctx: Ctx, key: string): Promise<boolean> => {
-  const row = await one(ctx.deps.query,
-    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1,$2) ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key",
-    [key, ctx.now.toISOString()]);
-  return Boolean(row);
-};
+// One statement per kind: pick due rows, skip opted-out users, and claim the dedupe key so a rerun sends nothing twice.
+const claimed = (due: string): string => `WITH due AS (${due}), claimed AS (
+  INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $2::timestamptz FROM due ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
+) SELECT due.user_id, due.id, due.title FROM due JOIN claimed USING (dedupe_key)`;
+
+const DUE_DEADLINES = claimed(`SELECT b.user_id, p.id, p.title, 'deadline:' || b.user_id || ':' || p.id || ':' || $1 AS dedupe_key
+    FROM bookmarks b JOIN job_postings p ON p.id = b.posting_id LEFT JOIN user_settings s ON s.user_id = b.user_id
+    WHERE p.deadline = $1::date AND p.closed_at IS NULL AND COALESCE(s.notify_deadline, true)`);
+
+const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.id AS dedupe_key
+    FROM calendar_events e LEFT JOIN user_settings s ON s.user_id = e.user_id
+    WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
 const utcDay = (moment: Date, shiftDays: number): string => {
   const day = new Date(Date.UTC(moment.getUTCFullYear(), moment.getUTCMonth(), moment.getUTCDate() + shiftDays));
@@ -67,38 +73,21 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
 
 export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   await requireJob(ctx);
+  const nowIso = ctx.now.toISOString();
   const deadlineDay = utcDay(ctx.now, 3);
-  const due = await query(ctx.deps.query,
-    `SELECT b.user_id, p.id, p.title
-     FROM bookmarks b JOIN job_postings p ON p.id = b.posting_id
-     WHERE p.deadline = $1::date AND p.closed_at IS NULL`,
-    [deadlineDay]);
-  let deadlines = 0;
-  for (const row of due.rows) {
-    const userId = String(row.user_id);
-    const postingId = String(row.id);
-    if (!(await claim(ctx, `deadline:${userId}:${postingId}:${deadlineDay}`))) continue;
-    if (!(await allowed(ctx, userId, "notify_deadline"))) continue;
-    const title = String(row.title ?? "");
-    await sendNotification(ctx, { userId, type: "DEADLINE", title, body: title, target: { kind: "posting", id: postingId } });
-    deadlines += 1;
-  }
   const lookback = new Date(ctx.now.getTime() - 2 * DAY_MS).toISOString();
-  const reminders = await query(ctx.deps.query,
-    `SELECT id, user_id, title FROM calendar_events
-     WHERE remind_at IS NOT NULL AND remind_at <= $1 AND remind_at > $2`,
-    [ctx.now.toISOString(), lookback]);
-  let reminded = 0;
-  for (const row of reminders.rows) {
-    const userId = String(row.user_id);
-    const eventId = String(row.id);
-    if (!(await claim(ctx, `remind:${eventId}`))) continue;
-    if (!(await allowed(ctx, userId, "notify_deadline"))) continue;
+  const [due, reminders] = await Promise.all([
+    query(ctx.deps.query, DUE_DEADLINES, [deadlineDay, nowIso]),
+    query(ctx.deps.query, DUE_REMINDERS, [nowIso, nowIso, lookback]),
+  ]);
+  for (const row of due.rows) {
     const title = String(row.title ?? "");
-    await sendNotification(ctx, { userId, type: "DEADLINE", title, body: "", target: { kind: "calendar", id: eventId } });
-    reminded += 1;
+    await sendNotification(ctx, { userId: String(row.user_id), type: "DEADLINE", title, body: title, target: { kind: "posting", id: String(row.id) } });
   }
-  return data(200, { deadlines, reminders: reminded }, ctx.rid);
+  for (const row of reminders.rows) {
+    await sendNotification(ctx, { userId: String(row.user_id), type: "DEADLINE", title: String(row.title ?? ""), body: "", target: { kind: "calendar", id: String(row.id) } });
+  }
+  return data(200, { deadlines: due.rows.length, reminders: reminders.rows.length }, ctx.rid);
 };
 
 export const dispatchNotificationJobs = async (ctx: Ctx, path: string): Promise<Response | null> => {
