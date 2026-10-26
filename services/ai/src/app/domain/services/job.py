@@ -1,15 +1,13 @@
 from __future__ import annotations
 from app.clock import utcnow
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
-from app.domain.errors import (
-    internal, map_revision_err, not_found, revision_conflict, validation_field,
-)
+from app.domain.errors import internal, not_found, revision_conflict, validation_field
 from app.domain.reference_text import features_of, link_count, score_band, templates_of
 from app.domain.services.ai import AIGate
 from app.domain.services.approval import ApprovalService
@@ -172,12 +170,6 @@ class JobService:
         self.ops = OperationStore(db)
         self.ai = ai
 
-    async def list(self, user_id: UUID, archived: Optional[bool], query: str, page):
-        try:
-            return await self.jobs.list(user_id, archived, query, page)
-        except Exception:
-            raise internal()
-
     async def get(self, user_id: UUID, id_: UUID) -> ent.JobPosting:
         try:
             return await self.jobs.get(user_id, id_)
@@ -203,44 +195,6 @@ class JobService:
         except Exception:
             raise internal()
         return j
-
-    async def patch(self, user_id: UUID, id_: UUID, expected: int,
-                    company: Optional[str], title: Optional[str],
-                    requirements, preferred, deadline, clear_deadline: bool) -> ent.JobPosting:
-        out = None
-
-        async def work():
-            nonlocal out
-            try:
-                j = await self.jobs.get(user_id, id_)
-            except NotFoundError:
-                raise not_found()
-            if company is not None:
-                if not 1 <= len(company) <= 200:
-                    raise validation_field("company", "company must be 1-200 characters")
-                j.company = company
-            if title is not None:
-                if not 1 <= len(title) <= 300:
-                    raise validation_field("title", "title must be 1-300 characters")
-                j.title = title
-            if requirements is not None:
-                j.requirements = requirements or []
-            if preferred is not None:
-                j.preferred = preferred or []
-            if clear_deadline:
-                j.deadline = None
-            elif deadline is not None:
-                j.deadline = deadline
-            j.updated_at = _now()
-            try:
-                await self.jobs.update(j, expected)
-            except Exception as err:
-                raise map_revision_err(err)
-            j.revision = expected + 1
-            out = j
-
-        await self.db.run(work)
-        return out
 
     async def analyze(self, user_id: UUID, job_id: UUID, application_id: UUID,
                       expected: int, evidence_ids: list[UUID],
@@ -343,10 +297,3 @@ class JobService:
                 uuid4(), user_id, category, tenure, fit, score_band(fit), plan,
                 features_of(evidence.source_text), templates_of(evidence.source_text),
                 part_scores(job.requirements, job.keywords, [evidence]))
-
-    async def list_analyses(self, user_id: UUID, job_id: UUID, page):
-        await self.get(user_id, job_id)
-        try:
-            return await self.analyses.list_by_job(user_id, job_id, page)
-        except Exception:
-            raise internal()

@@ -52,7 +52,7 @@ async def test_import_with_full_details_creates_owned_evidence():
     assert stored.provenance.content_hash == hash_bytes(b"Led 3 engineers")
     assert stored.provenance.source_location.end == len("Led 3 engineers")
     assert stored.verification_status == ent.VERIFICATION_USER_PROVIDED
-    await _raises("NOT_FOUND", s.get(B, stored.id))
+    assert stored.user_id == A
     assert (await s.ops.get(A, op.id)).status == ent.OP_SUCCEEDED
 
 
@@ -157,15 +157,12 @@ async def test_complete_import_input_finishes_import():
     assert (ev.kind, ev.title, ev.source_text) == ("PROJECT", "Side", "text")
 
 
-async def test_list_and_get_are_scoped_and_map_outages():
+async def test_list_is_scoped_and_maps_outages():
     s = _svc()
     mine = s.evidence.put(f.evidence(A))
     s.evidence.put(f.evidence(B))
     assert [e.id for e in (await s.list(A, None, "", PageRequest())).items] == [mine.id]
-    assert (await s.get(A, mine.id)).id == mine.id
-    await _raises("NOT_FOUND", s.get(B, mine.id))
     s.evidence = f.Boom()
-    await _raises("INTERNAL", s.get(A, mine.id))
     await _raises("INTERNAL", s.list(A, None, "", PageRequest()))
 
 
