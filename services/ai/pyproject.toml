@@ -17,7 +17,7 @@ dependencies = [
 # Cloudflare Python Workers (Pyodide) cannot load these; the Workers runtime
 # uses the Neon wire client, pure-Python AES-GCM, pypdf, and Browser Rendering.
 local = [
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.54.0",
     "asyncpg>=0.30",
     "cryptography>=43",
     "langgraph-checkpoint-postgres>=2.0",
