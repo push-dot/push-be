@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { recorder } from "../test-support/recorder.ts";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -85,3 +86,24 @@ test("a bearer on the board is not replaced by the nil user", async () => {
   assert.equal(calls.some((call) => call.sql.includes("job_postings") && call.params.includes(NIL)), false);
   assert.equal(calls.some((call) => call.sql.includes("access_tokens")), true);
 });
+
+{
+const NIL = "00000000-0000-0000-0000-000000000000";
+const POSTING = "11111111-1111-4111-8111-111111111111";
+const NOW = new Date("2026-10-21T00:00:00Z");
+const ENV = { APP_ENV: "production" };
+const openPosting = { id: POSTING, company: "Acme", title: "BE", created_at: "2026-10-01T00:00:00Z", revision: 1, status: "OPEN" };
+
+test("a guest can open a public posting without writing a view row for the nil user", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("INSERT INTO posting_views")) throw Object.assign(new Error("insert or update on table \"posting_views\" violates foreign key constraint"), { code: "23503" });
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [openPosting];
+    return null;
+  });
+  const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.equal(calls.some((c) => c.sql.includes("posting_views") && c.params.includes(NIL)), false);
+});
+}
+
