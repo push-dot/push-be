@@ -18,10 +18,12 @@
 services/gateway     TypeScript Worker `push-be`. 인증 캐시, 속도 제한, 캐시, 라우팅
 services/core-api    TypeScript Worker `push-be-core`. 인증, 대화, 결제, 키 저장, 공고, 캘린더
 services/ai          Python Worker `push-be-python`. LangGraph, LLM, 임베딩, 크론, 사용량 기록
-packages/contracts   FastAPI OpenAPI와 그 스펙으로 만든 TypeScript 타입
+packages/contracts   게이트웨이 공개 API 전체의 OpenAPI(spec/*.ts에서 생성)와 TypeScript 타입
 db/migrations        SQL 마이그레이션
 infra                로컬 docker compose. VPS는 infra/vps
 ```
+
+`packages/contracts/openapi.json`은 클라이언트가 게이트웨이 `/api/v1`로 부를 수 있는 모든 경로를 담는다. 경로마다 `x-owner`(gateway·core·ai)가 붙고, 웹훅·`/internal`·AI 워커 act-as 경로는 뺀다. `packages/contracts/spec/*.ts`를 고친 뒤 `npm run contracts`로 `openapi.json`과 `src/schema.ts`를 다시 만든다. core·gateway·ai 테스트(`openapi-routes`)가 실제 라우트와 스펙이 어긋나면 실패한다.
 
 `packages/ts-shared`는 두지 않았다. 게이트웨이와 코어가 각자 타임스탬프 도우미를 둔다. 응답 바이트를 바꾸지 않으려고 게이트웨이 읽기 경로를 공유 패키지로 옮기지 않았다.
 
