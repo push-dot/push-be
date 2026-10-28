@@ -30,3 +30,7 @@ updates:
     groups:
       npm:
         update-types: [minor, patch]
+    ignore:
+      # @types/node follows the Node major CI runs (22); bump both together.
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
