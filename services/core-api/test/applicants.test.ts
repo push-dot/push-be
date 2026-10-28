@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { postJson, recorder } from "../test-support/recorder.ts";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -1383,3 +1384,85 @@ test("guest applicant counts are 404", async () => {
   );
   assert.equal(res.status, 404);
 });
+
+{
+const POSTING = "11111111-1111-4111-8111-111111111111";
+const APP = "22222222-2222-4222-8222-222222222222";
+const FILE = "33333333-3333-4333-8333-333333333333";
+const NOW = new Date("2026-10-21T00:00:00Z");
+const ENV = { APP_ENV: "production" };
+const E1 = "e0000000-0000-4000-8000-000000000001";
+const E2 = "e0000000-0000-4000-8000-000000000002";
+const E3 = "e0000000-0000-4000-8000-000000000003";
+const postingRow = { company: "Acme", title: "Backend", description: "Build", requirements: ["Go"], deadline: null };
+const appRow = { id: APP, revision: 1, job_id: E3, company: "Acme", title: "Backend", stage: "APPLIED", notes: "", applied_at: "2026-10-21T00:00:00Z", next_action_at: null, imported: false, created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z" };
+
+test("an applicant file with a Korean name downloads with an RFC 5987 filename", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("JOIN company_members m")) return [{ id: POSTING }];
+    if (sql.includes("FROM application_files f")) return [{ file_name: "이력서 \"최종\".pdf", mime_type: "application/pdf", content: "\\x255044" }];
+    return null;
+  });
+  const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}/files/${FILE}`, {
+    headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const disposition = res.headers.get("content-disposition") ?? "";
+  assert.match(disposition, /^attachment; filename="[\x20-\x7e]*"; filename\*=UTF-8''/);
+  assert.ok(disposition.includes(encodeURIComponent("이력서")));
+  assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [0x25, 0x50, 0x44]);
+});
+
+test("apply checks every document and source in one query each and writes in one statement", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const S1 = "50000000-0000-4000-8000-000000000001";
+  const S2 = "50000000-0000-4000-8000-000000000002";
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.includes("FROM documents d")) return [E1, E2].map((id) => ({ id, title: "Doc", content: { id } }));
+    if (sql.startsWith("SELECT id FROM sources")) return [{ id: S1 }, { id: S2 }];
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, { documentIds: [E1, E2], sourceIds: [S1, S2] }, "00000000-0000-4000-8000-000000000008"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const routeCalls = calls.filter((c) => !/rate_limits|access_tokens|idempotency_keys/.test(c.sql));
+  assert.equal(routeCalls.length, 5);
+  assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT")).length, 1);
+});
+
+test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {
+  const { handle } = await import("../src/handler.ts");
+  let lookups = 0;
+  const { query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS")) throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
+    if (sql.includes("FROM applications a JOIN jobs j")) return lookups++ === 0 ? [] : [appRow];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-000000000009"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
+});
+
+test("posting facets run their four counts in parallel", async () => {
+  const { handle } = await import("../src/handler.ts");
+  let inFlight = 0;
+  let peak = 0;
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    inFlight -= 1;
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.equal(peak, 4);
+});
+}
+

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
+import { postJson, recorder } from "../test-support/recorder.ts";
 
 import type { Query } from "../src/db.ts";
 import { handle, type CoreEnv } from "../src/handler.ts";
@@ -279,3 +280,56 @@ test("offers: messages are listed only for a participant and paginate", async ()
   const stranger = await w.call("GET", `/api/v1/me/offers/${LINK}/messages`);
   assert.equal(stranger.status, 404);
 });
+
+{
+const USER = "12345678-1234-4678-9234-567812345678";
+const POSTING = "11111111-1111-4111-8111-111111111111";
+const APP = "22222222-2222-4222-8222-222222222222";
+const NOW = new Date("2026-10-21T00:00:00Z");
+const ENV = { APP_ENV: "production" };
+
+test("deleting a device with a malformed percent-encoding is a 400, not a 500", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder();
+  const res = await handle(new Request("https://core.example/api/v1/me/devices/%E0%A4%A", {
+    method: "DELETE", headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 400);
+});
+
+test("registering a device token unbinds it from any other account in the same statement", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder();
+  const res = await handle(postJson("/api/v1/me/devices", { token: "ExponentPushToken[abc]", platform: "ios" }, "00000000-0000-4000-8000-00000000000a"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const write = calls.find((c) => c.sql.includes("INSERT INTO user_devices"));
+  assert.ok(write);
+  assert.match(write.sql, /DELETE FROM user_devices WHERE token = \$2 AND user_id <> \$1/);
+});
+
+test("an offer may only attach a posting of the sender's own company", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings")) return sql.includes("company_members") ? [] : [{ id: POSTING }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/profiles/${APP}/offer`, { message: "join", postingId: POSTING }, "00000000-0000-4000-8000-00000000000b"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 404);
+  assert.equal(calls.some((c) => c.sql.startsWith("INSERT INTO offers")), false);
+});
+
+test("a second accept that loses the race gets 409 instead of overwriting the decision", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const OFFER = "60000000-0000-4000-8000-000000000001";
+  const { query } = recorder((sql) => {
+    if (sql.startsWith("SELECT o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
+    if (sql.startsWith("UPDATE offers")) return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/me/offers/${OFFER}/decline`, {}, "00000000-0000-4000-8000-00000000000c"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 409);
+});
+}
+
