@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { recorder } from "../test-support/recorder.ts";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -88,3 +89,57 @@ test("source upload keeps the python validation errors", async () => {
   assert.equal(big.status, 413);
   assert.equal((await big.json() as { error: { code: string } }).error.code, "PAYLOAD_TOO_LARGE");
 });
+
+{
+const NOW = new Date("2026-10-21T00:00:00Z");
+const ENV = { APP_ENV: "production" };
+const E1 = "e0000000-0000-4000-8000-000000000001";
+const E2 = "e0000000-0000-4000-8000-000000000002";
+const E3 = "e0000000-0000-4000-8000-000000000003";
+
+const path = "/api/v1/sources";
+const limit = 20 << 20;
+  test(`an upload to ${path} declaring more than the limit is refused with 413`, async () => {
+    const { handle } = await import("../src/handler.ts");
+    const { calls, query } = recorder();
+    const request = new Request("https://core.example" + path, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer t", "idempotency-key": "00000000-0000-4000-8000-000000000001",
+        "content-type": "multipart/form-data; boundary=x", "content-length": String(limit + (1 << 20)),
+      },
+      body: "--x--",
+    });
+    const res = await handle(request, ENV, { query, now: () => NOW });
+    assert.equal(res.status, 413);
+    assert.equal(calls.some((c) => c.sql.includes("INSERT INTO upload_images") || c.sql.includes("INSERT INTO sources")), false);
+  });
+
+test("deleting a source is one statement that unpins the profile resume instead of cascading the profile away", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const SRC = "55555555-5555-4555-8555-555555555555";
+  const { calls, query } = recorder((sql) => (sql.includes("DELETE FROM sources") ? [{ found: 1, used: 0, deleted: 1 }] : null));
+  const res = await handle(new Request(`https://core.example/api/v1/sources/${SRC}`, { method: "DELETE", headers: { authorization: "Bearer t" } }),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 204);
+  const writes = calls.filter((c) => !c.sql.includes("rate_limits") && !c.sql.includes("access_tokens"));
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].sql, /UPDATE profiles SET resume_source_id = NULL/);
+});
+
+test("the source library reads one bounded page from each side and merges them", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql, params) => {
+    const limit = Number(params.at(-1));
+    if (sql.includes("FROM sources")) return [{ id: E1, file_name: "a", mime_type: "text/plain", size: 1, created_at: "2026-10-03T00:00:00Z" }].slice(0, limit);
+    if (sql.includes("FROM documents")) return [{ id: E2, title: "d", created_at: "2026-10-04T00:00:00Z" }, { id: E3, title: "e", created_at: "2026-10-01T00:00:00Z" }].slice(0, limit);
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/sources?limit=2", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { data: { id: string }[]; page: { hasMore: boolean } };
+  assert.deepEqual(body.data.map((item) => item.id), [E2, E1]);
+  assert.equal(body.page.hasMore, true);
+  for (const c of calls.filter((x) => x.sql.includes("FROM sources") || x.sql.includes("FROM documents"))) assert.match(c.sql, /LIMIT \$2$/);
+});
+}
+

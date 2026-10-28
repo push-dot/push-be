@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { beforeEach, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
-import { handle } from "../src/handler.ts";
+import { handle, type Deps } from "../src/handler.ts";
 import { allow, resetLimits } from "../src/ratelimit.ts";
 
 type Call = { sql: string; params: unknown[] };
@@ -97,4 +97,15 @@ test("ratelimit: public routes are limited per client ip at 60/min", async () =>
   }), { APP_ENV: "production" }, { query, now: () => new Date(T0) });
   assert.equal(res.status, 429);
   assert.deepEqual(seen.find((c) => c.sql.includes("rate_limits"))?.params, [`ip:203.0.113.9:${WINDOW}`, WINDOW * 60 + 120, 60]);
+});
+
+test("the in-memory rate limit fallback drops buckets from past minutes", async () => {
+  const { allow, memoryBuckets, resetLimits } = await import("../src/ratelimit.ts");
+  resetLimits();
+  const down: Deps["query"] = async () => { throw new Error("connection reset"); };
+  const t0 = Date.parse("2026-10-22T00:00:30Z");
+  for (let i = 0; i < 50; i += 1) await allow(down, "ip", "10.0.0." + i, 60, t0);
+  assert.equal(memoryBuckets(), 50);
+  await allow(down, "ip", "10.0.0.1", 60, t0 + 60_000);
+  assert.equal(memoryBuckets(), 1);
 });
