@@ -132,7 +132,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   return authorization === "" && isGuestRead(method, path);
 }
 
-async function dispatch(ctx: Ctx, path: string): Promise<Response> {
+export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const method = ctx.request.method;
   const authProvider = path.match(/^\/api\/v1\/auth\/([^/]+)\/(start|callback)$/);
   if (method === "GET" && authProvider?.[2] === "start") return oauthStart(ctx);
