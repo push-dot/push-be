@@ -22,7 +22,12 @@ import { dispatchApplications } from "./routes/applications.ts";
 import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
-import { dispatchRecruiting } from "./routes/recruiting.ts";
+import { dispatchMe } from "./routes/me.ts";
+import { dispatchOffers } from "./routes/offers.ts";
+import { dispatchPostings } from "./routes/postings.ts";
+import { dispatchPosts } from "./routes/posts.ts";
+import { dispatchProfiles } from "./routes/profiles.ts";
+import { dispatchSearch } from "./routes/search.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
 const PUBLIC = new Set([
@@ -187,8 +192,18 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "GET" && job) return getJob(ctx, job[1]);
   if (method === "PATCH" && job) return patchJob(ctx, job[1]);
 
-  const recruited = await dispatchRecruiting(ctx, path);
-  if (recruited) return recruited;
+  const postings = await dispatchPostings(ctx, path);
+  if (postings) return postings;
+  const search = await dispatchSearch(ctx, path);
+  if (search) return search;
+  const profiles = await dispatchProfiles(ctx, path);
+  if (profiles) return profiles;
+  const offers = await dispatchOffers(ctx, path);
+  if (offers) return offers;
+  const posts = await dispatchPosts(ctx, path);
+  if (posts) return posts;
+  const mine = await dispatchMe(ctx, path);
+  if (mine) return mine;
   const companies = await dispatchCompanies(ctx, path);
   if (companies) return companies;
 
