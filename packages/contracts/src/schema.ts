@@ -3896,8 +3896,11 @@ export interface components {
             /** @description Navigation target. Empty object when missing. */
             target: {
                 id?: string;
-                /** @description offer, post, posting, calendar, activity (application id), conversation */
-                kind?: string;
+                /**
+                 * @description activity: id is an application id
+                 * @enum {string}
+                 */
+                kind?: "offer" | "post" | "posting" | "calendar" | "activity" | "conversation";
             } & {
                 [key: string]: unknown;
             };

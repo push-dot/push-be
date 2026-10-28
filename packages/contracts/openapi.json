@@ -3498,7 +3498,15 @@
                 "type": "string"
               },
               "kind": {
-                "description": "offer, post, posting, calendar, activity (application id), conversation",
+                "description": "activity: id is an application id",
+                "enum": [
+                  "offer",
+                  "post",
+                  "posting",
+                  "calendar",
+                  "activity",
+                  "conversation"
+                ],
                 "type": "string"
               }
             },
