@@ -10,7 +10,7 @@ from app.harness.core_client import CoreClient
 from app.harness.jobs import run_queue_turn
 from app.harness.runtime import HarnessRuntime
 from app.workers.ai_worker_main import AI_WORKER_QUEUES
-from app.workers.handlers.chat import chat, configure_chat, configure_harness
+from app.workers.handlers.chat import chat, configure_harness
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, service
 from tests.test_queue_worker import MemoryJobs, queued, worker
 
@@ -56,13 +56,6 @@ async def test_harness_turn_on_the_redis_worker_runs_an_approved_tool_once(monke
     async def cancelled(job_id):
         return False
 
-    async def legacy_node(ctx, name):
-        raise AssertionError("legacy chat nodes must not run")
-
-    async def set_state(job_id, state):
-        return None
-
-    configure_chat(run_node=legacy_node, cancelled=cancelled, set_state=set_state)
     configure_harness(lambda ctx: run_queue_turn(svc, ctx, cancelled))
     try:
         await _flow(svc, db, applies)

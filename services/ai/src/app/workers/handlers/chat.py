@@ -8,10 +8,6 @@ def configure_harness(run) -> None:
     _harness = run
 
 
-def configure_chat(*, run_node, cancelled, set_state) -> None:
-    return None
-
-
 def approval_followup(job: dict) -> dict:
     payload = dict(job.get("payload") or {})
     payload["approved"] = True
