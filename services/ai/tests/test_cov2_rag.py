@@ -49,12 +49,12 @@ class _NoChunks:
 
 
 def _langchain(monkeypatch):
-    monkeypatch.delenv("RAG_ENGINE", raising=False)
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
 
 
 def _legacy(monkeypatch):
     monkeypatch.setattr(rag, "use_langchain", lambda: False)
-    monkeypatch.delenv("RAG_ENGINE", raising=False)
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
 
 
 def test_split_text_uses_llamaindex_sentence_splitter_when_installed(monkeypatch):
