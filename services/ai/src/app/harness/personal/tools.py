@@ -27,6 +27,14 @@ bound_services: contextvars.ContextVar = contextvars.ContextVar(
     "harness_services", default=None)
 
 
+def current_ai_gate():
+    svc = bound_services.get()
+    gate = getattr(svc, "ai", None) if svc is not None else None
+    if gate is None or not hasattr(gate, "_reserve"):
+        return None
+    return gate
+
+
 class EmptyArgs(BaseModel):
     pass
 
@@ -295,15 +303,18 @@ def _user_id(ctx: ToolContext):
 
 
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
+    gate = current_ai_gate()
+    job_id = ctx.job_id or None
     if args.posting_id is not None and ctx.db is not None:
         view = await load_fit(
             ctx.db.q(), UUID(ctx.user_id), args.posting_id,
-            args.document_id or UUID(int=0))
+            args.document_id or UUID(int=0), gate=gate, job_id=job_id)
         return view if view is not None else {"error": "NOT_FOUND"}
     query = None if ctx.db is None else ctx.db.q()
+    user_id = None if query is None else _user_id(ctx)
     return await judge_fit(
         args.requirements, args.keywords, args.description, args.content,
-        await read_plan(query, None if query is None else _user_id(ctx)))
+        await read_plan(query, user_id), gate=gate, job_id=job_id, user_id=user_id)
 
 
 async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:

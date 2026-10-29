@@ -9,11 +9,12 @@ def ai_handlers(deps, query) -> dict:
     from app.workers.handlers.document import make_document
     from app.workers.handlers.fit import make_fit
 
+    gate = getattr(getattr(deps, "ai", None), "gate", None)
     return {
         "chat": chat,
         "employer_ai": chat,
         "document": make_document(deps.documents),
-        "fit": make_fit(query),
+        "fit": make_fit(query, gate),
     }
 
 

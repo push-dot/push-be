@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from app.config import Config
@@ -92,12 +93,34 @@ async def test_judge_attaches_the_usage_callback():
     assert callback.job_id == "job-1"
 
 
+async def test_personal_fit_passes_the_gate_into_the_cache(monkeypatch):
+    import app.harness.personal.tools as tools
+
+    gate = SimpleNamespace(_reserve=object())
+    seen = {}
+
+    async def fake_load(query, user_id, posting_id, document_id, **kwargs):
+        seen["gate"] = kwargs.get("gate")
+        seen["job_id"] = kwargs.get("job_id")
+        return {"fitScore": 7.4, "parts": {}, "topGap": "", "plan": "PRO"}
+
+    monkeypatch.setattr(tools, "load_fit", fake_load, raising=False)
+    token = tools.bound_services.set(SimpleNamespace(ai=gate))
+    try:
+        await tools._get_fit_score(_ctx(_PlanDb("PRO")), tools.FitArgs(
+            posting_id=uuid4(), document_id=uuid4()))
+    finally:
+        tools.bound_services.reset(token)
+    assert seen["gate"] is gate
+    assert seen["job_id"] == "job-1"
+
+
 async def test_personal_fit_uses_the_posting_and_the_user_plan(monkeypatch):
     import app.harness.personal.tools as tools
 
     seen = {}
 
-    async def fake_load(query, user_id, posting_id, document_id):
+    async def fake_load(query, user_id, posting_id, document_id, **kwargs):
         seen["load"] = (user_id, posting_id, document_id)
         return {
             "fitScore": 7.4,
@@ -145,20 +168,91 @@ async def test_resume_fit_reads_the_user_plan(monkeypatch):
     assert out["plan"] == "PRO"
 
 
-async def test_employer_fit_still_passes_free(monkeypatch):
+COMPANY = UUID("00000000-0000-4000-8000-0000000000c1")
+OTHER_COMPANY = UUID("00000000-0000-4000-8000-0000000000c2")
+POSTING = UUID("00000000-0000-4000-8000-0000000000b2")
+
+
+class _CompanyPostings:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def q(self):
+        return self
+
+    async def fetchrow(self, sql, *args):
+        if "job_postings" not in sql or len(args) < 2:
+            return None
+        row = self.rows.get(args[0])
+        if row is None or str(row["company_id"]) != str(args[1]):
+            return None
+        return row
+
+
+def _employer_ctx(db, company_id):
+    return ToolContext(
+        user_id=str(USER), company_id=str(company_id),
+        conversation_id=str(uuid4()), job_id="job-1", tool_call_id="call-1",
+        db=db, core=None)
+
+
+def _owned_posting(company_id=COMPANY):
+    return {
+        "company_id": company_id,
+        "requirements": ["python service"],
+        "skills": ["Python"],
+        "description": "backend role",
+    }
+
+
+async def test_employer_basic_pro_and_ultra_pick_different_levers(monkeypatch):
+    from app.config import Config
+    from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
+    from app.domain.plan_levers import levers_for
     from app.harness.employer import tools as employer
 
     seen = []
 
-    async def fake(*args, **kwargs):
-        seen.append(args[4])
-        return {"fitScore": 1.0, "parts": {}, "topGap": "", "plan": args[4]}
+    def capture(levers, **kwargs):
+        seen.append(levers.model)
+        return _Scripted()
 
-    monkeypatch.setattr(employer, "judge_fit", fake, raising=False)
-    out = await employer._fit(None, employer.FitArgs(
-        requirements=["Python"], content="Python"))
-    assert seen == ["FREE"]
-    assert out["plan"] == "FREE"
+    monkeypatch.setattr("app.framework.fit_judge.chat_model_for", capture)
+    db = _CompanyPostings({POSTING: _owned_posting()})
+    config = Config()
+    expected = []
+    for plan in ("BASIC", "PRO", "ULTRA"):
+        expected.append(levers_for("EMPLOYER", plan, config).model)
+        token = bind_employer_plan(plan)
+        try:
+            await employer._fit(_employer_ctx(db, COMPANY), employer.FitArgs(
+                posting_id=POSTING, content="I use Python"))
+        finally:
+            reset_employer_plan(token)
+    assert seen == expected
+    assert len(set(expected)) == 3
+
+
+async def test_employer_fit_rejects_another_companys_posting(monkeypatch):
+    from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
+    from app.harness.employer import tools as employer
+
+    seen = []
+
+    def capture(levers, **kwargs):
+        seen.append(levers.model)
+        return _Scripted()
+
+    monkeypatch.setattr("app.framework.fit_judge.chat_model_for", capture)
+    db = _CompanyPostings({POSTING: _owned_posting(OTHER_COMPANY)})
+    token = bind_employer_plan("PRO")
+    try:
+        out = await employer._fit(_employer_ctx(db, COMPANY), employer.FitArgs(
+            posting_id=POSTING, content="I use Python"))
+    finally:
+        reset_employer_plan(token)
+    assert out == {"error": "NOT_FOUND"}
+    assert seen == []
 
 
 def test_reference_writer_still_receives_fit_and_part_scores():

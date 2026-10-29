@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -107,7 +108,12 @@ class _Db:
                 return None
             user_id, posting_id, document_id, plan = args
             hit = self.cache.get((user_id, posting_id, document_id, plan))
-            return hit if hit is not None and hit["edits"] == self.edits else None
+            if hit is None or hit["edits"] != self.edits:
+                return None
+            posted = None if self.posting is None else self.posting.get("revision")
+            if posted is not None and hit.get("revision") != posted:
+                return None
+            return hit
         if "FROM job_postings" in sql:
             user_id, posting_id, document_id = args
             p, d = self.posting, self.document
@@ -129,6 +135,7 @@ class _Db:
             "top_gap": args[5],
             "plan": args[6],
             "edits": self.edits,
+            "revision": args[7] if len(args) > 7 else None,
         }
 
 
@@ -138,6 +145,7 @@ def _posting():
         "requirements": ["python service"],
         "skills": ["Python", "Rust"],
         "description": "",
+        "revision": 1,
     }
 
 
@@ -191,6 +199,18 @@ def test_document_edit_invalidates_the_cached_fit():
     assert db.inserts == 2
 
 
+def test_editing_the_posting_forces_a_recompute(scripted_judge):
+    assert "c.posting_revision = p.revision" in _CACHED
+    posting = _posting()
+    posting["revision"] = 1
+    db = _Db(posting, _document(), "PRO")
+    _fit(db)
+    posting["revision"] = 2
+    _fit(db)
+    assert scripted_judge["n"] == 2
+    assert db.inserts == 2
+
+
 def test_fit_inputs_load_in_one_query_scoped_to_the_user():
     from app.infrastructure.posting_fit_cache import _INPUTS
     assert "d.user_id = $1" in _INPUTS and "users u" in _INPUTS
@@ -232,3 +252,100 @@ def test_fit_route_moved_to_core():
 def test_plan_name_blank_is_free():
     assert plan_name(None) == "FREE"
     assert plan_name("  ") == "FREE"
+
+
+def _usage_response():
+    message = SimpleNamespace(usage_metadata={"input_tokens": 11, "output_tokens": 7})
+    return SimpleNamespace(generations=[[SimpleNamespace(message=message)]])
+
+
+class _Settling:
+    def __init__(self, **kwargs):
+        self.schema = None
+
+    def with_structured_output(self, schema, **kwargs):
+        self.schema = schema
+        return self
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        for callback in (config or {}).get("callbacks") or []:
+            await callback.on_llm_end(_usage_response(), run_id="fit-run")
+        return self.schema(
+            tech_stack=10, experience_link=8, career_level=6, keyword=4, domain=2)
+
+
+class _Boom:
+    def __init__(self, **kwargs):
+        pass
+
+    def with_structured_output(self, schema, **kwargs):
+        return self
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        raise RuntimeError("judge down")
+
+
+def _usage_gate():
+    from app.domain.services.ai import AIGate
+    from tests.stubs import FakeDB, StubAiUsageStore, StubUserStore
+    from tests.test_ai import _user
+
+    gate = AIGate(FakeDB(), "sk", None)
+    gate.users = StubUserStore(_user("FREE"))
+    gate.usage = StubAiUsageStore()
+    return gate
+
+
+def _real_judge(monkeypatch):
+    from app.framework.fit_judge import judge_fit
+
+    monkeypatch.setattr("app.infrastructure.posting_fit_cache.judge_fit", judge_fit)
+
+
+async def test_cache_miss_settles_one_usage_row(monkeypatch):
+    from app.domain import entities as ent
+    from app.domain.services.ai import usage_row_id
+
+    _real_judge(monkeypatch)
+    gate = _usage_gate()
+    job_id = "fit-job-1"
+    view = await load_fit(
+        _Db(_posting(), _document(), "PRO"), USER_ID, POSTING_ID, DOC_ID,
+        gate=gate, job_id=job_id, cls=_Settling)
+    assert view["fitScore"] == 7.4
+    assert len(gate.usage.items) == 1
+    row = gate.usage.items[0]
+    assert row.id == usage_row_id(job_id, "fit")
+    assert row.status == ent.USAGE_SETTLED
+    assert (row.input_tokens, row.output_tokens) == (11, 7)
+
+
+async def test_cache_hit_writes_no_usage_row(monkeypatch):
+    _real_judge(monkeypatch)
+    db = _Db(_posting(), _document(), "PRO")
+    db.cache[(USER_ID, POSTING_ID, DOC_ID, "PRO")] = {
+        "fit_score": 7.4,
+        "parts": SCORES,
+        "top_gap": "도메인",
+        "plan": "PRO",
+        "edits": 0,
+        "revision": 1,
+    }
+    gate = _usage_gate()
+    view = await load_fit(
+        db, USER_ID, POSTING_ID, DOC_ID, gate=gate, job_id="fit-job-hit", cls=_Settling)
+    assert view["fitScore"] == 7.4
+    assert gate.usage.items == []
+
+
+async def test_cache_miss_releases_the_reservation_when_the_judge_fails(monkeypatch):
+    from app.domain import entities as ent
+
+    _real_judge(monkeypatch)
+    gate = _usage_gate()
+    with pytest.raises(RuntimeError, match="judge down"):
+        await load_fit(
+            _Db(_posting(), _document(), "PRO"), USER_ID, POSTING_ID, DOC_ID,
+            gate=gate, job_id="fit-job-fail", cls=_Boom)
+    assert len(gate.usage.items) == 1
+    assert gate.usage.items[0].status == ent.USAGE_RELEASED
