@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from app.framework.models import _content
-from app.graphs.chat_surface import insert_chat_approval
+from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.personal.resume.boost import boost_cycle
 from app.harness.personal.resume.prompts import phase_prompt_for_harness

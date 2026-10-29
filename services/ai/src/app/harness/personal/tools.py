@@ -14,7 +14,7 @@ from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.framework.fit_judge import judge_fit
-from app.graphs.chat_surface import insert_chat_approval
+from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow

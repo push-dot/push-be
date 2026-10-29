@@ -16,39 +16,11 @@ CONV = UUID("12345678-0000-4000-8000-000000000001")
 USER = uuid4()
 
 
-def _block(name: str, body: str, lang: str = "md") -> str:
-    return f"```{lang}\n# file: {name}\n{body}\n```"
-
-
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     monkeypatch.setenv("PUSH_RESUME_DIR", str(tmp_path / "root"))
     monkeypatch.delenv("BLOB_STORE", raising=False)
     return tmp_path / "root"
-
-
-# --- visible text ---------------------------------------------------------------
-
-def test_strip_file_blocks_removes_complete_artifacts():
-    text = "Intro\n" + _block("03_resume.md", "# Kim") + "\nOutro\n"
-    assert ws.strip_file_blocks(text) == "Intro\n\nOutro"
-
-
-@pytest.mark.parametrize("tail", [
-    "```md\n# file: 03_resume.md\npartial body",  # streaming artifact
-    "```md\n# fi",                                 # marker still arriving
-    "```",                                          # fence without newline yet
-    "```md\n",                                      # empty first line
-])
-def test_visible_prefix_hides_unterminated_artifact(tail):
-    assert ws.visible_prefix("Before\n" + tail) == "Before\n"
-
-
-def test_visible_prefix_keeps_ordinary_code_blocks():
-    open_code = "See:\n```python\nprint(1)"
-    assert ws.visible_prefix(open_code) == open_code
-    closed = "See:\n```python\nprint(1)\n```"
-    assert ws.visible_prefix(closed) == closed
 
 
 # --- md_to_doc --------------------------------------------------------------------
@@ -112,56 +84,6 @@ def test_workspace_dir_isolates_conversations_sharing_id_prefix(root):
     a = UUID("abcdef01-0000-4000-8000-00000000000a")
     b = UUID("abcdef01-ffff-4fff-bfff-ffffffffffff")
     assert ws.workspace_dir(a, "새 채팅") != ws.workspace_dir(b, "새 채팅")
-
-
-# --- save_artifacts (filesystem) -------------------------------------------------------
-
-def test_save_artifacts_writes_blocks_and_skips_unsafe_names(root):
-    text = "\n".join([
-        _block("01_job_analyses.json", '{"company": {"name": "Acme"}}', "json"),
-        _block(".docs.json", '{"RESUME": "hijack"}', "json"),
-        _block("..", "x"),
-        _block("03_resume.md", "# Kim\n- Built X"),
-    ])
-    saved = ws.save_artifacts(CONV, "t", text)
-    d = ws.workspace_dir(CONV, "t")
-    assert saved == ["01_job_analyses.json", "03_resume.md"]
-    assert (d / "03_resume.md").read_text() == "# Kim\n- Built X\n"
-    assert not (d / ".docs.json").exists()
-    assert sorted(p.name for p in d.iterdir()) == ["01_job_analyses.json", "03_resume.md"]
-
-
-def test_save_artifacts_keeps_longer_existing_file_over_truncated_tail(root):
-    d = ws.workspace_dir(CONV, "t")
-    (d / "03_resume.md").write_text("full previous body that is long\n")
-    saved = ws.save_artifacts(CONV, "t", "ok\n```md\n# file: 03_resume.md\nshort")
-    assert saved == []
-    assert (d / "03_resume.md").read_text() == "full previous body that is long\n"
-
-    saved = ws.save_artifacts(
-        CONV, "t", "ok\n```md\n# file: 03_resume.md\n" + "much longer body " * 5)
-    assert saved == ["03_resume.md"]
-    assert (d / "03_resume.md").read_text().startswith("much longer body")
-
-
-def test_save_artifacts_renders_final_pdf(root):
-    saved = ws.save_artifacts(CONV, "t", _block("05_final_resume.md", "# 김철수\n- 백엔드"))
-    pdf = ws.workspace_dir(CONV, "t") / "05_final_resume.pdf"
-    assert saved == ["05_final_resume.md"]
-    assert len(PdfReader(str(pdf)).pages) == 1
-
-
-def test_save_artifacts_logs_pdf_failure_but_keeps_markdown(root, monkeypatch, caplog):
-    def boom(md, out):
-        raise RuntimeError("no fonts")
-
-    monkeypatch.setattr(ws, "md_to_pdf", boom)
-    with caplog.at_level(logging.ERROR):
-        saved = ws.save_artifacts(CONV, "t", _block("05_final_resume.md", "body"))
-    d = ws.workspace_dir(CONV, "t")
-    assert saved == ["05_final_resume.md"]
-    assert (d / "05_final_resume.md").exists() and not (d / "05_final_resume.pdf").exists()
-    assert "pdf render failed" in caplog.text
 
 
 # --- document sync fakes ---------------------------------------------------------------
@@ -229,10 +151,11 @@ async def test_sync_documents_without_document_service(root):
 
 async def test_sync_documents_creates_then_versions_documents(root):
     conv = _conv("토스 지원")
-    text = "\n".join([_block("03_resume.md", "# Kim"),
-                      _block("04_cover_letter.md", "Dear"),
-                      _block("02_notes.md", "skip me")])
-    saved = ws.save_artifacts(conv.id, conv.title, text)
+    d = ws.workspace_dir(conv.id, conv.title)
+    (d / "03_resume.md").write_text("# Kim\n")
+    (d / "04_cover_letter.md").write_text("Dear\n")
+    (d / "02_notes.md").write_text("skip me\n")
+    saved = ["03_resume.md", "04_cover_letter.md", "02_notes.md"]
     docs = _Docs()
     svc = SimpleNamespace(document_svc=docs)
 
@@ -242,7 +165,7 @@ async def test_sync_documents_creates_then_versions_documents(root):
     mapping = json.loads((ws.workspace_dir(conv.id, conv.title) / ".docs.json").read_text())
     assert set(mapping) == {"RESUME", "COVER_LETTER"}
 
-    ws.save_artifacts(conv.id, conv.title, _block("03_resume.md", "# Kim v2"))
+    (ws.workspace_dir(conv.id, conv.title) / "03_resume.md").write_text("# Kim v2\n")
     again = await ws.sync_documents(svc, USER, conv, ["03_resume.md"])
     assert len(docs.created) == 2
     assert again[0]["document_id"] == UUID(mapping["RESUME"])
@@ -260,7 +183,7 @@ async def test_sync_documents_untitled_chat_uses_company_name(root, analyses, ex
     if analyses is not None:
         (d / "01_job_analyses.json").write_text(json.dumps(analyses))
     (d / ".docs.json").write_text("{not json")
-    ws.save_artifacts(conv.id, conv.title, _block("04_portfolio.md", "work"))
+    (d / "04_portfolio.md").write_text("work\n")
     docs = _Docs()
     synced = await ws.sync_documents(
         SimpleNamespace(document_svc=docs), USER, conv, ["04_portfolio.md"])
@@ -269,7 +192,7 @@ async def test_sync_documents_untitled_chat_uses_company_name(root, analyses, ex
 
 async def test_sync_documents_logs_failures_and_skips(root, caplog):
     conv = _conv("t")
-    ws.save_artifacts(conv.id, conv.title, _block("03_resume.md", "x"))
+    (ws.workspace_dir(conv.id, conv.title) / "03_resume.md").write_text("x\n")
     with caplog.at_level(logging.ERROR):
         synced = await ws.sync_documents(
             SimpleNamespace(document_svc=_Docs(fail_create=True)), USER, conv,
@@ -282,56 +205,21 @@ async def test_sync_documents_logs_failures_and_skips(root, caplog):
 async def test_sync_documents_routes_to_db_when_blob_store_is_db(monkeypatch):
     monkeypatch.setenv("BLOB_STORE", "db")
     db = _DB()
-    await ws.save_artifacts_db(db, CONV, "t", _block("03_resume.md", "# Kim"))
+    db.files[(CONV, "03_resume.md")] = {"body": "# Kim\n", "content": None}
     docs = _Docs()
     synced = await ws.sync_documents(
         SimpleNamespace(db=db, document_svc=docs), USER, _conv("Job"), ["03_resume.md"])
     assert synced[0]["title"] == "Job 이력서"
 
 
-# --- DB-backed artifacts -----------------------------------------------------------------
-
-async def test_save_artifacts_db_upserts_and_skips_unsafe_names():
-    db = _DB()
-    text = "\n".join([_block("03_resume.md", "# Kim"), _block(".docs.json", "{}"),
-                      "```md\n# file: 04_portfolio.md\nstreaming tail"])
-    saved = await ws.save_artifacts_db(db, CONV, "t", text)
-    assert saved == ["03_resume.md", "04_portfolio.md"]
-    assert await ws.artifact_names(db, CONV) == {"03_resume.md", "04_portfolio.md"}
-    assert await ws.read_artifact(db, CONV, "03_resume.md") == "# Kim\n"
-    assert await ws.read_artifact(db, CONV, "04_portfolio.md") == "streaming tail\n"
-    assert await ws.read_artifact(db, CONV, "missing.md") == ""
-
-
-async def test_save_artifacts_db_stores_final_pdf_bytes():
-    db = _DB()
-    await ws.save_artifacts_db(db, CONV, "t", _block("05_final_resume.md", "# Kim"))
-    row = db.files[(CONV, "05_final_resume.pdf")]
-    assert row["body"] is None
-    assert row["content"].startswith(b"%PDF")
-    assert await ws.read_artifact(db, CONV, "05_final_resume.pdf") == ""
-
-
-async def test_save_artifacts_db_logs_pdf_failure(monkeypatch, caplog):
-    def boom(md, out):
-        raise RuntimeError("no fonts")
-
-    monkeypatch.setattr(ws, "md_to_pdf", boom)
-    db = _DB()
-    with caplog.at_level(logging.ERROR):
-        saved = await ws.save_artifacts_db(db, CONV, "t", _block("05_final_x.md", "b"))
-    assert saved == ["05_final_x.md"]
-    assert (CONV, "05_final_x.pdf") not in db.files
-    assert "pdf render failed" in caplog.text
-
-
 async def test_sync_documents_db_flow():
     db = _DB()
-    await ws.save_artifacts_db(db, CONV, "새 채팅", "\n".join([
-        _block("01_job_analyses.json", json.dumps(["bad", {"company": {"name": "Acme"}}])),
-        _block("03_resume.md", "# Kim"),
-        _block("02_notes.md", "ignored"),
-    ]))
+    db.files[(CONV, "01_job_analyses.json")] = {
+        "body": json.dumps(["bad", {"company": {"name": "Acme"}}]),
+        "content": None,
+    }
+    db.files[(CONV, "03_resume.md")] = {"body": "# Kim\n", "content": None}
+    db.files[(CONV, "02_notes.md")] = {"body": "ignored\n", "content": None}
     db.files[(CONV, ".docs.json")] = {"body": "[1, 2]", "content": None}
     docs = _Docs()
     svc = SimpleNamespace(db=db, document_svc=docs)
@@ -342,7 +230,7 @@ async def test_sync_documents_db_flow():
     mapping = json.loads(db.files[(CONV, ".docs.json")]["body"])
     assert mapping == {"RESUME": str(synced[0]["document_id"])}
 
-    await ws.save_artifacts_db(db, CONV, "새 채팅", _block("03_resume.md", "# Kim v2"))
+    db.files[(CONV, "03_resume.md")] = {"body": "# Kim v2\n", "content": None}
     writes = len(db.query.executes)
     again = await ws._sync_documents_db(svc, USER, conv, ["03_resume.md"])
     assert again[0]["document_id"] == synced[0]["document_id"]
@@ -353,7 +241,7 @@ async def test_sync_documents_db_flow():
 async def test_sync_documents_db_edge_cases(caplog):
     db = _DB()
     db.files[(CONV, ".docs.json")] = {"body": "{broken", "content": None}
-    await ws.save_artifacts_db(db, CONV, "", _block("03_resume.md", "x"))
+    db.files[(CONV, "03_resume.md")] = {"body": "x\n", "content": None}
     assert await ws._sync_documents_db(
         SimpleNamespace(db=db), USER, _conv(""), ["03_resume.md"]) == []
 

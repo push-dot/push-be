@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 
 from app.db import NotFoundError
 from app.domain import entities as ent
@@ -118,7 +119,7 @@ async def test_finalize_with_application_records_event():
 
 class _JobRunner:
     def __init__(self, convs):
-        self.svc = ConversationService(FakeDB(), None, None)
+        self.svc = ConversationService(FakeDB(), None, MemorySaver())
         self.svc.conversations = convs
         self.svc.ops = StubOperationStore()
         self.jobs = StubChatJobStore()

@@ -1,26 +1,19 @@
 """ConversationService paths that production reaches: the local chat worker
-(start/stop/_worker_loop/_run_job) and the queue-worker step runner
-(exec_chat_node). CRUD/post/stream methods have no live caller (see report).
+(start/stop/_worker_loop/_run_job).
 """
 from __future__ import annotations
 
 import asyncio
-import json
 from uuid import uuid4
 
 import pytest
 
-from app.claimctx import LostClaim, claim_job, claim_token
 from app.domain.errors import feature_disabled
 from app.domain.services import conversation as conv_mod
-from app.domain.services.conversation import (
-    ConversationService, _checkpoint_dict, _wait, flush_chat_events,
-)
-from app.graphs.chat import event_sink
+from app.domain.services.conversation import ConversationService, _wait
 from app.infrastructure.store_chat_jobs import user_message_id
 from app.jobs import get_job_scheduler, set_job_scheduler
 from tests.stubs import StubChatJobStore, StubConversationStore
-
 
 # ---- shared fakes ---------------------------------------------------------
 
@@ -68,27 +61,6 @@ def _svc(jobs) -> ConversationService:
 
 # ---- small helpers --------------------------------------------------------
 
-@pytest.mark.parametrize("raw,out", [
-    ({"node": "persist"}, {"node": "persist"}),
-    ('{"node": "persist", "fails": 2}', {"node": "persist", "fails": 2}),
-    ("{broken", {}),
-    ("[1, 2]", {}),
-    ("", {}),
-    (None, {}),
-    (7, {}),
-])
-def test_checkpoint_dict_accepts_dict_or_json_object_only(raw, out):
-    assert _checkpoint_dict(raw) == out
-
-
-@pytest.mark.parametrize("ck,hit", [
-    ({"fails": "x"}, False), ({"fails": None}, False), ({"fails": 2}, False),
-    ({"fails": "3"}, True), (None, False),
-])
-def test_step_fail_limit_tolerates_garbage_counts(ck, hit):
-    assert conv_mod.step_fail_limit_reached(ck) is hit
-
-
 async def test_notify_failure_never_fails_the_job():
     class DB:
         def q(self):
@@ -102,28 +74,6 @@ async def test_notify_failure_never_fails_the_job():
 async def test_wait_times_out_without_a_wake():
     event = asyncio.Event()
     assert await _wait(event, 0.01) is False
-
-
-async def test_flush_chat_events_drops_unknown_chunks():
-    sent = []
-
-    async def emit_many(job_id, items):
-        sent.extend(items)
-
-    q: asyncio.Queue = asyncio.Queue()
-    for item in ({"type": "noise"}, {"other": 1}, {"token": "a"}, None):
-        q.put_nowait(item)
-    await flush_chat_events(emit_many, "j", q)
-    assert sent == [("token", {"text": "a"})]
-
-
-async def test_ensure_chat_nodes_binds_once():
-    svc = _svc(None)
-    svc.ensure_chat_nodes()
-    nodes = svc.chat_nodes
-    assert {"resolve_context", "generate_reply", "persist"} <= set(nodes)
-    svc.ensure_chat_nodes()
-    assert svc.chat_nodes is nodes
 
 
 # ---- local worker lifecycle ----------------------------------------------
@@ -275,12 +225,11 @@ def _job(jobs, attempt=1, **payload):
 
 def _run_svc(jobs, graph):
     svc = _svc(jobs)
-    svc._compiled = graph
+    svc._harness_runtime = graph
     return svc
 
 
-async def test_run_job_success_streams_events_and_notifies(monkeypatch):
-    monkeypatch.delenv("AI_HARNESS", raising=False)
+async def test_run_job_success_streams_events_and_notifies():
     jobs = _RunJobs()
     graph = _Graph([
         ("custom", {"status": "thinking"}),
@@ -379,302 +328,9 @@ async def test_worker_loop_claims_only_when_a_run_slot_is_free(monkeypatch):
     await asyncio.gather(*svc._inflight)
 
 
-# ---- exec_chat_node --------------------------------------------------------
-
-class _StepJobs:
-    def __init__(self, status="RUNNING", checkpoint=None, touch=True, err=None):
-        self.job = {"id": None, "status": status, "user_id": uuid4(),
-                    "conversation_id": uuid4(),
-                    "payload": {"text": "hi", "ai": None},
-                    "checkpoint": checkpoint if checkpoint is not None else {}}
-        self.touch = touch
-        self.err = err or {}  # method name -> exception
-        self.events, self.finished, self.deleted_after = [], [], []
-
-    def _maybe(self, name):
-        if name in self.err:
-            raise self.err[name]
-
-    async def touch_owner(self, jid, claim):
-        self.claim_seen = (claim_token.get(), claim_job.get())
-        return self.touch
-
-    async def get(self, jid):
-        return self.job
-
-    async def delete_events_after(self, jid, hw):
-        self._maybe("delete_events_after")
-        self.deleted_after.append(hw)
-
-    async def save_checkpoint(self, jid, ck):
-        self.job["checkpoint"] = ck
-
-    async def emit_many(self, jid, items):
-        self._maybe("emit_many")
-        self.events.extend(items)
-
-    async def emit(self, jid, type_, payload):
-        self._maybe("emit")
-        self.events.append((type_, payload))
-
-    async def finish(self, jid, status, error=None):
-        self._maybe("finish")
-        self.finished.append((status, error))
-        self.job["status"] = status
-
-    async def max_event_id(self, jid):
-        return 40 + len(self.events)
-
-
-def _step_svc(jobs, **nodes):
-    svc = _svc(jobs)
-    svc.ai = None
-    svc.chat_nodes = nodes
-    return svc
-
-
-async def _never(state):  # a node that must not run
-    raise AssertionError("node ran")
-
-
-@pytest.mark.parametrize("status,result", [("DONE", "ok"),
-                                           ("RUNNING", "skip")])
-async def test_lost_claim_owner_check(status, result):
-    jobs = _StepJobs(status=status, touch=False)
-    svc = _step_svc(jobs, generate_reply=_never)
-    jid = uuid4()
-    assert await svc.exec_chat_node(str(jid), "generate_reply", "run-b") == \
-        result
-    assert jobs.claim_seen == ("run-b", str(jid))
-    assert (claim_token.get(), claim_job.get()) == ("", "")
-
-
-async def test_cancelled_job_is_skipped_without_running_the_node():
-    jobs = _StepJobs(status="CANCELLED")
-    svc = _step_svc(jobs, generate_reply=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply", "") == "skip"
-    assert jobs.events == [] and jobs.finished == []
-
-
-async def test_missing_job_is_skipped():
-    jobs = _StepJobs()
-    jobs.job = None
-    assert await _step_svc(jobs).exec_chat_node(str(uuid4()), "persist") == \
-        "skip"
-
-
-@pytest.mark.parametrize("status,result", [("DONE", "ok"),
-                                           ("FAILED", "error")])
-async def test_terminal_jobs_do_not_rerun(status, result):
-    jobs = _StepJobs(status=status)
-    svc = _step_svc(jobs, persist=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "persist") == result
-    assert jobs.finished == [] and jobs.events == []
-
-
-async def test_completed_earlier_step_is_a_no_op():
-    jobs = _StepJobs(checkpoint={"node": "generate_reply"})
-    svc = _step_svc(jobs, resolve_context=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "resolve_context") == "ok"
-    assert jobs.finished == [] and jobs.deleted_after == []
-
-
-async def test_persist_replay_finishes_a_still_running_job():
-    jobs = _StepJobs(checkpoint=json.dumps({"node": "persist"}))
-    svc = _step_svc(jobs, persist=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "persist") == "ok"
-    assert jobs.finished == [("DONE", None)] and len(_ai_done(svc)) == 1
-
-
-async def test_persist_replay_that_lost_the_claim_skips():
-    jobs = _StepJobs(checkpoint={"node": "persist"},
-                     err={"finish": LostClaim()})
-    svc = _step_svc(jobs, persist=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "persist") == "skip"
-    assert _ai_done(svc) == []
-
-
-async def test_step_retry_limit_fails_the_job():
-    jobs = _StepJobs(checkpoint={"node": "resolve_context", "fails": 3})
-    svc = _step_svc(jobs, generate_reply=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "error"
-    (ev,) = jobs.events
-    assert ev == ("error", {"error": {"code": "INTERNAL",
-                                      "message": "step exceeded retry limit",
-                                      "details": None}})
-    assert jobs.finished == [("FAILED", "step exceeded retry limit")]
-
-
-async def test_step_retry_limit_after_lost_claim_writes_nothing():
-    jobs = _StepJobs(checkpoint={"fails": 5}, err={"emit": LostClaim()})
-    svc = _step_svc(jobs, generate_reply=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "error"
-    assert jobs.finished == []
-
-
-async def test_lost_claim_while_resetting_events_skips_the_step():
-    jobs = _StepJobs(err={"delete_events_after": LostClaim()})
-    svc = _step_svc(jobs, generate_reply=_never)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "skip"
-
-
-async def test_step_runs_node_streams_events_and_checkpoints():
-    jobs = _StepJobs(checkpoint={"node": "resolve_context", "event_id": 9,
-                                 "fails": 1,
-                                 "state": {"text": "from-ck", "n": 1}})
-    seen = {}
-
-    async def generate_reply(state):
-        seen.update(state)
-        sink = event_sink.get()
-        sink.append({"status": "drafting"})
-        sink.append({"token": "Hel"})
-        sink.append({"token": "lo"})
-        return {"n": 2, "reply": "Hello"}
-
-    svc = _step_svc(jobs, generate_reply=generate_reply)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "ok"
-    assert seen["text"] == "from-ck"  # resumed from the checkpoint state
-    assert jobs.deleted_after == [9]
-    assert jobs.events == [("status", {"text": "drafting"}),
-                           ("token", {"text": "Hel"}),
-                           ("token", {"text": "lo"})]
-    ck = jobs.job["checkpoint"]
-    assert (ck["node"], ck["fails"], ck["event_id"]) == ("generate_reply", 0,
-                                                          43)
-    assert ck["state"]["reply"] == "Hello" and ck["state"]["n"] == 2
-    assert jobs.finished == [] and event_sink.get() is None
-
-
-async def test_first_step_builds_state_from_payload():
-    jobs = _StepJobs()
-    jobs.job["payload"] = {"text": "hello", "intent": "posting",
-                           "access_mode": "AUTO"}
-    seen = {}
-
-    async def resolve_context(state):
-        seen.update(state)
-
-    svc = _step_svc(jobs, resolve_context=resolve_context)
-    jid = uuid4()
-    assert await svc.exec_chat_node(str(jid), "resolve_context") == "ok"
-    assert (seen["text"], seen["access_mode"], seen["intent"],
-            seen["job_id"]) == ("hello", "AUTO", "posting", str(jid))
-    assert seen["user_id"] == jobs.job["user_id"]
-
-
-async def test_lost_claim_inside_the_node_skips_without_checkpoint():
-    jobs = _StepJobs()
-
-    async def node(state):
-        raise LostClaim()
-
-    svc = _step_svc(jobs, generate_reply=node)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "skip"
-    assert jobs.job["checkpoint"] == {"fails": 1}
-    assert jobs.finished == []
-
-
-async def test_domain_error_fails_job_and_rolls_back_user_message():
-    jobs = _StepJobs()
-
-    async def node(state):
-        raise feature_disabled("monthly limit")
-
-    svc = _step_svc(jobs, generate_reply=node)
-    jid = uuid4()
-    assert await svc.exec_chat_node(str(jid), "generate_reply") == "error"
-    assert svc.conversations.deleted == [user_message_id(jid)]
-    assert jobs.events[-1][0] == "error"
-    assert jobs.events[-1][1]["error"]["code"] == "FEATURE_DISABLED"
-    assert jobs.finished == [("FAILED", "FEATURE_DISABLED")]
-
-
-async def test_domain_error_after_lost_claim_skips_and_survives_rollback_error():
-    jobs = _StepJobs(err={"emit": LostClaim()})
-
-    async def node(state):
-        raise feature_disabled("x")
-
-    svc = _step_svc(jobs, generate_reply=node)
-    svc.conversations = _Convs(err=RuntimeError("db"))
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "skip"
-    assert jobs.finished == []
-
-
-async def test_unexpected_error_propagates_and_keeps_the_fail_count():
-    jobs = _StepJobs(checkpoint={"fails": 1})
-
-    async def node(state):
-        event_sink.get().append({"token": "partial"})
-        raise RuntimeError("cpu limit")
-
-    svc = _step_svc(jobs, generate_reply=node)
-    with pytest.raises(RuntimeError):
-        await svc.exec_chat_node(str(uuid4()), "generate_reply")
-    assert jobs.job["checkpoint"] == {"fails": 2}
-    assert jobs.events == [("token", {"text": "partial"})]
-    assert jobs.finished == []
-
-
-async def test_persist_emits_done_and_finishes():
-    jobs = _StepJobs(checkpoint={"node": "generate_reply"})
-
-    async def persist(state):
-        return {"operation": {"id": "op-1", "status": "SUCCEEDED"}}
-
-    svc = _step_svc(jobs, persist=persist)
-    jid = uuid4()
-    assert await svc.exec_chat_node(str(jid), "persist") == "ok"
-    assert jobs.events == [("done", {"operation": {"id": "op-1",
-                                                   "status": "SUCCEEDED"}})]
-    assert jobs.finished == [("DONE", None)] and len(_ai_done(svc)) == 1
-    assert jobs.job["checkpoint"]["node"] == "persist"
-
-
-async def test_persist_that_loses_the_claim_on_done_skips():
-    jobs = _StepJobs(checkpoint={"node": "generate_reply"},
-                     err={"emit": LostClaim()})
-
-    async def persist(state):
-        return {"operation": {"id": "op-1"}}
-
-    svc = _step_svc(jobs, persist=persist)
-    assert await svc.exec_chat_node(str(uuid4()), "persist") == "skip"
-    assert jobs.finished == []
-
-
-async def test_event_flush_that_loses_the_claim_still_completes_the_step():
-    jobs = _StepJobs(err={"emit_many": LostClaim()})
-
-    async def node(state):
-        event_sink.get().append({"status": "x"})
-        await asyncio.sleep(0)
-
-    svc = _step_svc(jobs, generate_reply=node)
-    assert await svc.exec_chat_node(str(uuid4()), "generate_reply") == "ok"
-    assert jobs.events == []
-
-
-async def test_setup_failure_cancels_the_pump_and_resets_context(monkeypatch):
-    jobs = _StepJobs()
-    svc = _step_svc(jobs)
-    svc.chat_nodes = None
-
-    def broken(_svc):
-        raise RuntimeError("import failed")
-
-    monkeypatch.setattr("app.graphs.chat.bind_chat_nodes", broken)
-    with pytest.raises(RuntimeError, match="import failed"):
-        await svc.exec_chat_node(str(uuid4()), "generate_reply")
-    assert event_sink.get() is None
-    assert jobs.events == []
-
-
-async def test_graph_uses_one_harness_runtime_when_enabled(monkeypatch):
+async def test_graph_uses_one_harness_runtime():
     from app.harness.runtime import HarnessRuntime
-    monkeypatch.setenv("AI_HARNESS", "1")
     svc = _svc(None)
     runtime = svc.graph
     assert isinstance(runtime, HarnessRuntime) and svc.graph is runtime
-    assert svc._compiled is None
+    assert getattr(svc, "_compiled", None) is None

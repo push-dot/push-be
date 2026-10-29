@@ -23,7 +23,7 @@ from app.clock import utcnow
 from app.domain.employer_baseline import baseline_stats
 from app.domain.fair_hiring import DECISION_DISCLAIMER, banned_in_posting
 from app.domain.plan_levers import levers_for
-from app.graphs.chat_surface import insert_chat_approval
+from app.harness.approvals import insert_chat_approval
 from app.harness.employer import nodes
 from app.harness.employer.recruit_prompts import node_prompt
 from app.harness.employer.schemas import (

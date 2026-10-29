@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
@@ -14,7 +14,6 @@ from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
-from app.graphs.chat import _stable_ids
 from app.harness.document_edits import env_core
 from app.harness.graph import (
     RECURSION_LIMIT, _open_calls, build_harness_graph, quick_start_resume, turn_model,
@@ -23,11 +22,25 @@ from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
+from app.infrastructure.store_chat_jobs import user_message_id
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
 
+_PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 _TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
+
+
+def _stable_ids(job_id) -> tuple:
+    if job_id:
+        jid = job_id if isinstance(job_id, UUID) else UUID(str(job_id))
+        base = "push:chat:" + str(jid)
+        return (user_message_id(jid),
+                uuid5(NAMESPACE_URL, base + ":assistant"),
+                uuid5(NAMESPACE_URL, base + ":op"))
+    return uuid4(), uuid4(), uuid4()
+
+
 _EMPLOYER_INTENTS = ("posting", "review", "interview")
 
 
@@ -411,7 +424,6 @@ class HarnessRuntime:
 
     async def _persist(self, payload: dict, reply: str, ai, turn: dict) -> ent.Operation:
         from app.domain.services.ai import record_usage
-        from app.graphs.chat import _PLACEHOLDER_TITLES, _stable_ids
         svc = self.svc
         user_id = payload["user_id"]
         conversation = await svc.conversations.get(user_id, payload["conversation_id"])

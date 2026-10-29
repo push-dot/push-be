@@ -29,11 +29,11 @@ infra                로컬 docker compose. VPS는 infra/vps
 
 게이트웨이가 직접 답하는 읽기(건강 확인, `/auth/me`, 대화 목록, 메시지 목록, 활성 스트림, 모델 목록, 채용 사이트)는 그대로다. 그 외 비-AI 경로 중 코어가 구현한 것은 `CORE` 바인딩으로 `push-be-core`에 간다. AI 경로는 `AI_ORIGIN`(`https://<AI_HOST>`)으로 VPS의 Python에 간다. 오리진이 비어 있으면 500 `NOT_CONFIGURED`다. 서비스 바인딩으로 되돌리지 않는다. `POST /conversations/:id/messages`는 코어가 크레딧을 확인하고 잡을 넣는다. `QUEUE_BACKEND=redis`(운영)면 디스패처를 깨운다. `postgres`로 되돌리면 `AI_ORIGIN/internal/chat/schedule`을 호출한다. 게이트웨이는 `/internal`을 404로 막고 `x-push-internal`을 넘기지 않는다.
 
-Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`로, PDF·웹 페이지 파싱을 `app/ingest`로 옮겼다. 도메인과 인프라 계층은 그대로다. RAG는 `app/graphs/chat.py`의 답변 준비와 `app/rag`에 있다. 검색이 프롬프트 조립과 한 함수 안에 있고, 청크 저장소는 인프라 어댑터라 `app/rag`로 자르면 경계만 생기고 호출은 그대로다.
+Python 안에서는 LangGraph를 `app/graphs`로, FastAPI 라우터를 `app/api`로, PDF·웹 페이지 파싱을 `app/ingest`로 옮겼다. 도메인과 인프라 계층은 그대로다. RAG는 `app/rag`에 있다.
 
 ## 핵심 설계
 
-- **단계 게이트 워크플로** — `app/graphs/chat.py`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
+- **단계 게이트 워크플로** — `app/harness/personal/resume`의 LangGraph가 Phase 0–6을 실행하고, 각 게이트에서 interrupt로 멈춰 사용자 입력을 받는다. 모델 재량이 아니라 구조로 진행을 통제
 - **내구 큐 + 워커** — core가 `ai_jobs`·`outbox`·크레딧 예약을 한 트랜잭션에 쓰고 `202 {jobId}`를 돌려준다. VPS 디스패처가 outbox를 Redis Streams(`q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`)로 넘기고, 종류별 워커가 consumer group으로 처리한다. 원본 기록은 Postgres라서 Redis가 비어도 다시 채운다. 진행 상태는 `GET /api/v1/ai/jobs/{id}`. 운영은 [infra/vps/README.md](infra/vps/README.md)
 - **재연결 가능한 SSE** — `GET /conversations/{id}/messages/stream/active`가 진행 중 잡의 이벤트를 처음부터 재생해 이탈→복귀해도 스트림 복원
 - **근거 RAG** — LlamaIndex `SentenceSplitter`(512/64)로 자르고 TEI `bge-m3`(1024차원)로 임베딩해 `rag_nodes`에 둔다. 검색은 pgvector 밀집 검색과 `pg_trgm` 키워드 검색을 합친다. 합친 결과는 기본적으로 유사도로 재정렬한다. 교차 인코더는 `RERANK_PROVIDER=tei`이고 `rerank` 프로파일이 떠 있을 때만 쓴다. 모든 검색은 사용자나 회사 필터가 있어야 한다.

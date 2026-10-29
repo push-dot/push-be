@@ -1,33 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from uuid import uuid4
 
-from app.domain import entities as ent
 from app.domain.chat_settings import (
     apply_chat_settings,
     insert_ai_done,
     load_chat_settings,
     resolve_chat_settings,
 )
-from app.graphs.chat import bind_chat_nodes
-from app.graphs.chat_surface import surface_events
 
-DOC = "11111111-1111-4111-8111-111111111111"
-REV = "22222222-2222-4222-8222-222222222222"
-
-
-def _diff_state(confirm: bool) -> dict:
-    return {
-        "diff": {
-            "documentId": DOC,
-            "revisionId": REV,
-            "hunks": [{"line": 1, "sign": "+", "text": "shipped"}],
-        },
-        "confirm_before_edit": confirm,
-    }
 
 
 def test_none_and_empty_row_resolve_to_medium_and_true():
@@ -88,14 +70,6 @@ def test_missing_ai_does_not_invent_ai():
     assert out["confirm_before_edit"] is True
 
 
-def test_confirm_false_omits_approval_and_true_keeps_it():
-    skipped = [event["type"] for event in surface_events(_diff_state(False))]
-    assert "diff" in skipped
-    assert "approval" not in skipped
-    kept = [event["type"] for event in surface_events(_diff_state(True))]
-    assert "approval" in kept
-
-
 class _Query:
     def __init__(self, row=None, error=None):
         self.row = row
@@ -154,60 +128,6 @@ async def test_insert_ai_done_swallows_execute_error(caplog):
     assert any(record.exc_info for record in caplog.records)
 
 
-def _conv(user_id):
-    now = datetime.now(timezone.utc)
-    return ent.Conversation(
-        id=uuid4(), user_id=user_id, revision=1, title="chat",
-        created_at=now, updated_at=now)
-
-
-async def test_resolve_context_merges_settings_and_survives_a_query_failure():
-    user_id = uuid4()
-    conv = _conv(user_id)
-
-    class Store:
-        async def get(self, uid, cid):
-            assert uid == user_id and cid == conv.id
-            return conv
-
-    class DB:
-        def __init__(self, query):
-            self.query = query
-
-        def q(self):
-            return self.query
-
-    nodes = bind_chat_nodes(SimpleNamespace(
-        db=DB(_Query(row={
-            "default_effort": "HIGH",
-            "confirm_before_edit": False,
-        })),
-        conversations=Store(),
-    ))
-    state = {
-        "user_id": user_id,
-        "conversation_id": conv.id,
-        "text": "hi",
-        "context": {},
-        "ai": {"model": "kept"},
-    }
-    out = await nodes["resolve_context"](state)
-    assert out["confirm_before_edit"] is False
-    assert out["ai"]["effort"] == "HIGH"
-    assert out["ai"]["model"] == "kept"
-
-    broken = bind_chat_nodes(SimpleNamespace(
-        db=DB(_Query(error=RuntimeError("undefined column"))),
-        conversations=Store(),
-    ))
-    safe = await broken["resolve_context"]({
-        **state,
-        "ai": {"effort": "LOW"},
-    })
-    assert safe["confirm_before_edit"] is True
-    assert "ai" not in safe or safe["ai"]["effort"] == "LOW"
-
-
 class _Jobs:
     def __init__(self):
         self.finished = []
@@ -249,7 +169,7 @@ def _job_svc(error=None):
     svc = ConversationService.__new__(ConversationService)
     svc.db = _DB()
     svc.jobs = _Jobs()
-    svc._compiled = _Graph(error)
+    svc._harness_runtime = _Graph(error)
     svc._sem = asyncio.Semaphore(1)
     return svc
 
@@ -281,59 +201,3 @@ async def test_run_job_inserts_ai_done_only_after_done():
     })
     assert failed.jobs.finished == ["REQUEUE"]
     assert failed.db.query.calls == []
-
-
-async def test_workflow_persist_inserts_ai_done():
-    from app.domain.services.conversation import ConversationService
-
-    user_id = uuid4()
-    conversation_id = uuid4()
-    job_id = uuid4()
-
-    class Jobs(_Jobs):
-        def __init__(self):
-            super().__init__()
-            self.job = {
-                "id": job_id,
-                "status": "RUNNING",
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "payload": {"text": "hi"},
-                "checkpoint": {},
-            }
-
-        async def get(self, jid):
-            return self.job
-
-        async def delete_events_after(self, jid, hw):
-            return None
-
-        async def save_checkpoint(self, jid, ck):
-            self.job["checkpoint"] = ck
-
-        async def max_event_id(self, jid):
-            return 1
-
-        async def emit_many(self, jid, items):
-            return None
-
-        async def finish(self, jid, status, error=None):
-            self.finished.append(status)
-            self.job["status"] = status
-
-    svc = ConversationService.__new__(ConversationService)
-    svc.db = _DB()
-    svc.jobs = Jobs()
-    svc.ai = SimpleNamespace()
-
-    async def persist(state):
-        return {"operation": {"status": "SUCCEEDED"}}
-
-    svc.chat_nodes = {"persist": persist}
-    result = await svc.exec_chat_node(str(job_id), "persist", "")
-    assert result == "ok"
-    assert svc.jobs.finished == ["DONE"]
-    sql, args = svc.db.query.calls[0]
-    assert "AI_DONE" in sql
-    assert "AI 작업이 끝났어요" in args
-    assert '{"kind":"conversation","id":"' + str(conversation_id) + '"}' in args
