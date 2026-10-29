@@ -26,6 +26,7 @@ const fakeDb = (approval: Row | null) => {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
     if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+    if (sql.includes("user_consents")) return rows([{ reference_data: true }]);
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return rows([{ id: "idem" }]);
     if (sql.includes("FROM users") && sql.includes("display_name")) {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: NOW.toISOString() }]);

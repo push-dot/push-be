@@ -313,6 +313,19 @@ export const routes: Route[] = [
     body: body(obj({ referenceData: bool })),
     responses: { 200: ok(ref("Consents")) },
   }),
+  put("core", "/api/v1/me/consents/terms", {
+    tag: "consents",
+    summary: "Store signup terms",
+    description: "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+    body: body(obj({
+      age14: bool,
+      serviceTerms: bool,
+      privacy: bool,
+      marketing: bool,
+      termsVersion: { type: "string", minLength: 1, maxLength: 64 },
+    }, [])),
+    responses: { 200: ok(ref("Consents")) },
+  }),
 
   post("core", "/api/v1/uploads/images", {
     tag: "uploads",
@@ -440,6 +453,14 @@ export const schemas: Record<string, Schema> = {
   Consents: obj({
     referenceData: bool,
     updatedAt: nullable(dateTime),
+    terms: obj({
+      version: nullable(str),
+      age14At: nullable(dateTime),
+      serviceTermsAt: nullable(dateTime),
+      privacyAt: nullable(dateTime),
+      marketing: bool,
+      marketingAt: nullable(dateTime),
+    }),
   }),
   UploadedImage: obj({
     key: { type: "string", pattern: "^[0-9a-f]{32}\\.(jpg|png|webp|heic)$" },

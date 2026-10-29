@@ -49,6 +49,7 @@ test("personal create without audience still inserts a user conversation", async
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(res.status, 201);
@@ -58,6 +59,69 @@ test("personal create without audience still inserts a user conversation", async
   const insert = sqls.find((sql) => sql.includes("INSERT INTO conversations"));
   assert.equal(insert?.includes("company_id"), false);
   assert.equal(insert?.includes("posting_id"), false);
+});
+
+test("personal create without reference consent is 403 and does not insert", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations", JSON.stringify({ title: "hello" }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee11",
+  }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-consent" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 403);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "CONSENT_REQUIRED");
+  assert.equal(sqls.some((sql) => sql.includes("INSERT INTO conversations")), false);
+});
+
+test("a personal message without reference consent is 403 and an employer message is not", async () => {
+  resetLimits();
+  const personal = await handle(post("/api/v1/conversations/" + CONV + "/messages", JSON.stringify({
+    text: "안녕",
+    accessMode: "AUTO",
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee12",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-personal" }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
+    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-personal" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(personal.status, 403);
+  assert.equal((await personal.json() as { error: { code: string } }).error.code, "CONSENT_REQUIRED");
+
+  resetLimits();
+  let queued = false;
+  const employer = await handle(post("/api/v1/conversations/" + CONV + "/messages", JSON.stringify({
+    text: "공고",
+    accessMode: "AUTO",
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee13",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-employer" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("chat_jobs")) {
+      queued = true;
+      return { rows: [{ id: "job-employer" }], rowCount: 1 };
+    }
+    if (sql.includes("co.verified_at")) {
+      return { rows: [{ company_id: COMPANY, plan: "PRO", verified_at: NOW.toISOString() }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(employer.status, 202);
+  assert.equal(queued, true);
 });
 
 test("employer create without a verified company is 403 BUSINESS_NOT_VERIFIED", async () => {
