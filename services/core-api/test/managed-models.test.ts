@@ -67,9 +67,10 @@ test("the ai keys routes are gone", async () => {
 });
 
 test("a message stores the plan effort and ignores the client value", async () => {
-  const scheduled = { ...env(), API: { fetch: async () => new Response("{}", { status: 200 }) } };
+  const scheduled = { ...env(), AI_ORIGIN: "https://ai.example.test" };
   const capture = (slot: { payload: string }): Deps => ({
     ...deps(),
+    fetch: async () => new Response("ok"),
     query: async (sql, params = []) => {
       if (sql.includes("INSERT INTO chat_jobs")) slot.payload = String(params[3] ?? "");
       return deps().query(sql, params);
@@ -95,7 +96,6 @@ test("a message stores the plan effort and ignores the client value", async () =
 
 test("a message is accepted whatever provider the client names", async () => {
   resetLimits();
-  const api = { fetch: async () => new Response("{}", { status: 200 }) };
-  const res = await handle(message({ ...AI, provider: "CLAUDE" }, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), { ...env(), API: api } as CoreEnv, deps());
+  const res = await handle(message({ ...AI, provider: "CLAUDE" }, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), { ...env(), AI_ORIGIN: "https://ai.example.test" }, { ...deps(), fetch: async () => new Response("ok") });
   assert.equal(res.status, 202);
 });
