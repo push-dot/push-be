@@ -14,7 +14,8 @@ from typing_extensions import TypedDict
 from app.framework.models import _content
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
-from app.harness.personal.resume.boost import boost_cycle
+from app.harness.personal.resume.booster import boost_cycle
+from app.harness.personal.resume.drafts import draft_text
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
@@ -159,6 +160,14 @@ _GATES = {
         "recommended": "retry",
         "options": [{"id": "retry", "label": "다시 고르기"}],
     },
+    "boost": {
+        "title": "점수를 한 번 더 올릴까요?",
+        "recommended": "continue",
+        "options": [
+            {"id": "continue", "label": "한 번 더 올리기"},
+            {"id": "stop", "label": "여기서 멈추기"},
+        ],
+    },
 }
 
 
@@ -193,9 +202,73 @@ class ResumeGraphState(TypedDict, total=False):
     prevention_categories: list
     blueprints: dict
     validation_failures: int
+    scores: list
+    boost_acked: int
+    boost_stopped: str
 
 
 _VALIDATE_CAP = 3
+
+
+_JOB_KEYS = ("requirements", "required", "preferred", "keywords")
+_POSTING_CAP = 6000
+
+
+def _job_terms(analysis: dict) -> list:
+    jobs = analysis.get("jobs") if isinstance(analysis, dict) else None
+    if isinstance(jobs, dict):
+        nodes = [jobs]
+    elif isinstance(jobs, list):
+        nodes = jobs
+    else:
+        nodes = []
+    terms = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for key in _JOB_KEYS:
+            value = node.get(key)
+            if isinstance(value, list):
+                terms.extend(value)
+    return terms
+
+
+def _page_text(inputs) -> str:
+    pages = inputs.get("pages") if isinstance(inputs, dict) else None
+    if isinstance(pages, dict):
+        chunks = list(pages.values())
+    elif isinstance(pages, list):
+        chunks = pages
+    else:
+        return ""
+    return "\n".join(
+        chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()
+    )
+
+
+def _posting(state) -> tuple[list, str]:
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    jobs = analysis.get("jobs")
+    blob = json.dumps(jobs if jobs else analysis, ensure_ascii=False)
+    pages = _page_text(state.get("inputs") if isinstance(state.get("inputs"), dict) else {})
+    text = f"{blob}\n{pages}" if pages else blob
+    return _job_terms(analysis), text[:_POSTING_CAP]
+
+
+def _boost_detail(step: dict) -> str:
+    gain = step["gain"]
+    signed = f"+{gain:.1f}" if gain >= 0 else f"{gain:.1f}"
+    return f"적합도 {step['before']:.1f} → {step['after']:.1f} ({signed})"
+
+
+def _fit_user(state: dict):
+    raw = state.get("user_id")
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _invalid(output: dict) -> bool:
@@ -267,20 +340,24 @@ def _cancelled(answer: dict) -> bool:
     return text.startswith(("그만", "취소", "중단"))
 
 
-def _choice(state: dict, phase: str, *, auto: bool) -> dict:
+def _choice(
+    state: dict, phase: str, *, auto: bool, cycle: int | None = None, detail: str | None = None,
+) -> dict:
     gate = _GATES[phase]
+    seed = f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}"
+    if cycle is not None:
+        seed = f"{seed}:{cycle}"
     event = {
         "type": "choice",
-        "id": str(uuid5(
-            NAMESPACE_URL,
-            f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}",
-        )),
+        "id": str(uuid5(NAMESPACE_URL, seed)),
         "kind": "RESUME_GATE",
         "title": gate["title"],
         "gate": phase,
         "recommended": gate["recommended"],
         "options": [*gate["options"], {"id": "cancel", "label": "그만하기"}],
     }
+    if detail:
+        event["detail"] = detail
     if gate.get("multiple"):
         event["multiple"] = True
     if auto:
@@ -655,13 +732,107 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return await accepted(current, gate_id, answer)
         return node
 
+    async def score_draft(state: dict) -> dict:
+        from app.framework.fit_judge import judge_fit
+        from app.harness.personal.tools import current_ai_gate
+        from app.infrastructure.posting_fit_cache import read_plan
+
+        user_id = _fit_user(state)
+        query = None if db is None else db.q()
+        plan = await read_plan(query, user_id)
+        terms, description = _posting(state)
+        return await judge_fit(
+            terms,
+            terms,
+            description,
+            draft_text(state.get("drafts")),
+            plan,
+            gate=current_ai_gate(),
+            job_id=state.get("job_id") or None,
+            user_id=user_id,
+        )
+
     async def boost(state: ResumeGraphState) -> dict:
-        extra = boost_cycle(dict(state)) or {}
-        if not isinstance(extra, dict):
-            extra = {}
-        skipped = {"phase", "status", "goto"}
-        kept = {key: value for key, value in extra.items() if key not in skipped}
-        return {**kept, "phase": state.get("phase") or "review", "status": "active", "goto": "end"}
+        scores = [float(item) for item in (state.get("scores") or [])]
+        if not scores:
+            base = await score_draft(state)
+            scores.append(float(base["fitScore"]))
+        current = {**state, "phase": "craft"}
+        ctx = _context(db, state)
+        output = await _output(turn_model.get() or model, "craft", current, ctx)
+        stored = await _store_output(db, current, "craft", output)
+        view = await score_draft({**state, **stored})
+        scores.append(float(view["fitScore"]))
+        return {**stored, "scores": scores}
+
+    async def _finish_boost(state: ResumeGraphState, outcome: dict, stopped: str) -> dict:
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts["05_boost_history.json"] = await save_named(
+            state, "05_boost_history.json", {"history": outcome["history"]},
+        )
+        return {
+            "phase": "review",
+            "scores": [],
+            "boost_acked": 0,
+            "boost_stopped": stopped,
+            "artifacts": artifacts,
+            "status": "active",
+            "goto": "end",
+        }
+
+    async def boost_gate(state: ResumeGraphState) -> dict:
+        outcome = boost_cycle({
+            "scores": state.get("scores") or [],
+            "acked": int(state.get("boost_acked") or 0),
+            "defer": True,
+        })
+        pending = outcome.get("pending")
+        phase = state.get("phase") or "review"
+        if pending is None:
+            stopped = outcome["stopped"]
+            if stopped == "continue":
+                stopped = "max"
+            return await _finish_boost(state, outcome, stopped)
+        detail = _boost_detail(pending)
+        stopped = outcome["stopped"]
+        if stopped in {"stall", "max"}:
+            note = (
+                "더 올리기 어려워서 여기서 멈출게요."
+                if stopped == "stall"
+                else "최대 5번까지 올렸어요."
+            )
+            emit({"token": f"{detail} — {note}"})
+            return await _finish_boost(state, outcome, stopped)
+        if not _must_stop(state, "boost"):
+            emit(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
+            answer: dict = {"option_id": "continue"}
+        else:
+            event = _choice(state, "boost", auto=False, cycle=pending["cycle"], detail=detail)
+            if await _save_choice(db, state, event):
+                emit(event)
+            answer = interrupt({
+                "approval_id": event["id"],
+                "awaiting": "choice",
+                "kind": "RESUME_GATE",
+                "gate": "boost",
+                "cycle": pending["cycle"],
+                "before": pending["before"],
+                "after": pending["after"],
+                "gain": pending["gain"],
+            }) or {}
+        if _cancelled(answer):
+            return {"status": "cancelled", "phase": phase, "goto": "end"}
+        option = answer.get("option_id") or "continue"
+        stopped = "stop" if option == "stop" else outcome["stopped"]
+        if stopped == "continue":
+            return {
+                "boost_acked": int(outcome["cycles"]),
+                "boost_stopped": stopped,
+                "status": "active",
+                "phase": phase,
+                "goto": "p3c_boost",
+            }
+        return await _finish_boost(state, outcome, stopped)
 
     async def save_named(state: dict, name: str, payload: dict) -> str:
         body = json.dumps(payload, ensure_ascii=False)
@@ -837,6 +1008,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p3_craft", work_node("craft"))
     graph.add_node("g3", gate_node("craft"))
     graph.add_node("p3c_boost", boost)
+    graph.add_node("p3c_cycle", boost_gate)
     graph.add_node("p4a_review", work_node("review"))
     graph.add_node("g4a", gate_node("review"))
     graph.add_node("p5_publish", work_node("publish"))
@@ -882,7 +1054,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("p4a_review", "g4a")
     graph.add_edge("p5_publish", "g5")
     graph.add_edge("p6_present", "g6")
-    graph.add_edge("p3c_boost", END)
+    graph.add_edge("p3c_boost", "p3c_cycle")
+    graph.add_conditional_edges(
+        "p3c_cycle", route_goto, {"end": END, "p3c_boost": "p3c_boost"})
     for name in (
         "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
         "g2", "g3", "g4a", "g5", "g6",

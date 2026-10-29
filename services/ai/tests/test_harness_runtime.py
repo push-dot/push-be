@@ -193,6 +193,46 @@ async def test_start_document_second_ask_can_be_answered():
     assert _saved_resume(rows)["status"] == "cancelled"
 
 
+async def test_boost_choice_answer_resumes_the_cycle(monkeypatch):
+    scores = iter([1.0, 2.0, 3.0, 4.0])
+
+    async def fake(*_args, **_kwargs):
+        return {"fitScore": next(scores), "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {
+        "status": "done",
+        "drafts": {"markdown": "백엔드 경력"},
+        "analysis": {"jobs": {"requirements": ["Python"], "keywords": ["Kafka"]}},
+        "inputs": {"pages": {"https://jobs.example/1": "백엔드 공고"}},
+    }})
+    runtime = HarnessRuntime(service(rows))
+    first = await run(runtime, _payload("점수 올려줘", ai=None, intent="boost"))
+    boost = next(
+        chunk for mode, chunk in first
+        if mode == "custom" and chunk.get("gate") == "boost"
+    )
+    assert boost["kind"] == "RESUME_GATE"
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in first
+    )
+    assert boost["title"] == "점수를 한 번 더 올릴까요?"
+    assert boost["detail"] == "적합도 1.0 → 2.0 (+1.0)"
+    assert [item["id"] for item in boost["options"]] == ["continue", "stop", "cancel"]
+    second = await run(runtime, _payload(
+        "", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        resume={"approvalId": boost["id"], "optionId": "continue"}))
+    again = next(
+        chunk for mode, chunk in second
+        if mode == "custom" and chunk.get("gate") == "boost"
+    )
+    assert again["id"] != boost["id"]
+    assert again["detail"] == "적합도 2.0 → 3.0 (+1.0)"
+
+
 async def test_start_document_continue_choice_keeps_the_flow():
     from app.harness.personal import tools
     from app.harness.router import select_harness
