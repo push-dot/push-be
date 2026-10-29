@@ -12,7 +12,7 @@ description: 서류의 주장 중 면접에서 확인할 부분을 claim-verific
 ## 단계
 1. `claim-verification.md` 2장 신호를 경력·프로젝트 항목마다 점검한다.
 2. 신호가 있으면 서류 안에서 해소되는지 본다(다른 문단에 방법이 적혀 있으면 해소).
-3. 해소되지 않으면 `CHECK`, 서로 맞고 구체적이면 `SUPPORTED`, 정보가 없으면 `UNKNOWN`.
+3. 해소되지 않으면 `CHECK`, 서로 맞고 구체적이면 `SUPPORTED`, 정보가 없으면 `UNKNOWN`. 세부가 아쉬운 정도는 `CHECK`가 아니다(`claim-verification.md` 1장 "CHECK와 UNKNOWN 가르기").
 4. 6번 신호(연차 대비 깊이)는 기준선이 있을 때만 쓴다.
 5. 항목은 많아도 5개까지. 가장 중요한 것부터.
 
