@@ -28,7 +28,7 @@ const likePattern = (raw: string | null): string | null => {
   return `%${trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 };
 
-async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null): Promise<Response> {
+async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null, archived = false): Promise<Response> {
   let filterSql = "";
   const params: unknown[] = [ownerId];
   if (appId) {
@@ -58,7 +58,7 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
     + "LEFT JOIN users cu ON cu.id = c.user_id "
     + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
     + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
-    + "WHERE " + ownerSql + " AND c.archived = false"
+    + "WHERE " + ownerSql + " AND c.archived = " + (archived ? "true" : "false")
     + filterSql
     + ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`,
     params,
@@ -78,6 +78,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   const cursor = cursorPair(url, rid);
   if (cursor instanceof Response) return cursor;
   const q = likePattern(url.searchParams.get("q"));
+  const archived = url.searchParams.get("archived") === "true";
   if (url.searchParams.get("audience") === "EMPLOYER") {
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
@@ -85,7 +86,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
       return errorResponse(403, "BUSINESS_NOT_VERIFIED", "company is not verified", rid);
     }
     try {
-      return await listConversationsFor(deps, user.companyId, appId, cursor, page.limit, rid, "EMPLOYER", q);
+      return await listConversationsFor(deps, user.companyId, appId, cursor, page.limit, rid, "EMPLOYER", q, archived);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
@@ -97,7 +98,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     if (user instanceof Response) return user;
     try {
       return await freshRead(
-        await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q),
+        await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived),
         request, rid);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -107,13 +108,13 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q);
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
   }
   try {
-    const rows = await queryToleratingCompany(deps.query, LIST_SQL, [
+    const rows = await queryToleratingCompany(deps.query, archived ? LIST_SQL.replace("AND c.archived = false ", "AND c.archived = true ") : LIST_SQL, [
       ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release),
       appId, cursor.at, cursor.id, page.limit + 1, q,
     ]);
@@ -125,7 +126,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     const user = await requireUser(request, env, deps, rid, limits, now);
     if (user instanceof Response) return user;
     try {
-      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q);
+      return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived);
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }

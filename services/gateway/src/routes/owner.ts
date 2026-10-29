@@ -59,8 +59,8 @@ function isCore(method: string, path: string): boolean {
   )) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
-  if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH";
-  if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (/^\/api\/v1\/conversations\/[^/]+\/(archive|unarchive)$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/messages(\/stream)?$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/attachments$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/approvals\/[^/]+$/.test(path)) return method === "POST";

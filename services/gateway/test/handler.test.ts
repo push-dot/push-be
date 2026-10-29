@@ -175,6 +175,28 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.match(listSql, /to_char\(page\.created_at AT TIME ZONE 'UTC'/);
 });
 
+test("conversation list archived=true returns only archived rows", async () => {
+  resetLimits();
+  const seen: unknown[][] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations?archived=true", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql, params) => {
+    seen.push([sql, params]);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const listSql = String(seen[0][0]);
+  assert.match(listSql, /c\.archived = true/);
+  assert.doesNotMatch(listSql, /c\.archived = false/);
+});
+
 test("message reads 404 when the conversation is missing and omit null attachments", async () => {
   resetLimits();
   const auth = async (sql: string) => {
