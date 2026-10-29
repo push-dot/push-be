@@ -513,6 +513,9 @@ test("delete removes the owner's conversation in one statement and hides another
     sqls.push(sql);
     if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("SELECT user_id, company_id")) {
+      return { rows: [{ user_id: USER, company_id: null }], rowCount: 1 };
+    }
     if (sql.startsWith("WITH owned AS")) {
       assert.equal(params[0], CONV);
       assert.equal(params[1], USER);
@@ -538,6 +541,53 @@ test("delete removes the owner's conversation in one statement and hides another
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(missing.status, 404);
+});
+
+const deleteCall = (role: string | null, owner: string, sqls: string[]) => handle(new Request("https://core.example/api/v1/conversations/" + CONV, {
+  method: "DELETE",
+  headers: headers(),
+}), env(), deps(async (sql) => {
+  sqls.push(sql);
+  if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("SELECT user_id, company_id")) {
+    return { rows: [{ user_id: owner, company_id: COMPANY }], rowCount: 1 };
+  }
+  if (sql.includes("SELECT role FROM company_members")) {
+    return role ? { rows: [{ role }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  }
+  if (sql.startsWith("WITH owned AS")) return { rows: [{ id: CONV }], rowCount: 1 };
+  return { rows: [], rowCount: 0 };
+}));
+
+test("a company admin deletes a conversation they did not create", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const other = "99999999-9999-4999-8999-999999999999";
+  const res = await deleteCall("ADMIN", other, sqls);
+  assert.equal(res.status, 204);
+  const gone = sqls.find((sql) => sql.startsWith("WITH owned AS")) ?? "";
+  assert.match(gone, /company_id IS NOT NULL/);
+  assert.equal(gone.includes("user_id = $2"), false);
+});
+
+test("the member who created a company conversation cannot delete it", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await deleteCall("MEMBER", USER, sqls);
+  assert.equal(res.status, 403);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal(sqls.some((sql) => sql.startsWith("WITH owned AS")), false);
+});
+
+test("another company member cannot delete a company conversation", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const other = "99999999-9999-4999-8999-999999999999";
+  const res = await deleteCall("MEMBER", other, sqls);
+  assert.equal(res.status, 403);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal(sqls.some((sql) => sql.startsWith("WITH owned AS")), false);
 });
 
 test("unarchive clears the flag and does not archive evidence", async () => {

@@ -184,7 +184,7 @@ export const routes: Route[] = [
   del("core", "/api/v1/conversations/{id}", {
     tag: "conversations",
     summary: "Delete a conversation",
-    description: "The creating user only. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
+    description: "A personal conversation is deleted by its owner. A company conversation is deleted only by a company admin. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
     params: [id],
     responses: { 204: noContent },
   }),

@@ -182,7 +182,13 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   return data(200, convDto(updated), ctx.rid);
 }
 
-const DELETE_CONVERSATION = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
+const DELETE_OWNED = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
+  + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
+
+const DELETE_COMPANY = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND company_id IS NOT NULL), "
   + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
   + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
   + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
@@ -190,7 +196,18 @@ const DELETE_CONVERSATION = "WITH owned AS (SELECT id FROM conversations WHERE i
 
 export async function deleteConversation(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const gone = await one(ctx.deps.query, DELETE_CONVERSATION, [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, "SELECT user_id, company_id FROM conversations WHERE id = $1", [id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (row.company_id != null) {
+    const member = await one(ctx.deps.query,
+      "SELECT role FROM company_members WHERE user_id = $1 AND company_id = $2",
+      [ctx.user.id, row.company_id]);
+    if (!member || String(member.role) !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+    const gone = await one(ctx.deps.query, DELETE_COMPANY, [id]);
+    if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    return noContent(ctx.rid);
+  }
+  const gone = await one(ctx.deps.query, DELETE_OWNED, [id, ctx.user.id]);
   if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
   return noContent(ctx.rid);
 }
