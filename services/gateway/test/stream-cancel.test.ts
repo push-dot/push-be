@@ -10,7 +10,6 @@ const NOW = new Date("2026-10-18T00:00:00Z");
 
 const env = (): FrontEnv => ({
   DATABASE_URL: "postgres://example",
-  API: { async fetch() { throw new Error("python should not be called"); } },
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",

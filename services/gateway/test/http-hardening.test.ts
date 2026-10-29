@@ -5,7 +5,7 @@ import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../sr
 import { requestIdOf } from "../src/http.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
-const env = { API: { fetch: async () => new Response("{}") }, APP_ENV: "production" } as FrontEnv;
+const env = { APP_ENV: "production" } as FrontEnv;
 
 test("a client request id outside [A-Za-z0-9._:-] is replaced, not echoed or forwarded", () => {
   const rid = (value: string) => requestIdOf(new Request("https://x.test/", { headers: { "x-request-id": value } }));

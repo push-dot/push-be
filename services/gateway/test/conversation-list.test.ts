@@ -74,7 +74,6 @@ const FIXTURES: Fixture[] = [
 
 const env = (): FrontEnv => ({
   DATABASE_URL: "postgres://example",
-  API: { async fetch() { throw new Error("python should not be called"); } },
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",
