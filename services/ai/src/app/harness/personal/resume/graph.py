@@ -31,6 +31,11 @@ _ARTIFACTS = {
     "present": "06_present.json",
 }
 _TARGET_IDS = ("resume", "portfolio", "cover_letter")
+_APPROACH_IDS = ("bottleneck", "prevention")
+_LEVEL_IDS = ("L1", "L2", "L3")
+_PREVENTION_IDS = (
+    "performance", "security", "scalability", "reliability", "maintainability", "data_integrity",
+)
 _GATES = {
     "mode_select": {
         "title": "어떤 방식으로 진행할까요?",
@@ -113,6 +118,41 @@ _GATES = {
         "recommended": "done",
         "options": [{"id": "done", "label": "확인했어요"}],
     },
+    "approach": {
+        "title": "어떤 접근 방식으로 진행할까요?",
+        "recommended": "prevention",
+        "options": [
+            {"id": "bottleneck", "label": "병목을 만들게요"},
+            {"id": "prevention", "label": "문제를 예방할게요"},
+        ],
+    },
+    "level": {
+        "title": "병목 강도를 어느 정도로 할까요?",
+        "recommended": "L2",
+        "options": [
+            {"id": "L1", "label": "가벼운 제약으로"},
+            {"id": "L2", "label": "중간 제약으로"},
+            {"id": "L3", "label": "강한 제약으로"},
+        ],
+    },
+    "prevention": {
+        "title": "어떤 문제를 예방할까요?",
+        "recommended": "performance",
+        "multiple": True,
+        "options": [
+            {"id": "performance", "label": "성능"},
+            {"id": "security", "label": "보안"},
+            {"id": "scalability", "label": "확장성"},
+            {"id": "reliability", "label": "안정성"},
+            {"id": "maintainability", "label": "유지보수"},
+            {"id": "data_integrity", "label": "데이터 무결성"},
+        ],
+    },
+    "projects": {
+        "title": "어떤 프로젝트를 구현할까요?",
+        "recommended": "skip",
+        "options": [{"id": "skip", "label": "기획만 볼게요"}],
+    },
 }
 
 
@@ -141,6 +181,10 @@ class ResumeGraphState(TypedDict, total=False):
     parsed_file: str
     github_file: str
     job_file: str
+    approach: str | None
+    bottleneck_level: str | None
+    prevention_categories: list
+    blueprints: dict
 
 
 def _scenario_letter(state: dict) -> str:
@@ -150,6 +194,8 @@ def _scenario_letter(state: dict) -> str:
 
 
 def _after_analyze(state: dict) -> str:
+    if state.get("work_mode") == "experience_blueprint":
+        return "approach"
     return {
         "B": "feedback",
         "C": "review",
@@ -253,6 +299,9 @@ def _bodies(phase: str, state: dict, output: dict) -> list[tuple[str, str]]:
     if phase == "publish":
         body = _artifact_body("05_final_resume.md", output)
         return [(f"05_final_{target}.md", body) for target in _targets(state)]
+    if phase == "blueprints":
+        body = _artifact_body("06_experience_blueprints.json", output)
+        return [("06_experience_blueprints.json", body)]
     if phase == "strategy":
         return [
             ("02_strategy.json", _artifact_body("02_strategy.json", output)),
@@ -276,6 +325,7 @@ async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
         "strategy": "strategy",
         "craft": "drafts",
         "review": "review",
+        "blueprints": "blueprints",
     }.get(phase)
     update = {"artifacts": artifacts}
     if bucket:
@@ -307,6 +357,16 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
             update["output_targets"] = picked
     if phase == "tone" and option_id:
         update["tone"] = str(option_id)
+    if phase == "approach" and option_id in _APPROACH_IDS:
+        update["approach"] = str(option_id)
+    if phase == "level" and option_id in _LEVEL_IDS:
+        update["bottleneck_level"] = str(option_id)
+    if phase == "prevention":
+        picked = [item for item in _option_ids(answer) if item in _PREVENTION_IDS]
+        if not picked and option_id in _PREVENTION_IDS:
+            picked = [str(option_id)]
+        if picked:
+            update["prevention_categories"] = picked
     if option_id == "2-B" or str(answer.get("text") or "").startswith("피드백만"):
         update["strategy"] = {**(state.get("strategy") or {}), "branch": "2-B"}
     text = answer.get("text")
@@ -363,7 +423,8 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     if model is None:
         return {"summary": phase}
     context = {key: state.get(key) for key in (
-        "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review")}
+        "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review",
+        "approach", "bottleneck_level", "prevention_categories")}
     messages = [
         SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
@@ -402,6 +463,7 @@ _PHASE_DONE = {
     "review": "품질 검토를 마쳤어요. 디자인을 골라 주세요.",
     "publish": "최종 서류를 만들었어요.",
     "present": "결과를 정리했어요.",
+    "blueprints": "프로젝트 기획서를 만들었어요.",
 }
 
 
@@ -418,6 +480,9 @@ _EXITS = {
     "g_tone": "g_tone",
     "g_intake": "g_intake",
     "p3c_boost": "p3c_boost",
+    "g_level": "g_level",
+    "g_prevention": "g_prevention",
+    "p2x_validate": "p2x_validate",
 }
 
 
@@ -431,6 +496,13 @@ def _auto_answer(gate_id: str) -> dict:
 def _advance(merged: dict, gate_id: str, update: dict) -> dict:
     if gate_id in _INTAKE_NEXT:
         return {**update, "status": "active", "phase": "intake", "goto": _INTAKE_NEXT[gate_id]}
+    if gate_id == "approach":
+        nxt = "g_level" if merged.get("approach") == "bottleneck" else "g_prevention"
+        return {**update, "status": "active", "phase": "approach", "goto": nxt}
+    if gate_id in {"level", "prevention"}:
+        return {**update, "status": "active", "phase": "approach", "goto": "p2x_validate"}
+    if gate_id == "projects":
+        return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
     phase = _GATE_PHASE.get(gate_id, gate_id)
     nxt = _next_phase(merged, phase)
     if nxt is None:
@@ -472,6 +544,21 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             }, ensure_ascii=False, indent=2)
             artifacts["01_scenario.json"] = await save_artifact(
                 _context(db, merged), "01_scenario.json", body)
+            update["artifacts"] = artifacts
+            merged = {**merged, "artifacts": artifacts}
+        if gate_id in {"level", "prevention"}:
+            artifacts = dict(merged.get("artifacts") or {})
+            scenario = {
+                "work_mode": merged.get("work_mode"),
+                "output_targets": _targets(merged),
+                "tone": merged.get("tone"),
+                "approach": merged.get("approach"),
+                "bottleneck_level": merged.get("bottleneck_level"),
+                "prevention_categories": list(merged.get("prevention_categories") or []),
+            }
+            artifacts["01_scenario.json"] = await save_artifact(
+                _context(db, merged), "01_scenario.json",
+                json.dumps(scenario, ensure_ascii=False, indent=2))
             update["artifacts"] = artifacts
             merged = {**merged, "artifacts": artifacts}
         return _advance(merged, gate_id, update)
@@ -556,6 +643,41 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         emit({"token": reply})
         return {"reply": reply, "reply_job": current["job_id"], "phase": "review"}
 
+    async def approach_node(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        reply = "접근 방식을 골라 주세요."
+        emit({"token": reply})
+        return {
+            "reply": reply, "reply_job": current["job_id"], "phase": "approach", "retry": False,
+        }
+
+    async def validate_node(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        chat = turn_model.get() or model
+        if chat is None:
+            output = {"valid": True}
+        else:
+            messages = [
+                SystemMessage(content=(
+                    "선택한 접근 방식이 공고와 맞는지 JSON으로 판단한다. "
+                    "맞지 않으면 valid를 false로 둔다."
+                )),
+                HumanMessage(content=json.dumps({
+                    "phase": "validate",
+                    "approach": current.get("approach"),
+                    "bottleneck_level": current.get("bottleneck_level"),
+                    "prevention_categories": current.get("prevention_categories") or [],
+                    "analysis": current.get("analysis") or {},
+                }, ensure_ascii=False)),
+            ]
+            output = _parsed(await chat.ainvoke(messages))
+        if output.get("valid") is False:
+            return {"phase": "approach", "status": "active", "retry": True}
+        return {"phase": "blueprints", "status": "active", "retry": False}
+
+    def after_validate(state: ResumeGraphState) -> str:
+        return "end" if state.get("retry") else "p2x_blueprints"
+
     def fan_out(state: ResumeGraphState):
         payload = dict(state)
         return [
@@ -578,6 +700,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             "review": "p4a_review",
             "publish": "p5_publish",
             "present": "p6_present",
+            "approach": "p2x_approach",
+            "blueprints": "p2x_blueprints",
         }.get(phase, "p0_mode")
 
     def route_goto(state: ResumeGraphState) -> str:
@@ -613,9 +737,17 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g5", gate_node("publish"))
     graph.add_node("p6_present", work_node("present"))
     graph.add_node("g6", gate_node("present"))
+    graph.add_node("p2x_approach", approach_node)
+    graph.add_node("g_approach", gate_node("approach"))
+    graph.add_node("g_level", gate_node("level"))
+    graph.add_node("g_prevention", gate_node("prevention"))
+    graph.add_node("p2x_validate", validate_node)
+    graph.add_node("p2x_blueprints", work_node("blueprints"))
+    graph.add_node("g2x", gate_node("projects"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
         "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
         "p4a_review", "p4b_design", "p5_publish", "p6_present",
+        "p2x_approach", "p2x_blueprints",
     )})
     graph.add_edge("p0_mode", "g0")
     graph.add_edge("p0i_intake", "g_output_targets")
@@ -627,6 +759,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("classify_scenario", "g1")
     graph.add_edge("p2b_feedback", "g_feedback")
     graph.add_edge("p4b_design", "g4a")
+    graph.add_edge("p2x_approach", "g_approach")
+    graph.add_edge("p2x_blueprints", "g2x")
+    graph.add_conditional_edges(
+        "p2x_validate", after_validate, {"end": END, "p2x_blueprints": "p2x_blueprints"})
     graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
     graph.add_edge("p3_craft", "g3")
     graph.add_edge("p4a_review", "g4a")
@@ -636,6 +772,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     for name in (
         "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
         "g2", "g3", "g4a", "g5", "g6",
+        "g_approach", "g_level", "g_prevention", "g2x",
     ):
         graph.add_conditional_edges(name, route_goto, _EXITS)
     return graph.compile(checkpointer=checkpointer)

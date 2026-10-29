@@ -85,6 +85,7 @@ def _state(payload: dict, conversation: dict) -> dict:
 _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
     "drafts", "review", "artifacts", "output_targets", "tone", "warnings",
+    "approach", "bottleneck_level", "prevention_categories", "blueprints",
 )
 
 

@@ -424,3 +424,89 @@ async def test_scenarios_d_and_f_go_straight_to_craft():
         assert "strategy" not in gates
         assert "feedback" not in gates
         assert "craft" in gates
+
+
+class _PromptModel(_PhaseModel):
+    def __init__(self, outputs=None):
+        super().__init__(outputs)
+        self.systems = []
+
+    async def ainvoke(self, messages, **kwargs):
+        first = messages[0].content if messages else ""
+        self.systems.append(first if isinstance(first, str) else str(first))
+        return await super().ainvoke(messages, **kwargs)
+
+
+async def _blueprint(graph, config, payload, stop, answers=None):
+    answers = answers or {}
+    gates = []
+    titles = {}
+    choices = {}
+    for _ in range(12):
+        events = []
+        async for mode, chunk in graph.astream(
+            payload, config, stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict):
+                events.append(chunk)
+        snap = await graph.aget_state(config)
+        if stop(snap):
+            return gates, titles, choices, snap
+        if snap.values.get("status") == "done":
+            return gates, titles, choices, snap
+        if snap.next:
+            choice = next(event for event in events if event.get("type") == "choice")
+            gates.append(choice["gate"])
+            titles[choice["gate"]] = choice["title"]
+            choices[choice["gate"]] = choice
+            resume = answers.get(choice["gate"])
+            if resume is None and choice["gate"] == "prevention":
+                resume = {"option_ids": ["performance", "security"]}
+            if resume is None:
+                resume = {"option_id": choice["recommended"]}
+            payload = Command(resume=resume)
+            continue
+        payload = {}
+    snap = await graph.aget_state(config)
+    return gates, titles, choices, snap
+
+
+async def test_blueprint_mode_never_enters_craft():
+    model = _PromptModel({
+        "validate": {"valid": True},
+        "blueprints": {"projects": [{"id": "01"}]},
+    })
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        lambda _snap: False,
+    )
+    assert "craft" not in gates
+    assert "strategy" not in gates
+    assert "craft" not in model.calls
+    assert titles["projects"] == "어떤 프로젝트를 구현할까요?"
+    assert choices["prevention"]["multiple"] is True
+    assert snap.values["approach"] == "prevention"
+    assert snap.values["prevention_categories"] == ["performance", "security"]
+    assert "06_experience_blueprints.json" in snap.values["artifacts"]
+    assert any("최소 2개의 질문" in text for text in model.systems)
+    assert snap.values["status"] == "done"
+    for name in ("p2x_approach", "p2x_validate", "p2x_blueprints"):
+        assert name in graph.nodes
+
+
+async def test_failed_validation_returns_to_approach():
+    model = _PhaseModel({"validate": {"valid": False}})
+    graph = _graph(_Approvals(), model=model)
+    _gates, _titles, _choices, snap = await _blueprint(
+        graph, _config(), _base(phase="analyze", work_mode="experience_blueprint"),
+        lambda _snap: "validate" in model.calls and not _snap.next,
+        {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
+    )
+    assert snap.values["phase"] == "approach"
+    assert snap.values["status"] == "active"
+    assert snap.values["approach"] == "bottleneck"
+    assert snap.values["bottleneck_level"] == "L2"
+    assert model.calls.count("validate") == 1
+    assert "blueprints" not in model.calls
+    assert "craft" not in model.calls
