@@ -44,108 +44,29 @@ def import_pgvector_store():
     return PGVectorStore
 
 
-def _row_text(kind: str, row: dict) -> tuple[str, str]:
-    if kind == "job":
-        title = ((row.get("company") or "") + " " + (row.get("title") or "")).strip()
-        return title or "job", row.get("source_text") or ""
-    if kind == "posting":
-        title = ((row.get("company") or "") + " " + (row.get("title") or "")).strip()
-        return title or "posting", row.get("description") or ""
-    if kind == "link":
-        title = row.get("title") or row.get("url") or "link"
-        return title, (title + "\n" + (row.get("url") or "")).strip()
-    return row.get("title") or "resume", ""
-
-
-async def _load_text(svc, user_id, kind: str, row: dict) -> tuple[str, str]:
-    title, text = _row_text(kind, row)
-    if kind == "resume":
-        loader = getattr(svc.evidence, "_source_text", None)
-        if loader is None:
-            return title, ""
-        text = await loader(user_id, row["id"])
-    return title, text or ""
-
-
 async def _index_evidence(svc, state) -> None:
-    user_id = state["user_id"]
     try:
-        missing = await svc.chunks.evidence_ids_missing(user_id, limit=10)
+        user_id = state["user_id"]
+        store = svc.nodes
+        embedder = _retriever(svc).embedder
+        missing = await store.evidence_ids_missing_for_user(
+            user_id, embedder.model, limit=10)
     except Exception:
         return
+    from app.rag.pipeline import Ingestor
+    from app.rag.tenant import Tenant
+
+    ingestor = Ingestor(store, embedder)
     for evidence_id in missing:
         try:
             evidence = await svc.evidence.get(user_id, evidence_id)
-            texts = split_text(evidence.source_text)
-            if not texts:
+            text = (getattr(evidence, "source_text", "") or "").strip()
+            if not text:
                 continue
-            vectors = await svc.ai.embed(
-                texts, user_id=user_id, job_id=state.get("job_id"))
-            if len(vectors) == len(texts):
-                await svc.chunks.replace_chunks(
-                    user_id, evidence_id, list(zip(texts, vectors)))
+            await ingestor.ingest_text(
+                Tenant(user_id=user_id), "evidence", evidence_id, text)
         except Exception:
             continue
-
-
-async def _index_extra(svc, state, store) -> None:
-    user_id = state["user_id"]
-    for kind in ("resume", "job", "posting", "link"):
-        try:
-            rows = await store.missing(kind, user_id, 5)
-        except Exception:
-            continue
-        for row in rows:
-            try:
-                title, text = await _load_text(svc, user_id, kind, row)
-                texts = split_text(text)
-                if not texts:
-                    continue
-                vectors = await svc.ai.embed(
-                    texts, user_id=user_id, job_id=state.get("job_id"))
-                if len(vectors) != len(texts):
-                    continue
-                await store.replace(
-                    user_id, kind, row["id"], title, list(zip(texts, vectors)))
-            except Exception:
-                continue
-
-
-async def _search_section(svc, store, state, seen: set) -> str:
-    query = (state.get("text") or "")[:2000]
-    vectors = await svc.ai.embed(
-        [query], user_id=state["user_id"], job_id=state.get("job_id"))
-    if not vectors:
-        return ""
-    hits = await store.search(state["user_id"], vectors[0], 6)
-    return format_section(accepted_hits(hits, seen))
-
-
-async def _legacy(svc, state, seen: set) -> str:
-    await _index_evidence(svc, state)
-    return await _search_section(svc, svc.chunks, state, seen)
-
-
-async def _langchain(svc, state, seen: set) -> str:
-    from app.framework import tools as tools_mod
-    await _index_evidence(svc, state)
-    store = getattr(svc, "rag", None)
-    if store is None:
-        from app.infrastructure.store_rag import RagStore
-        store = RagStore(svc.db)
-    await _index_extra(svc, state, store)
-
-    async def search(query: str) -> str:
-        vectors = await svc.ai.embed(
-            [query[:2000]], user_id=state["user_id"],
-            job_id=state.get("job_id"))
-        if not vectors:
-            return ""
-        hits = await store.search(state["user_id"], vectors[0], 6)
-        return format_section(accepted_hits(hits, seen))
-
-    tool = tools_mod.build_search_tool(search, source_preview="")
-    return await tools_mod.invoke_tool(tool, (state.get("text") or "")[:2000])
 
 
 _shared: dict = {}
@@ -170,6 +91,7 @@ def _retriever(svc):
 async def search_career_context(svc, state, seen: set) -> str:
     from app.rag.tenant import Tenant
 
+    await _index_evidence(svc, state)
     hits = await _retriever(svc)._search_llamaindex(
         (state.get("text") or "")[:2000], Tenant(user_id=state["user_id"]), 6, None)
     return format_section([
@@ -177,15 +99,5 @@ async def search_career_context(svc, state, seen: set) -> str:
         for hit in hits if str(hit.source_id) not in seen])
 
 
-async def _llamaindex(svc, state, seen: set) -> str:
-    return await search_career_context(svc, state, seen)
-
-
 async def collect_evidence(svc, state, seen: set) -> str:
-    from app.rag.retriever import rag_engine
-
-    if rag_engine() == "llamaindex":
-        return await _llamaindex(svc, state, seen)
-    if use_langchain():
-        return await _langchain(svc, state, seen)
-    return await _legacy(svc, state, seen)
+    return await search_career_context(svc, state, seen)

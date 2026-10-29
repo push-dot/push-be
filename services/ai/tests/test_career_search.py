@@ -33,7 +33,6 @@ class _Reranker:
 
 @pytest.mark.asyncio
 async def test_search_career_context_returns_reranked_nodes_for_the_caller_only(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
     rows = [
         _row(1, "vector", MINE, 0.9),
         _row(2, "keyword", MINE, 0.2),

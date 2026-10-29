@@ -68,7 +68,6 @@ x-ai-env: &ai-env
   TEI_EMBED_URL: http://embed:80
   TEI_RERANK_URL: http://rerank:80
   RERANK_PROVIDER: ${RERANK_PROVIDER:-similarity}
-  RAG_ENGINE: ${RAG_ENGINE:-llamaindex}
   AI_HARNESS: ${AI_HARNESS:-}
   CORE_ORIGIN: ${CORE_ORIGIN:-}
   INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
