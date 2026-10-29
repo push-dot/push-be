@@ -116,7 +116,7 @@ test("the gateway forwards act-as headers to core only with the internal secret"
 
 test("act-as-only core routes go to core", () => {
   assert.equal(ownerOf("POST", "/api/v1/documents/d1/edits"), "core");
-  assert.equal(ownerOf("POST", "/api/v1/conversations/c1/resume-jobs"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/conversations/c1/resume-jobs"), "deny");
   assert.equal(ownerOf("GET", "/api/v1/conversations/c1/artifacts/05_final_resume.pdf"), "core");
   assert.equal(ownerOf("GET", "/api/v1/conversations/c1/artifacts"), "python");
 });

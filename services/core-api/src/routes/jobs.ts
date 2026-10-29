@@ -173,6 +173,7 @@ export async function patchJob(ctx: Ctx, idRaw: string): Promise<Response> {
       JSON.stringify(jsonList(current.keywords)), JSON.stringify(jsonList(current.risks)),
       deadline, current.language, current.archived === true || current.archived === "t", now, body.expectedRevision],
     id, ctx.user.id);
+  await enqueueIngest(ctx, { jobId: id });
   return data(200, jobDto(updated), ctx.rid);
 }
 

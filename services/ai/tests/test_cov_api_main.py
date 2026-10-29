@@ -50,7 +50,6 @@ def boot(monkeypatch, tmp_path):
 
 
 async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, monkeypatch):
-    monkeypatch.setattr(main, "external_jobs", lambda: False)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: True)
     monkeypatch.setenv("CHECKPOINTER", "memory")
     cfg = Config(database_url="postgres://db", app_env="development",
@@ -78,15 +77,15 @@ async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, m
     await main._shutdown(fa)
 
 
-async def test_bootstrap_external_jobs_skips_migrations_dev_seed_and_saver(boot, monkeypatch):
-    monkeypatch.setattr(main, "external_jobs", lambda: True)
+async def test_bootstrap_external_jobs_skips_migrations_and_dev_seed(boot, monkeypatch):
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: False)
     monkeypatch.setenv("RUN_MIGRATIONS", "0")
+    monkeypatch.setenv("CHECKPOINTER", "memory")
     cfg = Config(database_url="postgres://db", app_env="production", dev_auth_token="dev")
     fa = FastAPI()
     await main._bootstrap(fa, cfg)
     assert boot["migrated"] == [] and boot["pool"].calls == []
-    assert fa.state.deps.conversations._checkpointer is None
+    assert fa.state.deps.conversations._checkpointer is not None
     await main._shutdown(fa)
     assert boot["workers"] == [] and boot["pool"].closed
 
@@ -96,8 +95,8 @@ async def test_bootstrap_existing_dev_user_is_not_reseeded(boot, monkeypatch):
     from app.domain.entities import User
     from app.infrastructure.store_auth import _USER_COLS
     boot["pool"].results.append(row(_USER_COLS, User))
-    monkeypatch.setattr(main, "external_jobs", lambda: True)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: False)
+    monkeypatch.setenv("CHECKPOINTER", "memory")
     await main._bootstrap(FastAPI(), Config(
         database_url="d", app_env="development", dev_auth_token="dev"))
     assert len(boot["pool"].calls) == 1
@@ -113,7 +112,6 @@ async def test_bootstrap_opens_postgres_checkpointer_and_exits_it(boot, monkeypa
     async def open_saver(url):
         return "saver", SaverPool()
 
-    monkeypatch.setattr(main, "external_jobs", lambda: False)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: False)
     monkeypatch.setattr(app.db, "open_chat_checkpointer", open_saver)
     fa = FastAPI()

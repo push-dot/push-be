@@ -153,7 +153,7 @@ test("a legacy document card keeps 200, applies through a job, and someone else'
   assert.equal(unknown.status, 400);
 });
 
-test("a new message rejects waiting tool cards but not resume gates", async () => {
+test("a new message rejects waiting tool cards but not resume or employer gates", async () => {
   resetLimits();
   const db = fakeDb(null);
   const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/messages`, {
@@ -164,25 +164,65 @@ test("a new message rejects waiting tool cards but not resume gates", async () =
   assert.equal(res.status, 202);
   const insert = db.sqls.find((sql) => sql.includes("INSERT INTO chat_jobs")) || "";
   assert.match(insert, /UPDATE approvals SET status = 'REJECTED'/);
-  assert.match(insert, /kind <> 'RESUME_GATE'/);
+  assert.match(insert, /kind NOT IN \('RESUME_GATE', 'EMPLOYER_GATE'\)/);
 });
 
-test("the ai worker queues the next resume phase only through act-as", async () => {
+test("the resume-jobs path is gone", async () => {
   const request = (headers: Record<string, string>): Request => new Request(`https://core.example/api/v1/conversations/${CONV}/resume-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee", ...headers },
-    body: JSON.stringify({ resume: { gate: "analyze", optionId: "continue", auto: true } }),
+    body: JSON.stringify({ resume: { gate: "analyze", auto: true } }),
   });
   resetLimits();
   const db = fakeDb(null);
   const acted = await handle(request({ "x-push-internal-secret": SECRET, "x-push-act-as": USER }), env(), deps(db.query));
-  assert.equal(acted.status, 202);
-  assert.equal(db.state.jobs, 1);
-
+  assert.equal(acted.status, 403);
+  assert.equal(db.state.jobs, 0);
   resetLimits();
-  const bearer = await handle(request({ authorization: "Bearer t" }), env(), deps(db.query));
-  assert.equal(bearer.status, 404);
-  assert.equal(db.state.jobs, 1);
+  const user = await handle(request({ authorization: "Bearer t" }), env(), deps(db.query));
+  assert.equal(user.status, 404);
+  assert.equal(db.state.jobs, 0);
+});
+
+test("optionIds answers every selected id and stores the first", async () => {
+  resetLimits();
+  const db = fakeDb(pending({
+    options: JSON.stringify([{ id: "b", label: "B" }, { id: "a", label: "A" }]),
+  }));
+  const keys: unknown[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) keys.push(params[3]);
+    return db.query(sql, params);
+  };
+  const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json" },
+    body: JSON.stringify({ optionIds: ["b", "a"] }),
+  }), env(), deps(query));
+  assert.equal(res.status, 202);
+  const body = await res.json() as { data: { optionId: string; optionIds: string[]; jobId: string } };
+  assert.equal(body.data.optionId, "b");
+  assert.deepEqual(body.data.optionIds, ["b", "a"]);
+  assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(db.state.payloads[0], {
+    ai: { provider: "OPENAI" }, access_mode: "AUTO", text: "",
+    resume: { approvalId: APPROVAL, optionId: "b", optionIds: ["b", "a"] },
+  });
+  const update = db.sqls.find((sql) => sql.startsWith("UPDATE approvals SET status = $1")) || "";
+  assert.match(update, /option_id/);
+  assert.deepEqual(keys, [await uuid5Url(`push:approval-answer:${APPROVAL}:b,a`)]);
+});
+
+test("an unknown id in optionIds is rejected", async () => {
+  resetLimits();
+  const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": "ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    body: JSON.stringify({ optionId: "approve", optionIds: ["approve", "nope"] }),
+  }), env(), deps(fakeDb(pending()).query));
+  assert.equal(res.status, 400);
+  const body = await res.json() as { error: { details: { field?: string } | null } };
+  assert.equal(body.error.details?.field, "optionIds");
 });
 
 test("an answer without Idempotency-Key uses a key derived from the card and option", async () => {

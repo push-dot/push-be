@@ -10,6 +10,7 @@ _set_state = None
 
 
 _harness = None
+_saved_turn = None
 
 
 def configure_harness(run) -> None:
@@ -18,10 +19,16 @@ def configure_harness(run) -> None:
 
 
 def configure_chat(*, run_node, cancelled, set_state) -> None:
-    global _run_node, _cancelled, _set_state
+    global _run_node, _cancelled, _set_state, _saved_turn
     _run_node = run_node
     _cancelled = cancelled
     _set_state = set_state
+    _saved_turn = None
+
+
+def configure_saved_turn(run) -> None:
+    global _saved_turn
+    _saved_turn = run
 
 
 def approval_followup(job: dict) -> dict:
@@ -48,6 +55,8 @@ async def chat(ctx) -> dict:
         handled = await _harness(ctx)
         if handled is not None:
             return handled
+    if _saved_turn is not None:
+        return await _saved_turn(ctx)
     message_id = ""
     for name in NODES:
         if await _cancelled(ctx.job["id"]):

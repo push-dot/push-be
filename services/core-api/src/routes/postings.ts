@@ -521,6 +521,7 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     if (!winner) throw new HttpError(500, "INTERNAL", "internal error");
     return data(201, applicationDto(winner), ctx.rid);
   }
+  await enqueueIngest(ctx, { jobId });
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
     stage: "APPLIED", notes: "", applied_at: now, next_action_at: null, imported: false, created_at: now, updated_at: now,

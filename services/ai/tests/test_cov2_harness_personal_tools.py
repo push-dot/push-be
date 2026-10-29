@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from langgraph.types import Command
 
 import app.harness.personal.tools as tools
 from app.domain import entities as ent
@@ -114,7 +115,7 @@ async def test_search_career_runs_rag_for_the_caller(monkeypatch):
         seen.append((state, seen_ids))
         return "[관련 근거]\n- A\nb" if state["text"] else None
 
-    monkeypatch.setattr(rag, "collect_evidence", collect)
+    monkeypatch.setattr(rag, "search_career_context", collect)
     svc = SimpleNamespace(ai=object())
     assert await _run("search_career_context", {"query": "결제"}, svc=svc) == {
         "text": "[관련 근거]\n- A\nb"}
@@ -217,7 +218,9 @@ async def test_start_document_offers_a_choice_when_resume_json_is_active(emitted
 async def test_start_document_starts_fresh_when_state_is_unreadable(row, emitted):
     db = _ResumeDB(row)
     out = await _run("start_document", {}, ctx=_ctx(db=db))
-    assert out == {"harness": "resume", "resume_state": {"status": "active", "phase": "mode_select"}}
+    assert isinstance(out, Command)
+    assert out.goto == "resume_flow"
+    assert out.update["resume"] == {"status": "active", "phase": "mode_select"}
     assert db.executed[0][1][0] == CONV
     assert emitted == []
 

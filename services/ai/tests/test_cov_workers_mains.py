@@ -270,7 +270,7 @@ class Svc:
 
 @pytest.fixture
 def chat_globals(monkeypatch):
-    for name in ("_run_node", "_cancelled", "_set_state", "_harness"):
+    for name in ("_run_node", "_cancelled", "_set_state", "_harness", "_saved_turn"):
         monkeypatch.setattr(chat_mod, name, getattr(chat_mod, name))
     return chat_mod
 

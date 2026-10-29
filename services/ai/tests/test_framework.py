@@ -24,6 +24,7 @@ def _now():
 
 
 def _legacy_env(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     for name in (
         "app.framework.rag.use_langchain",
         "app.framework.prompts.use_langchain",
@@ -310,6 +311,7 @@ async def test_legacy_collect_indexes_and_formats(monkeypatch):
 
 async def test_langchain_collect_uses_the_tool_and_swallows_index_errors(
         monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     from app.framework.rag import collect_evidence
     from app.framework import tools as tools_mod
     user_id = uuid4()
@@ -439,11 +441,12 @@ async def test_prepare_reply_keeps_the_rag_status_frame(monkeypatch):
         return _Page()
 
     svc.conversations.list_messages = list_messages
-    svc.chunks = _Chunks(hits=[{
-        "text": "shipped billing", "evidence_id": uuid4(),
-        "title": "Billing", "dist": 0.2,
-    }])
     svc.ai = _Embed()
+
+    async def search(_svc, _state, _seen):
+        return "[관련 근거]\n- Billing\nshipped billing"
+
+    monkeypatch.setattr("app.framework.rag.search_career_context", search)
     nodes = bind_chat_nodes(svc)
     sink = []
     token = event_sink.set(sink)

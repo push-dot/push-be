@@ -15,9 +15,9 @@ from app.framework.models import _content
 from app.graphs.chat_surface import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.policy import Tier
-from app.harness.resume.prompts import phase_prompt_for_harness
-from app.harness.resume.state import ResumeState
-from app.harness.resume.tools import RESUME_TOOLS, save_artifact
+from app.harness.personal.resume.prompts import phase_prompt_for_harness
+from app.harness.personal.resume.state import ResumeState
+from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
 from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)

@@ -44,7 +44,7 @@ def web(monkeypatch):
 
     monkeypatch.setattr(web_page, "fetch_page_text", fetch_page_text)
     monkeypatch.setattr(web_page, "fetch_github_context", fetch_github_context)
-    monkeypatch.setattr(rag, "collect_evidence", collect)
+    monkeypatch.setattr(rag, "search_career_context", collect)
     return log
 
 

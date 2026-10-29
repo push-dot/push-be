@@ -51,7 +51,6 @@ export const INTERNAL_ROUTES: [string, string][] = [
   ["POST", "/api/v1/billing/webhook"],
   ["POST", "/api/v1/billing/webhook/app-store"],
   ["POST", "/api/v1/billing/webhook/google-play"],
-  ["POST", "/api/v1/conversations/{id}/resume-jobs"],
   ["POST", "/api/v1/documents/{id}/edits"],
 ];
 

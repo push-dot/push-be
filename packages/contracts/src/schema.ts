@@ -1066,7 +1066,7 @@ export interface paths {
         put?: never;
         /**
          * Answer a chat approval or choice card
-         * @description optionId must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.
+         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.
          */
         post: operations["postConversationsByIdApprovalsByApprovalId"];
         delete?: never;
@@ -3319,7 +3319,7 @@ export interface components {
             expiresAt: string | null;
             /** Format: uuid */
             id: string;
-            /** @description EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE */
+            /** @description EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE, EMPLOYER_GATE */
             kind: string;
             payloadHash: string;
             revision: number;
@@ -3647,6 +3647,7 @@ export interface components {
             /** Format: uuid */
             jobId?: string;
             optionId: string;
+            optionIds?: string[];
             /** @enum {string} */
             status: "APPROVED" | "REJECTED";
         };
@@ -6501,7 +6502,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    optionId: string;
+                    optionId?: string;
+                    optionIds?: string[];
                 };
             };
         };
@@ -6821,7 +6823,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6849,7 +6851,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;

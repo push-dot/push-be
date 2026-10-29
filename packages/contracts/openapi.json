@@ -517,7 +517,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE",
+            "description": "EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE, EMPLOYER_GATE",
             "type": "string"
           },
           "payloadHash": {
@@ -2006,6 +2006,12 @@
           },
           "optionId": {
             "type": "string"
+          },
+          "optionIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "status": {
             "enum": [
@@ -9960,7 +9966,7 @@
     },
     "/api/v1/conversations/{id}/approvals/{approvalId}": {
       "post": {
-        "description": "optionId must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
+        "description": "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
         "operationId": "postConversationsByIdApprovalsByApprovalId",
         "parameters": [
           {
@@ -9993,11 +9999,16 @@
                   "optionId": {
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "optionIds": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
-                "required": [
-                  "optionId"
-                ],
+                "required": [],
                 "type": "object"
               }
             }
@@ -10816,7 +10827,7 @@
                 }
               }
             },
-            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled.",
+            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled.",
             "x-sse-events": {
               "approval": {
                 "properties": {
@@ -10918,7 +10929,8 @@
                   },
                   "kind": {
                     "enum": [
-                      "RESUME_GATE"
+                      "RESUME_GATE",
+                      "EMPLOYER_GATE"
                     ],
                     "type": "string"
                   },
@@ -11064,6 +11076,70 @@
                 ],
                 "type": "object"
               },
+              "employer_research": {
+                "properties": {
+                  "company": {
+                    "type": "string"
+                  },
+                  "facts": {
+                    "items": {
+                      "properties": {
+                        "sourceUrl": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "sourceUrl"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "sourceCounts": {
+                    "properties": {
+                      "homepage": {
+                        "type": "integer"
+                      },
+                      "news": {
+                        "type": "integer"
+                      },
+                      "postings": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "homepage",
+                      "news",
+                      "postings"
+                    ],
+                    "type": "object"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "employer_research"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "company",
+                  "facts",
+                  "seq"
+                ],
+                "type": "object"
+              },
               "error": {
                 "properties": {
                   "error": {
@@ -11193,6 +11269,301 @@
                   "score",
                   "parts",
                   "topGap",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "interview_kit": {
+                "properties": {
+                  "applicationId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "questions": {
+                    "items": {
+                      "properties": {
+                        "cautionSignals": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fromFlag": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "goodSignals": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "verify": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "verify"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "interview_kit"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "questions",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "posting_draft": {
+                "properties": {
+                  "draft": {
+                    "properties": {
+                      "careerMax": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "careerMin": {
+                        "type": "integer"
+                      },
+                      "description": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "employmentType": {
+                        "type": "string"
+                      },
+                      "jobCategory": {
+                        "type": "string"
+                      },
+                      "location": {
+                        "type": "string"
+                      },
+                      "preferred": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "requirements": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "salaryRange": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "skills": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "workStyle": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "title",
+                      "description",
+                      "requirements",
+                      "preferred"
+                    ],
+                    "type": "object"
+                  },
+                  "notes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "posting_draft"
+                    ],
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "type",
+                  "version",
+                  "draft",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "review_report": {
+                "properties": {
+                  "applicationId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attachmentName": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "disclaimer": {
+                    "type": "string"
+                  },
+                  "flags": {
+                    "items": {
+                      "properties": {
+                        "level": {
+                          "enum": [
+                            "CHECK",
+                            "SUPPORTED",
+                            "UNKNOWN"
+                          ],
+                          "type": "string"
+                        },
+                        "quote": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "level",
+                        "reason",
+                        "quote"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "matches": {
+                    "items": {
+                      "properties": {
+                        "evidence": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "requirement": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "MET",
+                            "PARTIAL",
+                            "MISSING"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "evidence"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "review_report"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "summary",
+                  "flags",
+                  "disclaimer",
                   "seq"
                 ],
                 "type": "object"
@@ -11384,7 +11755,7 @@
                 }
               }
             },
-            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled.",
+            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled.",
             "x-sse-events": {
               "approval": {
                 "properties": {
@@ -11486,7 +11857,8 @@
                   },
                   "kind": {
                     "enum": [
-                      "RESUME_GATE"
+                      "RESUME_GATE",
+                      "EMPLOYER_GATE"
                     ],
                     "type": "string"
                   },
@@ -11632,6 +12004,70 @@
                 ],
                 "type": "object"
               },
+              "employer_research": {
+                "properties": {
+                  "company": {
+                    "type": "string"
+                  },
+                  "facts": {
+                    "items": {
+                      "properties": {
+                        "sourceUrl": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "sourceUrl"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "sourceCounts": {
+                    "properties": {
+                      "homepage": {
+                        "type": "integer"
+                      },
+                      "news": {
+                        "type": "integer"
+                      },
+                      "postings": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "homepage",
+                      "news",
+                      "postings"
+                    ],
+                    "type": "object"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "employer_research"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "company",
+                  "facts",
+                  "seq"
+                ],
+                "type": "object"
+              },
               "error": {
                 "properties": {
                   "error": {
@@ -11761,6 +12197,301 @@
                   "score",
                   "parts",
                   "topGap",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "interview_kit": {
+                "properties": {
+                  "applicationId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "questions": {
+                    "items": {
+                      "properties": {
+                        "cautionSignals": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fromFlag": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "goodSignals": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "verify": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "verify"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "interview_kit"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "questions",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "posting_draft": {
+                "properties": {
+                  "draft": {
+                    "properties": {
+                      "careerMax": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "careerMin": {
+                        "type": "integer"
+                      },
+                      "description": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "employmentType": {
+                        "type": "string"
+                      },
+                      "jobCategory": {
+                        "type": "string"
+                      },
+                      "location": {
+                        "type": "string"
+                      },
+                      "preferred": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "requirements": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "salaryRange": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "skills": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "workStyle": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "title",
+                      "description",
+                      "requirements",
+                      "preferred"
+                    ],
+                    "type": "object"
+                  },
+                  "notes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "posting_draft"
+                    ],
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "type",
+                  "version",
+                  "draft",
+                  "seq"
+                ],
+                "type": "object"
+              },
+              "review_report": {
+                "properties": {
+                  "applicationId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attachmentName": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "disclaimer": {
+                    "type": "string"
+                  },
+                  "flags": {
+                    "items": {
+                      "properties": {
+                        "level": {
+                          "enum": [
+                            "CHECK",
+                            "SUPPORTED",
+                            "UNKNOWN"
+                          ],
+                          "type": "string"
+                        },
+                        "quote": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "level",
+                        "reason",
+                        "quote"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "matches": {
+                    "items": {
+                      "properties": {
+                        "evidence": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "requirement": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "MET",
+                            "PARTIAL",
+                            "MISSING"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "evidence"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "seq": {
+                    "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                    "type": "integer"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "review_report"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "summary",
+                  "flags",
+                  "disclaimer",
                   "seq"
                 ],
                 "type": "object"

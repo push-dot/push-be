@@ -144,6 +144,7 @@ class ChatState(TypedDict, total=False):
     employer_owned: bool
     company_plan: str
     confirm_before_edit: bool
+    event_id: int
 
 
 def bind_chat_nodes(svc):
@@ -437,8 +438,8 @@ def bind_chat_nodes(svc):
                 except Exception:
                     continue
         try:
-            from app.framework.rag import collect_evidence
-            section = await collect_evidence(svc, state, seen_evidence)
+            from app.framework.rag import search_career_context
+            section = await search_career_context(svc, state, seen_evidence)
             if section:
                 _emit({"status": "관련 근거 검색 완료"})
                 sections.append(section)
@@ -761,15 +762,60 @@ def bind_chat_nodes(svc):
     return svc.chat_nodes
 
 
+class _Put:
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self.queue = queue
+
+    def append(self, item: dict) -> None:
+        self.queue.put_nowait(item)
+
+
+def _retry_chat(exc: Exception) -> bool:
+    if isinstance(exc, DomainError):
+        return False
+    from langgraph.types import default_retry_on
+    return default_retry_on(exc)
+
+
+def _durable(svc, fn):
+    async def node(state: ChatState) -> dict:
+        from app.domain.services.conversation import flush_chat_events
+
+        job_raw = state.get("job_id")
+        job_id = UUID(str(job_raw)) if job_raw else None
+        if job_id is not None:
+            await svc.jobs.delete_events_after(job_id, int(state.get("event_id") or 0))
+        queue: asyncio.Queue = asyncio.Queue()
+        token = event_sink.set(_Put(queue))
+        pump = (
+            asyncio.create_task(flush_chat_events(svc.jobs.emit_many, job_id, queue))
+            if job_id is not None else None)
+        try:
+            update = await fn(state) or {}
+        finally:
+            event_sink.reset(token)
+            if pump is not None:
+                queue.put_nowait(None)
+                await pump
+        if job_id is not None:
+            update = {**update, "event_id": await svc.jobs.max_event_id(job_id)}
+        return update
+
+    return node
+
+
 def build_chat_graph(svc, checkpointer=None):
     nodes = bind_chat_nodes(svc)
     # Imported here so workflow steps that only bind nodes skip LangGraph.
     from langgraph.graph import END, START, StateGraph
+    from langgraph.types import RetryPolicy
 
+    policy = RetryPolicy(
+        max_attempts=3, initial_interval=0.05, jitter=False, retry_on=_retry_chat)
     g = StateGraph(ChatState)
-    g.add_node("resolve_context", nodes["resolve_context"])
-    g.add_node("generate_reply", nodes["generate_reply"])
-    g.add_node("persist", nodes["persist"])
+    g.add_node("resolve_context", _durable(svc, nodes["resolve_context"]), retry_policy=policy)
+    g.add_node("generate_reply", _durable(svc, nodes["generate_reply"]), retry_policy=policy)
+    g.add_node("persist", _durable(svc, nodes["persist"]), retry_policy=policy)
     g.add_edge(START, "resolve_context")
     g.add_edge("resolve_context", "generate_reply")
     g.add_edge("generate_reply", "persist")

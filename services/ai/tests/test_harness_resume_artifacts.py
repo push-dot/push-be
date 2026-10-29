@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.harness.personal.tools import bound_services
-from app.harness.resume.tools import save_artifact
+from app.harness.personal.resume.tools import save_artifact
 from app.harness.tools import ToolContext
 
 
@@ -96,7 +96,7 @@ def test_resume_get_posting_rejects_path_ids():
     import pytest
     from pydantic import ValidationError
 
-    from app.harness.resume.tools import RESUME_TOOLS
+    from app.harness.personal.resume.tools import RESUME_TOOLS
     tool = next(tool for tool in RESUME_TOOLS if tool.name == "get_posting")
     with pytest.raises(ValidationError):
         tool.args_model.model_validate({"posting_id": "../../me/profile"})

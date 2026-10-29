@@ -9,9 +9,9 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.harness.resume import tools as resume_tools
-from app.harness.resume.graph import build_resume_graph
-from app.harness.resume.tools import RESUME_TOOLS
+from app.harness.personal.resume import tools as resume_tools
+from app.harness.personal.resume.graph import build_resume_graph
+from app.harness.personal.resume.tools import RESUME_TOOLS
 from app.harness.tools import ToolContext
 
 USER = str(uuid4())
@@ -168,7 +168,7 @@ async def test_final_markdown_renders_pdf_off_the_event_loop(monkeypatch):
 
 
 async def test_resume_read_tool_failure_becomes_tool_failed():
-    from app.harness.resume.graph import _read_tool
+    from app.harness.personal.resume.graph import _read_tool
 
     class _Down:
         async def call(self, *args, **kwargs):

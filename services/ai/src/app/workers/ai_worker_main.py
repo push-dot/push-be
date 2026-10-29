@@ -20,9 +20,9 @@ def ai_handlers(deps, query) -> dict:
 async def build_chat(svc) -> None:
     from uuid import UUID
 
-    from app.queue.worker import JobCancelled
     from app.harness.jobs import run_queue_turn
-    from app.workers.handlers.chat import configure_chat, configure_harness
+    from app.queue.worker import JobCancelled
+    from app.workers.handlers.chat import configure_chat, configure_harness, configure_saved_turn
 
     async def cancelled(job_id):
         return await svc.jobs.worker_status(job_id) == "CANCELLED"
@@ -52,7 +52,13 @@ async def build_chat(svc) -> None:
             "needs_approval": bool(state.get("needs_approval")),
         }
 
+    async def saved(ctx):
+        from app.domain.services.conversation import run_saved_chat
+        return await run_saved_chat(
+            svc.graph, ctx, cancelled=cancelled, set_state=set_state)
+
     configure_chat(run_node=run_node, cancelled=cancelled, set_state=set_state)
+    configure_saved_turn(saved)
     configure_harness(lambda ctx: run_queue_turn(svc, ctx, cancelled))
 
 
