@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException
 
 from app.config import Config, load_config
 from app.db import DB, NotFoundError, create_pool, migrations_dir, run_migrations
-from app.jobs import external_jobs, runs_local_chat_worker
+from app.jobs import runs_local_chat_worker
 from app.domain.errors import DomainError
 from app.infrastructure.crypto import new_key_cipher
 from app.infrastructure.google_client import GoogleClient
@@ -188,10 +188,6 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
 
 
 async def _chat_checkpointer(cfg: Config, stack: AsyncExitStack) -> Any:
-    # Workflow steps keep their own checkpoint in chat_jobs. Workers do not
-    # import LangGraph's saver during bootstrap.
-    if external_jobs():
-        return None
     if os.environ.get("CHECKPOINTER") == "memory":
         from langgraph.checkpoint.memory import MemorySaver
         return MemorySaver()

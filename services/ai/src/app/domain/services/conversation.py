@@ -331,6 +331,7 @@ class ConversationService:
                         "access_mode": p.get("access_mode") or "SUGGEST",
                         "operation": None,
                         "job_id": str(job_id),
+                        "event_id": 0,
                         **turn_from_payload(p),
                         **({"resume": p["resume"]} if p.get("resume") else {}),
                     },
@@ -549,3 +550,43 @@ class ConversationService:
             await self.jobs.finish(job_id, "FAILED", message)
         except LostClaim:
             return
+
+
+async def run_saved_chat(graph, ctx, *, cancelled=None, set_state=None) -> dict:
+    from app.jsonutil import to_jsonable
+    from app.queue.worker import JobCancelled
+
+    job = ctx.job
+    job_id = job["id"]
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    config = {"configurable": {"thread_id": f"chat:{job_id}"}}
+    snap = await graph.aget_state(config)
+    if tuple(getattr(snap, "next", ()) or ()):
+        incoming = None
+    else:
+        incoming = {
+            "user_id": job["user_id"],
+            "conversation_id": job["conversation_id"],
+            "text": payload.get("text") or "",
+            "context": payload.get("context") or {},
+            "ai": with_managed_default(payload.get("ai")),
+            "access_mode": payload.get("access_mode") or "SUGGEST",
+            "operation": None,
+            "job_id": str(job_id),
+            "event_id": 0,
+            **turn_from_payload(payload),
+        }
+    final: dict = {}
+    async for mode, chunk in graph.astream(
+            incoming, config=config, stream_mode=["updates", "values"]):
+        if cancelled is not None and await cancelled(job_id):
+            await ctx.emit("cancelled", {})
+            raise JobCancelled()
+        if mode == "values" and isinstance(chunk, dict):
+            final = chunk
+    if final.get("needs_approval") and set_state is not None:
+        await set_state(job_id, "NEEDS_APPROVAL")
+        await ctx.emit("status", {"state": "NEEDS_APPROVAL"})
+    elif final.get("operation") is not None:
+        await ctx.emit("done", {"operation": to_jsonable(final["operation"])})
+    return {"messageId": str(final.get("messageId") or "")}
