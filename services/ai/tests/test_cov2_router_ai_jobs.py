@@ -67,13 +67,6 @@ def test_models_rejects_unknown_provider_filter():
     assert r.json()["error"]["details"] == {"field": "provider"}
 
 
-def test_models_ignores_legacy_credential_mode_query():
-    c, _ = _client()
-    r = c.get("/api/v1/ai/models?credentialMode=FREE")
-    assert r.status_code == 200
-    assert len(r.json()["data"]) == len(ent.OPENAI_MODELS)
-
-
 # ---- POST /ai/generate -----------------------------------------------------
 
 def test_generate_passes_user_prompt_and_options():
@@ -95,8 +88,6 @@ def test_generate_passes_user_prompt_and_options():
     {"ai": AI, "applicationId": str(uuid4())},
     {"ai": AI, "prompt": "p", "applicationId": "nope"},
     {"ai": AI, "prompt": "p", "applicationId": str(uuid4()), "extra": 1},
-    {"ai": {**AI, "credentialMode": "BYOK"}, "prompt": "p",
-     "applicationId": str(uuid4())},
 ])
 def test_generate_rejects_bad_bodies(body):
     c, rec = _client()

@@ -342,7 +342,7 @@ jobs:
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET != '' }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET != '' }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN != '' }}
-          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY != '' }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY != '' }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY != '' }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET != '' }}
@@ -359,7 +359,7 @@ jobs:
           missing=()
           for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID VPS_HOST VPS_SSH_KEY \
             DATABASE_URL REDIS_PASSWORD AI_SHARED_SECRET INTERNAL_API_SECRET DISPATCH_SECRET \
-            ADMIN_TOKEN BYOK_MASTER_KEY OPENROUTER_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
+            ADMIN_TOKEN TOKEN_ENCRYPTION_KEY OPENROUTER_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
             GOOGLE_CLIENT_SECRET GH_OAUTH_CLIENT_SECRET AI_HOST DISPATCH_HOST GOOGLE_CLIENT_ID \
             GH_OAUTH_CLIENT_ID STRIPE_PRICE_PRO STRIPE_PRICE_ULTRA VPS_SSH_HOST_KEY; do
             [ "${!name}" = true ] || missing+=("$name")
@@ -408,14 +408,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
         run: |
           set -euo pipefail
           umask 077
           file="$RUNNER_TEMP/secrets-python.json"
-          jq -n '{DATABASE_URL: env.DATABASE_URL, BYOK_MASTER_KEY: env.BYOK_MASTER_KEY,
+          jq -n '{DATABASE_URL: env.DATABASE_URL, TOKEN_ENCRYPTION_KEY: env.TOKEN_ENCRYPTION_KEY,
                   OPENROUTER_API_KEY: env.OPENROUTER_API_KEY, INTERNAL_API_SECRET: env.INTERNAL_API_SECRET}
                  | with_entries(select((.value // "") != ""))' >"$file"
           npx wrangler secret bulk "$file" --name push-be-python
@@ -433,7 +433,7 @@ jobs:
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
@@ -487,7 +487,7 @@ jobs:
           jq -nr '
             env
             | {DATABASE_URL, REDIS_PASSWORD, AI_SHARED_SECRET, INTERNAL_API_SECRET, DISPATCH_SECRET,
-               ADMIN_TOKEN, BYOK_MASTER_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, EMBEDDING_API_KEY,
+               ADMIN_TOKEN, TOKEN_ENCRYPTION_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, EMBEDDING_API_KEY,
                STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY,
                DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, AI_HOST, DISPATCH_HOST, CORE_ORIGIN,
@@ -539,7 +539,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BYOK_MASTER_KEY: ${{ secrets.BYOK_MASTER_KEY }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
@@ -557,7 +557,7 @@ jobs:
           umask 077
           file="$RUNNER_TEMP/secrets-core.json"
           jq -n 'env
-                 | {DATABASE_URL, BYOK_MASTER_KEY, AI_SHARED_SECRET, DISPATCH_SECRET, INTERNAL_API_SECRET,
+                 | {DATABASE_URL, TOKEN_ENCRYPTION_KEY, AI_SHARED_SECRET, DISPATCH_SECRET, INTERNAL_API_SECRET,
                     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
                     GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA}

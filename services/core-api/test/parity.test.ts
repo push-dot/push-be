@@ -24,7 +24,7 @@ function env(extra: Partial<CoreEnv> = {}): CoreEnv {
     APP_ENV: "production",
     MANAGED_AI: "1",
     MANAGED_GO: "0",
-    BYOK_MASTER_KEY: "test-master-key",
+    TOKEN_ENCRYPTION_KEY: "test-master-key",
     STRIPE_SECRET_KEY: "sk_test",
     STRIPE_PRICE_PRO: "price_pro",
     ...extra,

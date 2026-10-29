@@ -22,7 +22,7 @@ export interface CoreEnv {
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
   MANAGED_GO?: string;
-  BYOK_MASTER_KEY?: string;
+  TOKEN_ENCRYPTION_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_GMAIL_BETA_ENABLED?: string;
