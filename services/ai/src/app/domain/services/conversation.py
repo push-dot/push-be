@@ -559,7 +559,7 @@ async def run_saved_chat(graph, ctx, *, cancelled=None, set_state=None) -> dict:
     job = ctx.job
     job_id = job["id"]
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-    config = {"configurable": {"thread_id": str(job["conversation_id"])}}
+    config = {"configurable": {"thread_id": f"chat:{job_id}"}}
     snap = await graph.aget_state(config)
     if tuple(getattr(snap, "next", ()) or ()):
         incoming = None

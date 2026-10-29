@@ -66,6 +66,7 @@ async def _worker(monkeypatch, generate):
 
     async def generate_reply(state):
         calls.append("reply")
+        svc.texts.append(state.get("text") or "")
         await generate()
         return {"completion": {"text": "안녕"}}
 
@@ -86,7 +87,7 @@ async def _worker(monkeypatch, generate):
     monkeypatch.setattr("app.graphs.chat.bind_chat_nodes", bind)
     monkeypatch.delenv("AI_HARNESS", raising=False)
     monkeypatch.setattr(handlers, "_saved_turn", None, raising=False)
-    svc = type("Svc", (), {"jobs": jobs, "node_calls": []})()
+    svc = type("Svc", (), {"jobs": jobs, "node_calls": [], "texts": []})()
 
     async def exec_chat_node(job_id, name, claim):
         svc.node_calls.append(name)
@@ -157,6 +158,32 @@ async def test_killed_mid_reply_resumes_without_rerunning_context(monkeypatch):
     assert calls.count("reply") == 2
     assert svc.node_calls == []
     assert _tokens(jobs) == ["안", "녕"]
+
+
+async def test_new_job_in_the_same_conversation_starts_fresh(monkeypatch):
+    attempts = {"n": 0}
+
+    async def generate():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise _Killed()
+
+    calls, _jobs, svc, first = await _worker(monkeypatch, generate)
+    with pytest.raises(_Killed):
+        await handlers.chat(first)
+    second = JobContext(
+        {
+            "id": uuid4(),
+            "user_id": first.job["user_id"],
+            "conversation_id": first.job["conversation_id"],
+            "payload": {"text": "둘"},
+        },
+        lambda: None,
+        _emit_nothing,
+    )
+    await handlers.chat(second)
+    assert svc.texts == ["안녕", "둘"]
+    assert calls.count("context") == 2
 
 
 async def test_retry_policy_reruns_reply_without_rerunning_context(monkeypatch):
