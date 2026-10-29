@@ -46,7 +46,8 @@ function isPython(method: string, path: string): boolean {
 }
 
 function isCore(method: string, path: string): boolean {
-  if (/^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return method === "GET";
+  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
+  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
   if (path === "/api/v1/auth/exchange" || path === "/api/v1/auth/refresh" || path === "/api/v1/auth/logout") {
     return method === "POST";
   }

@@ -1133,6 +1133,12 @@ test("auth/me returns employer membership from the joined row", async () => {
     '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN", "email": "", "provider": "", "plan": "FREE"}}');
 });
 
+test("apple auth posts are owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/auth/apple/callback"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/auth/apple/native"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/auth/apple/native"), "deny");
+});
+
 test("email auth posts are owned by core", () => {
   for (const path of [
     "/api/v1/auth/email/signup",

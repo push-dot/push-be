@@ -12,7 +12,7 @@ const accepted = ok(obj({ accepted: { type: "boolean", const: true } }), "Accept
 const urlOnly = ok(obj({ url: str }));
 const email: Schema = { type: "string", format: "email" };
 const password: Schema = { type: "string", minLength: 8, maxLength: 128, description: "8 to 128 code points" };
-const providerParam = pathParam("provider", enumOf("google", "github"));
+const providerParam = pathParam("provider", enumOf("google", "github", "apple"));
 const tokenParam = pathParam("token", str);
 const userIdParam = pathParam("userId");
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/heic"];
@@ -35,7 +35,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Start OAuth login",
     auth: "public",
-    description: "Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+    description: "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
     params: [
       providerParam,
       query("accountType", { ...accountType, default: "PERSONAL" }),
@@ -49,15 +49,45 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "OAuth provider callback",
     auth: "public",
-    description: "Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.",
+    description: "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
     params: [providerParam, query("code"), query("state")],
     responses: { 302: redirect("Redirect to the app callback with ?code=") },
+  }),
+  post("core", "/api/v1/auth/apple/callback", {
+    tag: "auth",
+    summary: "Apple form_post callback",
+    auth: "public",
+    description: "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+    body: {
+      required: true,
+      content: {
+        "application/x-www-form-urlencoded": {
+          schema: obj({ code: str, state: str, user: str }, ["code", "state"]),
+        },
+      },
+    },
+    responses: { 302: redirect("Redirect to the app callback with ?code=") },
+  }),
+  post("core", "/api/v1/auth/apple/native", {
+    tag: "auth",
+    summary: "Apple native identity token",
+    auth: "public",
+    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+    body: body(obj({ identityToken: str, nonce: str })),
+    responses: {
+      200: ok({
+        oneOf: [
+          ref("AuthTokens"),
+          obj({ pendingToken: str, expiresIn: int }),
+        ],
+      }),
+    },
   }),
   post("core", "/api/v1/auth/exchange", {
     tag: "auth",
     summary: "Exchange OAuth code for tokens",
     auth: "public",
-    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
+    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
     body: body(obj({ code: str, codeVerifier: str })),
     responses: {
       200: ok({

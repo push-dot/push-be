@@ -3,6 +3,7 @@ import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
+import { dispatchAppleAuth } from "./routes/apple-auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
@@ -136,6 +137,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
   if (method === "POST" && PHONE_PUBLIC.has(path)) return true;
+  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
@@ -147,7 +149,10 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const method = ctx.request.method;
   const authProvider = path.match(/^\/api\/v1\/auth\/([^/]+)\/(start|callback)$/);
   if (method === "GET" && authProvider?.[2] === "start") return oauthStart(ctx);
-  if (method === "GET" && authProvider?.[2] === "callback") return oauthCallback(ctx);
+  if (method === "GET" && authProvider?.[2] === "callback") {
+    if (authProvider[1] === "apple") throw new HttpError(400, "VALIDATION_ERROR", "apple callback is POST form_post");
+    return oauthCallback(ctx);
+  }
   if (method === "POST" && path === "/api/v1/auth/exchange") return exchange(ctx);
   if (method === "POST" && path === "/api/v1/auth/refresh") return refresh(ctx);
   if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
@@ -157,6 +162,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (emailed) return emailed;
   const phoned = await dispatchPhoneAuth(ctx, path);
   if (phoned) return phoned;
+  const appled = await dispatchAppleAuth(ctx, path);
+  if (appled) return appled;
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);

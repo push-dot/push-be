@@ -113,6 +113,14 @@ function providerCfg(env: Ctx["env"], provider: string): { id: string; secret: s
   return { id, secret, ...PROVIDERS[provider] };
 }
 
+function appleCfg(env: Ctx["env"]): { id: string; secret: string; auth: string; token: string; user: string } {
+  const id = env.APPLE_CLIENT_ID || "";
+  if (!id || !env.APPLE_TEAM_ID || !env.APPLE_KEY_ID || !env.APPLE_PRIVATE_KEY) {
+    throw new HttpError(503, "NOT_CONFIGURED", "oauth provider apple is not configured");
+  }
+  return { id, secret: "form-post", auth: "https://appleid.apple.com/auth/authorize", token: "", user: "" };
+}
+
 function userFrom(row: Record<string, unknown>): UserRow {
   return {
     id: String(row.id),
@@ -207,12 +215,12 @@ function requireString(body: Record<string, unknown>, key: string): string {
 
 export async function oauthStart(ctx: Ctx): Promise<Response> {
   const provider = ctx.url.pathname.split("/")[4] || "";
-  if (!PROVIDERS[provider]) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (provider !== "apple" && !PROVIDERS[provider]) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const accountType = accountTypeFrom(ctx.url.searchParams.get("accountType"));
-  if (provider === "github" && accountType === "EMPLOYER") {
+  if ((provider === "github" || provider === "apple") && accountType === "EMPLOYER") {
     throw new HttpError(400, "VALIDATION_ERROR", "not allowed", { field: "accountType" });
   }
-  const cfg = providerCfg(ctx.env, provider);
+  const cfg = provider === "apple" ? appleCfg(ctx.env) : providerCfg(ctx.env, provider);
   const method = ctx.url.searchParams.get("codeChallengeMethod") || "";
   const challenge = ctx.url.searchParams.get("codeChallenge") || "";
   const redirect = ctx.url.searchParams.get("redirectUri") || "";
@@ -236,6 +244,11 @@ export async function oauthStart(ctx: Ctx): Promise<Response> {
   if (provider === "google") {
     q.set("scope", "openid email profile");
     q.set("access_type", "offline");
+  } else if (provider === "apple") {
+    q.set("scope", "openid name email");
+    q.set("response_mode", "form_post");
+    q.set("code_challenge", challenge);
+    q.set("code_challenge_method", "S256");
   } else {
     q.set("scope", "read:user user:email");
   }
