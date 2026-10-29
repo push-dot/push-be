@@ -11,8 +11,13 @@ from app.domain.errors import DomainError, provider_error
 from app.domain.plan_levers import PlanLevers
 from app.framework.llm import AiUsageCallback, chat_model_for
 from app.framework.models import _apply_usage
-from app.graphs.chat import stub_reply
 from app.harness.tools import to_structured_tool
+
+
+def stub_reply(text: str) -> str:
+    if len(text) > 80:
+        text = text[:80]
+    return f"(로컬 스텁) 메시지를 받았습니다: {text}"
 
 # Whole-call ceiling; long reasoning drafts can stream for minutes but never forever.
 _CALL_TIMEOUT_SECONDS: Final = 180

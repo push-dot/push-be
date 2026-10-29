@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-from types import SimpleNamespace
-
 import httpx
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
@@ -199,15 +197,8 @@ def test_router():
     assert select_harness({"resume_state": {"status": "done"}}).id == "personal"
 
 
-def test_flag_off_uses_legacy_graph(monkeypatch):
+def test_message_without_a_flag_routes_through_the_harness(monkeypatch):
     monkeypatch.delenv("AI_HARNESS", raising=False)
-    svc = ConversationService(FakeDB(), None, MemorySaver())
-    names = set(svc.graph.get_graph().nodes)
-    assert {"resolve_context", "generate_reply", "persist"} <= names
-
-
-def test_flag_on_uses_harness_nodes(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
     svc = ConversationService(FakeDB(), None, MemorySaver())
     names = set(svc.graph.get_graph().nodes)
     assert {"agent", "tools"} <= names

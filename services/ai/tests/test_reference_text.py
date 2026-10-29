@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -12,12 +11,10 @@ from app.domain.reference_text import (
     eligible, features_of, prompt_lines, score_band, templates_of,
 )
 from app.domain.services.job import JobService
-from app.graphs.chat import bind_chat_nodes, event_sink
 from app.pgproto import PgError
 from tests.stubs import (
-    StubApplicationStore, StubConversationStore, StubEvidenceStore, StubJobStore,
+    StubApplicationStore, StubEvidenceStore, StubJobStore,
 )
-from tests.test_conversation import _svc as _chat_svc
 
 _SENTENCE = (
     'H2O Corp에서 "민수"의 결제 프로젝트를 맡아 전환율을 40% 올렸다. '
@@ -489,170 +486,6 @@ def test_part_scores_are_integer_percents():
     assert part_scores(
         ["python work", "rust work"], ["Python", "Rust"], [linked],
     )["techStack"] == 50
-
-
-class _PromptQuery:
-    def __init__(self, samples, profiles, applicant, fit=82, fail=False):
-        self.samples = samples
-        self.profiles = profiles
-        self.applicant = applicant
-        self.fit = fit
-        self.fail = fail
-        self.calls = []
-        self.selected_templates = False
-
-    async def fetchrow(self, sql, *args):
-        self.calls.append((sql, args))
-        if args and args[0] in self.profiles:
-            return self.profiles[args[0]]
-        if "fit_score" in sql or "gap_analyses" in sql:
-            return {"fit_score": self.fit}
-        return None
-
-    async def fetch(self, sql, *args):
-        self.calls.append((sql, args))
-        if "reference_samples" not in sql:
-            return []
-        if "sentence_templates" in sql:
-            self.selected_templates = True
-        if self.fail:
-            raise PgError("42P01", 'relation "reference_samples" does not exist')
-        return self.samples
-
-    async def fetchval(self, sql, *args):
-        self.calls.append((sql, args))
-        if self.fail and "reference_samples" in sql:
-            raise PgError("42P01", 'relation "reference_samples" does not exist')
-        if "applications" in sql:
-            return self.applicant
-        if "gap_analyses" in sql or "fit_score" in sql:
-            return self.fit
-        return None
-
-    async def execute(self, sql, *args):
-        self.calls.append((sql, args))
-        return "OK"
-
-
-class _PromptDB:
-    def __init__(self, query):
-        self.query = query
-
-    def q(self):
-        return self.query
-
-
-def _profile(category="dev", tenure=5, plan="FREE"):
-    return {
-        "plan": plan,
-        "job_category": category,
-        "tenure_years": tenure,
-        "reference_data": True,
-    }
-
-
-async def _prepare_prompt(query, *, user_id, text, employer=False, intent=None,
-                          plan="BASIC", application_on="conv"):
-    app_id = uuid4()
-    conv = SimpleNamespace(
-        id=uuid4(), user_id=user_id, archived=False, title="", revision=1,
-        company_id=uuid4() if employer else None,
-        application_id=app_id if application_on == "conv" else None,
-    )
-    svc = _chat_svc(StubConversationStore())
-    svc.db = _PromptDB(query)
-
-    async def company_plan(_company_id):
-        return plan
-
-    svc.conversations.company_plan = company_plan
-    state = {
-        "user_id": user_id,
-        "text": text,
-        "conversation": conv,
-        "context": {},
-        "attachments": [],
-        "ai": {
-            "provider": "OPENAI", "model": "client-model",
-            "effort": "LOW",
-        },
-    }
-    if intent:
-        state["intent"] = intent
-    if application_on == "application_id":
-        state["application_id"] = app_id
-    if application_on == "applicationId":
-        state["applicationId"] = app_id
-    nodes = bind_chat_nodes(svc)
-    token = event_sink.set([])
-    try:
-        return await nodes["prepare_reply"](state)
-    finally:
-        event_sink.reset(token)
-
-
-def _prompt_rows(n):
-    return [
-        _sample(secret="SECRET_TEMPLATE_SENTENCE") for _ in range(n)
-    ]
-
-
-async def test_resume_prompt_includes_a_full_cell_and_hides_templates():
-    user_id = uuid4()
-    query = _PromptQuery(_prompt_rows(30), {user_id: _profile()}, user_id)
-    out = await _prepare_prompt(query, user_id=user_id, text="이력서 써 줘")
-    assert "dev 5년 80점대 30건 수치" in out["prompt_system"]
-    assert "SECRET_TEMPLATE_SENTENCE" not in out["prompt_system"]
-    assert "SECRET_TEMPLATE_SENTENCE" not in out["prompt_user"]
-    selected = [sql for sql, _ in query.calls if "FROM reference_samples" in sql]
-    assert selected
-    assert query.selected_templates is False
-
-
-async def test_resume_prompt_skips_a_cell_of_29():
-    user_id = uuid4()
-    query = _PromptQuery(_prompt_rows(29), {user_id: _profile()}, user_id)
-    out = await _prepare_prompt(query, user_id=user_id, text="이력서 써 줘")
-    assert "건 수치" not in out["prompt_system"]
-
-
-@pytest.mark.parametrize("intent", ["posting", "general"])
-async def test_posting_and_general_do_not_inject_reference_lines(intent):
-    user_id = uuid4()
-    applicant = uuid4()
-    query = _PromptQuery(_prompt_rows(30), {applicant: _profile()}, applicant)
-    out = await _prepare_prompt(
-        query, user_id=user_id, text="백엔드 공고를 써 줘", employer=True,
-        intent=intent, plan="BASIC", application_on="application_id",
-    )
-    assert "건 수치" not in out["prompt_system"]
-    if intent == "posting":
-        assert "```posting-draft" in out["prompt_system"]
-
-
-@pytest.mark.parametrize(
-    ("intent", "plan", "application_on"),
-    [("review", "BASIC", "applicationId"), ("interview", "PRO", "application_id")],
-)
-async def test_review_and_interview_inject_reference_lines(intent, plan, application_on):
-    user_id = uuid4()
-    applicant = uuid4()
-    query = _PromptQuery(_prompt_rows(30), {applicant: _profile()}, applicant)
-    out = await _prepare_prompt(
-        query, user_id=user_id, text="이 지원자를 봐 줘", employer=True,
-        intent=intent, plan=plan, application_on=application_on,
-    )
-    assert "dev 5년 80점대 30건 수치" in out["prompt_system"]
-    assert "SECRET_TEMPLATE_SENTENCE" not in out["prompt_system"]
-
-
-async def test_resume_prompt_survives_a_missing_sample_table():
-    user_id = uuid4()
-    query = _PromptQuery(_prompt_rows(30), {user_id: _profile()}, user_id, fail=True)
-    out = await _prepare_prompt(query, user_id=user_id, text="이력서 써 줘")
-    assert out["prepared"] is True
-    assert out["prompt_system"]
-    assert "건 수치" not in out["prompt_system"]
 
 
 @pytest.mark.parametrize("text", [

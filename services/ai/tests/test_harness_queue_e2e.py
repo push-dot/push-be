@@ -34,7 +34,6 @@ async def _deliver(box, db, job: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_harness_turn_on_the_redis_worker_runs_an_approved_tool_once(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
     monkeypatch.setenv("QUEUE_BACKEND", "redis")
     ScriptedLC.replies = [
         {"tool_calls": [{"name": "apply_to_posting", "id": "call-1", "type": "tool_call",
@@ -58,7 +57,7 @@ async def test_harness_turn_on_the_redis_worker_runs_an_approved_tool_once(monke
         return False
 
     async def legacy_node(ctx, name):
-        raise AssertionError("legacy chat nodes must not run with AI_HARNESS on")
+        raise AssertionError("legacy chat nodes must not run")
 
     async def set_state(job_id, state):
         return None
@@ -92,37 +91,3 @@ async def _flow(svc, db, applies):
     assert len(applies) == 1
     assert svc.ai.reserved == [str(MESSAGE_JOB), str(RESUME_JOB)]
     assert len(svc.ai.settled) == 2
-
-
-@pytest.mark.asyncio
-async def test_legacy_edit_answer_on_the_redis_worker_applies_without_chat_nodes(monkeypatch):
-    from types import SimpleNamespace
-
-    from tests.test_legacy_edit_approval import APPROVAL, DIFF, _Docs, _Rows
-
-    monkeypatch.delenv("AI_HARNESS", raising=False)
-    docs = _Docs()
-    monkeypatch.setattr("app.harness.jobs.apply_edit", lambda core, user, diff: docs.apply_hunks(user, diff))
-    svc = SimpleNamespace(db=_Rows(), document_svc=SimpleNamespace())
-    db = MemoryJobs()
-
-    async def cancelled(job_id):
-        return False
-
-    async def legacy_node(ctx, name):
-        raise AssertionError("an approved legacy edit must not run chat nodes")
-
-    async def set_state(job_id, state):
-        return None
-
-    configure_chat(run_node=legacy_node, cancelled=cancelled, set_state=set_state)
-    configure_harness(lambda ctx: run_queue_turn(svc, ctx, cancelled))
-    try:
-        box = worker(FakeRedis(decode_responses=True), db, {"chat": chat}, queues=list(AI_WORKER_QUEUES))
-        job = queued(RESUME_JOB, conversation_id=CONV, user_id=USER)
-        job["payload"] = {"text": "", "resume": {"approvalId": APPROVAL, "optionId": "apply"}}
-        assert await _deliver(box, db, job) == "done"
-    finally:
-        configure_harness(None)
-    assert docs.applied == [DIFF]
-    assert [kind for kind, _ in db.events[RESUME_JOB]] == ["diff", "done"]

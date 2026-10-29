@@ -111,7 +111,3 @@ def load_config() -> Config:
         core_origin=env("CORE_ORIGIN"),
         internal_api_secret=env("INTERNAL_API_SECRET"),
     )
-
-
-def harness_enabled() -> bool:
-    return os.environ.get("AI_HARNESS", "").strip().lower() in {"1", "true", "yes"}

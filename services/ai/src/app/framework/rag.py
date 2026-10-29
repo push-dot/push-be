@@ -7,6 +7,24 @@ from app.framework.flag import use_langchain
 _DIST = 0.6
 
 
+def chunk_text(text: str, size: int = 1200, overlap: int = 150) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= size:
+        return [text]
+    out = []
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        cut = text.rfind("\n\n", start, end)
+        if cut > start + size // 2:
+            end = cut
+        out.append(text[start:end].strip())
+        start = end if end == len(text) else max(end - overlap, start + 1)
+    return [c for c in out if c]
+
+
 def split_text(text: str, splitter=None) -> list[str]:
     text = (text or "").strip()
     if not text:
@@ -21,8 +39,7 @@ def split_text(text: str, splitter=None) -> list[str]:
             return [part.strip() for part in pieces if part and part.strip()]
         except ImportError:
             pass
-    from app.graphs.chat import _chunk_text
-    return _chunk_text(text)
+    return chunk_text(text)
 
 
 def accepted_hits(hits: list[dict], seen: set) -> list[dict]:

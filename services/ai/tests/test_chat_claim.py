@@ -6,7 +6,6 @@ import asyncio
 import os
 import socket
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -145,46 +144,6 @@ async def test_local_restart_resets_without_waiting():
     await svc.start_worker()
     await svc.stop_worker()
     assert seen == [0]
-
-
-@pytest.mark.asyncio
-async def test_missing_completion_stores_the_stub_reply(monkeypatch):
-    monkeypatch.setenv("CHAT_EXECUTOR", "workflow")
-    saved = {}
-
-    class DB:
-        async def run(self, fn):
-            await fn()
-
-    class Conversations:
-        async def upsert_user_message(self, msg):
-            saved["user"] = msg.text
-
-        async def create_message(self, msg):
-            saved["assistant"] = msg.text
-
-    class Ops:
-        async def create(self, op):
-            saved["op"] = op
-
-    async def publish(*args, **kwargs):
-        return False
-
-    monkeypatch.setattr(
-        "app.graphs.chat_surface.publish_persisted_surface", publish)
-    from app.graphs.chat import bind_chat_nodes, stub_reply
-    nodes = bind_chat_nodes(SimpleNamespace(
-        db=DB(), conversations=Conversations(), ops=Ops()))
-    await nodes["persist"]({
-        "user_id": uuid4(),
-        "text": "안녕",
-        "attachments": [],
-        "completion": None,
-        "conversation": SimpleNamespace(id=uuid4(), title="kept", application_id=None),
-        "job_id": str(uuid4()),
-    })
-    assert saved["user"] == "안녕"
-    assert saved["assistant"] == stub_reply("안녕")
 
 
 def test_usage_ids_are_stable_per_job():

@@ -5,29 +5,6 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-_BLOCK = re.compile(r"```\w*\n# file: ([\w.\-]+)\n(.*?)```", re.DOTALL)
-_MARKER = "# file: "
-
-
-def strip_file_blocks(text: str) -> str:
-    return visible_prefix(text).strip()
-
-
-def visible_prefix(text: str) -> str:
-    s = _BLOCK.sub("", text)
-    if s.count("```") % 2 == 0:
-        return s
-    idx = s.rfind("```")
-    after = s[idx + 3:]
-    nl = after.find("\n")
-    if nl == -1:
-        return s[:idx]
-    content = after[nl + 1:]
-    first = content.split("\n", 1)[0]
-    if _MARKER.startswith(first) or first.startswith(_MARKER):
-        return s[:idx]
-    return s
-
 
 def _root() -> Path:
     return Path(os.environ.get(
@@ -171,71 +148,8 @@ def workspace_dir(conversation_id, title: str = "") -> Path:
     return d
 
 
-def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
-    saved = []
-    d = workspace_dir(conversation_id, title)
-    blocks = _BLOCK.findall(text)
-    last_end = max((m.end() for m in _BLOCK.finditer(text)), default=0)
-    tail = re.search(r"```\w*\n# file: ([\w.\-]+)\n(.*)$",
-                     text[last_end:], re.DOTALL)
-    if tail:
-        existing = d / tail.group(1)
-        if not existing.exists() or \
-                existing.stat().st_size < len(tail.group(2)):
-            blocks.append((tail.group(1), tail.group(2)))
-    for name, body in blocks:
-        if name.startswith(".") or "/" in name or "\\" in name:
-            continue
-        (d / name).write_text(body.strip() + "\n")
-        saved.append(name)
-        if re.fullmatch(r"05_final_\w+\.md", name):
-            try:
-                md_to_pdf(body.strip(), d / (name[:-3] + ".pdf"))
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception("pdf render failed")
-    return saved
-
-
 def _db_blobs() -> bool:
     return os.environ.get("BLOB_STORE") == "db"
-
-
-async def save_artifacts_db(db, conversation_id, title: str, text: str) -> list[str]:
-    saved = []
-    blocks = list(_BLOCK.findall(text))
-    last_end = max((m.end() for m in _BLOCK.finditer(text)), default=0)
-    tail = re.search(r"```\w*\n# file: ([\w.\-]+)\n(.*)$",
-                     text[last_end:], re.DOTALL)
-    if tail:
-        blocks.append((tail.group(1), tail.group(2)))
-    for name, body in blocks:
-        if name.startswith(".") or "/" in name or "\\" in name:
-            continue
-        payload = body.strip() + "\n"
-        await db.q().execute(
-            "INSERT INTO workspace_files (conversation_id, name, body, updated_at) "
-            "VALUES ($1,$2,$3,now()) "
-            "ON CONFLICT (conversation_id, name) DO UPDATE "
-            "SET body=EXCLUDED.body, updated_at=now()",
-            conversation_id, name, payload)
-        saved.append(name)
-        if re.fullmatch(r"05_final_\w+\.md", name):
-            try:
-                import io
-                buf = io.BytesIO()
-                md_to_pdf(payload, buf)
-                await db.q().execute(
-                    "INSERT INTO workspace_files "
-                    "(conversation_id, name, content, updated_at) "
-                    "VALUES ($1,$2,$3,now()) "
-                    "ON CONFLICT (conversation_id, name) DO UPDATE "
-                    "SET content=EXCLUDED.content, updated_at=now()",
-                    conversation_id, name[:-3] + ".pdf", buf.getvalue())
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception("pdf render failed")
-    return saved
 
 
 async def artifact_names(db, conversation_id) -> set[str]:

@@ -261,7 +261,7 @@ async def test_runaway_tool_loop_becomes_a_clean_domain_error(monkeypatch):
 
 
 def test_user_turn_message_id_is_stable_across_retries():
-    from app.graphs.chat import _stable_ids
+    from app.harness.runtime import _stable_ids
     payload = _payload("안녕")
     first = runtime_module._state(payload, {})["messages"][0]
     again = runtime_module._state(payload, {})["messages"][0]
@@ -343,7 +343,6 @@ class _JobCtx:
 
 async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
     # Closing later, from GC in another Context, broke the stream's contextvar resets.
-    monkeypatch.setenv("AI_HARNESS", "1")
     closed = []
 
     class Graph:
@@ -363,7 +362,6 @@ async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
 
 
 async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
     monkeypatch.setattr(jobs, "monotonic", lambda: 100.0)
 
     class Graph:

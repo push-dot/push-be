@@ -11,9 +11,6 @@ from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import DomainError
 from app.domain.services.ai import AIGate
-from app.graphs.chat import build_chat_graph
-from app.graphs.chat import event_sink
-from app.graphs.freeze import freeze_state, thaw_state
 from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
@@ -29,30 +26,6 @@ def _now() -> datetime:
     return utcnow()
 
 
-# Workflow steps. prepare_reply is not a LangGraph node; the local graph
-# still prepares inside generate_reply. Each name is one free-plan CPU budget.
-WORKFLOW_NODES = (
-    "resolve_context", "prepare_reply", "generate_reply", "persist")
-MAX_STEP_FAILS = 3
-
-
-def step_already_done(checkpoint: dict | None, name: str) -> bool:
-    node = (checkpoint or {}).get("node") or ""
-    if node not in WORKFLOW_NODES or name not in WORKFLOW_NODES:
-        return False
-    return WORKFLOW_NODES.index(node) >= WORKFLOW_NODES.index(name)
-
-
-def step_fail_limit_reached(checkpoint: dict | None) -> bool:
-    try:
-        fails = int((checkpoint or {}).get("fails") or 0)
-    except (TypeError, ValueError):
-        return False
-    return fails >= MAX_STEP_FAILS
-
-
-_TOKEN_BATCH = 160
-_TOKEN_FLUSH_S = 0.05
 _LIVE_EVENT_TYPES = frozenset({
     "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
 
@@ -92,76 +65,6 @@ async def _wait(event: asyncio.Event, delay: float) -> bool:
     return True
 
 
-async def flush_chat_events(emit_many, job_id, queue: asyncio.Queue,
-                            *, batch_chars: int = _TOKEN_BATCH,
-                            flush_s: float = _TOKEN_FLUSH_S) -> None:
-    """Write status immediately, the first token immediately, then chunks.
-
-    ``emit_many`` is awaited between model deltas, so a streaming step
-    publishes ``chat_events`` before the step returns. A retry deletes
-    events after the checkpoint high-water, so a partial flush is safe.
-    """
-    batch: list[tuple[str, dict]] = []
-    chars = 0
-    saw_token = False
-
-    async def flush() -> None:
-        nonlocal batch, chars
-        if not batch:
-            return
-        pending = batch
-        batch = []
-        chars = 0
-        await emit_many(job_id, pending)
-
-    while True:
-        try:
-            if batch:
-                item = await asyncio.wait_for(queue.get(), flush_s)
-            else:
-                item = await queue.get()
-        except asyncio.TimeoutError:
-            await flush()
-            continue
-        if item is None:
-            await flush()
-            return
-        if "status" in item:
-            await flush()
-            await emit_many(job_id, [("status", {"text": item["status"]})])
-            continue
-        live = _live_event(item)
-        if live is not None:
-            await flush()
-            await emit_many(job_id, [live])
-            continue
-        if "token" not in item:
-            continue
-        text = item["token"]
-        if not saw_token:
-            await flush()
-            await emit_many(job_id, [("token", {"text": text})])
-            saw_token = True
-            continue
-        batch.append(("token", {"text": text}))
-        chars += len(text or "")
-        if chars >= batch_chars:
-            await flush()
-
-
-def _checkpoint_dict(raw) -> dict:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw:
-        import json
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
 class ConversationService:
     def __init__(self, db: DB, ai: AIGate, checkpointer=None,
                  document_svc=None, job_svc=None, application_svc=None):
@@ -185,30 +88,17 @@ class ConversationService:
         self._scheduler_installed = False
         self._prev_scheduler = None
         self._checkpointer = checkpointer
-        self._compiled = None
 
     @property
     def graph(self):
         # LangGraph compile is the heavy import. Health and auth requests
         # never touch it; the first local chat message in an isolate does.
-        from app.config import harness_enabled
-        if harness_enabled():
-            from app.harness.runtime import HarnessRuntime
-            runtime = getattr(self, "_harness_runtime", None)
-            if runtime is None:
-                runtime = HarnessRuntime(self)
-                self._harness_runtime = runtime
-            return runtime
-        if self._compiled is None:
-            self._compiled = build_chat_graph(self, self._checkpointer)
-        return self._compiled
-
-    def ensure_chat_nodes(self) -> None:
-        # Workflow steps call node functions directly and skip compile.
-        if getattr(self, "chat_nodes", None):
-            return
-        from app.graphs.chat import bind_chat_nodes
-        bind_chat_nodes(self)
+        from app.harness.runtime import HarnessRuntime
+        runtime = getattr(self, "_harness_runtime", None)
+        if runtime is None:
+            runtime = HarnessRuntime(self)
+            self._harness_runtime = runtime
+        return runtime
 
     def wake(self) -> None:
         event = getattr(self, "_wake", None)
@@ -317,11 +207,7 @@ class ConversationService:
         p = job["payload"]
         terminal = False
         try:
-            source = self.graph
-            if p.get("resume"):
-                from app.harness.jobs import approved_edit
-                source = await approved_edit(self, p, job["user_id"]) or source
-            async for mode, chunk in source.astream(
+            async for mode, chunk in self.graph.astream(
                     {
                         "user_id": job["user_id"],
                         "conversation_id": job["conversation_id"],
@@ -388,148 +274,6 @@ class ConversationService:
                 await self.jobs.finish(job_id, "FAILED", str(e)[:500])
                 terminal = True
 
-    async def exec_chat_node(self, job_id: str, name: str, claim: str = "") -> str:
-        from app.claimctx import claim_job, claim_token
-        jid = UUID(str(job_id))
-        token_ctx = claim_token.set(claim or "")
-        job_ctx = claim_job.set(str(jid) if claim else "")
-        try:
-            return await self._exec_chat_node(jid, name, claim)
-        finally:
-            claim_token.reset(token_ctx)
-            claim_job.reset(job_ctx)
-
-    async def _exec_chat_node(self, jid: UUID, name: str, claim: str) -> str:
-        from app.claimctx import LostClaim
-        if claim:
-            if not await self.jobs.touch_owner(jid, claim):
-                existing = await self.jobs.get(jid)
-                if existing is not None and existing.get("status") == "DONE":
-                    return "ok"
-                return "skip"
-        job = await self.jobs.get(jid)
-        if job is None:
-            return "skip"
-        match job.get("status"):
-            case "DONE":
-                return "ok"
-            case "FAILED":
-                return "error"
-            case "CANCELLED":
-                return "skip"
-        status = job.get("status")
-        payload = job["payload"] if isinstance(job["payload"], dict) else {}
-        ck = _checkpoint_dict(job.get("checkpoint"))
-        if step_already_done(ck, name):
-            if name == "persist" and status == "RUNNING":
-                try:
-                    await self.jobs.finish(jid, "DONE")
-                    await self._notify_ai_done(
-                        job["user_id"], job["conversation_id"])
-                except LostClaim:
-                    return "skip"
-            return "ok"
-        if step_fail_limit_reached(ck):
-            await self._fail_step(jid, "step exceeded retry limit")
-            return "error"
-        # Drop events from a previous attempt of this step. Earlier steps
-        # stay; their high-water id is stored on the checkpoint.
-        hw = int(ck.get("event_id") or 0)
-        try:
-            await self.jobs.delete_events_after(jid, hw)
-            fails = int(ck.get("fails") or 0) + 1
-            await self.jobs.save_checkpoint(jid, {**ck, "fails": fails})
-        except LostClaim:
-            return "skip"
-        queue: asyncio.Queue = asyncio.Queue()
-        closed = False
-
-        class _Sink:
-            def append(self, item: dict) -> None:
-                queue.put_nowait(item)
-
-        async def close_pump() -> None:
-            nonlocal closed
-            if closed:
-                return
-            closed = True
-            queue.put_nowait(None)
-            try:
-                await pump
-            except LostClaim:
-                pass
-
-        sink = event_sink.set(_Sink())
-        pump = asyncio.create_task(
-            flush_chat_events(self.jobs.emit_many, jid, queue))
-        try:
-            state = thaw_state((ck or {}).get("state") or {})
-            if not state:
-                state = {
-                    "user_id": job["user_id"],
-                    "conversation_id": job["conversation_id"],
-                    "text": payload.get("text") or "",
-                    "context": payload.get("context") or {},
-                    "ai": with_managed_default(payload.get("ai")),
-                    "access_mode": payload.get("access_mode") or "SUGGEST",
-                    "operation": None,
-                    "job_id": str(jid),
-                    **turn_from_payload(payload),
-                }
-            self.ensure_chat_nodes()
-            try:
-                update = await self.chat_nodes[name](state)
-                if update:
-                    state.update(update)
-                await close_pump()
-                if name == "persist" and state.get("operation") is not None:
-                    from app.jsonutil import to_jsonable
-                    await self.jobs.emit(
-                        jid, "done",
-                        {"operation": to_jsonable(state["operation"])})
-                    await self.jobs.finish(jid, "DONE")
-                    await self._notify_ai_done(
-                        job["user_id"], job["conversation_id"])
-                event_id = await self.jobs.max_event_id(jid)
-                await self.jobs.save_checkpoint(
-                    jid, {"state": freeze_state(state), "node": name,
-                          "event_id": event_id, "fails": 0})
-                return "ok"
-            except LostClaim:
-                await close_pump()
-                return "skip"
-            except DomainError as e:
-                await close_pump()
-                await self._drop_enqueued_user_message(jid)
-                try:
-                    await self.jobs.emit(
-                        jid, "error",
-                        {"error": {"code": e.code, "message": e.message,
-                                   "details": e.details}})
-                    await self.jobs.finish(jid, "FAILED", e.code)
-                except LostClaim:
-                    return "skip"
-                return "error"
-            except Exception:
-                # Leave the incremented fails count in the checkpoint and let
-                # the Workflow retry the step. A CPU-limit kill (Error 1102)
-                # never reaches this handler; the same checkpoint makes that
-                # retry idempotent. Events flushed during this attempt sit
-                # above the saved high-water and are deleted on the retry.
-                await close_pump()
-                logging.getLogger(__name__).exception("chat node %s failed", name)
-                raise
-        finally:
-            if not closed:
-                closed = True
-                queue.put_nowait(None)
-                pump.cancel()
-                try:
-                    await pump
-                except (asyncio.CancelledError, Exception):
-                    pass
-            event_sink.reset(sink)
-
     async def _drop_enqueued_user_message(self, job_id: UUID) -> None:
         """A rejected chat must not keep the USER row written at enqueue."""
         from app.infrastructure.store_chat_jobs import user_message_id
@@ -539,54 +283,3 @@ class ConversationService:
         except Exception:
             logging.getLogger(__name__).exception(
                 "user message rollback failed")
-
-    async def _fail_step(self, job_id: UUID, message: str) -> None:
-        from app.claimctx import LostClaim
-        try:
-            await self.jobs.emit(
-                job_id, "error",
-                {"error": {"code": "INTERNAL", "message": message,
-                           "details": None}})
-            await self.jobs.finish(job_id, "FAILED", message)
-        except LostClaim:
-            return
-
-
-async def run_saved_chat(graph, ctx, *, cancelled=None, set_state=None) -> dict:
-    from app.jsonutil import to_jsonable
-    from app.queue.worker import JobCancelled
-
-    job = ctx.job
-    job_id = job["id"]
-    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-    config = {"configurable": {"thread_id": f"chat:{job_id}"}}
-    snap = await graph.aget_state(config)
-    if tuple(getattr(snap, "next", ()) or ()):
-        incoming = None
-    else:
-        incoming = {
-            "user_id": job["user_id"],
-            "conversation_id": job["conversation_id"],
-            "text": payload.get("text") or "",
-            "context": payload.get("context") or {},
-            "ai": with_managed_default(payload.get("ai")),
-            "access_mode": payload.get("access_mode") or "SUGGEST",
-            "operation": None,
-            "job_id": str(job_id),
-            "event_id": 0,
-            **turn_from_payload(payload),
-        }
-    final: dict = {}
-    async for mode, chunk in graph.astream(
-            incoming, config=config, stream_mode=["updates", "values"]):
-        if cancelled is not None and await cancelled(job_id):
-            await ctx.emit("cancelled", {})
-            raise JobCancelled()
-        if mode == "values" and isinstance(chunk, dict):
-            final = chunk
-    if final.get("needs_approval") and set_state is not None:
-        await set_state(job_id, "NEEDS_APPROVAL")
-        await ctx.emit("status", {"state": "NEEDS_APPROVAL"})
-    elif final.get("operation") is not None:
-        await ctx.emit("done", {"operation": to_jsonable(final["operation"])})
-    return {"messageId": str(final.get("messageId") or "")}

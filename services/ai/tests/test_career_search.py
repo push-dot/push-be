@@ -65,5 +65,5 @@ async def test_search_career_context_returns_reranked_nodes_for_the_caller_only(
     assert ok is True
     assert result["text"] == section
 
-    chat = (ROOT / "src" / "app" / "graphs" / "chat.py").read_text()
+    chat = (ROOT / "src" / "app" / "harness" / "personal" / "tools.py").read_text()
     assert "search_career_context" in chat
