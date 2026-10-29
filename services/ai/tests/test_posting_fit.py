@@ -263,22 +263,27 @@ class _Settling:
     def __init__(self, **kwargs):
         self.schema = None
 
-    def with_structured_output(self, schema, **kwargs):
-        self.schema = schema
+    def bind_tools(self, tools, **kwargs):
+        self.schema = tools[0]
         return self
 
     async def ainvoke(self, messages, config=None, **kwargs):
+        from langchain_core.messages import AIMessage
+
         for callback in (config or {}).get("callbacks") or []:
             await callback.on_llm_end(_usage_response(), run_id="fit-run")
-        return self.schema(
-            tech_stack=10, experience_link=8, career_level=6, keyword=4, domain=2)
+        return AIMessage(content="", tool_calls=[{
+            "name": self.schema.__name__, "id": "call-fit",
+            "args": {"tech_stack": 10, "experience_link": 8, "career_level": 6,
+                     "keyword": 4, "domain": 2},
+        }])
 
 
 class _Boom:
     def __init__(self, **kwargs):
         pass
 
-    def with_structured_output(self, schema, **kwargs):
+    def bind_tools(self, tools, **kwargs):
         return self
 
     async def ainvoke(self, messages, config=None, **kwargs):
