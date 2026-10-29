@@ -126,10 +126,12 @@ def _done(state: dict, status: str, **data) -> dict:
     return flow_update(state, status=status, **data)
 
 
-def build_flows(*, db, generate_for, research_text, plan_of):
+def build_flows(*, db, generate_for, research_text, plan_of, store=None, read_pdf=None):
     """``generate_for(state)`` returns a node ``generate``; ``research_text(state, name)`` runs
     the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
-    store = EmployerStore(db) if db is not None else None
+    store = store or (EmployerStore(db) if db is not None else None)
+    if read_pdf is None:
+        from app.ingest.pdf_text import extract_pdf_bytes as read_pdf
     from app.harness.graph import HarnessState
 
     class EmployerState(HarnessState, total=False):
@@ -320,6 +322,8 @@ def build_flows(*, db, generate_for, research_text, plan_of):
     # ---- review ------------------------------------------------------------------
     async def rv_read(state):
         flow = flow_of(state)
+        if flow.get("attachment_id"):
+            return await _read_attachment(state, flow)
         app_id = flow.get("application_id")
         row = await store.application(app_id, state.get("company_id")) if store and app_id else None
         if row is None:
@@ -345,6 +349,39 @@ def build_flows(*, db, generate_for, research_text, plan_of):
             posting=posting_text(row),
             category=(ctx or {}).get("job_category") or row["job_category"],
             tenure=(ctx or {}).get("tenure_years"),
+        )
+
+    async def _read_attachment(state, flow):
+        # Ultra only. The PDF stays in this conversation: it is never indexed into RAG or
+        # turned into reference samples, and it goes away when the conversation is deleted.
+        if not plan_allows(plan_of(state), "ULTRA"):
+            reply = "Push 밖에서 받은 서류 검토는 기업 Ultra 요금제에서 쓸 수 있어요."
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
+        found = await store.attachment(
+            flow["attachment_id"], state.get("conversation_id"), state.get("company_id")
+        )
+        if found is None or found["mime_type"] != "application/pdf":
+            reply = "이 대화에 올린 PDF를 찾지 못했어요. 다시 올려 주세요."
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
+        posting_row = None
+        if flow.get("posting_id"):
+            posting_row = await store.company_posting(flow["posting_id"], state.get("company_id"))
+        if posting_row is None:
+            reply = "어떤 공고 기준으로 볼지 알려 주세요. 공고 관리에서 공고를 골라 주세요."
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
+        text = read_pdf(bytes(found["content"]))
+        emit({"type": "status", "text": f"{found['file_name']}을 읽었어요. 이 대화에만 보관해요."})
+        return flow_update(
+            state,
+            step="match",
+            documents=text,
+            posting=posting_text(posting_row),
+            category=posting_row["job_category"],
+            tenure=None,
+            attachment_name=found["file_name"],
         )
 
     async def rv_match(state):
@@ -395,12 +432,13 @@ def build_flows(*, db, generate_for, research_text, plan_of):
                 state.get("conversation_id"),
                 flow.get("application_id"),
                 report,
+                attachment_name=flow.get("attachment_name"),
             )
         emit(
             {
                 "type": "review_report",
                 "applicationId": flow.get("application_id"),
-                "attachmentName": None,
+                "attachmentName": flow.get("attachment_name"),
                 "summary": report["summary"],
                 "matches": report["matches"],
                 "flags": report["flags"],
@@ -411,6 +449,9 @@ def build_flows(*, db, generate_for, research_text, plan_of):
 
     async def rv_next(state):
         pro = plan_allows(plan_of(state), "PRO")
+        if flow_of(state).get("attachment_name"):
+            # Interview kits need a Push application; external PDFs end at the report.
+            return _done(state, "done")
         options = [
             {
                 "id": "interview",

@@ -83,6 +83,19 @@ class EmployerStore(Store):
         )
         return [dict(r) for r in rows]
 
+    async def attachment(self, attachment_id, conversation_id, company_id):
+        """An Ultra external PDF: readable only inside the conversation it was attached to."""
+        return await self.q().fetchrow(
+            "SELECT file_name, mime_type, content FROM conversation_attachments "
+            "WHERE id = $1 AND conversation_id = $2 AND company_id = $3",
+            _uuid(attachment_id), _uuid(conversation_id), _uuid(company_id))
+
+    async def company_posting(self, posting_id, company_id):
+        return await self.q().fetchrow(
+            "SELECT title, job_category, career_min, career_max, description, requirements, "
+            "preferred FROM job_postings WHERE id = $1 AND company_id = $2",
+            _uuid(posting_id), _uuid(company_id))
+
     async def applicant_context(self, user_id):
         return await self.q().fetchrow(
             "SELECT p.job_category, p.tenure_years FROM profiles p WHERE p.user_id = $1",
