@@ -98,7 +98,7 @@ Expected conflicts: L2 and S3 both touch `harness/resume/graph.py` — S3 merges
 - [ ] PR `chore(ci): stop deploying python worker`. Note in the PR body: "After this deploys, the orchestrator deletes the `push-be-python` Worker."
 
 ### A4: Delete Worker-only code
-**Files:** delete `services/ai/src/worker.py`, `services/ai/wrangler.jsonc`, `scripts/check_worker_bundle.py`, `tests/test_workflow_steps.py`, `test_chat_claim.py:132`; remove `CF_WORKER` branches (`main.py:218-222`, `api/middleware.py:111-116`, `db.py:190,199`, `framework/flag.py:8`, `ingest/web_page.py:323-324`), `_patch_to_thread`, `pgproto.py:426-488` Workers websocket path **only if** `migrate.yml` keeps working (it uses websocket by default — switch `migrate.yml` default to `tcp`, keep the module), dead `sse_max_polls`, pyodide dev deps in `pyproject.toml`.
+**Files:** delete `services/ai/src/worker.py`, `services/ai/wrangler.jsonc`, `scripts/check_worker_bundle.py`, `tests/test_workflow_steps.py`, `test_chat_claim.py:132`; remove `CF_WORKER` branches (`main.py:218-222`, `api/middleware.py:111-116`, `db.py:190,199`, `framework/flag.py:8`, `ingest/web_page.py:323-324`), `_patch_to_thread`, `pgproto.py:426-488` Workers websocket path **only if** `migrate.yml` keeps working (`default: tcp`, websocket still selectable, keep the module), dead `sse_max_polls`, pyodide dev deps in `pyproject.toml`.
 - [ ] `uv run pytest -q` green. PR `refactor(ai): remove cloudflare worker code`.
 
 ### A5: Workflow scheduler cleanup + cron on the VPS
