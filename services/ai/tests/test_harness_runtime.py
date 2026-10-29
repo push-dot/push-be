@@ -43,8 +43,8 @@ async def test_turn_uses_gate_model_and_persists_reply():
     assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
     assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
     assert svc.ai.settled == [("gate-model", 10, 5)]
-    schemas = {tool["function"]["name"]: tool for tool in ScriptedLC.bound[0]}
-    assert "posting_id" in schemas["bookmark_posting"]["function"]["parameters"]["properties"]
+    tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
+    assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
 
 
 async def test_no_ai_options_gives_the_stub_reply():
