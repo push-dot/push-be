@@ -12,8 +12,8 @@ permissions:
 # Path filters skip a service when the diff does not touch it.
 # A push to DEPLOY_BRANCH (default main) still runs every service
 # before deploy. Deploys run only for that branch.
-# The VPS image is the exception: it deploys only when services/ai or
-# infra/vps changed, after the Python Worker and before core.
+# The VPS image deploys on every push to that branch, before core
+# and the gateway.
 # Set the repository variable DEPLOY_BRANCH to retarget CD. If the new
 # branch is not develop or main, add it under on.push.branches as well.
 concurrency:
@@ -205,33 +205,6 @@ jobs:
       - name: Check schema invariants
         run: psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f db/tests/schema_checks.sql
 
-  bundle-ai:
-    needs: changes
-    if: needs.changes.outputs.ai == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          enable-cache: true
-          cache-dependency-glob: services/ai/uv.lock
-      - name: Install Python
-        run: uv python install 3.12
-      - name: Install Workers tooling
-        working-directory: services/ai
-        run: uv sync --locked --group dev --python 3.12
-      - name: Check Python worker bundle
-        working-directory: services/ai
-        run: |
-          uv run --no-sync pywrangler deploy --dry-run --outdir /tmp/push-be-bundle
-          python3 scripts/check_worker_bundle.py /tmp/push-be-bundle
-
   test-core:
     needs: changes
     if: needs.changes.outputs.core == 'true'
@@ -307,7 +280,7 @@ jobs:
         run: infra/vps/test/run.sh
 
   deploy:
-    needs: [changes, test-ai, test-gateway, test-core, test-db, test-vps, bundle-ai, bundle-core, bundle-gateway]
+    needs: [changes, test-ai, test-gateway, test-core, test-db, test-vps, bundle-core, bundle-gateway]
     if: |
       always() &&
       needs.changes.outputs.deploy == 'true' &&
@@ -317,7 +290,6 @@ jobs:
       (needs.test-core.result == 'success' || needs.test-core.result == 'skipped') &&
       (needs.test-db.result == 'success' || needs.test-db.result == 'skipped') &&
       (needs.test-vps.result == 'success' || needs.test-vps.result == 'skipped') &&
-      (needs.bundle-ai.result == 'success' || needs.bundle-ai.result == 'skipped') &&
       (needs.bundle-core.result == 'success' || needs.bundle-core.result == 'skipped') &&
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
@@ -377,51 +349,14 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: package-lock.json
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          enable-cache: true
-          cache-dependency-glob: services/ai/uv.lock
-      - name: Install Python
-        run: uv python install 3.12
-      - name: Install Workers tooling
-        working-directory: services/ai
-        run: uv sync --locked --group dev --python 3.12
       - name: Install gateway
         run: npm ci
       # Uploads the script and wrangler vars. Each "Set ... secrets" step
       # writes its Worker's secrets from GitHub with `wrangler secret bulk`
       # (empty optional values are skipped; other existing secrets persist).
-      # Python worker first, then the VPS image when services/ai or
-      # infra/vps changed, then core, then the gateway. Each service
-      # binding needs its target to exist. The public workers.dev name
-      # stays `push-be`.
-      - name: Deploy Python worker
-        working-directory: services/ai
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: uv run --no-sync pywrangler deploy
-      # AI_SHARED_SECRET stays unset on this Worker: it is reached through a
-      # service binding, and the shared-secret check is for VPS traffic only.
-      - name: Set Python worker secrets
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
-        run: |
-          set -euo pipefail
-          umask 077
-          file="$RUNNER_TEMP/secrets-python.json"
-          jq -n '{DATABASE_URL: env.DATABASE_URL, TOKEN_ENCRYPTION_KEY: env.TOKEN_ENCRYPTION_KEY,
-                  OPENROUTER_API_KEY: env.OPENROUTER_API_KEY, INTERNAL_API_SECRET: env.INTERNAL_API_SECRET}
-                 | with_entries(select((.value // "") != ""))' >"$file"
-          npx wrangler secret bulk "$file" --name push-be-python
-          rm -f "$file"
+      # The VPS image deploys on every push to DEPLOY_BRANCH, then core,
+      # then the gateway. The public workers.dev name stays `push-be`.
       - name: Deploy AI service to VPS
-        if: needs.changes.outputs.vps == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}

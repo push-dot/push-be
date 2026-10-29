@@ -34,5 +34,21 @@ for want in "docker.sock" "Dokploy" "priv: privileged" "hostnet: network_mode=ho
 done
 # Container egress must use goto so allowed traffic (DNS, HTTPS) is not dropped by DOCKER-USER.
 grep -q -- "-i docker0 -g PUSH-DOCKER-EGRESS" bin/push-firewall || { echo "push-firewall: DOCKER-USER must goto PUSH-DOCKER-EGRESS" >&2; exit 1; }
+ci="$(cd ../.. && pwd)/.github/workflows/ci.yml"
+python_worker="$(grep -E 'bundle-ai|pywrangler|push-be-python' "$ci" || true)"
+if [ -n "$python_worker" ]; then
+  echo "ci.yml still deploys the python worker" >&2
+  printf '%s\n' "$python_worker" >&2
+  exit 1
+fi
+if awk '
+  /name: Deploy AI service to VPS/ { step = 1; next }
+  step && /^      - name:/ { step = 0 }
+  step && /if: needs\.changes\.outputs\.vps/ { found = 1 }
+  END { exit found ? 0 : 1 }
+' "$ci"; then
+  echo "VPS deploy is still skipped unless the vps filter matches" >&2
+  exit 1
+fi
 echo "infra/vps checks passed"
 
