@@ -540,6 +540,15 @@ class _PromptModel(_PhaseModel):
         return await super().ainvoke(messages, **kwargs)
 
 
+def _interrupt_gate(snap) -> str:
+    for task in snap.tasks or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            value = getattr(item, "value", None) or {}
+            if isinstance(value, dict) and value.get("gate"):
+                return str(value["gate"])
+    return ""
+
+
 async def _blueprint(graph, config, payload, stop, answers=None):
     answers = answers or {}
     gates = []
@@ -552,15 +561,19 @@ async def _blueprint(graph, config, payload, stop, answers=None):
             if mode == "custom" and isinstance(chunk, dict):
                 events.append(chunk)
         snap = await graph.aget_state(config)
-        if stop(snap):
-            return gates, titles, choices, snap
         if snap.values.get("status") == "done":
             return gates, titles, choices, snap
         if snap.next:
-            choice = next(event for event in events if event.get("type") == "choice")
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            if choice is None:
+                choice = {"gate": _interrupt_gate(snap)}
             gates.append(choice["gate"])
-            titles[choice["gate"]] = choice["title"]
-            choices[choice["gate"]] = choice
+            if choice.get("title"):
+                titles[choice["gate"]] = choice["title"]
+            if choice.get("options"):
+                choices[choice["gate"]] = choice
+            if stop(snap):
+                return gates, titles, choices, snap
             resume = answers.get(choice["gate"])
             if resume is None and choice["gate"] == "prevention":
                 resume = {"option_ids": ["performance", "security"]}
@@ -568,6 +581,8 @@ async def _blueprint(graph, config, payload, stop, answers=None):
                 resume = {"option_id": choice["recommended"]}
             payload = Command(resume=resume)
             continue
+        if stop(snap):
+            return gates, titles, choices, snap
         payload = {}
     snap = await graph.aget_state(config)
     return gates, titles, choices, snap
@@ -613,3 +628,64 @@ async def test_failed_validation_returns_to_approach():
     assert model.calls.count("validate") == 1
     assert "blueprints" not in model.calls
     assert "craft" not in model.calls
+
+
+def _on_cap(snap) -> bool:
+    return "g_validate_cap" in (snap.next or ())
+
+
+async def test_third_failed_approach_validation_stops_without_a_fourth_call():
+    model = _PhaseModel({"validate": {"valid": False}})
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        _on_cap,
+        {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
+    )
+    assert "validate_cap" in gates
+    assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
+    assert [item["label"] for item in choices["validate_cap"]["options"]] == [
+        "다시 고르기", "그만하기",
+    ]
+    assert model.calls.count("validate") == 3
+    assert "blueprints" not in model.calls
+    assert snap.values["validation_failures"] == 3
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
+        pass
+    retried = await graph.aget_state(config)
+    assert retried.values["validation_failures"] == 0
+    assert retried.values["phase"] == "approach"
+    assert model.calls.count("validate") == 3
+
+
+async def test_failed_blueprint_validation_returns_to_blueprints_until_the_cap():
+    model = _PromptModel({
+        "validate": {"valid": True},
+        "blueprints": {"projects": [{"id": "01"}]},
+        "validate_bp": {"valid": False},
+    })
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, _choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        _on_cap,
+    )
+    assert "validate_cap" in gates
+    assert "projects" not in gates
+    assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
+    assert model.calls.count("validate_bp") == 3
+    assert model.calls.count("blueprints") == 3
+    assert "craft" not in model.calls
+    assert snap.values["phase"] == "blueprints"
+    assert snap.values["validation_failures"] == 3
+    assert "04_validation_report.json" in snap.values["artifacts"]
+    assert any("Relevance" in text for text in model.systems)
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
+        pass
+    retried = await graph.aget_state(config)
+    assert retried.values["validation_failures"] == 0
+    assert retried.values["phase"] == "blueprints"
+    assert model.calls.count("validate_bp") == 3

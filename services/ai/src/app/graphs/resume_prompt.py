@@ -152,6 +152,9 @@ def phase_prompt_for_harness(phase: str) -> str:
     if phase == "blueprints":
         skills = ("blueprint-generator",)
         label = "Phase 2-X: 문제해결 프로젝트 기획"
+    elif phase == "validate_bp":
+        skills = ("bottleneck-validator",)
+        label = "Phase 2-X: 기획서 검증"
     else:
         index = _HARNESS_PHASE_INDEX[phase]
         skills = _PHASE_SKILLS[index]

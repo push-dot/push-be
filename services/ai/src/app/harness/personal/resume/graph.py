@@ -154,6 +154,11 @@ _GATES = {
         "recommended": "skip",
         "options": [{"id": "skip", "label": "기획만 볼게요"}],
     },
+    "validate_cap": {
+        "title": "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?",
+        "recommended": "retry",
+        "options": [{"id": "retry", "label": "다시 고르기"}],
+    },
 }
 
 
@@ -187,6 +192,29 @@ class ResumeGraphState(TypedDict, total=False):
     bottleneck_level: str | None
     prevention_categories: list
     blueprints: dict
+    validation_failures: int
+
+
+_VALIDATE_CAP = 3
+
+
+def _invalid(output: dict) -> bool:
+    return output.get("valid") is False
+
+
+def _fail_update(state: dict, phase: str) -> dict:
+    failed = int(state.get("validation_failures") or 0) + 1
+    return {
+        "validation_failures": failed,
+        "phase": phase,
+        "status": "active",
+        "retry": failed < _VALIDATE_CAP,
+    }
+
+
+def _capped(state: dict, phase: str) -> bool:
+    failures = int(state.get("validation_failures") or 0)
+    return state.get("phase") == phase and failures >= _VALIDATE_CAP
 
 
 def _scenario_letter(state: dict) -> str:
@@ -222,9 +250,9 @@ def _next_phase(state: dict, phase: str) -> str | None:
 
 
 def _must_stop(state: dict, phase: str) -> bool:
-    if (state.get("access_mode") or "AUTO") != "BYPASS":
+    if phase in {"mode_select", "validate_cap"}:
         return True
-    if phase == "mode_select":
+    if (state.get("access_mode") or "AUTO") != "BYPASS":
         return True
     inputs = state.get("inputs") or {}
     if phase == "intake" and not (inputs.get("attachments") or inputs.get("pages")):
@@ -506,6 +534,17 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
         return {**update, "status": "active", "phase": "approach", "goto": nxt}
     if gate_id in {"level", "prevention"}:
         return {**update, "status": "active", "phase": "approach", "goto": "p2x_validate"}
+    if gate_id == "validate_cap":
+        phase = merged.get("phase")
+        if phase not in {"approach", "blueprints"}:
+            phase = "approach"
+        return {
+            **update,
+            "validation_failures": 0,
+            "status": "active",
+            "phase": phase,
+            "goto": "end",
+        }
     if gate_id == "projects":
         return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
     phase = _GATE_PHASE.get(gate_id, gate_id)
@@ -676,12 +715,54 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 }, ensure_ascii=False)),
             ]
             output = _parsed(await chat.ainvoke(messages))
-        if output.get("valid") is False:
-            return {"phase": "approach", "status": "active", "retry": True}
-        return {"phase": "blueprints", "status": "active", "retry": False}
+        if _invalid(output):
+            return _fail_update(state, "approach")
+        return {
+            "phase": "blueprints", "status": "active", "retry": False, "validation_failures": 0,
+        }
+
+    async def validate_bp_node(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        chat = turn_model.get() or model
+        if chat is None:
+            output = {"valid": True}
+        else:
+            messages = [
+                SystemMessage(content=phase_prompt_for_harness("validate_bp") + (
+                    "\n\n탈락이면 valid를 false로 둔다. 결과는 JSON 객체 하나로만 답한다."
+                )),
+                HumanMessage(content=json.dumps({
+                    "phase": "validate_bp",
+                    "approach": current.get("approach"),
+                    "bottleneck_level": current.get("bottleneck_level"),
+                    "prevention_categories": current.get("prevention_categories") or [],
+                    "blueprints": current.get("blueprints") or {},
+                    "analysis": current.get("analysis") or {},
+                }, ensure_ascii=False)),
+            ]
+            output = _parsed(await chat.ainvoke(messages))
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts["04_validation_report.json"] = await save_named(
+            state, "04_validation_report.json", output)
+        if _invalid(output):
+            return {**_fail_update(state, "blueprints"), "artifacts": artifacts}
+        return {
+            "artifacts": artifacts, "phase": "blueprints", "status": "active", "retry": False,
+        }
 
     def after_validate(state: ResumeGraphState) -> str:
-        return "end" if state.get("retry") else "p2x_blueprints"
+        if state.get("retry"):
+            return "end"
+        if _capped(state, "approach"):
+            return "g_validate_cap"
+        return "p2x_blueprints"
+
+    def after_validate_bp(state: ResumeGraphState) -> str:
+        if state.get("retry"):
+            return "end"
+        if _capped(state, "blueprints"):
+            return "g_validate_cap"
+        return "g2x"
 
     def fan_out(state: ResumeGraphState):
         payload = dict(state)
@@ -748,6 +829,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g_prevention", gate_node("prevention"))
     graph.add_node("p2x_validate", validate_node)
     graph.add_node("p2x_blueprints", work_node("blueprints"))
+    graph.add_node("p2x_validate_bp", validate_bp_node)
+    graph.add_node("g_validate_cap", gate_node("validate_cap"))
     graph.add_node("g2x", gate_node("projects"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
         "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
@@ -765,9 +848,15 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("p2b_feedback", "g_feedback")
     graph.add_edge("p4b_design", "g4a")
     graph.add_edge("p2x_approach", "g_approach")
-    graph.add_edge("p2x_blueprints", "g2x")
+    graph.add_edge("p2x_blueprints", "p2x_validate_bp")
     graph.add_conditional_edges(
-        "p2x_validate", after_validate, {"end": END, "p2x_blueprints": "p2x_blueprints"})
+        "p2x_validate", after_validate, {
+            "end": END, "p2x_blueprints": "p2x_blueprints", "g_validate_cap": "g_validate_cap",
+        })
+    graph.add_conditional_edges(
+        "p2x_validate_bp", after_validate_bp, {
+            "end": END, "g2x": "g2x", "g_validate_cap": "g_validate_cap",
+        })
     graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
     graph.add_edge("p3_craft", "g3")
     graph.add_edge("p4a_review", "g4a")
@@ -777,7 +866,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     for name in (
         "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
         "g2", "g3", "g4a", "g5", "g6",
-        "g_approach", "g_level", "g_prevention", "g2x",
+        "g_approach", "g_level", "g_prevention", "g_validate_cap", "g2x",
     ):
         graph.add_conditional_edges(name, route_goto, _EXITS)
     return graph.compile(checkpointer=checkpointer)
