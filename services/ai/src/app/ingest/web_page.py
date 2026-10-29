@@ -320,10 +320,6 @@ async def _render_with_browser(url: str, guard) -> str:
         await proxy_server.wait_closed()
 
 
-def _workers_runtime() -> bool:
-    return os.environ.get("CF_WORKER") == "1"
-
-
 async def _reject_private_host(host: str) -> None:
     host = (host or "").lower()
     _reject_blocked_name(host)
@@ -435,8 +431,6 @@ async def _fetch_page_text_worker(url: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
-    if _workers_runtime():
-        return await _fetch_page_text_worker(url)
     transport = _PinnedTransport()
 
     async def pin_hop(hop: str) -> None:

@@ -1,11 +1,10 @@
 name: Migrate database
 
-# Manual only. Pushes to develop/main deploy the Worker and do not migrate.
-# This job uses the GitHub secret DATABASE_URL. It does not call
-# `wrangler secret put`, so Worker runtime secrets stay as they are.
+# Manual only. Pushes to develop/main do not migrate.
+# This job uses the GitHub secret DATABASE_URL.
 #
-# Default transport is websocket (Neon wss://<direct-host>/v2), so the
-# job does not need outbound port 5432. Choose tcp when 5432 is open.
+# Default transport is tcp on port 5432. Choose websocket when 5432 is
+# closed; that path uses Neon wss://<direct-host>/v2.
 on:
   workflow_dispatch:
     inputs:
@@ -13,10 +12,10 @@ on:
         description: "tcp uses port 5432. websocket uses Neon wss://host/v2."
         type: choice
         required: true
-        default: websocket
+        default: tcp
         options:
-          - websocket
           - tcp
+          - websocket
 
 permissions:
   contents: read

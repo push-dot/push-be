@@ -182,7 +182,7 @@ async def test_ensure_ready_bootstraps_once(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("worker,shut", [("", 1), ("1", 0)])
+@pytest.mark.parametrize("worker,shut", [("", 1), ("1", 1)])
 def test_lifespan_and_healthz(monkeypatch, worker, shut):
     seen = {"ready": 0, "shut": 0}
 

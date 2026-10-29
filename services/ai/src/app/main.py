@@ -215,11 +215,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             yield
         finally:
-            # The Workers ASGI adapter starts and stops lifespan per request.
-            # Keep the pool for the life of the isolate; a new SCRAM handshake
-            # on every call would spend the free-plan CPU budget.
-            if os.environ.get("CF_WORKER") == "1":
-                return
             await _shutdown(app)
 
     app = FastAPI(lifespan=lifespan)

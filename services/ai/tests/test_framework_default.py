@@ -14,7 +14,7 @@ def test_legacy_flag_is_gone(monkeypatch):
     assert framework() == "langchain"
 
 
-def test_only_the_cloudflare_python_worker_skips_langchain(monkeypatch):
+def test_cf_worker_does_not_skip_langchain(monkeypatch):
     monkeypatch.setenv("CF_WORKER", "1")
-    assert framework() == "legacy"
-    assert use_langchain() is False
+    assert framework() == "langchain"
+    assert use_langchain() is True

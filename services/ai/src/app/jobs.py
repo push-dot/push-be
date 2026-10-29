@@ -55,10 +55,3 @@ async def schedule_chat_job(job_id: str | UUID) -> None:
     if queue_backend() == "redis" or _scheduler is None:
         return
     await _scheduler(str(job_id), str(uuid4()))
-
-
-def sse_max_polls() -> int:
-    raw = os.environ.get("SSE_MAX_POLLS", "")
-    if raw.isdigit():
-        return max(1, int(raw))
-    return 20 if external_jobs() else 1500

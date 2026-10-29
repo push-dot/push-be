@@ -54,7 +54,7 @@ def _langchain(monkeypatch):
 
 
 def _legacy(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
+    monkeypatch.setattr(rag, "use_langchain", lambda: False)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
 
 

@@ -128,19 +128,6 @@ async def test_a_type_error_inside_the_scheduler_is_not_retried():
 
 
 @pytest.mark.asyncio
-async def test_workflow_params_carry_the_claim():
-    from worker import _create_workflow
-    seen = {}
-
-    class Binding:
-        async def create(self, body):
-            seen["body"] = body
-
-    await _create_workflow(SimpleNamespace(CHAT_WORKFLOW=Binding()), "job", "claim-1")
-    assert seen["body"]["params"] == {"jobId": "job", "claim": "claim-1"}
-
-
-@pytest.mark.asyncio
 async def test_local_restart_resets_without_waiting():
     seen = []
 

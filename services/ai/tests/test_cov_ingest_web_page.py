@@ -632,17 +632,6 @@ _PUBLIC = {("pub.example", "A"): [{"type": 1, "data": "93.184.216.34"}],
            ("intra.example", "A"): [{"type": 1, "data": "10.0.0.7"}]}
 
 
-async def test_worker_fetch_dispatch_and_long_html(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
-    body = "<p>" + "Role details " * 200 + "</p>"
-    pages = {"https://pub.example/": lambda: httpx.Response(
-        200, headers={"content-type": "text/html"}, text=body)}
-    calls = _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC))
-    text = await web_page.fetch_page_text("https://pub.example/")
-    assert text.startswith("Role details")
-    assert not any(c.url.host == "api.cloudflare.com" for c in calls)
-
-
 async def test_worker_fetch_follows_redirect_and_returns_plain(monkeypatch):
     monkeypatch.setenv("CF_WORKER", "1")
     pages = {

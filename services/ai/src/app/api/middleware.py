@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Final
@@ -14,7 +13,7 @@ from starlette.types import Message, Receive, Scope, Send
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.api.errors import error_body, redact
-from app.ratelimit import SlidingWindow, allow as allow_shared
+from app.ratelimit import SlidingWindow
 
 # Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
 # webhooks and image bytes are served by push-be-core, not this service.
@@ -108,11 +107,6 @@ class ApiMiddleware:
 
     async def _limited(self, scope: Scope, kind: str, key: str,
                        memory: SlidingWindow, limit: int, now: float) -> bool:
-        # Local uvicorn and the test suite stay on the in-process window.
-        # Workers set CF_WORKER and share one Neon counter across isolates.
-        if os.environ.get("CF_WORKER") == "1":
-            pool = getattr(getattr(scope["app"].state, "db", None), "pool", None)
-            return await allow_shared(pool, kind, key, limit, now)
         return memory.allow(key or "unknown", limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
