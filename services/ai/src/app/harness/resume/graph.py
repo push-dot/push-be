@@ -18,7 +18,7 @@ from app.harness.policy import Tier
 from app.harness.resume.prompts import phase_prompt_for_harness
 from app.harness.resume.state import ResumeState
 from app.harness.resume.tools import RESUME_TOOLS, save_artifact
-from app.harness.tools import ToolContext, emit, run_tool
+from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
@@ -266,7 +266,7 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
         args = tool.args_model.model_validate(call.get("args") or {})
     except ValidationError:
         return {"error": "INVALID_ARGS"}
-    result, _ok = await run_tool(tool, replace(ctx, tool_call_id=call["id"]), args)
+    result, _ok = await call_structured(tool, args, replace(ctx, tool_call_id=call["id"]))
     emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
            "summary": tool.summarize(args), "tier": tool.tier.value})
     return result
@@ -285,7 +285,9 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     while True:
         if used >= _CAP or not hasattr(model, "bind_tools"):
             return _parsed(await model.ainvoke(messages))
-        reply = await model.bind_tools(list(_READ_TOOLS.values())).ainvoke(messages)
+        reply = await model.bind_tools(
+            [to_structured_tool(tool) for tool in _READ_TOOLS.values()],
+        ).ainvoke(messages)
         calls = getattr(reply, "tool_calls", None) or []
         if not calls:
             return _parsed(reply)
