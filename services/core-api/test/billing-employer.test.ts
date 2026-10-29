@@ -283,7 +283,7 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
   assert.equal(second.status, 200);
   assert.equal(decoded, 2);
   assert.equal(ledger.length, 1);
-  assert.equal(ledger[0]?.amount, 30_000_000);
+  assert.equal(ledger[0]?.amount, 27_000_000);
   assert.equal(ledger[0]?.reference, "tx-1");
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
@@ -472,7 +472,7 @@ test("personal status keeps the pro monthly amount and prefers an active store",
   assert.equal(body.data.plan, "PRO");
   assert.equal(body.data.balanceMicroCredits, 30_000_000);
   assert.equal(ledger.length, 1);
-  assert.equal(ledger[0]?.amount, 30_000_000);
+  assert.equal(ledger[0]?.amount, 27_000_000);
   assert.equal(ledger[0]?.reference, MONTH);
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
@@ -530,7 +530,7 @@ test("personal pro status reports the allowance and that user's settled spend", 
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
   const body = await res.json() as { data: { monthlyMicroCredits: number; spentMicroCredits: number } };
-  assert.equal(body.data.monthlyMicroCredits, 30_000_000);
+  assert.equal(body.data.monthlyMicroCredits, 27_000_000);
   assert.equal(body.data.spentMicroCredits, 9_000);
   const spend = seen.find((call) => call.sql.includes("ai_usage"));
   assert.ok(spend);

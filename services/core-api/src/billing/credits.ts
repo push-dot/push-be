@@ -4,8 +4,8 @@ export const DISPLAY_MICRO = 6000;
 
 const PERSONAL: Record<string, number> = {
   FREE: 1_800_000,
-  PRO: 30_000_000,
-  ULTRA: 100_000_000,
+  PRO: 27_000_000,
+  ULTRA: 108_000_000,
 };
 
 const EMPLOYER: Record<string, number> = {
