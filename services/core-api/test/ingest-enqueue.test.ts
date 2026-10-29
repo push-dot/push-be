@@ -71,6 +71,72 @@ test("saving a document version enqueues an ingest job", async () => {
   assert.deepEqual(jobPayload(calls), { documentId: DOC });
 });
 
+const JOB = "10000000-0000-4000-8000-000000000001";
+const POSTING = "20000000-0000-4000-8000-000000000001";
+const APP = "30000000-0000-4000-8000-000000000001";
+
+const savedJob = {
+  id: JOB, revision: 1, company: "Acme", title: "Backend", source_kind: "TEXT", source_url: null,
+  source_text: "TypeScript", requirements: [], preferred: [], keywords: [], risks: [], deadline: null,
+  language: "ko", archived: false, created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z",
+};
+
+const patchJson = (path: string, body: unknown): Request => new Request("https://core.example" + path, {
+  method: "PATCH",
+  headers: { authorization: "Bearer t", "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+test("patching a saved job enqueues an ingest job", async () => {
+  resetLimits();
+  const { calls, query } = recorder((sql, params) => {
+    if (sql.startsWith("SELECT") && sql.includes("FROM jobs WHERE id")) return [savedJob];
+    if (sql.startsWith("UPDATE jobs")) return [{ ...savedJob, revision: 2, title: "Staff" }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    return null;
+  });
+  const res = await handle(patchJson(`/api/v1/jobs/${JOB}`, { expectedRevision: 1, title: "Staff" }), ENV, {
+    query, now: () => new Date("2026-10-21T00:00:00Z"),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(jobPayload(calls), { jobId: JOB });
+});
+
+test("applying to a posting enqueues ingest for the created job only", async () => {
+  resetLimits();
+  const posting = { company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null };
+  let applied = false;
+  const { calls, query } = recorder((sql, params) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [posting];
+    if (sql.includes("FROM applications a JOIN jobs j") && !sql.includes("INSERT")) {
+      if (!applied) return [];
+      return [{
+        id: APP, revision: 1, job_id: JOB, company: "Acme", title: "Backend", stage: "APPLIED", notes: "",
+        applied_at: "2026-10-21T00:00:00Z", next_action_at: null, imported: false,
+        created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z",
+      }];
+    }
+    if (sql.startsWith("WITH job AS")) {
+      applied = true;
+      return [{ id: APP }];
+    }
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    return null;
+  });
+  const first = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-000000000021"), ENV, {
+    query, now: () => new Date("2026-10-21T00:00:00Z"),
+  });
+  assert.equal(first.status, 201);
+  const body = await first.json() as { data: { jobId: string } };
+  assert.deepEqual(jobPayload(calls), { jobId: body.data.jobId });
+  const before = calls.filter((call) => call.sql.includes("INSERT INTO ai_jobs")).length;
+  const second = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-000000000022"), ENV, {
+    query, now: () => new Date("2026-10-21T00:00:00Z"),
+  });
+  assert.equal(second.status, 201);
+  assert.equal(calls.filter((call) => call.sql.includes("INSERT INTO ai_jobs")).length, before);
+});
+
 test("creating a posting enqueues an ingest job", async () => {
   resetLimits();
   const { calls, query } = recorder((sql, params) => {

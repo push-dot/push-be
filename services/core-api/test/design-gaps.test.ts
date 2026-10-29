@@ -67,6 +67,7 @@ test("apply snapshots an owned source and a member can stream that file", async 
       if (sql.includes("FROM job_postings")) {
         return { rows: [{ company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null }], rowCount: 1 };
       }
+      if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };
       return empty;
     })),
   );
