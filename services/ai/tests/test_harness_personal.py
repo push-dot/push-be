@@ -546,6 +546,20 @@ async def test_done_returns_to_agent_same_thread():
     )
 
 
+async def test_ainvoke_into_active_resume_reaches_the_gate_without_a_stream(monkeypatch):
+    def missing_writer():
+        raise RuntimeError("Called get_stream_writer outside of a runnable context")
+
+    monkeypatch.setattr("app.harness.graph.get_stream_writer", missing_writer)
+    graph = _flow_graph(MemorySaver(), ScriptedChat([{"content": "ok"}]), None)
+    config = _flow_config("conv-invoke")
+    result = await graph.ainvoke(_flow_input("conv-invoke", "mode_select"), config)
+    assert result["__interrupt__"][0].value["gate"] == "mode_select"
+    state = await graph.aget_state(config)
+    assert state.next == ("resume_flow",)
+    assert state.config["configurable"]["thread_id"] == "conv-invoke"
+
+
 async def test_edit_document_id_cannot_rewrite_the_path():
     # Prompt injection: a SAFE_WRITE edit must not be steered onto a RISKY_WRITE route.
     seen = []

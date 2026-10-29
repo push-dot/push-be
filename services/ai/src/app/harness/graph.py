@@ -96,6 +96,13 @@ def _child_resume(state: dict) -> dict:
     return child
 
 
+def _stream_writer():
+    try:
+        return get_stream_writer()
+    except Exception:
+        return lambda _chunk: None
+
+
 async def _mirror_resume(db, conversation_id: str | None, resume: dict) -> None:
     if db is None or not conversation_id:
         return
@@ -293,7 +300,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
 
         async def resume_flow(state: PersonalState, config) -> dict | Command:
             parent_config = get_config()
-            writer = get_stream_writer()
+            writer = _stream_writer()
             result = None
             async for mode, chunk in subgraph.astream(
                 _child_resume(state), config, stream_mode=["custom", "values"],
