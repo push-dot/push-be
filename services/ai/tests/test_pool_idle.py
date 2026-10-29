@@ -113,7 +113,6 @@ async def test_shutdown_stops_the_worker_first_and_closes_the_pool_last(monkeypa
     monkeypatch.setenv("RUN_MIGRATIONS", "0")
     monkeypatch.delenv("CHECKPOINTER", raising=False)
     monkeypatch.setattr(main, "create_pool", create_pool)
-    monkeypatch.setattr(main, "external_jobs", lambda: False)
     monkeypatch.setattr(main, "runs_local_chat_worker", lambda: True)
     monkeypatch.setattr(app.db, "open_chat_checkpointer", open_saver)
     monkeypatch.setattr(ConversationService, "start_worker", started)

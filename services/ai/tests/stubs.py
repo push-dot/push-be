@@ -216,6 +216,19 @@ class StubChatJobStore:
         self.events.append({"id": len(self.events) + 1, "type": type_,
                             "payload": payload})
 
+    async def emit_many(self, job_id: UUID, batch) -> None:
+        for kind, payload in batch:
+            await self.emit(job_id, kind, payload)
+
+    async def delete_events_after(self, job_id: UUID, event_id: int) -> None:
+        keep = int(event_id)
+        self.events = [event for event in self.events if event["id"] <= keep]
+
+    async def max_event_id(self, job_id: UUID) -> int:
+        if not self.events:
+            return 0
+        return self.events[-1]["id"]
+
     async def enqueue_started(self, user_id: UUID, conversation_id: UUID,
                               payload: dict, status_text: str = "대기 중"):
         self.payload = payload
