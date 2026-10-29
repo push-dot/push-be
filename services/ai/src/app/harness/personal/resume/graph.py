@@ -774,6 +774,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     def route_phase(state: ResumeGraphState) -> str:
         phase = state.get("phase") or "mode_select"
+        if state.get("goto") == "p3c_boost":
+            return "p3c_boost"
         if phase == "review" and _scenario_letter(state) == "C":
             return "p4b_design"
         return {
@@ -834,7 +836,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g2x", gate_node("projects"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
         "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
-        "p4a_review", "p4b_design", "p5_publish", "p6_present",
+        "p4a_review", "p4b_design", "p5_publish", "p6_present", "p3c_boost",
         "p2x_approach", "p2x_blueprints",
     )})
     graph.add_edge("p0_mode", "g0")

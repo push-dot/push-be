@@ -52,17 +52,13 @@ def enter_flow(name: str, **update) -> Command:
     return Command(update=update, goto=name)
 
 
-# TODO(P2): fit should end at p6_present after the fit report. Nearest phase is analyze.
-# TODO(P2): gaps should run content-strategy steps 1-3 on p2_strategy. Nearest phase is strategy.
-# TODO(P3): experience should enter p2x_approach. Nearest phase is intake.
-# TODO(P4): boost should enter p3c_boost. Nearest phase is craft.
 _QUICK_START = {
     "match_posting": {
         "status": "active", "phase": "intake",
         "work_mode": "resume_based", "scenario": "A",
     },
     "fit": {
-        "status": "active", "phase": "analyze",
+        "status": "active", "phase": "present",
         "work_mode": "resume_based", "scenario": "E",
     },
     "gaps": {
@@ -70,9 +66,12 @@ _QUICK_START = {
         "scenario": "A", "strategy": {"focus": "bottleneck", "steps": [1, 2, 3]},
     },
     "experience": {
-        "status": "active", "phase": "intake", "work_mode": "experience_blueprint",
+        "status": "active", "phase": "approach", "work_mode": "experience_blueprint",
     },
-    "boost": {"status": "active", "phase": "craft", "work_mode": "resume_based"},
+    "boost": {
+        "status": "active", "phase": "craft", "work_mode": "resume_based",
+        "goto": "p3c_boost",
+    },
 }
 
 

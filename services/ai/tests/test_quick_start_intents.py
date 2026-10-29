@@ -51,15 +51,15 @@ async def test_match_posting_enters_scenario_a():
     assert saved["work_mode"] == "resume_based"
 
 
-async def test_fit_enters_scenario_e():
+async def test_fit_enters_p6_present():
     choice, saved = await _enter("fit")
-    assert choice["gate"] == "analyze"
-    assert saved["phase"] == "analyze"
+    assert choice["gate"] == "present"
+    assert saved["phase"] == "present"
     assert saved["scenario"] == "E"
     assert saved["work_mode"] == "resume_based"
 
 
-async def test_gaps_enters_strategy_bottleneck():
+async def test_gaps_enters_p2_strategy():
     choice, saved = await _enter("gaps")
     assert choice["gate"] == "strategy"
     assert saved["phase"] == "strategy"
@@ -67,21 +67,32 @@ async def test_gaps_enters_strategy_bottleneck():
     assert saved["strategy"]["steps"] == [1, 2, 3]
 
 
-async def test_experience_enters_blueprint_mode():
+async def test_experience_enters_p2x_approach():
     choice, saved = await _enter("experience")
-    assert choice["gate"] == "output_targets"
-    assert saved["phase"] == "intake"
+    assert choice["gate"] == "approach"
+    assert saved["phase"] == "approach"
     assert saved["work_mode"] == "experience_blueprint"
 
 
-async def test_boost_enters_craft_with_the_existing_draft():
-    choice, saved = await _enter("boost", {
-        "status": "done",
-        "phase": "present",
-        "drafts": {"resume": "기존 초안"},
+async def test_boost_enters_p3c_boost_with_the_existing_draft(monkeypatch):
+    seen = {}
+
+    def boost_cycle(state):
+        seen["resume"] = (state.get("drafts") or {}).get("resume")
+        return {}
+
+    monkeypatch.setattr("app.harness.personal.resume.graph.boost_cycle", boost_cycle)
+    rows = Rows({
+        "company_id": None,
+        "resume_state": {
+            "status": "done",
+            "phase": "present",
+            "drafts": {"resume": "기존 초안"},
+        },
     })
-    assert choice["gate"] == "craft"
-    assert saved["phase"] == "craft"
+    await run(HarnessRuntime(service(rows)), _payload("시작해 주세요", "boost"))
+    saved = _saved(rows)
+    assert seen.get("resume") == "기존 초안"
     assert saved["status"] == "active"
     assert saved["drafts"]["resume"] == "기존 초안"
 
