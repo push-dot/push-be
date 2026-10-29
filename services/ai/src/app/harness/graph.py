@@ -64,6 +64,37 @@ def _tool_event(name: str, state: str, summary: str, tier: str, result: dict | N
     return event
 
 
+def _tool_chunk(chunk) -> bool:
+    return bool(getattr(chunk, "tool_call_chunks", None) or getattr(chunk, "tool_calls", None))
+
+
+async def _complete(chat, messages, *, text_only: bool = False):
+    stream = getattr(chat, "astream", None)
+    if stream is None:
+        reply = await chat.ainvoke(messages)
+    else:
+        reply = None
+        saw_tool = False
+        async for chunk in stream(messages):
+            if not text_only:
+                if _tool_chunk(chunk):
+                    saw_tool = True
+                elif not saw_tool and _content(chunk):
+                    emit({"token": _content(chunk)})
+            reply = chunk if reply is None else reply + chunk
+    if text_only and reply is not None:
+        reply = AIMessage(content=_content(reply))
+    one_shot = stream is None or text_only
+    if (
+        one_shot
+        and reply is not None
+        and not getattr(reply, "tool_calls", None)
+        and _content(reply)
+    ):
+        emit({"token": _content(reply)})
+    return reply
+
+
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
@@ -73,14 +104,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=spec.prompt), *messages]
         chat = turn_model.get() or model
-        if int(state.get("tool_calls_used") or 0) >= _CAP:
-            reply = await chat.ainvoke(messages)
-            reply = AIMessage(content=reply.content)
-        else:
-            reply = await chat.bind_tools(list(structured.values())).ainvoke(messages)
-        if not reply.tool_calls and _content(reply):
-            emit({"token": _content(reply)})
-        return {"messages": [reply]}
+        over = int(state.get("tool_calls_used") or 0) >= _CAP
+        target = chat if over else chat.bind_tools(list(structured.values()))
+        reply = await _complete(target, messages, text_only=over)
+        return {"messages": [reply]} if reply is not None else {}
 
     async def tools(state: HarnessState) -> dict:
         pending = _open_calls(state)
