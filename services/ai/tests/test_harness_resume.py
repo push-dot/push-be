@@ -109,6 +109,23 @@ def test_harness_prompt_skips_file_rules():
     assert "resume-parser" in text or "Phase 1" in text
 
 
+_VOICE = "합니다체. 담백한 1인칭 설명형. 주어를 반복하지 않는다."
+
+
+def test_craft_prompt_includes_writing_voice():
+    assert _VOICE in phase_prompt_for_harness("craft")
+
+
+def test_analyze_prompt_excludes_writing_voice():
+    assert _VOICE not in phase_prompt_for_harness("analyze")
+
+
+def test_blueprint_prompt_includes_experience_blueprints():
+    text = phase_prompt_for_harness("blueprints")
+    assert "최소 2개의 질문" in text
+    assert "최소 2개의 질문" not in phase_prompt_for_harness("strategy")
+
+
 async def test_stops_at_every_gate_in_auto():
     posted = []
 
