@@ -1,6 +1,7 @@
 import type { StoreReceipts } from "./billing/stores.ts";
 import type { Query } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
+import type { SmsSender } from "./sms/sender.ts";
 
 export interface Fetcher {
   fetch(input: Request): Promise<Response>;
@@ -46,6 +47,11 @@ export interface CoreEnv {
   INTERNAL_API_SECRET?: string;
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
+  PHONE_SMS_MODE?: string;
+  PHONE_CODE_COOLDOWN_SEC?: string;
+  PHONE_CODE_TTL_SEC?: string;
+  PHONE_CODE_MAX_ATTEMPTS?: string;
+  PENDING_SIGNUP_SECRET?: string;
   NTS_SERVICE_KEY?: string;
   IAP_PRODUCT_PRO?: string;
   IAP_PRODUCT_ULTRA?: string;
@@ -67,6 +73,7 @@ export interface Deps {
   now?: () => Date;
   fetch?: typeof fetch;
   mailer?: Mailer;
+  sms?: SmsSender;
   stores?: StoreReceipts;
 }
 

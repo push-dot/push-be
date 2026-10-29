@@ -1,9 +1,10 @@
+import { signPendingSignup } from "../auth/pending-signup.ts";
+import { verifyPkce } from "../crypto.ts";
 import { isMissingRelation, isUndefinedColumn, isUnique, query, one } from "../db.ts";
 import { HttpError, asBool, data, randomToken, requireUuid, sha256Hex } from "../http.ts";
-import { verifyPkce } from "../crypto.ts";
 import { ts } from "../page.ts";
-import { cancelSubscriptions } from "./billing.ts";
 import type { Ctx, UserRow } from "../types.ts";
+import { cancelSubscriptions } from "./billing.ts";
 
 const ACCESS_TTL = 900;
 const REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -336,6 +337,11 @@ const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise
   const email = rec.email == null ? "" : String(rec.email).trim().toLowerCase();
   if (!asBool(rec.email_verified) || !email) throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
   const accountType = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
+  const byIdentity = await one(ctx.deps.query, "SELECT u.id, u.is_employer FROM user_identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.provider_subject = $2", [provider, String(rec.provider_subject ?? "")]);
+  if (byIdentity) {
+    if (accountLabel(byIdentity) !== accountType) throw emailTaken(byIdentity);
+    return String(byIdentity.id);
+  }
   const byEmail = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (byEmail) {
     if (accountLabel(byEmail) !== accountType) throw emailTaken(byEmail);
@@ -362,6 +368,28 @@ const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise
   return userId;
 };
 
+const IDENTITY_USER = "SELECT u.id, u.is_employer FROM user_identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.provider_subject = $2";
+const BY_PROVIDER = "SELECT id, is_employer FROM users WHERE provider = $1 AND provider_subject = $2";
+
+export const completePersonalSocial = async (ctx: Ctx, rec: Record<string, unknown>): Promise<Response> => {
+  const provider = String(rec.provider ?? "");
+  const subject = String(rec.provider_subject ?? "");
+  const wanted = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
+  const found = await one(ctx.deps.query, IDENTITY_USER, [provider, subject])
+    ?? await one(ctx.deps.query, BY_PROVIDER, [provider, subject]);
+  if (found) {
+    if (accountLabel(found) !== wanted) throw emailTaken(found);
+    const userId = String(found.id);
+    await clearDeletion(ctx, userId);
+    return data(200, await issue(ctx, userId), ctx.rid);
+  }
+  const rawEmail = rec.email == null || String(rec.email).trim() === "" ? null : String(rec.email).trim().toLowerCase();
+  const verified = asBool(rec.email_verified) && rawEmail != null;
+  if (provider !== "apple" && !verified) throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
+  const signed = await signPendingSignup(ctx.env, { provider, subject, email: verified ? rawEmail : null }, ctx.now);
+  return data(200, { pendingToken: signed.token, expiresIn: signed.expiresIn }, ctx.rid);
+};
+
 export async function exchange(ctx: Ctx): Promise<Response> {
   const body = await readJson(ctx.request);
   const code = requireString(body, "code");
@@ -380,6 +408,9 @@ export async function exchange(ctx: Ctx): Promise<Response> {
     "UPDATE exchange_codes SET used_at = $2 WHERE code = $1 AND used_at IS NULL RETURNING code",
     [code, ctx.now.toISOString()]);
   if (!marked) throw new HttpError(401, "UNAUTHENTICATED", "code expired or already used");
+  const provider = rec.provider == null || rec.provider === "" ? "" : String(rec.provider);
+  const accountType = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
+  if (provider && accountType === "PERSONAL") return completePersonalSocial(ctx, rec);
   const userId = await resolveOAuthUser(ctx, rec);
   await clearDeletion(ctx, userId);
   return data(200, await issue(ctx, userId), ctx.rid);

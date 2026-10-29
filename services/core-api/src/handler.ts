@@ -4,6 +4,7 @@ import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } f
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
+import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
@@ -44,6 +45,10 @@ const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/login",
   "/api/v1/auth/email/password-reset",
   "/api/v1/auth/email/password-reset/confirm",
+]);
+const PHONE_PUBLIC = new Set([
+  "/api/v1/auth/phone/send",
+  "/api/v1/auth/phone/verify",
 ]);
 const PENDING_MS = 5 * 60 * 1000;
 const GUEST_ID = "00000000-0000-0000-0000-000000000000";
@@ -130,6 +135,7 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
 function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
+  if (method === "POST" && PHONE_PUBLIC.has(path)) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
@@ -149,6 +155,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
   const emailed = await dispatchEmailAuth(ctx, path);
   if (emailed) return emailed;
+  const phoned = await dispatchPhoneAuth(ctx, path);
+  if (phoned) return phoned;
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);

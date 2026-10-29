@@ -57,9 +57,16 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Exchange OAuth code for tokens",
     auth: "public",
-    description: "Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.",
+    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
     body: body(obj({ code: str, codeVerifier: str })),
-    responses: { 200: ok(ref("AuthTokens")) },
+    responses: {
+      200: ok({
+        oneOf: [
+          ref("AuthTokens"),
+          obj({ pendingToken: str, expiresIn: int }),
+        ],
+      }),
+    },
   }),
   post("core", "/api/v1/auth/refresh", {
     tag: "auth",
@@ -125,6 +132,43 @@ export const routes: Route[] = [
     description: "Revokes every session of the user.",
     body: body(obj({ token: str, password })),
     responses: { 204: noContent },
+  }),
+  post("core", "/api/v1/auth/phone/send", {
+    tag: "auth",
+    summary: "Send a personal phone code",
+    auth: "optional",
+    description: "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
+    body: body(obj({ phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" } }, ["phone"])),
+    responses: { 202: ok(obj({ cooldownSeconds: int, expiresAt: dateTime }), "Accepted") },
+  }),
+  post("core", "/api/v1/auth/phone/verify", {
+    tag: "auth",
+    summary: "Verify a phone code and sign in",
+    auth: "optional",
+    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.",
+    body: body(obj({
+      phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" },
+      code: { type: "string", pattern: "^\\d{6}$" },
+      pendingToken: str,
+    }, ["phone", "code"])),
+    responses: {
+      200: ok(obj({
+        accessToken: str,
+        refreshToken: str,
+        expiresIn: int,
+        created: bool,
+        linked: bool,
+        provider: str,
+        user: obj({
+          id: uuid,
+          displayName: str,
+          locale: str,
+          accountType,
+          companyId: nullable(uuid),
+          companyRole: nullable(companyRole),
+        }),
+      }, ["accessToken", "refreshToken", "expiresIn", "created", "user"])),
+    },
   }),
   del("core", "/api/v1/me", {
     tag: "auth",
