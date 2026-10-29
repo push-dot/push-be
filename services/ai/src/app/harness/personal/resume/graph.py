@@ -14,7 +14,7 @@ from typing_extensions import TypedDict
 from app.framework.models import _content
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
-from app.harness.personal.resume.boost import boost_cycle
+from app.harness.personal.resume.booster import boost_cycle
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
@@ -193,9 +193,33 @@ class ResumeGraphState(TypedDict, total=False):
     prevention_categories: list
     blueprints: dict
     validation_failures: int
+    scores: list
+    boost_acked: int
+    boost_stopped: str
 
 
 _VALIDATE_CAP = 3
+
+
+def _draft_text(state: dict) -> str:
+    drafts = state.get("drafts") or {}
+    if not isinstance(drafts, dict):
+        return ""
+    for key in ("markdown", "text", "summary", "message"):
+        value = drafts.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _fit_user(state: dict):
+    raw = state.get("user_id")
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _invalid(output: dict) -> bool:
@@ -655,13 +679,59 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return await accepted(current, gate_id, answer)
         return node
 
+    async def score_draft(state: dict) -> dict:
+        from app.framework.fit_judge import judge_fit
+        from app.harness.personal.tools import current_ai_gate
+        from app.infrastructure.posting_fit_cache import read_plan
+
+        user_id = _fit_user(state)
+        query = None if db is None else db.q()
+        plan = await read_plan(query, user_id)
+        inputs = state.get("inputs") or {}
+        keywords = inputs.get("keywords")
+        if keywords is None:
+            keywords = inputs.get("skills")
+        return await judge_fit(
+            inputs.get("requirements"),
+            keywords,
+            inputs.get("description") or inputs.get("posting"),
+            _draft_text(state),
+            plan,
+            gate=current_ai_gate(),
+            job_id=state.get("job_id") or None,
+            user_id=user_id,
+        )
+
     async def boost(state: ResumeGraphState) -> dict:
-        extra = boost_cycle(dict(state)) or {}
-        if not isinstance(extra, dict):
-            extra = {}
-        skipped = {"phase", "status", "goto"}
-        kept = {key: value for key, value in extra.items() if key not in skipped}
-        return {**kept, "phase": state.get("phase") or "review", "status": "active", "goto": "end"}
+        scores = [float(item) for item in (state.get("scores") or [])]
+        if not scores:
+            base = await score_draft(state)
+            scores.append(float(base["fitScore"]))
+        current = {**state, "phase": "craft"}
+        ctx = _context(db, state)
+        output = await _output(turn_model.get() or model, "craft", current, ctx)
+        stored = await _store_output(db, current, "craft", output)
+        view = await score_draft({**state, **stored})
+        scores.append(float(view["fitScore"]))
+        return {**stored, "scores": scores}
+
+    async def boost_gate(state: ResumeGraphState) -> dict:
+        outcome = boost_cycle({
+            "scores": state.get("scores") or [],
+            "acked": int(state.get("boost_acked") or 0),
+        })
+        resume = outcome.get("resume")
+        phase = state.get("phase") or "review"
+        if isinstance(resume, dict) and _cancelled(resume):
+            return {"status": "cancelled", "phase": phase, "goto": "end"}
+        stopped = outcome["stopped"]
+        return {
+            "boost_acked": int(outcome["cycles"]),
+            "boost_stopped": stopped,
+            "status": "active",
+            "phase": phase,
+            "goto": "p3c_boost" if stopped == "continue" else "end",
+        }
 
     async def save_named(state: dict, name: str, payload: dict) -> str:
         body = json.dumps(payload, ensure_ascii=False)
@@ -837,6 +907,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p3_craft", work_node("craft"))
     graph.add_node("g3", gate_node("craft"))
     graph.add_node("p3c_boost", boost)
+    graph.add_node("p3c_cycle", boost_gate)
     graph.add_node("p4a_review", work_node("review"))
     graph.add_node("g4a", gate_node("review"))
     graph.add_node("p5_publish", work_node("publish"))
@@ -882,7 +953,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("p4a_review", "g4a")
     graph.add_edge("p5_publish", "g5")
     graph.add_edge("p6_present", "g6")
-    graph.add_edge("p3c_boost", END)
+    graph.add_edge("p3c_boost", "p3c_cycle")
+    graph.add_conditional_edges(
+        "p3c_cycle", route_goto, {"end": END, "p3c_boost": "p3c_boost"})
     for name in (
         "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
         "g2", "g3", "g4a", "g5", "g6",

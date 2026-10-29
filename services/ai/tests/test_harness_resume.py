@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -53,6 +54,14 @@ def _graph(db, poster=None, model=None):
     return build_resume_graph(MemorySaver(), model=model or _PhaseModel(), db=db)
 
 
+@pytest.fixture(autouse=True)
+def _flat_fit(monkeypatch):
+    async def fake(*_args, **_kwargs):
+        return {"fitScore": 5.0, "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+
+
 def _config():
     return {"configurable": {"thread_id": "conv-1:resume"}}
 
@@ -95,8 +104,9 @@ async def _drive(graph, config, first):
         snap = await graph.aget_state(config)
         seen.append((events, snap))
         if snap.next:
-            choice = next(event for event in events if event.get("type") == "choice")
-            payload = Command(resume={"option_id": choice["recommended"]})
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            option = choice["recommended"] if choice is not None else "continue"
+            payload = Command(resume={"option_id": option})
             continue
         if snap.values.get("status") in {"done", "cancelled"}:
             break
@@ -132,7 +142,7 @@ def test_phase_nodes_cover_p0_through_p6():
     names = set(graph.nodes)
     assert {
         "p0_mode", "g0", "p0i_intake", "g_output_targets", "g_tone", "g_intake",
-        "p1_analyze", "g1", "p2_strategy", "g2", "p3_craft", "g3", "p3c_boost",
+        "p1_analyze", "g1", "p2_strategy", "g2", "p3_craft", "g3", "p3c_boost", "p3c_cycle",
         "p4a_review", "g4a", "p5_publish", "g5", "p6_present", "g6",
     } <= names
 
@@ -473,7 +483,10 @@ async def _until_done(graph, config, payload):
                 events.append(chunk)
         snap = await graph.aget_state(config)
         if snap.next:
-            choice = next(event for event in events if event.get("type") == "choice")
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            if choice is None:
+                payload = Command(resume={"option_id": "continue"})
+                continue
             gates.append(choice["gate"])
             titles[choice["gate"]] = choice["title"]
             payload = Command(resume={"option_id": choice["recommended"]})

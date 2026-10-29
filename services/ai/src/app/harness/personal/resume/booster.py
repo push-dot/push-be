@@ -5,17 +5,20 @@ _MAX_CYCLES = 5
 
 def boost_cycle(state: dict) -> dict:
     scores = [float(score) for score in state.get("scores") or []]
+    acked = int(state.get("acked") or 0)
     previous = scores[0] if scores else 0.0
     history = []
     stall = 0
     stopped = "max"
+    resumed = None
     for after in scores[1:]:
         if len(history) == _MAX_CYCLES:
             break
         gain = round(after - previous, 1)
         step = {"cycle": len(history) + 1, "before": previous, "after": after, "gain": gain}
         history.append(step)
-        interrupt(step)
+        if len(history) > acked:
+            resumed = interrupt(step)
         previous = after
         if gain < 0.1:
             stall += 1
@@ -31,4 +34,5 @@ def boost_cycle(state: dict) -> dict:
         "score": history[-1]["after"] if history else None,
         "stopped": stopped,
         "history": history,
+        "resume": resumed,
     }
