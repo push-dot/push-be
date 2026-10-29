@@ -2358,7 +2358,8 @@
             "enum": [
               "RESUME",
               "PORTFOLIO",
-              "COVER_LETTER"
+              "COVER_LETTER",
+              "CAREER_STATEMENT"
             ],
             "type": "string"
           },
@@ -4370,6 +4371,9 @@
           "followerCount": {
             "type": "integer"
           },
+          "followingCount": {
+            "type": "integer"
+          },
           "headline": {
             "type": "string"
           },
@@ -4398,6 +4402,9 @@
           },
           "openToOffers": {
             "type": "boolean"
+          },
+          "postCount": {
+            "type": "integer"
           },
           "resumeSourceId": {
             "anyOf": [
@@ -4448,6 +4455,8 @@
           "careers",
           "skills",
           "followerCount",
+          "followingCount",
+          "postCount",
           "resumeSourceId",
           "contact",
           "updatedAt"
@@ -4506,6 +4515,9 @@
           "following": {
             "type": "boolean"
           },
+          "followingCount": {
+            "type": "integer"
+          },
           "headline": {
             "type": "string"
           },
@@ -4537,6 +4549,9 @@
           },
           "openToOffers": {
             "type": "boolean"
+          },
+          "postCount": {
+            "type": "integer"
           },
           "resumeSourceId": {
             "anyOf": [
@@ -4587,6 +4602,8 @@
           "careers",
           "skills",
           "followerCount",
+          "followingCount",
+          "postCount",
           "resumeSourceId",
           "contact",
           "updatedAt",
@@ -11579,7 +11596,8 @@
               "enum": [
                 "RESUME",
                 "PORTFOLIO",
-                "COVER_LETTER"
+                "COVER_LETTER",
+                "CAREER_STATEMENT"
               ],
               "type": "string"
             }
@@ -11641,7 +11659,8 @@
                     "enum": [
                       "RESUME",
                       "PORTFOLIO",
-                      "COVER_LETTER"
+                      "COVER_LETTER",
+                      "CAREER_STATEMENT"
                     ],
                     "type": "string"
                   },

@@ -83,6 +83,8 @@ async def test_create_stores_draft_with_canonical_template():
     d = await s.create(A, app.id, "CV", "RESUME", "CLASSIC", "ko")
     assert d.status == ent.DOC_DRAFT and d.template == "SIMPLE" and d.revision == 1
     assert (await s.get(A, d.id)).application_id == app.id
+    statement = await s.create(A, None, "경력", "CAREER_STATEMENT", "SIMPLE", "ko")
+    assert statement.kind == "CAREER_STATEMENT" and statement.status == ent.DOC_DRAFT
 
 
 @pytest.mark.parametrize("title,kind,template,field", [

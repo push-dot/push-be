@@ -10,6 +10,32 @@ const E1 = "e0000000-0000-4000-8000-000000000001";
 const E2 = "e0000000-0000-4000-8000-000000000002";
 const E3 = "e0000000-0000-4000-8000-000000000003";
 
+test("create accepts CAREER_STATEMENT and rejects an unknown kind", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const APP = "a0000000-0000-4000-8000-000000000001";
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM applications")) return [{ id: APP }];
+    return null;
+  });
+  const created = await handle(postJson("/api/v1/documents", {
+    applicationId: APP, title: "경력기술서", kind: "CAREER_STATEMENT", template: "SIMPLE", language: "ko",
+  }, "00000000-0000-4000-8000-000000000008"), ENV, { query, now: () => NOW });
+  assert.equal(created.status, 201);
+  const body = await created.json() as { data: { kind: string } };
+  assert.equal(body.data.kind, "CAREER_STATEMENT");
+  const insert = calls.find((call) => call.sql.includes("INSERT INTO documents"));
+  assert.equal(insert?.params.includes("CAREER_STATEMENT"), true);
+
+  const { query: rejectQuery } = recorder((sql) => {
+    if (sql.includes("FROM applications")) return [{ id: APP }];
+    return null;
+  });
+  const rejected = await handle(postJson("/api/v1/documents", {
+    applicationId: APP, title: "경력기술서", kind: "LETTER", template: "SIMPLE", language: "ko",
+  }, "00000000-0000-4000-8000-000000000009"), ENV, { query: rejectQuery, now: () => NOW });
+  assert.equal(rejected.status, 400);
+});
+
 test("an export result can be recorded only once even when two reports race", async () => {
   const { handle } = await import("../src/handler.ts");
   const DOC = "d0000000-0000-4000-8000-000000000001";

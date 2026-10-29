@@ -12,7 +12,7 @@ const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, 
 const VERSION_COLS = "id, user_id, document_id, application_id, number, content, blocks, change_note, quality, created_at";
 const PROPOSAL_COLS = "id, user_id, document_id, source_version_id, source_revision, selection, replacement, evidence_refs, claim_status, applied_at, created_at";
 const EXPORT_COLS = "id, user_id, document_id, version_id, format, template, language, content, blocks, content_hash, status, renderer_version, result, created_at, updated_at";
-const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER"]);
+const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT"]);
 const TEMPLATE_ALIASES: Record<string, string> = { CLASSIC: "SIMPLE", COMPACT: "ATS" };
 const TEMPLATES = new Set(["SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT"]);
 const TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT";
@@ -233,7 +233,7 @@ export const createDocument = async (ctx: Ctx): Promise<Response> => {
   const kind = String(values.kind);
   const template = String(values.template ?? "");
   if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
-  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO or COVER_LETTER");
+  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT");
   if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
   const now = ts(ctx.now);
   const row: Row = {

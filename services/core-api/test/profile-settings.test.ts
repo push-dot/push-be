@@ -100,6 +100,33 @@ test("settings omit retired effort and retention fields", async () => {
   assert.equal(update?.params[13], "BYPASS");
 });
 
+test("profile returns followingCount and postCount from the follow and post tables", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(get("/api/v1/me/profile"), env(), deps(authed(seen, async (sql) => {
+    if (sql.includes("INSERT INTO profiles")) return empty;
+    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@push.app" }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) {
+      return {
+        rows: [{
+          user_id: USER, display_name: "Ada", updated_at: NOW, profile_public: true,
+          follower_count: 2, following_count: 4, post_count: 7,
+        }],
+        rowCount: 1,
+      };
+    }
+    return empty;
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { followerCount: number; followingCount: number; postCount: number } };
+  assert.equal(body.data.followerCount, 2);
+  assert.equal(body.data.followingCount, 4);
+  assert.equal(body.data.postCount, 7);
+  const select = seen.find((call) => call.sql.includes("AS follower_count"));
+  assert.match(select?.sql ?? "", /follower_id = p\.user_id\) AS following_count/);
+  assert.match(select?.sql ?? "", /FROM posts po WHERE po\.user_id = p\.user_id\) AS post_count/);
+});
+
 test("profile contact follows the visibility setting", async () => {
   resetLimits();
   const self = await handle(get("/api/v1/me/profile"), env(), deps(authed([], async (sql) => {
