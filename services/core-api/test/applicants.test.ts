@@ -299,6 +299,7 @@ test("apply snapshots document json and a second apply does not snapshot again",
       return { rows: [{ company: "Acme", title: "Backend", description: "Build APIs", requirements: [], deadline: null }], rowCount: 1 };
     }
     if (sql.includes("INSERT INTO applications")) applied = true;
+    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };
     return empty;
   });
   const first = await handle(
@@ -1428,14 +1429,16 @@ test("apply checks every document and source in one query each and writes in one
     if (sql.includes("FROM documents d")) return [E1, E2].map((id) => ({ id, title: "Doc", content: { id } }));
     if (sql.startsWith("SELECT id FROM sources")) return [{ id: S1 }, { id: S2 }];
     if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
     return null;
   });
   const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, { documentIds: [E1, E2], sourceIds: [S1, S2] }, "00000000-0000-4000-8000-000000000008"),
     ENV, { query, now: () => NOW });
   assert.equal(res.status, 201);
   const routeCalls = calls.filter((c) => !/rate_limits|access_tokens|idempotency_keys/.test(c.sql));
-  assert.equal(routeCalls.length, 5);
-  assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT")).length, 1);
+  assert.equal(routeCalls.length, 6);
+  assert.equal(routeCalls.filter((c) => c.sql.startsWith("WITH job AS")).length, 1);
+  assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT INTO ai_jobs")).length, 1);
 });
 
 test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {
