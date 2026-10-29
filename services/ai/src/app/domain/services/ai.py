@@ -12,7 +12,7 @@ from app.domain.errors import (
     not_found, provider_error, validation_field,
 )
 from app.domain.employer_chat import current_employer_plan
-from app.domain.plan_levers import levers_for
+from app.domain.plan_levers import PlanLevers, levers_for
 from app.domain.validators import code_point_len
 from app.jobs import queue_backend
 from app.infrastructure.store_ai import AiUsageStore
@@ -106,17 +106,21 @@ class AIGate:
                                job_id=None) -> str:
         if not self.managed_key or self.chat is None:
             return ""
+        system = (
+            "채용 지원을 돕기 위해 이 특정 회사를 조사해줘: " + company + ". "
+            "반드시 이 회사의 공식 사이트와 채용 공고를 먼저 찾아 확인하고, "
+            "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
+            "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
+            "확인 가능한 출처 URL을 붙여줘. "
+            "조회 결과가 해당 회사와 무관하면 무관하다고만 답해.")
+        user = company + ("\n\n[공고 컨텍스트]\n" + context[:3000] if context else "")
+        name = model or _SEARCH_MODEL
         try:
-            c = await self.chat.chat(
-                self.managed_key, (model or _SEARCH_MODEL) + ":online",
-                "채용 지원을 돕기 위해 이 특정 회사를 조사해줘: " + company + ". "
-                "반드시 이 회사의 공식 사이트와 채용 공고를 먼저 찾아 확인하고, "
-                "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
-                "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
-                "확인 가능한 출처 URL을 붙여줘. "
-                "조회 결과가 해당 회사와 무관하면 무관하다고만 답해.",
-                company + ("\n\n[공고 컨텍스트]\n" + context[:3000]
-                           if context else ""))
+            c = await self._langchain_text(
+                name, system, user, user_id=user_id, job_id=job_id, web_search=True)
+            if c is None:
+                c = await self.chat.chat(
+                    self.managed_key, name + ":online", system, user)
         except Exception:
             return ""
         await self._meter(user_id, model or _SEARCH_MODEL,
@@ -227,11 +231,14 @@ class AIGate:
             return ""
         if not self.managed_key or self.chat is None:
             raise not_configured("web search is not configured")
+        system = "사용자 질문에 답하는 데 필요한 최신 정보를 검색하고, 핵심 사실과 출처 URL을 간결하게 정리해줘."
         try:
-            c = await self.chat.chat(
-                self.managed_key, _SEARCH_MODEL + ":online",
-                "사용자 질문에 답하는 데 필요한 최신 정보를 검색하고, 핵심 사실과 출처 URL을 간결하게 정리해줘.",
-                user)
+            c = await self._langchain_text(
+                _SEARCH_MODEL, system, user, user_id=user_id, job_id=job_id,
+                web_search=True)
+            if c is None:
+                c = await self.chat.chat(
+                    self.managed_key, _SEARCH_MODEL + ":online", system, user)
         except DomainError:
             raise
         except Exception:
@@ -249,6 +256,48 @@ class AIGate:
             model += ":online"
         return self.chat, self.managed_key, model, None
 
+    def _factory_config(self, chat):
+        from dataclasses import replace
+        config = self._levers_config()
+        updates = {}
+        if not getattr(config, "managed_ai_key", "") and self.managed_key:
+            updates["managed_ai_key"] = self.managed_key
+        if not getattr(config, "opencode_go_key", "") and self.go_key:
+            updates["opencode_go_key"] = self.go_key
+        if self.config is None:
+            base = getattr(chat, "base_url", "") or getattr(config, "ai_base_url", "")
+            if base:
+                updates["ai_base_url"] = base
+        return replace(config, **updates) if updates else config
+
+    def _factory_call(self, ai: ent.AiOptions, user_id, job_id, usage_id, chat):
+        from app.framework.llm import AiUsageCallback
+        web = bool(ai.web_search) and not ai.model.startswith(_GO_PREFIX)
+        return {
+            "levers": PlanLevers(ai.model, ai.effort, "", "", "", 0),
+            "web_search": web,
+            "session_id": str(user_id),
+            "app_config": self._factory_config(chat),
+            "callback": AiUsageCallback(self.usage, user_id, job_id, usage_id),
+        }
+
+    async def _langchain_text(self, model_name: str, system: str, user: str, *,
+                              user_id, job_id, web_search: bool):
+        from app.framework.flag import use_langchain
+        from app.framework.models import complete_langchain, openai_compatible
+        if self.chat is None or not use_langchain() or not openai_compatible(self.chat):
+            return None
+        from app.framework.llm import AiUsageCallback
+        try:
+            return await complete_langchain(
+                self.chat, self.managed_key, model_name, system, user, "low", None,
+                levers=PlanLevers(model_name, "LOW", "", "", "", 0),
+                web_search=web_search, session_id=str(user_id or ""),
+                app_config=self._factory_config(self.chat),
+                callback=AiUsageCallback(self.usage, user_id, job_id, None))
+        except ImportError:
+            return None
+
     async def complete(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str,
                        search_query: str = "",
@@ -264,7 +313,8 @@ class AIGate:
         try:
             from app.framework.models import complete_or_none
             c = await complete_or_none(
-                chat, key, model, system, user, reasoning, headers)
+                chat, key, model, system, user, reasoning, headers,
+                **self._factory_call(ai, user_id, job_id, usage_id, chat))
             if c is None:
                 c = await chat.chat(key, model, system, user, reasoning, headers)
         except Exception:
@@ -296,7 +346,8 @@ class AIGate:
             from app.framework.models import stream_or_none
             lc = stream_or_none(
                 chat, key, model, system, user, usage, reasoning, headers,
-                assistant_prefix)
+                assistant_prefix,
+                **self._factory_call(ai, user_id, job_id, usage_id, chat))
             ran_legacy = True
             if lc is not None:
                 produced = False
