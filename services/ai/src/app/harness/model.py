@@ -9,7 +9,7 @@ from langchain_core.tools import StructuredTool
 from app.domain import entities as ent
 from app.domain.errors import DomainError, provider_error
 from app.domain.plan_levers import PlanLevers
-from app.framework.llm import AiUsageCallback, chat_model_for
+from app.framework.llm import AiUsageCallback, astructured_reply, chat_model_for
 from app.framework.models import _apply_usage
 from app.harness.tools import to_structured_tool
 
@@ -55,7 +55,7 @@ class GateModel:
         return GateModel(self.gate, self.user_id, self.ai, self.job_id, self.turn,
                          tools, self.cls)
 
-    async def _open(self, messages):
+    async def _open(self, messages, *, tools: bool = True):
         if not self.turn.get("checked"):
             await self.gate.check(self.user_id, self.ai)
             self.turn["checked"] = True
@@ -80,7 +80,8 @@ class GateModel:
         callback = None
         if store is not None and self.turn.get("usage_id") is not None:
             callback = AiUsageCallback(store, self.user_id, self.job_id, self.turn["usage_id"])
-        runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if self.tools else lc
+        bind = tools and self.tools
+        runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if bind else lc
         invoke = {"config": {"callbacks": [callback]}} if callback is not None else {}
         return runnable, invoke
 
@@ -108,23 +109,18 @@ class GateModel:
 
     async def astructured(self, schema, messages):
         """Structured output on the turn model; usage joins the turn's reservation."""
-        runnable, invoke = await self._open(messages)
-        typed = runnable.with_structured_output(
-            schema, method="function_calling", include_raw=True)
+        runnable, invoke = await self._open(messages, tools=False)
         try:
             async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
-                out = await typed.ainvoke(messages, **invoke)
+                raw, parsed = await astructured_reply(runnable, schema, messages, **invoke)
         except DomainError:
             raise
         except Exception:
             raise provider_error("AI provider request failed") from None
-        raw = out.get("raw") if isinstance(out, dict) else None
-        if raw is not None:
-            self._add_usage(raw)
-        parsed = out.get("parsed") if isinstance(out, dict) else out
+        self._add_usage(raw)
         if parsed is None:
             raise provider_error("AI provider returned an unreadable answer")
-        return parsed if isinstance(parsed, schema) else schema.model_validate(parsed)
+        return parsed
 
     async def astream(self, messages, **kwargs):
         runnable, invoke = await self._open(messages)

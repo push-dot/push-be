@@ -43,6 +43,60 @@ def chat_model_for(
     )
 
 
+async def astructured_reply(model, schema, messages, **invoke):
+    """Ask for ``schema`` as one tool call; returns ``(raw reply, parsed or None)``.
+
+    Paid plans run Claude with a reasoning effort, and Anthropic rejects a forced
+    tool_choice while extended thinking is on. So the schema is offered with
+    ``tool_choice="auto"`` and the system prompt asks for exactly one call.
+    """
+    bound = model.bind_tools([schema], tool_choice="auto")
+    reply = await bound.ainvoke(_with_tool_rule(messages, schema), **invoke)
+    return reply, parse_structured(reply, schema)
+
+
+def _with_tool_rule(messages, schema) -> list:
+    from langchain_core.messages import SystemMessage
+
+    rule = (
+        f"답은 반드시 `{schema.__name__}` 도구를 한 번 호출해서 낸다. "
+        "도구 밖에 답을 쓰지 않는다."
+    )
+    out = list(messages)
+    if out and isinstance(out[0], SystemMessage) and isinstance(out[0].content, str):
+        out[0] = SystemMessage(content=f"{out[0].content}\n\n{rule}")
+    else:
+        out.insert(0, SystemMessage(content=rule))
+    return out
+
+
+def parse_structured(reply, schema):
+    """The schema tool call's args, else a JSON object in the text, else None."""
+    import json
+
+    from pydantic import ValidationError
+
+    calls = getattr(reply, "tool_calls", None) or []
+    named = [call for call in calls if call.get("name") == schema.__name__]
+    for call in named or calls[:1]:
+        try:
+            return schema.model_validate(call.get("args") or {})
+        except ValidationError:
+            return None
+    content = getattr(reply, "content", "")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    text = str(content or "")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return schema.model_validate(json.loads(text[start:end + 1]))
+    except (ValueError, ValidationError):
+        return None
+
+
 def _usage_tokens(response) -> tuple[int, int]:
     found = None
     for batch in getattr(response, "generations", None) or []:
