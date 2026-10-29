@@ -66,7 +66,7 @@ test("a denied path is answered 404 without calling any worker", async () => {
   resetLimits();
   let calls = 0;
   const binding = { fetch: async () => { calls += 1; return new Response("{}"); } };
-  const env = { API: binding, CORE: binding, APP_ENV: "production" } as FrontEnv;
+  const env = { CORE: binding, APP_ENV: "production" } as FrontEnv;
   const deps = { query: async () => [] } as Deps;
   for (const path of ["/openapi.json", "/docs", "//internal/chat/schedule"]) {
     const res = await handle(new Request("https://push-be.example" + path), env, deps);

@@ -9,12 +9,23 @@ const FILES = [`${SRC}handler.ts`, `${SRC}routes/owner.ts`];
 
 type Owner = "gateway" | "core" | "ai" | "deny";
 
-const binding = (name: string): FrontEnv["API"] => ({
+const binding = (name: string): NonNullable<FrontEnv["CORE"]> => ({
   fetch: async () => new Response(JSON.stringify({ probe: name }), { status: 202, headers: { "content-type": "application/json" } }),
 });
 
-const ENV: FrontEnv = { API: binding("ai"), CORE: binding("core"), APP_ENV: "production", SSE_MAX_POLLS: "1" };
-const DEPS: Deps = { query: async () => [], sleep: async () => {}, waitUntil: () => {} };
+const ENV: FrontEnv = {
+  CORE: binding("core"),
+  APP_ENV: "production",
+  SSE_MAX_POLLS: "1",
+  AI_ORIGIN: "https://ai.example.test",
+  AI_SHARED_SECRET: "secret",
+};
+const DEPS: Deps = {
+  query: async () => [],
+  sleep: async () => {},
+  waitUntil: () => {},
+  fetch: async () => new Response(JSON.stringify({ probe: "ai" }), { status: 202, headers: { "content-type": "application/json" } }),
+};
 
 const ownerOfRoute = async (method: string, path: string): Promise<Owner> => {
   resetLimits();

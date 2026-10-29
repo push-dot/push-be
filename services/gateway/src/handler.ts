@@ -2,7 +2,7 @@
  * Gateway request pipeline.
  *
  * index.ts is the Worker entry. This module dispatches the routes the
- * gateway answers itself and forwards everything else to the Python worker.
+ * gateway answers itself and forwards AI routes to AI_ORIGIN.
  */
 
 import type { Deps, FrontEnv } from "./types.ts";

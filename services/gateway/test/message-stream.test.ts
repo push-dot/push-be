@@ -10,7 +10,6 @@ const NOW = new Date("2026-10-22T00:00:00Z");
 
 const env = (core: (request: Request) => Promise<Response>): FrontEnv => ({
   DATABASE_URL: "postgres://example",
-  API: { async fetch() { throw new Error("python must not see chat messages"); } },
   CORE: { fetch: core },
   APP_ENV: "production",
   SSE_MAX_POLLS: "3",

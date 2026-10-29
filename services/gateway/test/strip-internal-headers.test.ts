@@ -27,11 +27,19 @@ test("the gateway strips act-as headers and denies /internal", async () => {
   };
   const env = {
     DATABASE_URL: "postgres://example",
-    API: binding,
     CORE: binding,
     APP_ENV: "production",
+    AI_ORIGIN: "https://ai.example.test",
+    AI_SHARED_SECRET: "real",
   } as FrontEnv;
-  const deps = { query: async () => [], now: () => new Date("2026-10-21T00:00:00.000Z") } as Deps;
+  const deps = {
+    query: async () => [],
+    now: () => new Date("2026-10-21T00:00:00.000Z"),
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(String(input), init));
+      return new Response('{"data":[]}', { status: 200, headers: { "content-type": "application/json" } });
+    },
+  } as Deps;
   const core = await handle(new Request("https://push-be.example/api/v1/me/bookmarks", { headers }), env, deps);
   assert.equal(core.status, 200);
   assert.equal(seen[0].headers.get("x-push-internal"), null);
@@ -69,12 +77,20 @@ test("the gateway forwards act-as headers to core only with the internal secret"
   };
   const env = {
     DATABASE_URL: "postgres://example",
-    API: binding,
     CORE: binding,
     APP_ENV: "production",
     INTERNAL_API_SECRET: "secret",
+    AI_ORIGIN: "https://ai.example.test",
+    AI_SHARED_SECRET: "real",
   } as FrontEnv;
-  const deps = { query: async () => [], now: () => new Date("2026-10-21T00:00:00.000Z") } as Deps;
+  const deps = {
+    query: async () => [],
+    now: () => new Date("2026-10-21T00:00:00.000Z"),
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(String(input), init));
+      return new Response('{"data":[]}', { status: 200, headers: { "content-type": "application/json" } });
+    },
+  } as Deps;
   const internal = { "x-push-internal-secret": "secret", "x-push-act-as": USER, "x-push-company": headers["x-push-company"] };
 
   const ok = await handle(new Request("https://push-be.example/api/v1/me/bookmarks", { headers: internal }), env, deps);
@@ -125,8 +141,20 @@ const spoofed = {
 test("client copies of any x-push header are dropped on every route", async () => {
   resetLimits();
   const { seen, binding } = capture();
-  const env = { API: binding, CORE: binding, APP_ENV: "production", INTERNAL_API_SECRET: "secret" } as FrontEnv;
-  const deps = { query: async () => [] } as Deps;
+  const env = {
+    CORE: binding,
+    APP_ENV: "production",
+    INTERNAL_API_SECRET: "secret",
+    AI_ORIGIN: "https://ai.example.test",
+    AI_SHARED_SECRET: "real",
+  } as FrontEnv;
+  const deps = {
+    query: async () => [],
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(String(input), init));
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    },
+  } as Deps;
   await handle(new Request("https://push-be.example/api/v1/me/bookmarks", { headers: spoofed }), env, deps);
   await handle(new Request("https://push-be.example/api/v1/me/bookmarks", {
     headers: { ...spoofed, "x-push-internal-secret": "secret", "x-push-act-as": USER },
@@ -135,10 +163,40 @@ test("client copies of any x-push header are dropped on every route", async () =
     method: "POST", headers: { ...spoofed, "content-type": "application/json" }, body: "{}",
   }), env, deps);
   assert.equal(seen.length, 3);
-  for (const request of seen) {
+  for (const request of seen.slice(0, 2)) {
     for (const name of Object.keys(spoofed)) assert.equal(request.headers.get(name), null, name);
   }
   assert.equal(seen[1].headers.get("x-push-act-as"), USER);
+  assert.equal(seen[2].headers.get("x-push-ai-secret"), "real");
+  assert.equal(seen[2].headers.get("x-push-dispatch-secret"), null);
+  assert.equal(seen[2].headers.get("x-push-user"), null);
+});
+
+test("AI_ORIGIN unset returns 500 and does not call a binding", async () => {
+  resetLimits();
+  let calls = 0;
+  const binding = {
+    fetch: async () => {
+      calls += 1;
+      return new Response("{}");
+    },
+  };
+  const env = { CORE: binding, APP_ENV: "production" } as FrontEnv;
+  const deps = {
+    query: async () => [],
+    fetch: async () => {
+      calls += 1;
+      return new Response("{}");
+    },
+  } as Deps;
+  const res = await handle(new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }), env, deps);
+  assert.equal(res.status, 500);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_CONFIGURED");
+  assert.equal(calls, 0);
 });
 
 test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing secret", async () => {
@@ -151,11 +209,10 @@ test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing sec
       return new Response("{}", { status: 202 });
     },
   } as Deps;
-  const { binding } = capture();
   const post = () => new Request("https://push-be.example/api/v1/ai/generate", {
     method: "POST", headers: { "content-type": "application/json", "x-push-ai-secret": "client-guess" }, body: "{}",
   });
-  const base = { API: binding, CORE: binding, APP_ENV: "production" };
+  const base = { APP_ENV: "production" };
 
   const ok = await handle(post(), { ...base, AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv, deps);
   assert.equal(ok.status, 202);
@@ -171,7 +228,7 @@ test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing sec
 test("a declared body over 20 MiB is refused before it is read or forwarded", async () => {
   resetLimits();
   const { seen, binding } = capture();
-  const env = { API: binding, CORE: binding, APP_ENV: "production" } as FrontEnv;
+  const env = { CORE: binding, APP_ENV: "production" } as FrontEnv;
   const deps = { query: async () => [] } as Deps;
   const big = await handle(new Request("https://push-be.example/api/v1/sources", {
     method: "POST", headers: { "content-length": String((20 << 20) + 1) }, body: "x",

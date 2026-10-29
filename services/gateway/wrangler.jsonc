@@ -16,9 +16,8 @@
   "triggers": { "crons": [] },
   // Public URL stays https://push-be.<account>.workers.dev.
   // Reads listed in src/handler.ts are answered here. Other non-AI
-  // routes go to push-be-core. AI routes go to push-be-python.
+  // routes go to push-be-core. AI routes go to AI_ORIGIN.
   "services": [
-    { "binding": "API", "service": "push-be-python" },
     { "binding": "CORE", "service": "push-be-core" }
   ],
   "vars": {
