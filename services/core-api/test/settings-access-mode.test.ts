@@ -93,7 +93,6 @@ test("settings round-trip aiAccessMode and reject an unknown mode", async () => 
 test("a message stores the canonical access mode in both keys", async () => {
   resetLimits();
   const seen: Call[] = [];
-  const api = { fetch: async () => new Response("{}", { status: 200 }) };
   const res = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
     method: "POST",
     headers: {
@@ -102,12 +101,15 @@ test("a message stores the canonical access mode in both keys", async () => {
       "idempotency-key": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     },
     body: JSON.stringify({ text: "hi", accessMode: "CONFIRM_ACTIONS" }),
-  }), { ...env(), API: api } as CoreEnv, deps(authed(seen, async (sql) => {
-    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    return empty;
-  })));
+  }), { ...env(), AI_ORIGIN: "https://ai.example.test" }, {
+    ...deps(authed(seen, async (sql) => {
+      if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
+      if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+      if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
+      return empty;
+    })),
+    fetch: async () => new Response("ok"),
+  });
   assert.equal(res.status, 202);
   const insert = seen.find((call) => call.sql.includes("chat_jobs"));
   const payload = JSON.parse(String(insert?.params[3]));

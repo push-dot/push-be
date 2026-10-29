@@ -134,12 +134,11 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "FEATURE_DISABLED");
   assert.equal(sqls.some((sql) => sql.includes("chat_jobs")), false);
 
-  const api = {
-    async fetch(request: Request) {
-      scheduled = await request.text();
-      return new Response('{"data":{"scheduled":true}}', { status: 200 });
-    },
+  const wake: Deps["fetch"] = async (_input, init) => {
+    scheduled = String(init?.body || "");
+    return new Response("ok");
   };
+  const origin = { AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "s3cret" };
   const open: Deps["query"] = async (sql) => {
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
@@ -161,7 +160,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       "idempotency-key": "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     },
     body,
-  }), env({ API: api }), deps(open));
+  }), env(origin), deps(open, { fetch: wake }));
   assert.equal(opened.status, 202);
 
   const paid: Deps["query"] = async (sql) => {
@@ -186,7 +185,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     },
     body,
-  }), env({ API: api }), deps(paid));
+  }), env(origin), deps(paid, { fetch: wake }));
   assert.equal(queued.status, 202);
   const op = await queued.json() as { data: { id: string; status: string; type: string; result: { value: { jobId: string } } } };
   assert.equal(op.data.status, "QUEUED");
@@ -205,7 +204,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       accessMode: "SUGGEST",
       ai: { provider: "OPENAI", model: "opencode-go/deepseek-v4.1-flash", effort: "LOW" },
     }),
-  }), env({ API: api }), deps(paid));
+  }), env(origin), deps(paid, { fetch: wake }));
   assert.equal(go.status, 202);
 });
 

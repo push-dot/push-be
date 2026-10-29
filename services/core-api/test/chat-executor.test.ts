@@ -61,29 +61,26 @@ function message(key: string): Request {
   });
 }
 
-test("core schedules the Cloudflare workflow when AI_ORIGIN is unset", async () => {
+test("AI_ORIGIN unset throws 500 and does not schedule", async () => {
   resetLimits();
   let calls = 0;
-  const api = {
-    async fetch() {
-      calls += 1;
-      return new Response('{"data":{"scheduled":true}}', { status: 200 });
-    },
-  };
   const res = await handle(message("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env({
-    API: api,
     AI_ORIGIN: "  ",
-  }), { query: paidQuery(), now: () => NOW });
-  assert.equal(res.status, 202);
-  assert.equal(calls, 1);
-  const op = await res.json() as { data: { status: string; type: string } };
-  assert.equal(op.data.status, "QUEUED");
-  assert.equal(op.data.type, "CHAT_MESSAGE");
+  }), {
+    query: paidQuery(),
+    now: () => NOW,
+    fetch: async () => {
+      calls += 1;
+      return new Response("ok");
+    },
+  });
+  assert.equal(res.status, 500);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_CONFIGURED");
+  assert.equal(calls, 0);
 });
 
 test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fails", async () => {
   resetLimits();
-  let calls = 0;
   const sqls: string[] = [];
   const woke = { url: "", secret: "", internal: "", body: "" };
   const query = paidQuery();
@@ -91,14 +88,7 @@ test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fail
     sqls.push(sql);
     return query(sql, params);
   };
-  const api = {
-    async fetch() {
-      calls += 1;
-      return new Response("nope", { status: 500 });
-    },
-  };
   const res = await handle(message("bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env({
-    API: api,
     AI_ORIGIN: "https://ai.example.test/",
     AI_SHARED_SECRET: "s3cret",
   }), {
@@ -114,7 +104,6 @@ test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fail
     },
   });
   assert.equal(res.status, 202);
-  assert.equal(calls, 0);
   assert.equal(woke.url, "https://ai.example.test/internal/chat/schedule");
   assert.equal(woke.secret, "s3cret");
   assert.equal(woke.internal, "1");

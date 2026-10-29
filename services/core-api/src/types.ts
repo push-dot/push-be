@@ -3,14 +3,9 @@ import type { Query } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 import type { SmsSender } from "./sms/sender.ts";
 
-export interface Fetcher {
-  fetch(input: Request): Promise<Response>;
-}
-
 export interface CoreEnv {
   DATABASE_URL?: string;
-  API?: Fetcher;
-  /** When set, the VPS worker consumes chat_jobs and core skips the Workflow. */
+  /** HTTPS origin of the AI service. The postgres chat wake returns 500 when this is empty. */
   AI_ORIGIN?: string;
   /** postgres keeps the chat_jobs insert. redis uses enqueueJob. */
   QUEUE_BACKEND?: string;
