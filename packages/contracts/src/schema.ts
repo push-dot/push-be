@@ -3319,7 +3319,7 @@ export interface components {
             expiresAt: string | null;
             /** Format: uuid */
             id: string;
-            /** @description EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE */
+            /** @description EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE; chat cards appear as TOOL_ACTION, DOCUMENT_EDIT, RESUME_GATE, EMPLOYER_GATE */
             kind: string;
             payloadHash: string;
             revision: number;
@@ -6821,7 +6821,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6849,7 +6849,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;

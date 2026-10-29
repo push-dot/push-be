@@ -153,7 +153,7 @@ test("a legacy document card keeps 200, applies through a job, and someone else'
   assert.equal(unknown.status, 400);
 });
 
-test("a new message rejects waiting tool cards but not resume gates", async () => {
+test("a new message rejects waiting tool cards but not resume or employer gates", async () => {
   resetLimits();
   const db = fakeDb(null);
   const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/messages`, {
@@ -164,7 +164,7 @@ test("a new message rejects waiting tool cards but not resume gates", async () =
   assert.equal(res.status, 202);
   const insert = db.sqls.find((sql) => sql.includes("INSERT INTO chat_jobs")) || "";
   assert.match(insert, /UPDATE approvals SET status = 'REJECTED'/);
-  assert.match(insert, /kind <> 'RESUME_GATE'/);
+  assert.match(insert, /kind NOT IN \('RESUME_GATE', 'EMPLOYER_GATE'\)/);
 });
 
 test("the ai worker queues the next resume phase only through act-as", async () => {
