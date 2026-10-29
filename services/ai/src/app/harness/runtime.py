@@ -16,7 +16,9 @@ from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
 from app.graphs.chat import _stable_ids
 from app.harness.document_edits import env_core
-from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
+from app.harness.graph import (
+    RECURSION_LIMIT, _open_calls, build_harness_graph, quick_start_resume, turn_model,
+)
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
@@ -313,10 +315,15 @@ class HarnessRuntime:
                 if start is not None:
                     state["start_flow"] = start
             if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
-                if _saved_resume(conversation.get("resume_state")).get("status") == "active":
+                saved = _saved_resume(conversation.get("resume_state"))
+                if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
                     seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
                     state["resume"] = seeded
+                elif quick_start_resume(payload.get("intent"), saved) is not None:
+                    state["intent"] = payload.get("intent")
+                    if saved.get("drafts"):
+                        state["resume"] = {"drafts": saved["drafts"]}
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
         done = None

@@ -39,6 +39,7 @@ class HarnessState(TypedDict, total=False):
 
 class PersonalState(HarnessState, total=False):
     resume: dict | None
+    intent: str | None
 
 
 _FLOW_DONE = {
@@ -49,6 +50,43 @@ _FLOW_DONE = {
 
 def enter_flow(name: str, **update) -> Command:
     return Command(update=update, goto=name)
+
+
+# TODO(P2): fit should end at p6_present after the fit report. Nearest phase is analyze.
+# TODO(P2): gaps should run content-strategy steps 1-3 on p2_strategy. Nearest phase is strategy.
+# TODO(P3): experience should enter p2x_approach. Nearest phase is intake.
+# TODO(P4): boost should enter p3c_boost. Nearest phase is craft.
+_QUICK_START = {
+    "match_posting": {
+        "status": "active", "phase": "intake",
+        "work_mode": "resume_based", "scenario": "A",
+    },
+    "fit": {
+        "status": "active", "phase": "analyze",
+        "work_mode": "resume_based", "scenario": "E",
+    },
+    "gaps": {
+        "status": "active", "phase": "strategy", "work_mode": "resume_based",
+        "scenario": "A", "strategy": {"focus": "bottleneck", "steps": [1, 2, 3]},
+    },
+    "experience": {
+        "status": "active", "phase": "intake", "work_mode": "experience_blueprint",
+    },
+    "boost": {"status": "active", "phase": "craft", "work_mode": "resume_based"},
+}
+
+
+def quick_start_resume(intent: object, current: dict | None = None) -> dict | None:
+    if not isinstance(intent, str):
+        return None
+    seed = _QUICK_START.get(intent)
+    if seed is None:
+        return None
+    resume = dict(seed)
+    drafts = (current or {}).get("drafts") or {}
+    if intent == "boost" and drafts:
+        resume = {**resume, "drafts": dict(drafts)}
+    return resume
 
 
 def leave_flow(summary: str, **update) -> Command:
@@ -309,8 +347,13 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
 
         subgraph = build_resume_graph(None, model=None, db=db)
 
-        async def route(_state: PersonalState) -> dict:
-            return {}
+        async def route(state: PersonalState) -> dict | Command:
+            if _resume_dict(state).get("status") == "active":
+                return {}
+            seed = quick_start_resume(state.get("intent"), _resume_dict(state))
+            if seed is None:
+                return {}
+            return enter_flow("resume_flow", resume=seed)
 
         async def resume_flow(state: PersonalState, config) -> dict | Command:
             parent_config = get_config()
