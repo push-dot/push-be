@@ -127,11 +127,7 @@ async def one_turn(framework: str) -> dict:
 
     previous = {
         "LLM_STREAM": os.environ.get("LLM_STREAM"),
-        "CF_WORKER": os.environ.get("CF_WORKER"),
     }
-    os.environ.pop("CF_WORKER", None)
-    if framework == "legacy":
-        os.environ["CF_WORKER"] = "1"
     os.environ["LLM_STREAM"] = "0"
     import app.framework.models as models
     original_model = models.chat_model

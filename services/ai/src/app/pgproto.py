@@ -400,10 +400,7 @@ def websocket_url(dsn: dict) -> str:
 
 
 async def open_websocket_stream(dsn: dict) -> ByteStream:
-    url = websocket_url(dsn)
-    if os.environ.get("CF_WORKER") == "1":
-        return await _open_workers_websocket(url)
-    return await _open_python_websocket(url)
+    return await _open_python_websocket(websocket_url(dsn))
 
 
 async def _open_python_websocket(url: str) -> ByteStream:
@@ -419,71 +416,6 @@ async def _open_python_websocket(url: str) -> ByteStream:
 
     async def close():
         await ws.close()
-
-    return BufferedStream(recv, send, close)
-
-
-async def _open_workers_websocket(url: str) -> ByteStream:
-    """Outbound WebSocket via the Workers fetch upgrade API."""
-    from pyodide.ffi import create_proxy, to_js
-    from js import Object, Uint8Array, fetch
-
-    # Workers fetch() only accepts http(s) URLs; the Upgrade header opens the socket.
-    if url.startswith("wss://"):
-        url = "https://" + url[len("wss://"):]
-    headers = to_js({"Upgrade": "websocket"}, dict_converter=Object.fromEntries)
-    resp = await fetch(url, to_js({"headers": headers}, dict_converter=Object.fromEntries))
-    ws = resp.webSocket
-    if ws is None:
-        raise ConnectionError("Neon WebSocket upgrade failed")
-    # Newer compatibility dates deliver binary frames as Blob by default.
-    try:
-        ws.binaryType = "arraybuffer"
-    except Exception:
-        pass
-    ws.accept()
-    queue: asyncio.Queue = asyncio.Queue()
-    proxies = []
-
-    def on_message(event):
-        data = getattr(event, "data", b"")
-        if hasattr(data, "to_bytes"):
-            data = data.to_bytes()
-        elif hasattr(data, "to_py"):
-            data = data.to_py()
-        if isinstance(data, memoryview):
-            data = data.tobytes()
-        elif not isinstance(data, (bytes, bytearray)):
-            try:
-                data = bytes(data)
-            except Exception:
-                data = str(data).encode()
-        queue.put_nowait(bytes(data))
-
-    def on_done(_event):
-        queue.put_nowait(b"")
-
-    for name, fn in (("message", on_message), ("close", on_done), ("error", on_done)):
-        proxy = create_proxy(fn)
-        proxies.append(proxy)
-        ws.addEventListener(name, proxy)
-
-    async def recv():
-        return await queue.get()
-
-    async def send(data: bytes):
-        # Python bytes are not implicitly converted; copy into a Uint8Array.
-        buf = Uint8Array.new(len(data))
-        buf.assign(data)
-        ws.send(buf)
-
-    async def close():
-        for proxy in proxies:
-            proxy.destroy()
-        try:
-            ws.close()
-        except Exception:
-            pass
 
     return BufferedStream(recv, send, close)
 

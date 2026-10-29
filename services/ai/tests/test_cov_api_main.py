@@ -43,7 +43,6 @@ def boot(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "migrations_dir", lambda: tmp_path)
     monkeypatch.setattr(ConversationService, "start_worker", start)
     monkeypatch.setattr(ConversationService, "stop_worker", stop)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.delenv("RUN_MIGRATIONS", raising=False)
     monkeypatch.delenv("CHECKPOINTER", raising=False)
     env["tmp"] = tmp_path
@@ -182,7 +181,7 @@ async def test_ensure_ready_bootstraps_once(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("worker,shut", [("", 1), ("1", 0)])
+@pytest.mark.parametrize("worker,shut", [("", 1), ("1", 1)])
 def test_lifespan_and_healthz(monkeypatch, worker, shut):
     seen = {"ready": 0, "shut": 0}
 
@@ -194,7 +193,6 @@ def test_lifespan_and_healthz(monkeypatch, worker, shut):
 
     monkeypatch.setattr(main, "ensure_ready", ready)
     monkeypatch.setattr(main, "_shutdown", shutdown)
-    monkeypatch.setenv("CF_WORKER", worker)
     monkeypatch.delenv("AI_SHARED_SECRET", raising=False)
     with TestClient(main.create_app(Config())) as c:
         for path in ("/healthz", "/api/v1/healthz"):

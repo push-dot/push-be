@@ -45,7 +45,6 @@ def test_parse_dsn_neon_url():
 
 def test_any_neon_region_uses_the_wire_client(monkeypatch):
     monkeypatch.delenv("DB_DRIVER", raising=False)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     from app.db import database_driver
     assert database_driver(
         "postgresql://u:p@ep.ap-southeast-1.aws.neon.tech/db") == "neon"

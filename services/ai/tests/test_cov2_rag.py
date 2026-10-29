@@ -49,12 +49,11 @@ class _NoChunks:
 
 
 def _langchain(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
 
 
 def _legacy(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
+    monkeypatch.setattr(rag, "use_langchain", lambda: False)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
 
 

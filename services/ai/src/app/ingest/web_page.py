@@ -320,56 +320,6 @@ async def _render_with_browser(url: str, guard) -> str:
         await proxy_server.wait_closed()
 
 
-def _workers_runtime() -> bool:
-    return os.environ.get("CF_WORKER") == "1"
-
-
-async def _reject_private_host(host: str) -> None:
-    host = (host or "").lower()
-    _reject_blocked_name(host)
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        ip = None
-    if ip is not None:
-        if not _is_public(ip):
-            raise ValueError("host resolves to a private address")
-        return
-    async with httpx.AsyncClient(timeout=5) as client:
-        for rtype in ("A", "AAAA"):
-            resp = await client.get(
-                "https://cloudflare-dns.com/dns-query",
-                params={"name": host, "type": rtype},
-                headers={"accept": "application/dns-json"})
-            if resp.status_code != 200:
-                raise ValueError("cannot resolve host")
-            for ans in resp.json().get("Answer") or []:
-                if ans.get("type") not in (1, 28):
-                    continue
-                if not _is_public(ipaddress.ip_address(ans["data"])):
-                    raise ValueError("host resolves to a private address")
-
-
-async def _browser_markdown(url: str) -> str:
-    account = os.environ.get("CF_ACCOUNT_ID", "")
-    token = os.environ.get("CF_API_TOKEN", "")
-    if not account or not token:
-        raise RuntimeError("browser rendering is not configured")
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.cloudflare.com/client/v4/accounts/"
-            + account + "/browser-rendering/markdown",
-            headers={"Authorization": "Bearer " + token},
-            json={"url": url})
-    if resp.status_code != 200:
-        raise RuntimeError("browser rendering http " + str(resp.status_code))
-    body = resp.json()
-    result = body.get("result") if isinstance(body, dict) else ""
-    if isinstance(result, dict):
-        result = result.get("markdown") or result.get("content") or ""
-    return _WS_RE.sub(" ", result or "").strip()[:_MAX_TEXT]
-
-
 async def _read_page(client: httpx.AsyncClient, url: str,
                      check_hop: HopCheck) -> tuple[str, str, bool]:
     """Follow redirects, checking every hop. Returns (final url, text, is_html)."""
@@ -415,28 +365,7 @@ async def _with_render_fallback(url: str, text: str, is_html: bool,
     return rendered if len(rendered) > len(text) else text
 
 
-async def _fetch_page_text_worker(url: str) -> str:
-    """HTTP fetch on Workers. No local CONNECT proxy and no Playwright.
-
-    Cloudflare Browser Rendering (10 minutes/day on the free plan) is used
-    when CF_ACCOUNT_ID and CF_API_TOKEN are set and the static extract is
-    short. DNS is checked via DNS-over-HTTPS before the fetch; Workers
-    cannot pin the TCP destination the way the local transport does.
-    """
-    async def check_hop(hop: str) -> None:
-        validate_https_url(hop)
-        await _reject_private_host(_url_host(hop))
-
-    async with httpx.AsyncClient(headers=_HEADERS, timeout=_HTTP_TIMEOUT,
-                                 follow_redirects=False) as client:
-        async with asyncio.timeout(_FETCH_DEADLINE):
-            url, text, is_html = await _read_page(client, url, check_hop)
-    return await _with_render_fallback(url, text, is_html, _browser_markdown)
-
-
 async def fetch_page_text(url: str) -> str:
-    if _workers_runtime():
-        return await _fetch_page_text_worker(url)
     transport = _PinnedTransport()
 
     async def pin_hop(hop: str) -> None:

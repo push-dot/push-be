@@ -198,7 +198,7 @@ def save_artifacts(conversation_id, title: str, text: str) -> list[str]:
 
 
 def _db_blobs() -> bool:
-    return os.environ.get("BLOB_STORE") == "db" or os.environ.get("CF_WORKER") == "1"
+    return os.environ.get("BLOB_STORE") == "db"
 
 
 async def save_artifacts_db(db, conversation_id, title: str, text: str) -> list[str]:

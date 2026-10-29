@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,7 +51,6 @@ async def test_buffered_stream_reassembles_frames():
 # --- WebSocket transports ------------------------------------------------
 
 async def test_python_websocket_transport(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     calls = {}
 
     class WS:
@@ -80,127 +79,6 @@ async def test_python_websocket_transport(monkeypatch):
     await stream.write(b"q")
     await stream.close()
     assert ws.sent == [b"q"] and ws.closed
-
-
-class _Proxy:
-    def __init__(self, fn):
-        self.fn = fn
-        self.destroyed = False
-
-    def destroy(self):
-        self.destroyed = True
-
-
-class _Uint8:
-    def __init__(self, n):
-        self.n, self.data = n, None
-
-    @classmethod
-    def new(cls, n):
-        return cls(n)
-
-    def assign(self, data):
-        self.data = bytes(data)
-
-
-class _WorkerWS:
-    def __init__(self, *, reject_binary_type=False, close_raises=False):
-        self.reject = reject_binary_type
-        self.close_raises = close_raises
-        self.listeners = {}
-        self.sent = []
-        self.accepted = False
-
-    def __setattr__(self, name, value):
-        if name == "binaryType" and self.reject:
-            raise AttributeError("read-only")
-        object.__setattr__(self, name, value)
-
-    def accept(self):
-        self.accepted = True
-
-    def addEventListener(self, name, proxy):
-        self.listeners[name] = proxy
-
-    def send(self, buf):
-        self.sent.append(buf.data)
-
-    def close(self):
-        if self.close_raises:
-            raise RuntimeError("already closed")
-
-
-def _install_workers(monkeypatch, ws):
-    seen = {}
-
-    async def fetch(url, opts):
-        seen["url"], seen["opts"] = url, opts
-        return SimpleNamespace(webSocket=ws)
-
-    ffi = ModuleType("pyodide.ffi")
-    ffi.create_proxy = _Proxy
-    ffi.to_js = lambda obj, dict_converter=None: obj
-    pyodide = ModuleType("pyodide")
-    pyodide.ffi = ffi
-    js = ModuleType("js")
-    js.Object = SimpleNamespace(fromEntries=dict)
-    js.Uint8Array = _Uint8
-    js.fetch = fetch
-    monkeypatch.setitem(sys.modules, "pyodide", pyodide)
-    monkeypatch.setitem(sys.modules, "pyodide.ffi", ffi)
-    monkeypatch.setitem(sys.modules, "js", js)
-    monkeypatch.setenv("CF_WORKER", "1")
-    return seen
-
-
-async def test_workers_websocket_transport(monkeypatch):
-    ws = _WorkerWS()
-    seen = _install_workers(monkeypatch, ws)
-    stream = await pgproto.open_websocket_stream({"host": "ep.neon.tech"})
-    assert seen["url"] == "https://ep.neon.tech/v2"
-    assert seen["opts"] == {"headers": {"Upgrade": "websocket"}}
-    assert ws.binaryType == "arraybuffer" and ws.accepted
-    on_message = ws.listeners["message"].fn
-
-    class ToBytes:
-        def to_bytes(self):
-            return b"a"
-
-    class ToPy:
-        def to_py(self):
-            return memoryview(b"b")
-
-    on_message(SimpleNamespace(data=ToBytes()))
-    on_message(SimpleNamespace(data=ToPy()))
-    on_message(SimpleNamespace(data=b"c"))
-    on_message(SimpleNamespace(data=[100]))      # bytes([100]) == b"d"
-    on_message(SimpleNamespace(data="e"))        # bytes("e") fails -> str encode
-    on_message(SimpleNamespace())                # no data attribute -> b""
-    assert await stream.readexactly(5) == b"abcde"
-    ws.listeners["close"].fn(None)
-    with pytest.raises(ConnectionError):
-        await stream.readexactly(1)
-    await stream.write(b"\x01\x02")
-    assert ws.sent == [b"\x01\x02"]
-    await stream.close()
-    assert all(p.destroyed for p in ws.listeners.values())
-    assert set(ws.listeners) == {"message", "close", "error"}
-
-
-async def test_workers_websocket_tolerates_runtime_quirks(monkeypatch):
-    ws = _WorkerWS(reject_binary_type=True, close_raises=True)
-    _install_workers(monkeypatch, ws)
-    stream = await pgproto._open_workers_websocket("https://already-http/v2")
-    ws.listeners["error"].fn(None)
-    with pytest.raises(ConnectionError):
-        await stream.readexactly(1)
-    await stream.close()
-
-
-async def test_workers_websocket_upgrade_failure(monkeypatch):
-    _install_workers(monkeypatch, None)
-    with pytest.raises(ConnectionError, match="upgrade failed"):
-        await pgproto.open_websocket_stream({"host": "h"})
 
 
 # --- connect() -----------------------------------------------------------
