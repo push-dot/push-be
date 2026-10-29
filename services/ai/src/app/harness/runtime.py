@@ -21,7 +21,7 @@ from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph,
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.registry import REGISTRY
-from app.harness.resume.graph import bound_core, merge_inputs
+from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
@@ -141,7 +141,7 @@ class HarnessRuntime:
         if cached is not None and cached[0] is spec:
             return cached[1]
         if spec.id == "resume":
-            from app.harness.resume.graph import build_resume_graph
+            from app.harness.personal.resume.graph import build_resume_graph
             graph = build_resume_graph(self.svc._checkpointer, db=self.svc.db)
         else:
             graph = build_harness_graph(

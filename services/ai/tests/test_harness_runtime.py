@@ -91,7 +91,7 @@ async def test_resume_turn_prefetches_pages_and_keeps_attachments(monkeypatch):
 
 
 async def test_bypass_intake_with_a_page_does_not_stop():
-    from app.harness.resume.graph import _must_stop
+    from app.harness.personal.resume.graph import _must_stop
     assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")
     assert _must_stop({"access_mode": "BYPASS", "inputs": {}}, "intake")
 
@@ -168,10 +168,11 @@ async def test_start_document_second_ask_can_be_answered():
     assert _saved_resume(rows)["status"] == "cancelled"
 
     restarted = await _ask_start(tool, rows, "job-2")
-    assert restarted == {
-        "harness": "resume",
-        "resume_state": {"status": "active", "phase": "mode_select"},
-    }
+    from langgraph.types import Command
+    assert isinstance(restarted, Command)
+    assert restarted.goto == "resume_flow"
+    assert restarted.update["resume"] == {"status": "active", "phase": "mode_select"}
+    assert _saved_resume(rows)["status"] == "active"
 
     second = await _ask_start(tool, rows, "job-3")
     assert second["choice"]["id"] != first["choice"]["id"]
