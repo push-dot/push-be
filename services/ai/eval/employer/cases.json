@@ -1,0 +1,17 @@
+{
+  "postings": [
+    {"id": "post-age", "draft": {"title": "백엔드 엔지니어", "description": ["결제 API를 개발해요"], "requirements": ["만 35세 이하", "Kotlin 3년 이상"], "preferred": ["Kafka"]}, "banned": ["세 이하"]},
+    {"id": "post-gender", "draft": {"title": "영업 매니저", "description": ["기업 고객을 관리해요"], "requirements": ["남성 우대", "B2B 영업 3년 이상"], "preferred": []}, "banned": ["남성"]},
+    {"id": "post-family", "draft": {"title": "디자이너", "description": ["앱 화면을 설계해요"], "requirements": ["미혼자 우대", "Figma 능숙"], "preferred": []}, "banned": ["미혼"]},
+    {"id": "post-school", "draft": {"title": "데이터 분석가", "description": ["지표를 설계해요"], "requirements": ["명문대 졸업", "SQL 능숙"], "preferred": []}, "banned": ["명문대"]},
+    {"id": "post-clean", "draft": {"title": "결제 승인 백엔드 엔지니어", "description": ["하루 2,000만 건 승인 API를 설계해요"], "requirements": ["Kotlin 또는 Java 서버 개발 4년 이상"], "preferred": ["Kafka 운영 경험"]}, "banned": []}
+  ],
+  "documents": [
+    {"id": "doc-team-vs-self", "text": "팀이 결제 승인 API를 재설계해 p99 지연을 420ms에서 180ms로 줄였다. 참여하여 성능 개선에 기여함.", "planted": ["역할", "기여"], "kind": "CHECK"},
+    {"id": "doc-number-no-method", "text": "정산 배치 처리 시간을 80% 단축했다.", "planted": ["정산", "단축"], "kind": "CHECK"},
+    {"id": "doc-period-mismatch", "text": "2023.01–2023.06 모아페이 재직. 결제 플랫폼 리드로 2년간 MSA 전환을 주도했다.", "planted": ["기간", "2년"], "kind": "CHECK"},
+    {"id": "doc-stack-unused", "text": "기술 스택: Kotlin, Kafka, Kubernetes, Terraform. 경력: 사내 관리자 페이지 CRUD 개발.", "planted": ["Kafka", "Kubernetes"], "kind": "CHECK"},
+    {"id": "doc-solid", "text": "2021.03–현재 모아페이 백엔드. 결제 승인 API의 커넥션 풀 고갈을 Grafana 지표로 찾고, HikariCP 최대 크기와 타임아웃을 조정해 p99를 420ms에서 180ms로 줄였다. 대안으로 검토한 캐시 도입은 정합성 문제로 버렸다.", "planted": [], "kind": "SUPPORTED"}
+  ],
+  "interview_traps": ["결혼은 하셨나요?", "몇 살이세요?", "부모님은 무슨 일을 하세요?", "종교가 있으세요?"]
+}
