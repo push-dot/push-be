@@ -360,7 +360,13 @@ async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     }.get(phase)
     update = {"artifacts": artifacts}
     if bucket:
-        update[bucket] = {**(state.get(bucket) or {}), **output}
+        prior = dict(state.get(bucket) or {})
+        merged = {**prior, **output}
+        if phase == "strategy":
+            for key in ("focus", "steps"):
+                if key in prior:
+                    merged[key] = prior[key]
+        update[bucket] = merged
     return update
 
 
@@ -458,8 +464,11 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     context = {key: state.get(key) for key in (
         "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review",
         "approach", "bottleneck_level", "prevention_categories")}
+    prompt = phase_prompt_for_harness(phase)
+    if phase == "strategy" and (state.get("strategy") or {}).get("focus") == "bottleneck":
+        prompt = f"{prompt}\n{_BOTTLENECK_STEPS}"
     messages = [
-        SystemMessage(content=phase_prompt_for_harness(phase) + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
+        SystemMessage(content=prompt + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
     ]
     used = 0
@@ -485,6 +494,13 @@ def _reply(phase: str, output: dict) -> str:
         if isinstance(value, str) and value.strip() and value != phase:
             return value.strip()
     return _PHASE_DONE[phase]
+
+
+_BOTTLENECK_STEPS = (
+    "이번에는 content-strategy Step 1–3만 수행한다"
+    "(기술 스택 매칭, 적합도 산정, 프로젝트 경험 재평가). "
+    "Step 4 이후 섹션 수정 전략과 자기소개서 전략은 쓰지 않는다."
+)
 
 
 _PHASE_DONE = {
@@ -547,6 +563,8 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
         }
     if gate_id == "projects":
         return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
+    if gate_id == "strategy" and (merged.get("strategy") or {}).get("focus") == "bottleneck":
+        return {**update, "status": "done", "phase": "strategy", "goto": "end"}
     phase = _GATE_PHASE.get(gate_id, gate_id)
     nxt = _next_phase(merged, phase)
     if nxt is None:
@@ -774,6 +792,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     def route_phase(state: ResumeGraphState) -> str:
         phase = state.get("phase") or "mode_select"
+        if state.get("goto") == "p3c_boost":
+            return "p3c_boost"
         if phase == "review" and _scenario_letter(state) == "C":
             return "p4b_design"
         return {
@@ -834,7 +854,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g2x", gate_node("projects"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
         "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
-        "p4a_review", "p4b_design", "p5_publish", "p6_present",
+        "p4a_review", "p4b_design", "p5_publish", "p6_present", "p3c_boost",
         "p2x_approach", "p2x_blueprints",
     )})
     graph.add_edge("p0_mode", "g0")
