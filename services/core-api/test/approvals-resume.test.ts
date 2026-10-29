@@ -123,7 +123,7 @@ test("rejecting a tool card still resumes so the model hears the rejection", asy
   assert.equal(db.state.jobs, 1);
 });
 
-test("a legacy document card keeps 200, applies through a job, and someone else's card is 404", async () => {
+test("a jobless document card does not enqueue, and someone else's card is 404", async () => {
   const legacy = () => pending({
     kind: "DOCUMENT_EDIT", job_id: null, expires_at: null,
     options: JSON.stringify([{ id: "apply", label: "적용" }, { id: "skip", label: "그대로 두기" }]),
@@ -139,10 +139,8 @@ test("a legacy document card keeps 200, applies through a job, and someone else'
   const applied = fakeDb(legacy());
   const apply = await handle(resolve("apply"), env(), deps(applied.query));
   assert.equal(apply.status, 200);
-  const body = await apply.json() as { data: { status: string; jobId: string } };
-  assert.equal(body.data.status, "APPROVED");
-  assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
-  assert.equal(applied.state.jobs, 1);
+  assert.deepEqual((await apply.json() as { data: unknown }).data, { id: APPROVAL, status: "APPROVED", optionId: "apply" });
+  assert.equal(applied.state.jobs, 0);
 
   resetLimits();
   const missing = await handle(resolve("approve"), env(), deps(fakeDb(null).query));

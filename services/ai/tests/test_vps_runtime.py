@@ -16,21 +16,17 @@ def test_dead_runtime_flag_does_not_select_external_jobs(monkeypatch):
 
 
 def test_dead_runtime_flag_does_not_store_blobs_in_the_db(monkeypatch):
-    from app.graphs.chat import _blob_db
     from app.infrastructure.resume_workspace import _db_blobs
 
     monkeypatch.delenv("BLOB_STORE", raising=False)
     monkeypatch.setenv(_GONE, "1")
-    assert _blob_db() is False
     assert _db_blobs() is False
 
 
 def test_blob_store_db_still_selects_the_database(monkeypatch):
-    from app.graphs.chat import _blob_db
     from app.infrastructure.resume_workspace import _db_blobs
 
     monkeypatch.setenv("BLOB_STORE", "db")
-    assert _blob_db() is True
     assert _db_blobs() is True
 
 
@@ -93,7 +89,6 @@ def test_listed_modules_have_no_dead_runtime_flag():
         ROOT / "src" / "app" / "ingest" / "web_page.py",
         ROOT / "src" / "app" / "pgproto.py",
         ROOT / "src" / "app" / "jobs.py",
-        ROOT / "src" / "app" / "graphs" / "chat.py",
         ROOT / "src" / "app" / "infrastructure" / "resume_workspace.py",
         ROOT / "src" / "app" / "framework" / "smoke.py",
     ]

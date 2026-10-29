@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -14,7 +15,8 @@ from app.harness.tools import ToolContext
 from app.harness.core_client import CoreClient
 
 _ORDER = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+    "mode_select", "output_targets", "tone", "intake",
+    "analyze", "strategy", "craft", "review", "publish", "present",
 )
 
 
@@ -52,6 +54,14 @@ def _graph(db, poster=None, model=None):
     return build_resume_graph(MemorySaver(), model=model or _PhaseModel(), db=db)
 
 
+@pytest.fixture(autouse=True)
+def _flat_fit(monkeypatch):
+    async def fake(*_args, **_kwargs):
+        return {"fitScore": 5.0, "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+
+
 def _config():
     return {"configurable": {"thread_id": "conv-1:resume"}}
 
@@ -86,7 +96,7 @@ async def _drive(graph, config, first):
     posted = []
     seen = []
     payload = first
-    for _ in range(16):
+    for _ in range(24):
         events = []
         async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
             if mode == "custom" and isinstance(chunk, dict):
@@ -94,8 +104,9 @@ async def _drive(graph, config, first):
         snap = await graph.aget_state(config)
         seen.append((events, snap))
         if snap.next:
-            choice = next(event for event in events if event.get("type") == "choice")
-            payload = Command(resume={"option_id": choice["recommended"]})
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            option = choice["recommended"] if choice is not None else "continue"
+            payload = Command(resume={"option_id": option})
             continue
         if snap.values.get("status") in {"done", "cancelled"}:
             break
@@ -126,6 +137,39 @@ def test_blueprint_prompt_includes_experience_blueprints():
     assert "최소 2개의 질문" not in phase_prompt_for_harness("strategy")
 
 
+def test_phase_nodes_cover_p0_through_p6():
+    graph = _graph(_Approvals())
+    names = set(graph.nodes)
+    assert {
+        "p0_mode", "g0", "p0i_intake", "g_output_targets", "g_tone", "g_intake",
+        "p1_analyze", "g1", "p2_strategy", "g2", "p3_craft", "g3", "p3c_boost", "p3c_cycle",
+        "p4a_review", "g4a", "p5_publish", "g5", "p6_present", "g6",
+    } <= names
+
+
+async def test_two_targets_produce_two_finals_and_two_pdfs():
+    db = _Approvals()
+    graph = _graph(db, model=_PhaseModel({"publish": {"markdown": "# 서류"}}))
+    config = _config()
+    await _run(graph, _base(phase="publish", output_targets=["resume", "portfolio"]), config)
+    snap = await graph.aget_state(config)
+    assert "05_final_resume.md" in snap.values["artifacts"]
+    assert "05_final_portfolio.md" in snap.values["artifacts"]
+    assert "05_final_resume.pdf" in db.files
+    assert "05_final_portfolio.pdf" in db.files
+
+
+async def test_output_targets_gate_keeps_option_ids():
+    graph = _graph(_Approvals())
+    config = _config()
+    await _run(graph, _base(), config)
+    await _run(graph, Command(resume={"option_id": "resume_based"}), config)
+    await _run(graph, {}, config)
+    await _run(graph, Command(resume={"option_ids": ["portfolio", "resume"]}), config)
+    snap = await graph.aget_state(config)
+    assert snap.values["output_targets"] == ["portfolio", "resume"]
+
+
 async def test_stops_at_every_gate_in_auto():
     posted = []
 
@@ -140,7 +184,11 @@ async def test_stops_at_every_gate_in_auto():
         for event in events
         if event.get("type") == "choice" and snap.next
     ]
-    assert gates == list(_ORDER)
+    assert gates == [
+        "mode_select", "output_targets", "tone", "intake",
+        "analyze", "strategy", "craft", "boost",
+        "review", "publish", "present",
+    ]
     assert seen[-1][1].values["status"] == "done"
 
 
@@ -164,6 +212,109 @@ async def test_phase_output_is_saved_to_workspace_files():
     file_id = snap.values["artifacts"]["01_parsed_resume.json"]
     assert db.files["01_parsed_resume.json"]
     assert len(file_id) == 36
+
+
+async def test_template_choice_reaches_the_pdf_renderer():
+    import io
+
+    from pypdf import PdfReader
+
+    db = _Approvals()
+    model = _PhaseModel({"publish": {"markdown": "# 이력서\n백엔드"}})
+    graph = _graph(db, model=model)
+    config = _config()
+    await _run(graph, _base(phase="review"), config)
+    await _run(graph, Command(resume={"option_id": "ATS"}), config)
+    chosen = await graph.aget_state(config)
+    assert chosen.values["template"] == "ATS"
+    assert chosen.values["phase"] == "publish"
+    await _run(graph, {}, config)
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(io.BytesIO(db.files["05_final_resume.pdf"])).pages)
+    assert "ATS" in text
+    assert "백엔드" in text
+
+
+async def test_compact_choice_document_template_matches_the_pdf():
+    import io
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    from pypdf import PdfReader
+
+    from app.db import NotFoundError
+    from app.domain.services.document import DocumentService
+    from app.harness.personal.tools import bound_services
+    from tests.stubs import FakeDB
+
+    class _Store:
+        def __init__(self):
+            self.docs = {}
+            self.versions = []
+
+        async def create(self, doc):
+            self.docs[doc.id] = doc
+
+        async def get(self, user_id, id_):
+            doc = self.docs.get(id_)
+            if doc is None or doc.user_id != user_id:
+                raise NotFoundError()
+            return doc
+
+        async def update(self, doc, expected):
+            current = self.docs[doc.id]
+            if current.revision != expected:
+                raise RuntimeError("revision")
+            self.docs[doc.id] = doc
+
+        async def next_version_number(self, document_id):
+            return 1 + sum(1 for v in self.versions if v.document_id == document_id)
+
+        async def create_version(self, version):
+            self.versions.append(version)
+
+    class _Workspace(_Approvals):
+        async def fetchrow(self, sql, *args):
+            if "workspace_files" in sql:
+                body = self.files.get(args[1])
+                if not isinstance(body, str):
+                    return None
+                return {"body": body}
+            return self.rows.get(str(args[0]))
+
+    user_id = str(uuid4())
+    db = _Workspace()
+    store = _Store()
+    docs = DocumentService(FakeDB(), None, None)
+    docs.documents = store
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        graph = _graph(db, model=_PhaseModel({"publish": {"markdown": "# 이력서\n백엔드"}}))
+        config = _config()
+        await _run(graph, _base(phase="review", user_id=user_id), config)
+        await _run(graph, Command(resume={"option_id": "COMPACT"}), config)
+        await _run(graph, {}, config)
+        text = "\n".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(db.files["05_final_resume.pdf"])).pages)
+        stored = next(
+            name for name in ("SIMPLE", "MODERN", "CREATIVE", "ATS") if name in text)
+        doc = next(iter(store.docs.values()))
+        assert doc.template == stored
+        doc.template = "SIMPLE"
+        from app.infrastructure.resume_workspace import _sync_documents_db
+
+        await _sync_documents_db(
+            SimpleNamespace(db=db, document_svc=docs),
+            UUID(user_id),
+            SimpleNamespace(id="conv-1", title=""),
+            ["05_final_resume.md"],
+            "COMPACT",
+        )
+        assert next(iter(store.docs.values())).template == stored
+    finally:
+        bound_services.reset(token)
 
 
 async def test_bypass_auto_picks_recommended():
@@ -302,10 +453,13 @@ async def test_new_document_while_active_asks():
 
 _GATE_QUESTIONS = {
     "mode_select": "어떤 방식으로 진행할까요?",
+    "output_targets": "어떤 산출물을 만들까요?",
+    "tone": "어떤 말투로 쓸까요?",
     "intake": "입력한 자료를 확인했어요. 분석을 시작할까요?",
     "analyze": "이 공고에 맞춰 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
+    "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
     "publish": "디자인을 적용했어요. PDF로 만들까요?",
     "present": "PDF를 만들었어요. 결과를 확인할까요?",
@@ -322,3 +476,234 @@ async def test_gate_title_is_the_question():
         if event.get("type") == "choice" and snap.next
     }
     assert titles == _GATE_QUESTIONS
+
+
+async def _until_done(graph, config, payload):
+    gates = []
+    titles = {}
+    for _ in range(16):
+        events = []
+        async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict):
+                events.append(chunk)
+        snap = await graph.aget_state(config)
+        if snap.next:
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            if choice is None:
+                payload = Command(resume={"option_id": "continue"})
+                continue
+            gates.append(choice["gate"])
+            titles[choice["gate"]] = choice["title"]
+            payload = Command(resume={"option_id": choice["recommended"]})
+            continue
+        if snap.values.get("status") == "done":
+            return gates, titles, snap
+        payload = {}
+    snap = await graph.aget_state(config)
+    return gates, titles, snap
+
+
+async def test_scenario_e_ends_after_fit_report():
+    db = _Approvals()
+    graph = _graph(db, model=_PhaseModel({"analyze": {"scenario": "E", "fit": {"score": 3}}}))
+    config = _config()
+    gates, _titles, snap = await _until_done(graph, config, _base(phase="analyze"))
+    assert gates == ["analyze", "present"]
+    assert snap.values["status"] == "done"
+    assert snap.values["scenario"] == "E"
+    assert "02_fit_score.json" in snap.values["artifacts"]
+    for name in ("01_parsed_resume.json", "01_github_findings.json", "01_job_analyses.json"):
+        assert name in snap.values["artifacts"]
+        assert name in db.files
+
+
+async def test_scenario_c_goes_to_design():
+    model = _PhaseModel()
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, snap = await _until_done(graph, config, _base(phase="analyze", scenario="C"))
+    assert "strategy" not in gates
+    assert "craft" not in gates
+    assert titles["review"] == "검증을 마쳤어요. 어떤 디자인을 적용할까요?"
+    assert "review" not in model.calls
+    assert "p4b_design" in graph.nodes
+    assert snap.values["status"] == "done"
+
+
+async def test_scenario_b_asks_before_craft():
+    graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": "B"}}))
+    gates, titles, _snap = await _until_done(graph, _config(), _base(phase="analyze"))
+    assert "strategy" not in gates
+    assert titles["feedback"] == "피드백을 반영해서 수정할까요?"
+    assert "craft" in gates
+
+
+async def test_scenarios_d_and_f_go_straight_to_craft():
+    for scenario in ("D", "F"):
+        graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": scenario}}))
+        gates, _titles, _snap = await _until_done(graph, _config(), _base(phase="analyze"))
+        assert "strategy" not in gates
+        assert "feedback" not in gates
+        assert "craft" in gates
+
+
+class _PromptModel(_PhaseModel):
+    def __init__(self, outputs=None):
+        super().__init__(outputs)
+        self.systems = []
+
+    async def ainvoke(self, messages, **kwargs):
+        first = messages[0].content if messages else ""
+        self.systems.append(first if isinstance(first, str) else str(first))
+        return await super().ainvoke(messages, **kwargs)
+
+
+def _interrupt_gate(snap) -> str:
+    for task in snap.tasks or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            value = getattr(item, "value", None) or {}
+            if isinstance(value, dict) and value.get("gate"):
+                return str(value["gate"])
+    return ""
+
+
+async def _blueprint(graph, config, payload, stop, answers=None):
+    answers = answers or {}
+    gates = []
+    titles = {}
+    choices = {}
+    for _ in range(12):
+        events = []
+        async for mode, chunk in graph.astream(
+            payload, config, stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict):
+                events.append(chunk)
+        snap = await graph.aget_state(config)
+        if snap.values.get("status") == "done":
+            return gates, titles, choices, snap
+        if snap.next:
+            choice = next((event for event in events if event.get("type") == "choice"), None)
+            if choice is None:
+                choice = {"gate": _interrupt_gate(snap)}
+            gates.append(choice["gate"])
+            if choice.get("title"):
+                titles[choice["gate"]] = choice["title"]
+            if choice.get("options"):
+                choices[choice["gate"]] = choice
+            if stop(snap):
+                return gates, titles, choices, snap
+            resume = answers.get(choice["gate"])
+            if resume is None and choice["gate"] == "prevention":
+                resume = {"option_ids": ["performance", "security"]}
+            if resume is None:
+                resume = {"option_id": choice["recommended"]}
+            payload = Command(resume=resume)
+            continue
+        if stop(snap):
+            return gates, titles, choices, snap
+        payload = {}
+    snap = await graph.aget_state(config)
+    return gates, titles, choices, snap
+
+
+async def test_blueprint_mode_never_enters_craft():
+    model = _PromptModel({
+        "validate": {"valid": True},
+        "blueprints": {"projects": [{"id": "01"}]},
+    })
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        lambda _snap: False,
+    )
+    assert "craft" not in gates
+    assert "strategy" not in gates
+    assert "craft" not in model.calls
+    assert titles["projects"] == "어떤 프로젝트를 구현할까요?"
+    assert choices["prevention"]["multiple"] is True
+    assert snap.values["approach"] == "prevention"
+    assert snap.values["prevention_categories"] == ["performance", "security"]
+    assert "06_experience_blueprints.json" in snap.values["artifacts"]
+    assert any("최소 2개의 질문" in text for text in model.systems)
+    assert snap.values["status"] == "done"
+    for name in ("p2x_approach", "p2x_validate", "p2x_blueprints"):
+        assert name in graph.nodes
+
+
+async def test_failed_validation_returns_to_approach():
+    model = _PhaseModel({"validate": {"valid": False}})
+    graph = _graph(_Approvals(), model=model)
+    _gates, _titles, _choices, snap = await _blueprint(
+        graph, _config(), _base(phase="analyze", work_mode="experience_blueprint"),
+        lambda _snap: "validate" in model.calls and not _snap.next,
+        {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
+    )
+    assert snap.values["phase"] == "approach"
+    assert snap.values["status"] == "active"
+    assert snap.values["approach"] == "bottleneck"
+    assert snap.values["bottleneck_level"] == "L2"
+    assert model.calls.count("validate") == 1
+    assert "blueprints" not in model.calls
+    assert "craft" not in model.calls
+
+
+def _on_cap(snap) -> bool:
+    return "g_validate_cap" in (snap.next or ())
+
+
+async def test_third_failed_approach_validation_stops_without_a_fourth_call():
+    model = _PhaseModel({"validate": {"valid": False}})
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        _on_cap,
+        {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
+    )
+    assert "validate_cap" in gates
+    assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
+    assert [item["label"] for item in choices["validate_cap"]["options"]] == [
+        "다시 고르기", "그만하기",
+    ]
+    assert model.calls.count("validate") == 3
+    assert "blueprints" not in model.calls
+    assert snap.values["validation_failures"] == 3
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
+        pass
+    retried = await graph.aget_state(config)
+    assert retried.values["validation_failures"] == 0
+    assert retried.values["phase"] == "approach"
+    assert model.calls.count("validate") == 3
+
+
+async def test_failed_blueprint_validation_returns_to_blueprints_until_the_cap():
+    model = _PromptModel({
+        "validate": {"valid": True},
+        "blueprints": {"projects": [{"id": "01"}]},
+        "validate_bp": {"valid": False},
+    })
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, _choices, snap = await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
+        _on_cap,
+    )
+    assert "validate_cap" in gates
+    assert "projects" not in gates
+    assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
+    assert model.calls.count("validate_bp") == 3
+    assert model.calls.count("blueprints") == 3
+    assert "craft" not in model.calls
+    assert snap.values["phase"] == "blueprints"
+    assert snap.values["validation_failures"] == 3
+    assert "04_validation_report.json" in snap.values["artifacts"]
+    assert any("Relevance" in text for text in model.systems)
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
+        pass
+    retried = await graph.aget_state(config)
+    assert retried.values["validation_failures"] == 0
+    assert retried.values["phase"] == "blueprints"
+    assert model.calls.count("validate_bp") == 3

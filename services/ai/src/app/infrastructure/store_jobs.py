@@ -152,3 +152,16 @@ class ReferenceSampleStore(Store):
             "ORDER BY created_at DESC LIMIT 500",
             job_category)
         return [dict(row) for row in rows]
+
+    async def list_writing_reference(self, job_category):
+        rows = await self.q().fetch(
+            "SELECT job_category, tenure_years, score_band, features, sentence_templates "
+            "FROM reference_samples WHERE job_category = $1 "
+            "ORDER BY created_at DESC LIMIT 500",
+            job_category)
+        return [dict(row) for row in rows]
+
+    async def conversation_application(self, user_id, conversation_id):
+        return await self.q().fetchval(
+            "SELECT application_id FROM conversations WHERE id = $1 AND user_id = $2",
+            conversation_id, user_id)

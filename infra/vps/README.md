@@ -56,7 +56,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 
 필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `VPS_SSH_HOST_KEY`(`harden.sh`가 출력한 `ssh-ed25519 AAAA…`. CI는 이 키만 믿는다. 처음 본 키를 믿지 않는다).
 
-선택 변수: `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RAG_ENGINE`, `RERANK_PROVIDER`, `AI_HARNESS`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
+선택 변수: `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RERANK_PROVIDER`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
 
 CI가 하는 일:
 
@@ -164,9 +164,8 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
 | `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다 |
 | `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
-| `RAG_ENGINE` | `llamaindex` | `legacy`로 바꾸면 기존 `rag_chunks` 경로로 돌아간다 |
 
-기본값은 `llamaindex`다. 기존 업로드를 `rag_nodes`에 다시 색인하려면 `q:ingest`에 `{"reindex": true}`를 넣는다. 그다음 `run_eval.py`로 `legacy`와 `llamaindex`를 비교한다.
+기존 업로드를 `rag_nodes`에 다시 색인하려면 `q:ingest`에 `{"reindex": true}`를 넣는다. 그다음 `run_eval.py`로 검색 품질을 본다.
 
 ## 처리량 측정
 

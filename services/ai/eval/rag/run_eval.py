@@ -1,12 +1,12 @@
 """Retrieval quality on the synthetic set in fixtures/.
 
     cd services/ai
-    python eval/rag/run_eval.py --engine legacy       # rag_chunks method, 1536-d API embeddings
-    python eval/rag/run_eval.py --engine llamaindex   # rag_nodes method, EMBEDDING_PROVIDER (TEI by default)
+    python eval/rag/run_eval.py
 
-Runs in memory: no database writes. Prints one JSON line with recall@k,
-MRR and grounded_rate (share of queries whose top-k text contains an
-expected answer term). The fixtures are made up; never add real user data.
+Runs in memory on the llamaindex chunker. No database writes. Prints one
+JSON line with recall@k, MRR and grounded_rate (share of queries whose
+top-k text contains an expected answer term). The fixtures are made up;
+never add real user data.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-LEGACY_MAX_DIST = 0.6
 
 
 def load(fixtures: Path = FIXTURES) -> tuple[list[dict], list[dict]]:
@@ -61,27 +60,20 @@ def word_similarity(query: str, text: str) -> float:
     return len(q & _trigrams(text)) / len(q) if q else 0.0
 
 
-def legacy_chunks(text: str) -> list[str]:
-    from app.graphs.chat import _chunk_text
-    return _chunk_text(text)
-
-
 def llamaindex_chunks(text: str) -> list[str]:
     from app.rag.pipeline import split_nodes
     return [n.get_content() for n in split_nodes(text, {})]
 
 
 class Engine:
-    def __init__(self, name: str, embedder, reranker=None):
-        self.name = name
+    def __init__(self, embedder, reranker):
         self.embedder = embedder
         self.reranker = reranker
         self.chunks: list[dict] = []
 
     async def index(self, docs: list[dict]) -> None:
-        split = legacy_chunks if self.name == "legacy" else llamaindex_chunks
         for doc in docs:
-            texts = split(doc["text"])
+            texts = llamaindex_chunks(doc["text"])
             vectors = await self.embedder.embed(texts) if texts else []
             self.chunks.extend(
                 {"doc": doc["id"], "tenant": doc["tenant"], "text": t, "vector": v}
@@ -91,8 +83,6 @@ class Engine:
         pool = [c for c in self.chunks if c["tenant"] == tenant]
         vector = (await self.embedder.embed([query]))[0]
         dense = sorted(pool, key=lambda c: _cosine(vector, c["vector"]), reverse=True)
-        if self.name == "legacy":
-            return [c for c in dense if 1 - _cosine(vector, c["vector"]) < LEGACY_MAX_DIST][:k]
         keyword = sorted(pool, key=lambda c: word_similarity(query, c["text"]), reverse=True)
         keyword = [c for c in keyword if word_similarity(query, c["text"]) >= 0.3]
         merged = list({id(c): c for c in [*dense[:30], *keyword[:30]]}.values())
@@ -113,7 +103,7 @@ async def evaluate(engine: Engine, docs: list[dict], queries: list[dict], k: int
         hits += grounded([c["text"] for c in top], q["answerTerms"])
     n = len(queries)
     return {
-        "engine": engine.name,
+        "engine": "llamaindex",
         "queries": n,
         f"recall@{k}": round(recall / n, 4),
         "mrr": round(rr / n, 4),
@@ -122,27 +112,16 @@ async def evaluate(engine: Engine, docs: list[dict], queries: list[dict], k: int
 
 
 async def main() -> None:
-    import os
-
     import httpx
 
-    from app.embedding.api import ApiEmbedder
     from app.embedding.factory import get_embedder, get_reranker
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--engine", choices=["legacy", "llamaindex"], required=True)
     parser.add_argument("--k", type=int, default=5)
     args = parser.parse_args()
     docs, queries = load()
     async with httpx.AsyncClient(timeout=120) as client:
-        if args.engine == "legacy":
-            embedder = ApiEmbedder(
-                os.environ.get("AI_BASE_URL", "https://openrouter.ai/api/v1"),
-                os.environ.get("OPENROUTER_API_KEY", ""),
-                "openai/text-embedding-3-small", client, dim=1536)
-            engine = Engine("legacy", embedder)
-        else:
-            engine = Engine("llamaindex", get_embedder(client), get_reranker(client))
+        engine = Engine(get_embedder(client), get_reranker(client))
         print(json.dumps(await evaluate(engine, docs, queries, args.k)))
 
 

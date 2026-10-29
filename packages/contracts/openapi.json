@@ -9966,7 +9966,7 @@
     },
     "/api/v1/conversations/{id}/approvals/{approvalId}": {
       "post": {
-        "description": "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
+        "description": "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
         "operationId": "postConversationsByIdApprovalsByApprovalId",
         "parameters": [
           {
@@ -10540,7 +10540,12 @@
                       "posting",
                       "review",
                       "interview",
-                      "general"
+                      "general",
+                      "match_posting",
+                      "fit",
+                      "gaps",
+                      "experience",
+                      "boost"
                     ],
                     "type": "string"
                   },
@@ -10799,7 +10804,12 @@
                       "posting",
                       "review",
                       "interview",
-                      "general"
+                      "general",
+                      "match_posting",
+                      "fit",
+                      "gaps",
+                      "experience",
+                      "boost"
                     ],
                     "type": "string"
                   },
@@ -11230,20 +11240,28 @@
                 "properties": {
                   "parts": {
                     "properties": {
+                      "careerLevel": {
+                        "type": "number"
+                      },
+                      "domain": {
+                        "type": "number"
+                      },
                       "experienceLink": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "keyword": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "techStack": {
-                        "type": "integer"
+                        "type": "number"
                       }
                     },
                     "required": [
                       "techStack",
                       "experienceLink",
-                      "keyword"
+                      "careerLevel",
+                      "keyword",
+                      "domain"
                     ],
                     "type": "object"
                   },
@@ -12158,20 +12176,28 @@
                 "properties": {
                   "parts": {
                     "properties": {
+                      "careerLevel": {
+                        "type": "number"
+                      },
+                      "domain": {
+                        "type": "number"
+                      },
                       "experienceLink": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "keyword": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "techStack": {
-                        "type": "integer"
+                        "type": "number"
                       }
                     },
                     "required": [
                       "techStack",
                       "experienceLink",
-                      "keyword"
+                      "careerLevel",
+                      "keyword",
+                      "domain"
                     ],
                     "type": "object"
                   },

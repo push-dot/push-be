@@ -231,10 +231,12 @@ async def test_replace_deletes_then_inserts_in_one_transaction():
     await RagNodeStore(DB(pool)).replace("source", SOURCE, "BAAI/bge-m3", [node_row(0, [0.1, 0.2]), node_row(1, [1, 2])])
     assert pool.executed == []
     assert conn.committed and not conn.rolled_back
-    (delete_sql, delete_args), *inserts = conn.executed
+    (lock_sql, lock_args), (delete_sql, delete_args), *inserts = conn.executed
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert lock_args == (f"source:{SOURCE}",)
     assert delete_sql.startswith("DELETE FROM rag_nodes")
-    assert "embedding_model = $3" in delete_sql
-    assert delete_args == ("source", SOURCE, "BAAI/bge-m3")
+    assert "user_id = $4" in delete_sql
+    assert delete_args == ("source", SOURCE, "BAAI/bge-m3", USER, None)
     assert len(inserts) == 2
     sql, args = inserts[0]
     assert "INSERT INTO rag_nodes" in sql and "$11::vector" in sql
@@ -246,7 +248,7 @@ async def test_replace_deletes_then_inserts_in_one_transaction():
 async def test_replace_with_no_rows_only_deletes():
     conn = Conn()
     await RagNodeStore(DB(Pool(conn))).replace("link", SOURCE, "m", [])
-    assert [sql.split()[0] for sql, _ in conn.executed] == ["DELETE"]
+    assert [sql.split()[0] for sql, _ in conn.executed] == ["SELECT", "DELETE"]
 
 
 async def test_replace_rolls_back_when_an_insert_fails():

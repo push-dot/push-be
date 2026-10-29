@@ -150,8 +150,7 @@ async def test_query_never_returns_another_tenants_nodes():
 
 
 @pytest.mark.asyncio
-async def test_hybrid_fusion_ranks_exact_korean_keyword_above_weak_vector(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "llamaindex")
+async def test_hybrid_fusion_ranks_exact_korean_keyword_above_weak_vector():
     db = FakeDb([
         row("벡터만 가까운 문장", dense=0.05, seq=0),
         row("결제 장애", keyword=1.0, seq=1),

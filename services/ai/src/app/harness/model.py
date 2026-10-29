@@ -11,8 +11,13 @@ from app.domain.errors import DomainError, provider_error
 from app.domain.plan_levers import PlanLevers
 from app.framework.llm import AiUsageCallback, chat_model_for
 from app.framework.models import _apply_usage
-from app.graphs.chat import stub_reply
 from app.harness.tools import to_structured_tool
+
+
+def stub_reply(text: str) -> str:
+    if len(text) > 80:
+        text = text[:80]
+    return f"(로컬 스텁) 메시지를 받았습니다: {text}"
 
 # Whole-call ceiling; long reasoning drafts can stream for minutes but never forever.
 _CALL_TIMEOUT_SECONDS: Final = 180
@@ -100,6 +105,26 @@ class GateModel:
         reply = await self._call(runnable, messages, invoke)
         self._add_usage(reply)
         return reply
+
+    async def astructured(self, schema, messages):
+        """Structured output on the turn model; usage joins the turn's reservation."""
+        runnable, invoke = await self._open(messages)
+        typed = runnable.with_structured_output(
+            schema, method="function_calling", include_raw=True)
+        try:
+            async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
+                out = await typed.ainvoke(messages, **invoke)
+        except DomainError:
+            raise
+        except Exception:
+            raise provider_error("AI provider request failed") from None
+        raw = out.get("raw") if isinstance(out, dict) else None
+        if raw is not None:
+            self._add_usage(raw)
+        parsed = out.get("parsed") if isinstance(out, dict) else out
+        if parsed is None:
+            raise provider_error("AI provider returned an unreadable answer")
+        return parsed if isinstance(parsed, schema) else schema.model_validate(parsed)
 
     async def astream(self, messages, **kwargs):
         runnable, invoke = await self._open(messages)

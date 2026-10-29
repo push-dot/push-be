@@ -25,7 +25,11 @@ const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => 
   return PLAN_EFFORT[`PERSONAL:${tier || "FREE"}`] ?? "LOW";
 };
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 27_000_000, ULTRA: 108_000_000 };
-const INTENTS = new Set(["posting", "review", "interview", "general"]);
+const INTENTS = new Set([
+  "posting", "review", "interview", "general",
+  "match_posting", "fit", "gaps", "experience", "boost",
+]);
+const PERSONAL_INTENTS = new Set(["match_posting", "fit", "gaps", "experience", "boost"]);
 const CANONICAL_ACCESS: Record<string, string> = {
   ALWAYS_ASK: "ALWAYS_ASK",
   AUTO: "AUTO",
@@ -432,6 +436,9 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
   else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
   if (owned.company_id != null) {
+    if (intent != null && PERSONAL_INTENTS.has(intent)) {
+      throw new HttpError(400, "VALIDATION_ERROR", "unsupported intent", { field: "intent" });
+    }
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
   }
@@ -546,15 +553,14 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
   const result = { id: approvalId, status, optionId, ...(picked.optionIds ? { optionIds: picked.optionIds } : {}) };
   const resumes = RESUMABLE.has(kind) || row.job_id != null;
-  const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
-  if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
+  if (!resumes) return data(200, result, ctx.rid);
   const resume: Record<string, unknown> = { approvalId, optionId };
   if (picked.optionIds) resume.optionIds = picked.optionIds;
   try {
     const jobId = await enqueueResumeJob(ctx, {
       conversationId, userId: ctx.user.id, payload: { resume }, idempotencyKey: `approval:${approvalId}`,
     });
-    return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
+    return data(202, { ...result, jobId }, ctx.rid);
   } catch (err) {
     await query(ctx.deps.query,
       "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",

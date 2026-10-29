@@ -58,7 +58,7 @@ class Gate:
     async def _route(self, user_id, ai):
         return SimpleNamespace(base_url="http://llm.test"), "key", ai.model, None
 
-    async def _reserve(self, user_id, ai, system, user, job_id=None):
+    async def _reserve(self, user_id, ai, system, user, job_id=None, purpose="chat"):
         self.reserved.append(job_id)
         return uuid4()
 

@@ -66,7 +66,13 @@ const chatEvents: Record<string, Schema> = {
   fit: obj({
     type: enumOf("fit"),
     score: num,
-    parts: obj({ techStack: int, experienceLink: int, keyword: int }),
+    parts: obj({
+      techStack: num,
+      experienceLink: num,
+      careerLevel: num,
+      keyword: num,
+      domain: num,
+    }),
     topGap: str,
     seq,
   }),
@@ -159,7 +165,10 @@ const postMessageBody = body(obj({
     models: { type: "object", additionalProperties: true },
   }, ["provider", "model"])),
   accessMode: { ...enumOf("ALWAYS_ASK", "AUTO", "BYPASS", "SUGGEST", "CONFIRM_ACTIONS"), description: "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting" },
-  intent: enumOf("posting", "review", "interview", "general"),
+  intent: enumOf(
+    "posting", "review", "interview", "general",
+    "match_posting", "fit", "gaps", "experience", "boost",
+  ),
   applicationId: nullable(uuid),
 }, ["text"]));
 
@@ -297,7 +306,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/approvals/{approvalId}", {
     tag: "conversations",
     summary: "Answer a chat approval or choice card",
-    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
+    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
     params: [id, pathParam("approvalId")],
     body: body(obj({
       optionId: { type: "string", minLength: 1 },

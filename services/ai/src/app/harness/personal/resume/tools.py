@@ -8,11 +8,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel
 
-from app.domain.posting_fit import compute_fit
+from app.framework.fit_judge import judge_fit
 from app.harness.policy import Tier
+from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
+from app.infrastructure.posting_fit_cache import read_plan
 from app.ingest.pdf_text import extract_pdf_bytes
 from app.ingest.web_page import fetch_github_context, github_usernames
-from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 
 _FINAL_MD = re.compile(r"05_final_\w+\.md")
 
@@ -97,10 +98,19 @@ async def _posting(ctx: ToolContext, args: PostingArgs) -> dict:
     )
 
 
-async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    return compute_fit(
-        args.requirements, args.keywords, args.description,
-        args.document_id or UUID(int=0), args.content, "FREE")
+async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
+    query = None if ctx.db is None else ctx.db.q()
+    user_id = None
+    if query is not None:
+        try:
+            user_id = UUID(ctx.user_id)
+        except ValueError:
+            user_id = None
+    plan = await read_plan(query, user_id)
+    from app.harness.personal.tools import current_ai_gate
+    return await judge_fit(
+        args.requirements, args.keywords, args.description, args.content, plan,
+        gate=current_ai_gate(), job_id=ctx.job_id or None, user_id=user_id)
 
 
 def _artifact_id(ctx: ToolContext, name: str) -> str:
@@ -127,7 +137,7 @@ async def _put_pdf(ctx: ToolContext, name: str, content: bytes) -> None:
     )
 
 
-async def _document_id(ctx: ToolContext, name: str) -> str:
+async def _document_id(ctx: ToolContext, name: str, template: str | None = None) -> str:
     from app.harness.personal.tools import bound_services
     from app.infrastructure.resume_workspace import _sync_documents_db
 
@@ -144,13 +154,16 @@ async def _document_id(ctx: ToolContext, name: str) -> str:
         user_id,
         SimpleNamespace(id=ctx.conversation_id, title=""),
         [name],
+        template,
     )
     if not synced:
         return ""
     return str(synced[0]["document_id"])
 
 
-async def save_artifact(ctx: ToolContext, name: str, content: str) -> str:
+async def save_artifact(
+    ctx: ToolContext, name: str, content: str, template: str | None = None,
+) -> str:
     file_id = _artifact_id(ctx, name)
     if ctx.db is None:
         return file_id
@@ -161,9 +174,12 @@ async def save_artifact(ctx: ToolContext, name: str, content: str) -> str:
     from app.infrastructure.resume_workspace import md_to_pdf
 
     buf = io.BytesIO()
-    await asyncio.to_thread(md_to_pdf, body, buf)
+    if template:
+        await asyncio.to_thread(md_to_pdf, body, buf, template)
+    else:
+        await asyncio.to_thread(md_to_pdf, body, buf)
     await _put_pdf(ctx, name[:-3] + ".pdf", buf.getvalue())
-    document_id = await _document_id(ctx, name)
+    document_id = await _document_id(ctx, name, template)
     emit({
         "type": "file",
         "name": name,

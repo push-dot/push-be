@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
@@ -14,15 +14,49 @@ from app.domain import entities as ent
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
-from app.graphs.chat import _stable_ids
 from app.harness.document_edits import env_core
-from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
+from app.harness.graph import (
+    RECURSION_LIMIT, _open_calls, build_harness_graph, quick_start_resume, turn_model,
+)
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
+from app.infrastructure.store_chat_jobs import user_message_id
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
+
+
+_PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
+_TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
+
+
+def _stable_ids(job_id) -> tuple:
+    if job_id:
+        jid = job_id if isinstance(job_id, UUID) else UUID(str(job_id))
+        base = "push:chat:" + str(jid)
+        return (user_message_id(jid),
+                uuid5(NAMESPACE_URL, base + ":assistant"),
+                uuid5(NAMESPACE_URL, base + ":op"))
+    return uuid4(), uuid4(), uuid4()
+
+
+_EMPLOYER_INTENTS = ("posting", "review", "interview")
+
+
+def employer_start(payload: dict, conversation: dict) -> dict | None:
+    """A web entry point (intent) starts an employer flow; plain chat goes to the agent."""
+    name = str(payload.get("intent") or "")
+    if name not in _EMPLOYER_INTENTS:
+        return None
+    application_id = (payload.get("application_id") or payload.get("applicationId")
+                      or conversation.get("application_id"))
+    start = {"name": name}
+    if name == "posting" and conversation.get("posting_id"):
+        start["reference_posting_id"] = conversation["posting_id"]
+    if name in ("review", "interview") and application_id:
+        start["application_id"] = str(application_id)
+    return start
 
 
 def _saved_resume(raw) -> dict:
@@ -47,6 +81,7 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
         "strategy": saved.get("strategy") or {},
         "drafts": saved.get("drafts") or {},
         "review": saved.get("review") or {},
+        "template": saved.get("template"),
         "artifacts": saved.get("artifacts") or {},
         "warnings": saved.get("warnings") or [],
         "access_mode": mode.value,
@@ -84,8 +119,17 @@ def _state(payload: dict, conversation: dict) -> dict:
 
 _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
-    "drafts", "review", "artifacts", "warnings",
+    "drafts", "review", "template", "artifacts", "output_targets", "tone", "warnings",
+    "approach", "bottleneck_level", "prevention_categories", "blueprints",
 )
+
+
+def _gate_answer(resume: dict) -> dict:
+    answer = {"option_id": resume.get("optionId")}
+    ids = resume.get("optionIds")
+    if isinstance(ids, list) and ids:
+        answer["option_ids"] = [str(item) for item in ids]
+    return answer
 
 
 async def _turn_inputs(payload: dict) -> dict:
@@ -163,7 +207,8 @@ class HarnessRuntime:
         }
         try:
             row = await self.svc.db.q().fetchrow(
-                "SELECT company_id, resume_state FROM conversations WHERE id = $1",
+                "SELECT company_id, resume_state, posting_id, application_id "
+                "FROM conversations WHERE id = $1",
                 payload.get("conversation_id"),
             )
         except Exception:
@@ -174,6 +219,12 @@ class HarnessRuntime:
             found["company_id"] = row["company_id"]
         if row["resume_state"] is not None:
             found["resume_state"] = row["resume_state"]
+        for key in ("posting_id", "application_id"):
+            try:
+                if row[key] is not None:
+                    found[key] = str(row[key])
+            except (KeyError, IndexError):
+                continue
         return found
 
     async def _open(self, payload):
@@ -259,11 +310,11 @@ class HarnessRuntime:
         if resume.get("approvalId"):
             if waiting is None:
                 return
-            state = Command(resume={"option_id": resume.get("optionId")})
-        elif waiting is not None and waiting.get("kind") == "RESUME_GATE" and text:
+            state = Command(resume=_gate_answer(resume))
+        elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await _turn_inputs(payload)})
-        elif waiting is not None and waiting.get("kind") == "RESUME_GATE":
+        elif waiting is not None and waiting.get("kind") in _TEXT_GATES:
             return
         else:
             state = _state(payload, conversation)
@@ -272,11 +323,20 @@ class HarnessRuntime:
             # Heal calls a crashed turn left open too, or the provider rejects every later turn.
             crashed = None if waiting is not None else {"error": "TOOL_FAILED"}
             state["messages"] = [*_rejections(snapshot.values, crashed), *state["messages"]]
+            if spec.id == "employer":
+                start = employer_start(payload, conversation)
+                if start is not None:
+                    state["start_flow"] = start
             if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
-                if _saved_resume(conversation.get("resume_state")).get("status") == "active":
+                saved = _saved_resume(conversation.get("resume_state"))
+                if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
                     seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
                     state["resume"] = seeded
+                elif quick_start_resume(payload.get("intent"), saved) is not None:
+                    state["intent"] = payload.get("intent")
+                    if saved:
+                        state["resume"] = saved
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
         done = None
@@ -332,7 +392,7 @@ class HarnessRuntime:
     async def _reject_waiting(self, conversation_id) -> None:
         await self.svc.db.q().execute(
             "UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 "
-            "WHERE conversation_id = $1 AND status = 'PENDING' AND kind <> 'RESUME_GATE' "
+            "WHERE conversation_id = $1 AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') "
             "AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL)",
             conversation_id,
         )
@@ -364,7 +424,6 @@ class HarnessRuntime:
 
     async def _persist(self, payload: dict, reply: str, ai, turn: dict) -> ent.Operation:
         from app.domain.services.ai import record_usage
-        from app.graphs.chat import _PLACEHOLDER_TITLES, _stable_ids
         svc = self.svc
         user_id = payload["user_id"]
         conversation = await svc.conversations.get(user_id, payload["conversation_id"])

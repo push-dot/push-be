@@ -9,56 +9,22 @@ def ai_handlers(deps, query) -> dict:
     from app.workers.handlers.document import make_document
     from app.workers.handlers.fit import make_fit
 
+    gate = getattr(getattr(deps, "ai", None), "gate", None)
     return {
         "chat": chat,
         "employer_ai": chat,
         "document": make_document(deps.documents),
-        "fit": make_fit(query),
+        "fit": make_fit(query, gate),
     }
 
 
 async def build_chat(svc) -> None:
-    from uuid import UUID
-
     from app.harness.jobs import run_queue_turn
-    from app.queue.worker import JobCancelled
-    from app.workers.handlers.chat import configure_chat, configure_harness, configure_saved_turn
+    from app.workers.handlers.chat import configure_harness
 
     async def cancelled(job_id):
         return await svc.jobs.worker_status(job_id) == "CANCELLED"
 
-    async def set_state(job_id, state):
-        await svc.jobs.worker_set_state(job_id, state)
-
-    async def run_node(ctx, name):
-        jid = ctx.job["id"]
-        if not isinstance(jid, UUID):
-            jid = UUID(str(jid))
-        result = await svc.exec_chat_node(str(jid), name, "")
-        if result == "skip":
-            raise JobCancelled()
-        if result != "ok":
-            raise RuntimeError("chat node " + name + " failed")
-        job = await svc.jobs.get(jid)
-        checkpoint = (job or {}).get("checkpoint") or {}
-        if isinstance(checkpoint, str):
-            import json
-            checkpoint = json.loads(checkpoint)
-        state = checkpoint.get("state") or {}
-        if not isinstance(state, dict):
-            state = {}
-        return {
-            "messageId": str(state.get("messageId") or ""),
-            "needs_approval": bool(state.get("needs_approval")),
-        }
-
-    async def saved(ctx):
-        from app.domain.services.conversation import run_saved_chat
-        return await run_saved_chat(
-            svc.graph, ctx, cancelled=cancelled, set_state=set_state)
-
-    configure_chat(run_node=run_node, cancelled=cancelled, set_state=set_state)
-    configure_saved_turn(saved)
     configure_harness(lambda ctx: run_queue_turn(svc, ctx, cancelled))
 
 

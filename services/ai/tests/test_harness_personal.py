@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-from types import SimpleNamespace
-
 import httpx
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
@@ -199,15 +197,8 @@ def test_router():
     assert select_harness({"resume_state": {"status": "done"}}).id == "personal"
 
 
-def test_flag_off_uses_legacy_graph(monkeypatch):
+def test_message_without_a_flag_routes_through_the_harness(monkeypatch):
     monkeypatch.delenv("AI_HARNESS", raising=False)
-    svc = ConversationService(FakeDB(), None, MemorySaver())
-    names = set(svc.graph.get_graph().nodes)
-    assert {"resolve_context", "generate_reply", "persist"} <= names
-
-
-def test_flag_on_uses_harness_nodes(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
     svc = ConversationService(FakeDB(), None, MemorySaver())
     names = set(svc.graph.get_graph().nodes)
     assert {"agent", "tools"} <= names
@@ -487,7 +478,7 @@ async def test_paused_gate_survives_worker_restart_and_resumes_on_conversation_t
     assert moved.next == ("resume_flow",)
     assert moved.values["resume"]["phase"] == "intake"
     assert moved.values["resume"]["status"] == "active"
-    assert _gate(moved)["gate"] == "intake"
+    assert _gate(moved)["gate"] == "output_targets"
     assert moved.values["job_id"] == _JOB
 
 
@@ -500,7 +491,7 @@ async def test_cancel_returns_to_agent_same_thread(phase):
     await _drain(graph, _flow_input(conversation_id, phase), config)
     paused = await graph.aget_state(config)
     assert paused.next == ("resume_flow",)
-    assert _gate(paused)["gate"] == phase
+    assert _gate(paused)["gate"] == ("output_targets" if phase == "intake" else phase)
 
     events = await _drain(graph, Command(resume={"option_id": "cancel"}), config)
     done = await graph.aget_state(config)

@@ -91,6 +91,16 @@ async def test_resume_turn_prefetches_pages_and_keeps_attachments(monkeypatch):
     assert saved["inputs"]["attachments"] == [evidence]
 
 
+def test_gate_answer_forwards_option_ids():
+    from app.harness.runtime import _gate_answer
+
+    assert _gate_answer({"optionId": "resume"}) == {"option_id": "resume"}
+    assert _gate_answer({"optionId": "resume", "optionIds": ["portfolio", "resume"]}) == {
+        "option_id": "resume",
+        "option_ids": ["portfolio", "resume"],
+    }
+
+
 async def test_bypass_intake_with_a_page_does_not_stop():
     from app.harness.personal.resume.graph import _must_stop
     assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")
@@ -183,6 +193,46 @@ async def test_start_document_second_ask_can_be_answered():
     assert _saved_resume(rows)["status"] == "cancelled"
 
 
+async def test_boost_choice_answer_resumes_the_cycle(monkeypatch):
+    scores = iter([1.0, 2.0, 3.0, 4.0])
+
+    async def fake(*_args, **_kwargs):
+        return {"fitScore": next(scores), "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {
+        "status": "done",
+        "drafts": {"markdown": "백엔드 경력"},
+        "analysis": {"jobs": {"requirements": ["Python"], "keywords": ["Kafka"]}},
+        "inputs": {"pages": {"https://jobs.example/1": "백엔드 공고"}},
+    }})
+    runtime = HarnessRuntime(service(rows))
+    first = await run(runtime, _payload("점수 올려줘", ai=None, intent="boost"))
+    boost = next(
+        chunk for mode, chunk in first
+        if mode == "custom" and chunk.get("gate") == "boost"
+    )
+    assert boost["kind"] == "RESUME_GATE"
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in first
+    )
+    assert boost["title"] == "점수를 한 번 더 올릴까요?"
+    assert boost["detail"] == "적합도 1.0 → 2.0 (+1.0)"
+    assert [item["id"] for item in boost["options"]] == ["continue", "stop", "cancel"]
+    second = await run(runtime, _payload(
+        "", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        resume={"approvalId": boost["id"], "optionId": "continue"}))
+    again = next(
+        chunk for mode, chunk in second
+        if mode == "custom" and chunk.get("gate") == "boost"
+    )
+    assert again["id"] != boost["id"]
+    assert again["detail"] == "적합도 2.0 → 3.0 (+1.0)"
+
+
 async def test_start_document_continue_choice_keeps_the_flow():
     from app.harness.personal import tools
     from app.harness.router import select_harness
@@ -251,7 +301,7 @@ async def test_runaway_tool_loop_becomes_a_clean_domain_error(monkeypatch):
 
 
 def test_user_turn_message_id_is_stable_across_retries():
-    from app.graphs.chat import _stable_ids
+    from app.harness.runtime import _stable_ids
     payload = _payload("안녕")
     first = runtime_module._state(payload, {})["messages"][0]
     again = runtime_module._state(payload, {})["messages"][0]
@@ -333,7 +383,6 @@ class _JobCtx:
 
 async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
     # Closing later, from GC in another Context, broke the stream's contextvar resets.
-    monkeypatch.setenv("AI_HARNESS", "1")
     closed = []
 
     class Graph:
@@ -353,7 +402,6 @@ async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
 
 
 async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(monkeypatch):
-    monkeypatch.setenv("AI_HARNESS", "1")
     monkeypatch.setattr(jobs, "monotonic", lambda: 100.0)
 
     class Graph:

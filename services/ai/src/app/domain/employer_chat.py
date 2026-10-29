@@ -6,6 +6,7 @@ from app.domain.errors import validation_field
 from app.domain.plan_levers import levers_for
 
 INTENTS = frozenset({"posting", "review", "interview", "general"})
+PERSONAL_INTENTS = frozenset({"match_posting", "fit", "gaps", "experience", "boost"})
 _UNSET = object()
 _plan: ContextVar[object] = ContextVar("employer_company_plan", default=_UNSET)
 
@@ -13,7 +14,7 @@ _plan: ContextVar[object] = ContextVar("employer_company_plan", default=_UNSET)
 def known_intent(intent: str | None) -> str | None:
     if intent is None or intent == "":
         return None
-    if not isinstance(intent, str) or intent not in INTENTS:
+    if not isinstance(intent, str) or intent not in INTENTS | PERSONAL_INTENTS:
         raise validation_field("intent", "unsupported intent")
     return intent
 
@@ -43,7 +44,7 @@ def apply_employer_turn(ai, plan: str | None, intent: str | None, config: object
 
 def posting_system_prompt() -> str:
     return (
-        "공고 초안은 다음 펜스 안에 JSON으로만 써.\n"
+        "공고 초안은 다음 펜스 안에 JSON으로만 쓴다.\n"
         "```posting-draft\n"
         "{\n"
         '  "title": "",\n'

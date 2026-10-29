@@ -1,5 +1,4 @@
 """Process entrypoints (infra/vps/compose.yaml) wired with fakes: no Redis, Postgres or network."""
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -13,7 +12,7 @@ import app.embedding.factory
 import app.queue.worker
 from app.infrastructure.store_chat_jobs import ChatJobStore, QueueJobs
 from app.queue.streams import StreamQueue
-from app.queue.worker import JobCancelled, JobFailed
+from app.queue.worker import JobFailed
 from app.workers import ai_worker_main, dispatcher_main, ingest_worker_main, notify_worker_main
 from app.workers.handlers import chat as chat_mod
 
@@ -258,20 +257,13 @@ class Jobs:
 
 
 class Svc:
-    def __init__(self, result="ok", job=None, status="RUNNING"):
+    def __init__(self, job=None, status="RUNNING"):
         self.jobs = Jobs(status, job)
-        self.result = result
-        self.nodes = []
-
-    async def exec_chat_node(self, job_id, name, extra):
-        self.nodes.append((job_id, name, extra))
-        return self.result
 
 
 @pytest.fixture
 def chat_globals(monkeypatch):
-    for name in ("_run_node", "_cancelled", "_set_state", "_harness", "_saved_turn"):
-        monkeypatch.setattr(chat_mod, name, getattr(chat_mod, name))
+    monkeypatch.setattr(chat_mod, "_harness", chat_mod._harness)
     return chat_mod
 
 
@@ -288,50 +280,16 @@ async def configured(svc, monkeypatch, chat_globals):
     return turns
 
 
-async def test_build_chat_run_node_reads_message_and_approval_from_checkpoint(monkeypatch, chat_globals):
-    svc = Svc(job={"checkpoint": {"state": {"messageId": "m-1", "needs_approval": 1}}})
-    await configured(svc, monkeypatch, chat_globals)
-    out = await chat_mod._run_node(SimpleNamespace(job={"id": str(JOB)}), "respond")
-    assert out == {"messageId": "m-1", "needs_approval": True}
-    assert svc.nodes == [(str(JOB), "respond", "")]
-    assert svc.jobs.calls == [("get", JOB)]
-
-
-@pytest.mark.parametrize("job, expected", [
-    ({"checkpoint": json.dumps({"state": {"messageId": "m-2"}})}, {"messageId": "m-2", "needs_approval": False}),
-    ({"checkpoint": {"state": ["not", "a", "dict"]}}, {"messageId": "", "needs_approval": False}),
-    ({"checkpoint": None}, {"messageId": "", "needs_approval": False}),
-    (None, {"messageId": "", "needs_approval": False}),
-])
-async def test_build_chat_run_node_tolerates_odd_checkpoints(monkeypatch, chat_globals, job, expected):
-    svc = Svc(job=job)
-    await configured(svc, monkeypatch, chat_globals)
-    assert await chat_mod._run_node(SimpleNamespace(job={"id": JOB}), "plan") == expected
-
-
-async def test_build_chat_run_node_skip_cancels_and_failure_raises(monkeypatch, chat_globals):
-    svc = Svc(result="skip")
-    await configured(svc, monkeypatch, chat_globals)
-    with pytest.raises(JobCancelled):
-        await chat_mod._run_node(SimpleNamespace(job={"id": JOB}), "plan")
-    svc.result = "error"
-    with pytest.raises(RuntimeError, match="chat node plan failed"):
-        await chat_mod._run_node(SimpleNamespace(job={"id": JOB}), "plan")
-    assert svc.jobs.calls == []
-
-
-async def test_build_chat_cancel_state_and_harness_hooks_use_the_service(monkeypatch, chat_globals):
+async def test_build_chat_wires_the_harness(monkeypatch, chat_globals):
     svc = Svc(status="CANCELLED")
     turns = await configured(svc, monkeypatch, chat_globals)
-    assert await chat_mod._cancelled(JOB) is True
-    svc.jobs.status = "RUNNING"
-    assert await chat_mod._cancelled(JOB) is False
-    await chat_mod._set_state(JOB, "NEEDS_APPROVAL")
-    assert ("set_state", JOB, "NEEDS_APPROVAL") in svc.jobs.calls
     ctx = SimpleNamespace(job={"id": JOB})
     assert await chat_mod._harness(ctx) == {"handled": True}
     (s, c, cancelled), = turns
-    assert s is svc and c is ctx and cancelled is chat_mod._cancelled
+    assert s is svc and c is ctx
+    assert await cancelled(JOB) is True
+    svc.jobs.status = "RUNNING"
+    assert await cancelled(JOB) is False
 
 
 async def test_serve_api_binds_port_and_stops_worker_even_if_server_crashes(monkeypatch):

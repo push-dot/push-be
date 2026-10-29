@@ -75,7 +75,7 @@ async def test_run_stops_when_status_becomes_cancelled():
 
     jobs.emit = emit
     svc.jobs = jobs
-    svc._compiled = _Chunks([
+    svc._harness_runtime = _Chunks([
         ("custom", {"token": "hi"}),
         ("custom", {"type": "tool", "name": "read", "state": "ok", "summary": "file"}),
         ("values", {"operation": {"status": "SUCCEEDED"}}),
