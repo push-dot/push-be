@@ -50,7 +50,7 @@ class GateModel:
         return GateModel(self.gate, self.user_id, self.ai, self.job_id, self.turn,
                          tools, self.cls)
 
-    async def ainvoke(self, messages, **kwargs):
+    async def _open(self, messages):
         if not self.turn.get("checked"):
             await self.gate.check(self.user_id, self.ai)
             self.turn["checked"] = True
@@ -77,18 +77,51 @@ class GateModel:
             callback = AiUsageCallback(store, self.user_id, self.job_id, self.turn["usage_id"])
         runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if self.tools else lc
         invoke = {"config": {"callbacks": [callback]}} if callback is not None else {}
+        return runnable, invoke
+
+    def _add_usage(self, reply) -> None:
+        usage: dict = {}
+        _apply_usage(reply, usage)
+        self.turn["input_tokens"] = self.turn.get("input_tokens", 0) + usage.get("input_tokens", 0)
+        added = usage.get("output_tokens", 0)
+        self.turn["output_tokens"] = self.turn.get("output_tokens", 0) + added
+
+    async def _call(self, runnable, messages, invoke):
         try:
             async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
-                reply = await runnable.ainvoke(messages, **invoke)
+                return await runnable.ainvoke(messages, **invoke)
         except DomainError:
             raise
         except Exception:
             raise provider_error("AI provider request failed")
-        usage: dict = {}
-        _apply_usage(reply, usage)
-        self.turn["input_tokens"] = self.turn.get("input_tokens", 0) + usage.get("input_tokens", 0)
-        self.turn["output_tokens"] = self.turn.get("output_tokens", 0) + usage.get("output_tokens", 0)
+
+    async def ainvoke(self, messages, **kwargs):
+        runnable, invoke = await self._open(messages)
+        reply = await self._call(runnable, messages, invoke)
+        self._add_usage(reply)
         return reply
+
+    async def astream(self, messages, **kwargs):
+        runnable, invoke = await self._open(messages)
+        stream = getattr(runnable, "astream", None)
+        if stream is None:
+            reply = await self._call(runnable, messages, invoke)
+            self._add_usage(reply)
+            yield reply
+            return
+        last = None
+        try:
+            async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
+                async for chunk in stream(messages, **invoke):
+                    if getattr(chunk, "usage_metadata", None):
+                        last = chunk
+                    yield chunk
+        except DomainError:
+            raise
+        except Exception:
+            raise provider_error("AI provider request failed")
+        if last is not None:
+            self._add_usage(last)
 
 
 async def settle_turn(gate, turn: dict, ok: bool) -> None:
