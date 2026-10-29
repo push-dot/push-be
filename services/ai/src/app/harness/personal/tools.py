@@ -15,8 +15,9 @@ from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.posting_fit import compute_fit
 from app.graphs.chat_surface import insert_chat_approval
-from app.harness.document_edits import apply_edit
 from app.harness.core_client import idempotency_key
+from app.harness.document_edits import apply_edit
+from app.harness.graph import enter_flow
 from app.harness.policy import Decision, Tier, decide
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.jsonutil import to_jsonable
@@ -273,7 +274,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
         ctx.conversation_id,
         json.dumps(state, ensure_ascii=False),
     )
-    return {"harness": "resume", "resume_state": state}
+    return enter_flow("resume_flow", resume=state)
 
 
 async def _list_applications(ctx: ToolContext, _args: EmptyArgs) -> dict:

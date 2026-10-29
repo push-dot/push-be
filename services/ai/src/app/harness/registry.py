@@ -5,7 +5,7 @@ from pathlib import Path
 from app.domain.employer_chat import posting_system_prompt
 from app.harness.employer.tools import EMPLOYER_TOOLS
 from app.harness.personal.tools import PERSONAL_TOOLS
-from app.harness.resume.tools import RESUME_TOOLS
+from app.harness.personal.resume.tools import RESUME_TOOLS
 from app.harness.tools import HarnessSpec
 
 _ROOT = Path(__file__).parent

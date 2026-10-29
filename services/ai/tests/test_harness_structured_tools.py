@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from app.harness.employer.tools import EMPLOYER_TOOLS
 from app.harness.personal.tools import PERSONAL_TOOLS
 from app.harness.policy import Tier
-from app.harness.resume.tools import RESUME_TOOLS
+from app.harness.personal.resume.tools import RESUME_TOOLS
 from app.harness.tools import ToolContext, ToolSpec
 from tests.test_harness_employer import _TIERS as EMPLOYER_TIERS
 from tests.test_harness_personal import _TIERS as PERSONAL_TIERS
