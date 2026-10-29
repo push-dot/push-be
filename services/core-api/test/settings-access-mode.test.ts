@@ -104,6 +104,8 @@ test("a message stores the canonical access mode in both keys", async () => {
     body: JSON.stringify({ text: "hi", accessMode: "CONFIRM_ACTIONS" }),
   }), { ...env(), API: api } as CoreEnv, deps(authed(seen, async (sql) => {
     if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     return empty;
   })));
   assert.equal(res.status, 202);

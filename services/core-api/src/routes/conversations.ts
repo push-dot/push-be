@@ -1,7 +1,7 @@
 import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
-import { HttpError, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
+import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
 import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
@@ -38,10 +38,18 @@ const FORM_OVERHEAD_BYTES = 64 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
+const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
 const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
   + " WHERE e.user_id = $1 AND e.archived = false"
   + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
   + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
+
+async function requireAgentConsent(ctx: Ctx): Promise<void> {
+  const row = await one(ctx.deps.query, AGENT_CONSENT, [ctx.user.id]);
+  if (!asBool(row?.reference_data)) {
+    throw new HttpError(403, "CONSENT_REQUIRED", "reference data consent is required");
+  }
+}
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -124,6 +132,7 @@ export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
   forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  await requireAgentConsent(ctx);
   if (body.audience != null && body.audience !== "PERSONAL") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
@@ -429,12 +438,14 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
-    allowChat(ctx, ai),
   ]);
+  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (owned.company_id == null) await requireAgentConsent(ctx);
+  await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
   if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
   else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
-  if (owned && owned.company_id != null) {
+  if (owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
   }

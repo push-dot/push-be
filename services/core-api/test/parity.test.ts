@@ -109,6 +109,8 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
     if (sql.includes("ai_usage")) return { rows: [{ spent: 1_800_000 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.startsWith("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
@@ -143,6 +145,8 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: null }], rowCount: 1 };
     if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-free" }], rowCount: 1 };
@@ -166,6 +170,8 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
     if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-2" }], rowCount: 1 };

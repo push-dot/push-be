@@ -98,7 +98,7 @@ export const del = route("delete");
 export const sharedSchemas: Record<string, Schema> = {
   Error: obj({
     error: obj({
-      code: { type: "string", description: "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ..." },
+      code: { type: "string", description: "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ..." },
       message: str,
       requestId: str,
       details: nullable({ type: "object", additionalProperties: true }),

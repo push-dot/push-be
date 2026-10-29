@@ -145,7 +145,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations", {
     tag: "conversations",
     summary: "Create a conversation",
-    description: "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.",
+    description: "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
     body: body(obj({
       title: { type: "string", maxLength: 300 },
       audience: enumOf("PERSONAL", "EMPLOYER"),
@@ -198,7 +198,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "Send a message (queue a chat job)",
-    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
     params: [id],
     body: postMessageBody,
     responses: { 202: ok(chatJob, "Accepted") },

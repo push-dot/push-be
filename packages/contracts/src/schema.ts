@@ -925,7 +925,7 @@ export interface paths {
         put?: never;
         /**
          * Create a conversation
-         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.
+         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.
          */
         post: operations["postConversations"];
         delete?: never;
@@ -1087,7 +1087,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message (queue a chat job)
-         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
          */
         post: operations["postConversationsByIdMessages"];
         delete?: never;
@@ -1914,6 +1914,26 @@ export interface paths {
          * @description Setting referenceData false deletes the user's reference samples.
          */
         put: operations["putMeConsents"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/consents/terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Store signup terms
+         * @description Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.
+         */
+        put: operations["putMeConsentsTerms"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3519,6 +3539,14 @@ export interface components {
         };
         Consents: {
             referenceData: boolean;
+            terms: {
+                age14At: string | null;
+                marketing: boolean;
+                marketingAt: string | null;
+                privacyAt: string | null;
+                serviceTermsAt: string | null;
+                version: string | null;
+            };
             updatedAt: string | null;
         };
         Conversation: {
@@ -3788,7 +3816,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -8278,6 +8306,39 @@ export interface operations {
             content: {
                 "application/json": {
                     referenceData: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Consents"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    putMeConsentsTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    age14?: boolean;
+                    marketing?: boolean;
+                    privacy?: boolean;
+                    serviceTerms?: boolean;
+                    termsVersion?: string;
                 };
             };
         };

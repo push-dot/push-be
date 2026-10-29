@@ -1859,6 +1859,76 @@
           "referenceData": {
             "type": "boolean"
           },
+          "terms": {
+            "properties": {
+              "age14At": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "marketing": {
+                "type": "boolean"
+              },
+              "marketingAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "privacyAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "serviceTermsAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "age14At",
+              "serviceTermsAt",
+              "privacyAt",
+              "marketing",
+              "marketingAt"
+            ],
+            "type": "object"
+          },
           "updatedAt": {
             "anyOf": [
               {
@@ -1873,7 +1943,8 @@
         },
         "required": [
           "referenceData",
-          "updatedAt"
+          "updatedAt",
+          "terms"
         ],
         "type": "object"
       },
@@ -2927,7 +2998,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ...",
                 "type": "string"
               },
               "details": {
@@ -9243,7 +9314,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.",
+        "description": "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
         "operationId": "postConversations",
         "parameters": [
           {
@@ -9954,7 +10025,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
         "operationId": "postConversationsByIdMessages",
         "parameters": [
           {
@@ -15225,6 +15296,70 @@
           }
         },
         "summary": "Update data consents",
+        "tags": [
+          "consents"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/consents/terms": {
+      "put": {
+        "description": "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+        "operationId": "putMeConsentsTerms",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "age14": {
+                    "type": "boolean"
+                  },
+                  "marketing": {
+                    "type": "boolean"
+                  },
+                  "privacy": {
+                    "type": "boolean"
+                  },
+                  "serviceTerms": {
+                    "type": "boolean"
+                  },
+                  "termsVersion": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Consents"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Store signup terms",
         "tags": [
           "consents"
         ],

@@ -26,6 +26,8 @@ const deps = (): Deps => ({
     }
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "1" }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "PRO", is_employer: false }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("chat_jobs")) return { rows: [{ id: String(params[2]) }], rowCount: 1 };
     return empty;
   },
