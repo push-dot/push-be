@@ -31,6 +31,18 @@ class MemoryStore:
         ids = sorted(s for s in SOURCES if (("source", s, model) not in self.rows))
         return [{"id": s, "user_id": USER} for s in ids if after is None or s > after][:limit]
 
+    async def evidence_missing(self, model, after=None, limit=100):
+        return []
+
+    async def documents_missing(self, model, after=None, limit=100):
+        return []
+
+    async def jobs_missing(self, model, after=None, limit=100):
+        return []
+
+    async def postings_missing(self, model, after=None, limit=100):
+        return []
+
 
 SOURCES = [SOURCE]
 

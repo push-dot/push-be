@@ -1,3 +1,4 @@
+import { enqueueIngest } from "../jobs/ingest.ts";
 import { strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
 import { HttpError, data, fieldError, pageBody, requireUuid, sha256Hex } from "../http.ts";
@@ -127,6 +128,7 @@ export const createEvidence = async (ctx: Ctx): Promise<Response> => {
   await query(ctx.deps.query,
     `INSERT INTO career_evidence (${COLS}) VALUES ($1,$2,1,$3,$4,$5,$6,$7::jsonb,'USER_PROVIDED',$8::jsonb,$9,false,$10,$10)`,
     [row.id, ctx.user.id, kind, title, sourceText, sourceUrl, JSON.stringify(skills), JSON.stringify(row.provenance), supersedesId, now]);
+  await enqueueIngest(ctx, { evidenceId: String(row.id) });
   return data(201, evidenceDto(row), ctx.rid);
 };
 

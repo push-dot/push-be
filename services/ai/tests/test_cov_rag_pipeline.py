@@ -46,16 +46,27 @@ def llama(monkeypatch):
             parts = [p for d in docs for p in d.text.split("\n\n")]
             return [FakeNode(p, f"node-{i}") for i, p in enumerate(parts)]
 
+    class IngestionPipeline:
+        def __init__(self, transformations, disable_cache=True):
+            self.transformations = transformations
+
+        def run(self, documents):
+            return self.transformations[0].get_nodes_from_documents(documents)
+
     core = types.ModuleType("llama_index.core")
     core.Document = Document
     parser = types.ModuleType("llama_index.core.node_parser")
     parser.SentenceSplitter = SentenceSplitter
+    ingestion = types.ModuleType("llama_index.core.ingestion")
+    ingestion.IngestionPipeline = IngestionPipeline
     root = types.ModuleType("llama_index")
     root.core = core
     core.node_parser = parser
+    core.ingestion = ingestion
     monkeypatch.setitem(sys.modules, "llama_index", root)
     monkeypatch.setitem(sys.modules, "llama_index.core", core)
     monkeypatch.setitem(sys.modules, "llama_index.core.node_parser", parser)
+    monkeypatch.setitem(sys.modules, "llama_index.core.ingestion", ingestion)
     return seen
 
 
@@ -113,8 +124,8 @@ async def test_ingest_text_builds_rows_with_tenant_metadata_and_embeddings(llama
     assert (first["user_id"], first["company_id"], first["document_id"], first["plan"]) == (USER, None, DOCUMENT, "PRO")
     assert (first["source_type"], first["source_id"]) == ("source", SOURCE)
     assert first["metadata"] == {
-        "user_id": str(USER), "company_id": None, "source_type": "source", "source_id": str(SOURCE),
-        "document_id": str(DOCUMENT), "plan": "PRO", "node_id": "node-0"}
+        "user_id": str(USER), "company_id": None, "source_type": "source", "kind": "source",
+        "source_id": str(SOURCE), "document_id": str(DOCUMENT), "plan": "PRO", "node_id": "node-0"}
     assert rows[1]["metadata"]["node_id"] == "node-1"
 
 

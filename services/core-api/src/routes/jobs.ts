@@ -1,5 +1,6 @@
 import { one, query } from "../db.ts";
 import { HttpError, data, jsonList, pageBody, requireUuid } from "../http.ts";
+import { enqueueIngest } from "../jobs/ingest.ts";
 import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
@@ -119,6 +120,7 @@ export async function createJob(ctx: Ctx): Promise<Response> {
   await query(ctx.deps.query,
     "INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,'[]'::jsonb,'[]'::jsonb,$10,$11,false,$12,$12)",
     [id, ctx.user.id, company, title, kind, sourceUrl, sourceText, JSON.stringify(requirements), JSON.stringify(preferred), deadline, body.language, now]);
+  await enqueueIngest(ctx, { jobId: id });
   return data(201, jobDto({
     id, revision: 1, company, title, source_kind: kind, source_url: sourceUrl, source_text: sourceText,
     requirements, preferred, keywords: [], risks: [], deadline, language: body.language, created_at: now, updated_at: now,

@@ -57,6 +57,7 @@ function world() {
       const limit = Number(params[params.length - 1]);
       return out(analyses.filter((row) => row.user_id === params[0] && row.job_id === params[1]).slice(0, limit));
     }
+    if (sql.includes("INSERT INTO ai_jobs")) return out([{ id: params[0], queue: params[2] }]);
     return out([]);
   };
   const call = async (method: string, path: string, opts: { token?: string | null; body?: unknown } = {}) => {
