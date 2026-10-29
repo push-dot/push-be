@@ -211,6 +211,16 @@ async def _review_attachment(_ctx: ToolContext, args: AttachmentReviewArgs):
     return _enter("review", attachment_id=str(args.attachment_id), posting_id=str(args.posting_id))
 
 
+class FindTalentArgs(BaseModel):
+    posting_id: UUID | None = None
+    query: str = ""
+
+
+async def _find_talent(_ctx: ToolContext, args: FindTalentArgs):
+    posting = str(args.posting_id) if args.posting_id else None
+    return _enter("sourcing", posting_id=posting, query=args.query)
+
+
 async def _prepare_interview(_ctx: ToolContext, args: ApplicationArgs):
     return _enter("interview", application_id=str(args.application_id))
 
@@ -222,6 +232,8 @@ EMPLOYER_TOOLS += [
              lambda _args: "지원자 서류에서 면접 때 확인할 부분을 찾아요"),
     ToolSpec("review_attachment", Tier.READ, AttachmentReviewArgs, _review_attachment,
              lambda _args: "이 대화에 올린 PDF 서류를 공고 기준으로 검토해요"),
+    ToolSpec("find_talent", Tier.READ, FindTalentArgs, _find_talent,
+             lambda _args: "공고에 맞는 공개 프로필을 찾고 제안 메시지를 준비해요"),
     ToolSpec("prepare_interview", Tier.READ, ApplicationArgs, _prepare_interview,
              lambda _args: "서류 검토 결과로 검증 면접 질문을 만들어요"),
 ]

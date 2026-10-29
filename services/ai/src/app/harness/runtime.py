@@ -285,7 +285,10 @@ class HarnessRuntime:
         if resume.get("approvalId"):
             if waiting is None:
                 return
-            state = Command(resume={"option_id": resume.get("optionId")})
+            answer = {"option_id": resume.get("optionId")}
+            if isinstance(resume.get("optionIds"), list):
+                answer["option_ids"] = [str(item) for item in resume["optionIds"]]
+            state = Command(resume=answer)
         elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await _turn_inputs(payload)})
