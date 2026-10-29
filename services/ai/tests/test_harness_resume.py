@@ -166,6 +166,109 @@ async def test_phase_output_is_saved_to_workspace_files():
     assert len(file_id) == 36
 
 
+async def test_template_choice_reaches_the_pdf_renderer():
+    import io
+
+    from pypdf import PdfReader
+
+    db = _Approvals()
+    model = _PhaseModel({"publish": {"markdown": "# 이력서\n백엔드"}})
+    graph = _graph(db, model=model)
+    config = _config()
+    await _run(graph, _base(phase="review"), config)
+    await _run(graph, Command(resume={"option_id": "ATS"}), config)
+    chosen = await graph.aget_state(config)
+    assert chosen.values["template"] == "ATS"
+    assert chosen.values["phase"] == "publish"
+    await _run(graph, {}, config)
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(io.BytesIO(db.files["05_final_resume.pdf"])).pages)
+    assert "ATS" in text
+    assert "백엔드" in text
+
+
+async def test_compact_choice_document_template_matches_the_pdf():
+    import io
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    from pypdf import PdfReader
+
+    from app.db import NotFoundError
+    from app.domain.services.document import DocumentService
+    from app.harness.personal.tools import bound_services
+    from tests.stubs import FakeDB
+
+    class _Store:
+        def __init__(self):
+            self.docs = {}
+            self.versions = []
+
+        async def create(self, doc):
+            self.docs[doc.id] = doc
+
+        async def get(self, user_id, id_):
+            doc = self.docs.get(id_)
+            if doc is None or doc.user_id != user_id:
+                raise NotFoundError()
+            return doc
+
+        async def update(self, doc, expected):
+            current = self.docs[doc.id]
+            if current.revision != expected:
+                raise RuntimeError("revision")
+            self.docs[doc.id] = doc
+
+        async def next_version_number(self, document_id):
+            return 1 + sum(1 for v in self.versions if v.document_id == document_id)
+
+        async def create_version(self, version):
+            self.versions.append(version)
+
+    class _Workspace(_Approvals):
+        async def fetchrow(self, sql, *args):
+            if "workspace_files" in sql:
+                body = self.files.get(args[1])
+                if not isinstance(body, str):
+                    return None
+                return {"body": body}
+            return self.rows.get(str(args[0]))
+
+    user_id = str(uuid4())
+    db = _Workspace()
+    store = _Store()
+    docs = DocumentService(FakeDB(), None, None)
+    docs.documents = store
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        graph = _graph(db, model=_PhaseModel({"publish": {"markdown": "# 이력서\n백엔드"}}))
+        config = _config()
+        await _run(graph, _base(phase="review", user_id=user_id), config)
+        await _run(graph, Command(resume={"option_id": "COMPACT"}), config)
+        await _run(graph, {}, config)
+        text = "\n".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(db.files["05_final_resume.pdf"])).pages)
+        stored = next(
+            name for name in ("SIMPLE", "MODERN", "CREATIVE", "ATS") if name in text)
+        doc = next(iter(store.docs.values()))
+        assert doc.template == stored
+        doc.template = "SIMPLE"
+        from app.infrastructure.resume_workspace import _sync_documents_db
+
+        await _sync_documents_db(
+            SimpleNamespace(db=db, document_svc=docs),
+            UUID(user_id),
+            SimpleNamespace(id="conv-1", title=""),
+            ["05_final_resume.md"],
+            "COMPACT",
+        )
+        assert next(iter(store.docs.values())).template == stored
+    finally:
+        bound_services.reset(token)
+
+
 async def test_bypass_auto_picks_recommended():
     graph = _graph(_Approvals(), None)
     config = _config()
