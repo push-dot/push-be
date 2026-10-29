@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { signPendingSignup } from "../src/auth/pending-signup.ts";
 import { pkceChallenge } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { sha256Hex } from "../src/http.ts";
@@ -15,12 +16,15 @@ const OAUTH = "22222222-2222-4222-8222-222222222222";
 const OWNER = "33333333-3333-4333-8333-333333333333";
 
 type Row = Record<string, unknown>;
-type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number } | null } };
-type Session = { data: { created: boolean; accessToken: string; user: { id: string; accountType: string } } };
+type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number; existingProviders?: string[] } | null } };
+type Session = { data: { created?: boolean; linked?: boolean; provider?: string; pendingToken?: string; accessToken?: string; user: { id: string; accountType: string } } };
 type Sent = { phone: string; code: string };
+
+const SECRET = "pending-test-secret";
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production",
+  PENDING_SIGNUP_SECRET: SECRET,
   ...extra,
 });
 
@@ -89,9 +93,24 @@ const createDb = () => {
       return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("INSERT INTO users")) {
-      users.push(userRow({
-        id: params[0], provider: "phone", provider_subject: params[1], phone: params[1], created_at: params[2], display_name: "user",
-      }));
+      const social = !sql.includes("'phone'");
+      const phone = social ? params[6] : params[1];
+      const email = social ? params[4] : null;
+      const clash = (users.some((item) => item.phone === phone && item.is_employer === false))
+        || (email != null && email !== "" && users.some((item) => String(item.email ?? "").toLowerCase() === String(email).toLowerCase()));
+      if (clash) {
+        const err = new Error("duplicate key value violates unique constraint");
+        (err as { code?: string }).code = "23505";
+        throw err;
+      }
+      users.push(social
+        ? userRow({
+          id: params[0], provider: params[1], provider_subject: params[2], created_at: params[3],
+          email: params[4], email_verified_at: params[5], phone: params[6], display_name: "user",
+        })
+        : userRow({
+          id: params[0], provider: "phone", provider_subject: params[1], phone: params[1], created_at: params[2], display_name: "user",
+        }));
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("UPDATE users SET phone")) {
@@ -108,6 +127,22 @@ const createDb = () => {
     if (sql.startsWith("SELECT id, provider, provider_subject")) {
       const row = users.find((item) => item.id === params[0]);
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.startsWith("SELECT provider FROM user_identities")) {
+      const rows = identities.filter((item) => item.user_id === params[0]);
+      return { rows, rowCount: rows.length };
+    }
+    if (sql.startsWith("UPDATE users SET provider =")) {
+      const row = users.find((item) => item.id === params[0] && item.provider === "phone");
+      if (!row) return { rows: [], rowCount: 0 };
+      if (users.some((item) => item.id !== row.id && item.provider === params[1] && item.provider_subject === params[2])) {
+        const err = new Error("duplicate key value violates unique constraint");
+        (err as { code?: string }).code = "23505";
+        throw err;
+      }
+      row.provider = params[1];
+      row.provider_subject = params[2];
+      return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("SELECT user_id FROM user_identities")) {
       const row = identities.find((item) => item.provider === params[0] && item.provider_subject === params[1]);
@@ -177,10 +212,19 @@ const send = async (db: ReturnType<typeof createDb>, sent: Sent[], phone = PHONE
   return handle(post("/api/v1/auth/phone/send", { phone }, headers), env(), deps(db, sent));
 };
 
-const verify = async (db: ReturnType<typeof createDb>, sent: Sent[], code: string, phone = PHONE, headers?: HeadersInit) => {
+const verify = async (
+  db: ReturnType<typeof createDb>,
+  sent: Sent[],
+  code: string,
+  phone = PHONE,
+  extra: Record<string, unknown> = {},
+) => {
   resetLimits();
-  return handle(post("/api/v1/auth/phone/verify", { phone, code }, headers), env(), deps(db, sent));
+  return handle(post("/api/v1/auth/phone/verify", { phone, code, ...extra }), env(), deps(db, sent));
 };
+
+const pending = async (provider: string, subject: string, email: string | null = "ada@push.app"): Promise<string> =>
+  (await signPendingSignup({ PENDING_SIGNUP_SECRET: SECRET }, { provider, subject, email }, NOW)).token;
 
 test("send stores a hash, enforces cooldown, and refuses a bad phone", async () => {
   const db = createDb();
@@ -258,35 +302,140 @@ test("verify creates a personal account once, then logs into it", async () => {
   assert.equal(db.users.length, 1);
 });
 
-test("an oauth session links a free phone and joins an existing phone account", async () => {
+test("a new google identity and a new phone create one account", async () => {
   const db = createDb();
   const sent: Sent[] = [];
-  db.users.push(userRow({ id: OAUTH, provider: "google", provider_subject: "gsub", display_name: "Ada" }));
-  const headers = { authorization: `Bearer ${DEV}` };
-  const devEnv = env({ APP_ENV: "development", DEV_AUTH_TOKEN: DEV, DEV_USER_ID: OAUTH });
-  resetLimits();
-  const linked = await handle(post("/api/v1/auth/phone/send", { phone: PHONE }, headers), devEnv, deps(db, sent));
-  assert.equal(linked.status, 202);
-  resetLimits();
-  const session = await handle(post("/api/v1/auth/phone/verify", { phone: PHONE, code: sent[0].code }, headers), devEnv, deps(db, sent));
-  assert.equal(session.status, 200);
-  const body = await session.json() as Session;
-  assert.equal(body.data.created, false);
-  assert.equal(body.data.user.id, OAUTH);
+  await send(db, sent);
+  const created = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub") });
+  assert.equal(created.status, 200);
+  const body = await created.json() as Session;
+  assert.equal(body.data.created, true);
+  assert.equal(body.data.linked, undefined);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.users[0].provider, "google");
+  assert.equal(db.users[0].provider_subject, "gsub");
   assert.equal(db.users[0].phone, PHONE);
+  assert.equal(db.users[0].id, body.data.user?.id);
+  assert.equal(db.identities.filter((row) => row.user_id === body.data.user?.id).length, 2);
 
-  db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: OTHER, phone: OTHER, display_name: "Bea" }));
   db.now = new Date(NOW.getTime() + 169_000);
+  await send(db, sent);
+  const again = await verify(db, sent, sent[1].code);
+  assert.equal(again.status, 200);
+  const second = await again.json() as Session;
+  assert.equal(second.data.created, false);
+  assert.equal(second.data.user?.id, body.data.user?.id);
+  assert.equal(db.users.length, 1);
+});
+
+test("a phone-only account links one new social identity", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  await send(db, sent);
+  const created = await verify(db, sent, sent[0].code);
+  const first = await created.json() as Session;
+  const id = first.data.user?.id;
+  db.now = new Date(NOW.getTime() + 169_000);
+  await send(db, sent);
+  const linked = await verify(db, sent, sent[1].code, PHONE, { pendingToken: await pending("google", "gsub") });
+  assert.equal(linked.status, 200);
+  const body = await linked.json() as Session;
+  assert.equal(body.data.linked, true);
+  assert.equal(body.data.provider, "google");
+  assert.equal(body.data.created, false);
+  assert.equal(body.data.user?.id, id);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.users[0].provider, "google");
+  assert.equal(db.users[0].provider_subject, "gsub");
+  assert.equal(db.identities.some((row) => row.provider === "google" && row.provider_subject === "gsub" && row.user_id === id), true);
+
+  const verifier = "verifier-verifier-verifier-verifier-verifier";
+  db.exchange.push({
+    code: "ex-linked",
+    user_id: null,
+    code_challenge: await pkceChallenge(verifier),
+    expires_at: "2099-01-01T00:00:00.000Z",
+    used_at: null,
+    provider: "google",
+    provider_subject: "gsub",
+    email: "ada@push.app",
+    email_verified: true,
+    display_name: "Ada",
+    account_type: "PERSONAL",
+  });
   resetLimits();
-  await handle(post("/api/v1/auth/phone/send", { phone: OTHER }, headers), devEnv, deps(db, sent));
-  resetLimits();
-  const joined = await handle(post("/api/v1/auth/phone/verify", { phone: OTHER, code: sent[1].code }, headers), devEnv, deps(db, sent));
-  assert.equal(joined.status, 200);
-  const joinedBody = await joined.json() as Session;
-  assert.equal(joinedBody.data.created, false);
-  assert.equal(joinedBody.data.user.id, OWNER);
-  assert.equal(db.identities.some((row) => row.provider === "google" && row.provider_subject === "gsub" && row.user_id === OWNER), true);
-  assert.equal(db.users.find((row) => row.id === OAUTH)?.provider_subject, `merged:${OAUTH}`);
+  const back = await handle(post("/api/v1/auth/exchange", { code: "ex-linked", codeVerifier: verifier }), env(), {
+    query: db.query,
+    now: () => db.now,
+  });
+  assert.equal(back.status, 200);
+  const session = await back.json() as Session;
+  assert.equal(session.data.pendingToken, undefined);
+  assert.equal(session.data.user?.id, id);
+  assert.equal(db.users.length, 1);
+});
+
+test("a phone that already has a social identity rejects another", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
+  db.identities.push({ user_id: OWNER, provider: "google", provider_subject: "gsub" });
+  db.identities.push({ user_id: OWNER, provider: "phone", provider_subject: PHONE });
+  await send(db, sent);
+  const blocked = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("apple", "asub", null) });
+  assert.equal(blocked.status, 409);
+  const body = await blocked.json() as Err;
+  assert.equal(body.error.code, "PHONE_ALREADY_REGISTERED");
+  assert.deepEqual(body.error.details?.existingProviders, ["google"]);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.identities.length, 2);
+
+  db.now = new Date(NOW.getTime() + 169_000);
+  await send(db, sent);
+  const again = await verify(db, sent, sent[1].code, PHONE, { pendingToken: await pending("google", "other-sub") });
+  assert.equal(again.status, 409);
+  assert.deepEqual((await again.json() as Err).error.details?.existingProviders, ["google"]);
+  assert.equal(db.identities.some((row) => row.provider_subject === "other-sub"), false);
+  assert.equal(db.users.length, 1);
+});
+
+test("verify rejects an expired or forged pending token and keeps the code", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  await send(db, sent);
+  const token = await pending("google", "gsub");
+  const [payload, mac] = token.split(".");
+  const flipped = `${payload}.${mac.slice(0, -1)}${mac.endsWith("a") ? "b" : "a"}`;
+  const bad = await verify(db, sent, sent[0].code, PHONE, { pendingToken: flipped });
+  assert.equal(bad.status, 401);
+  assert.equal((await bad.json() as Err).error.code, "UNAUTHENTICATED");
+  assert.equal(db.users.length, 0);
+  assert.equal(db.codes[0].consumed_at, null);
+
+  const expired = await signPendingSignup(
+    { PENDING_SIGNUP_SECRET: SECRET },
+    { provider: "google", subject: "gsub", email: null },
+    new Date("2020-01-01T00:00:00.000Z"),
+  );
+  const old = await verify(db, sent, sent[0].code, PHONE, { pendingToken: expired.token });
+  assert.equal(old.status, 401);
+  assert.equal((await old.json() as Err).error.code, "TOKEN_EXPIRED");
+  assert.equal(db.users.length, 0);
+  assert.equal(db.codes[0].consumed_at, null);
+});
+
+test("a colliding email is stored null when the phone is new", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  db.users.push(userRow({ id: OAUTH, provider: "email", provider_subject: "ada@push.app", email: "ada@push.app" }));
+  await send(db, sent);
+  const created = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub", "ada@push.app") });
+  assert.equal(created.status, 200);
+  assert.equal(db.users.length, 2);
+  const made = db.users.find((row) => row.provider === "google");
+  assert.equal(made?.email, null);
+  assert.equal(made?.phone, PHONE);
+  assert.notEqual(made?.id, OAUTH);
 });
 
 test("an employer session cannot send a phone code", async () => {

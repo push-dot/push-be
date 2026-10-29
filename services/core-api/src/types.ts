@@ -51,6 +51,7 @@ export interface CoreEnv {
   PHONE_CODE_COOLDOWN_SEC?: string;
   PHONE_CODE_TTL_SEC?: string;
   PHONE_CODE_MAX_ATTEMPTS?: string;
+  PENDING_SIGNUP_SECRET?: string;
   NTS_SERVICE_KEY?: string;
   IAP_PRODUCT_PRO?: string;
   IAP_PRODUCT_ULTRA?: string;

@@ -1,3 +1,4 @@
+import { readPendingSignup, type PendingSignup } from "../auth/pending-signup.ts";
 import { isUnique, one, query } from "../db.ts";
 import { HttpError, data, fieldError, sha256Hex } from "../http.ts";
 import { ts } from "../page.ts";
@@ -21,12 +22,12 @@ const BUMP = "UPDATE phone_codes SET attempts = attempts + 1 WHERE id = $1 RETUR
 const CONSUME_ONE = "UPDATE phone_codes SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL";
 const BY_PHONE = "SELECT id FROM users WHERE phone = $1 AND is_employer = false";
 const INSERT_USER = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,'phone',$2,'user','ko',$3,NULL,NULL,false,NULL,$2)";
-const SET_PHONE = "UPDATE users SET phone = $2 WHERE id = $1 AND is_employer = false";
+const INSERT_SOCIAL = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,$2,$3,'user','ko',$4,$5,$6,false,NULL,$7)";
+const SET_SOCIAL = "UPDATE users SET provider = $2, provider_subject = $3 WHERE id = $1 AND provider = 'phone'";
 const ME = "SELECT id, provider, provider_subject, is_employer FROM users WHERE id = $1";
+const LIST_PROVIDERS = "SELECT provider FROM user_identities WHERE user_id = $1";
 const IDENTITY = "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2";
 const INSERT_IDENTITY = "INSERT INTO user_identities (user_id, provider, provider_subject, created_at) VALUES ($1,$2,$3,$4)";
-const MOVE_IDENTITY = "UPDATE user_identities SET user_id = $1 WHERE provider = $2 AND provider_subject = $3 AND user_id = $4";
-const STAMP = "UPDATE users SET provider_subject = $2 WHERE id = $1 AND provider_subject = $3";
 
 const readJson = async (request: Request): Promise<Record<string, unknown>> => {
   const raw = await request.text();
@@ -94,24 +95,30 @@ const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject:
   }
 };
 
-const moveIdentity = async (ctx: Ctx, fromId: string, toId: string, provider: string, subject: string): Promise<void> => {
-  if (!provider || provider === "phone" || !subject || subject.startsWith("merged:")) return;
-  const existing = await one(ctx.deps.query, IDENTITY, [provider, subject]);
-  if (!existing) {
-    await bindIdentity(ctx, toId, provider, subject);
-    return;
-  }
-  if (String(existing.user_id) === toId) return;
-  if (String(existing.user_id) !== fromId) {
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
-  }
-  await query(ctx.deps.query, MOVE_IDENTITY, [toId, provider, subject, fromId]);
-};
-
-const session = async (ctx: Ctx, userId: string, created: boolean): Promise<Response> => {
+const session = async (ctx: Ctx, userId: string, created: boolean, link?: { provider: string }): Promise<Response> => {
   await clearDeletion(ctx, userId);
   const body = await issue(ctx, userId);
-  return data(200, { ...body, created }, ctx.rid);
+  return data(200, { ...body, created, ...(link ? { linked: true, provider: link.provider } : {}) }, ctx.rid);
+};
+
+const socialProviders = async (ctx: Ctx, userId: string): Promise<string[]> => {
+  const me = await one(ctx.deps.query, ME, [userId]);
+  const listed = await query(ctx.deps.query, LIST_PROVIDERS, [userId]);
+  const found = new Set<string>();
+  const add = (value: unknown): void => {
+    const provider = String(value ?? "");
+    if (!provider || provider === "phone") return;
+    found.add(provider);
+  };
+  add(me?.provider);
+  for (const row of listed.rows) add(row.provider);
+  return [...found];
+};
+
+const pendingOf = async (ctx: Ctx, body: Record<string, unknown>): Promise<PendingSignup | null> => {
+  if (body.pendingToken == null || body.pendingToken === "") return null;
+  if (typeof body.pendingToken !== "string") throw fieldError("pendingToken", "must be a string");
+  return readPendingSignup(ctx.env, body.pendingToken, ctx.now);
 };
 
 const sendPhone = async (ctx: Ctx): Promise<Response> => {
@@ -143,22 +150,62 @@ const sendPhone = async (ctx: Ctx): Promise<Response> => {
   return data(202, { cooldownSeconds: cooldown, expiresAt: ts(expires) }, ctx.rid);
 };
 
-const attachTaken = async (ctx: Ctx, fromId: string, toId: string, provider: string, subject: string, phone: string): Promise<Response> => {
-  await moveIdentity(ctx, fromId, toId, provider, subject);
-  await query(ctx.deps.query, STAMP, [fromId, `merged:${fromId}`, subject]);
-  return finishOwned(ctx, toId, phone, false);
-};
-
 const finishOwned = async (ctx: Ctx, userId: string, phone: string, created: boolean): Promise<Response> => {
   await bindIdentity(ctx, userId, "phone", phone);
   return session(ctx, userId, created);
+};
+
+const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, phone: string): Promise<Response> => {
+  const existing = await socialProviders(ctx, userId);
+  if (existing.length > 0) {
+    throw new HttpError(409, "PHONE_ALREADY_REGISTERED", "phone is already registered", { existingProviders: existing });
+  }
+  const taken = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
+  if (taken && String(taken.user_id) !== userId) {
+    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+  }
+  try {
+    await query(ctx.deps.query, SET_SOCIAL, [userId, pending.provider, pending.subject]);
+  } catch (err) {
+    if (!isUnique(err)) throw err;
+    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+  }
+  await bindIdentity(ctx, userId, pending.provider, pending.subject);
+  await bindIdentity(ctx, userId, "phone", phone);
+  return session(ctx, userId, false, { provider: pending.provider });
+};
+
+const insertSocial = async (ctx: Ctx, userId: string, pending: PendingSignup, phone: string, email: string | null): Promise<void> => {
+  const now = ctx.now.toISOString();
+  await query(ctx.deps.query, INSERT_SOCIAL, [userId, pending.provider, pending.subject, now, email, email ? now : null, phone]);
+};
+
+const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string): Promise<Response> => {
+  const userId = crypto.randomUUID();
+  try {
+    await insertSocial(ctx, userId, pending, phone, pending.email);
+  } catch (err) {
+    if (!isUnique(err)) throw err;
+    const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
+    if (raced) return linkOrBlock(ctx, String(raced.id), pending, phone);
+    if (!pending.email) throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    try {
+      await insertSocial(ctx, userId, pending, phone, null);
+    } catch (err2) {
+      if (!isUnique(err2)) throw err2;
+      const again = await one(ctx.deps.query, BY_PHONE, [phone]);
+      if (again) return linkOrBlock(ctx, String(again.id), pending, phone);
+      throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    }
+  }
+  await bindIdentity(ctx, userId, pending.provider, pending.subject);
+  return finishOwned(ctx, userId, phone, true);
 };
 
 const verifyPhone = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const phone = phoneOf(body);
   const code = codeOf(body);
-  const caller = await callerOf(ctx);
   const max = envInt(ctx.env.PHONE_CODE_MAX_ATTEMPTS, DEFAULT_ATTEMPTS, 20);
   const row = await one(ctx.deps.query, ACTIVE_CODE, [phone]);
   if (!row) throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
@@ -171,27 +218,12 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query, BUMP, [String(row.id)]);
     throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
   }
+  const pending = await pendingOf(ctx, body);
   await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
-  if (caller) {
-    const me = await one(ctx.deps.query, ME, [caller.id]);
-    if (!me) throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");
+  if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
-    const provider = String(me.provider ?? "");
-    const subject = String(me.provider_subject ?? "");
-    if (owner && String(owner.id) !== caller.id) {
-      return attachTaken(ctx, caller.id, String(owner.id), provider, subject, phone);
-    }
-    if (!owner) {
-      try {
-        await query(ctx.deps.query, SET_PHONE, [caller.id, phone]);
-      } catch (err) {
-        if (!isUnique(err)) throw err;
-        const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
-        if (!raced || String(raced.id) === caller.id) throw err;
-        return attachTaken(ctx, caller.id, String(raced.id), provider, subject, phone);
-      }
-    }
-    return finishOwned(ctx, caller.id, phone, false);
+    if (owner) return linkOrBlock(ctx, String(owner.id), pending, phone);
+    return createFromPending(ctx, pending, phone);
   }
   const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
   if (owner) return finishOwned(ctx, String(owner.id), phone, false);

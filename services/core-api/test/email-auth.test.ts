@@ -24,6 +24,7 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   GOOGLE_CLIENT_SECRET: "gsec",
   GITHUB_CLIENT_ID: "hid",
   GITHUB_CLIENT_SECRET: "hsec",
+  PENDING_SIGNUP_SECRET: "pending-test-secret",
   ...extra,
 });
 
@@ -581,7 +582,7 @@ const exchangeCode = async (db: ReturnType<typeof createDb>, verified: boolean, 
   return code;
 };
 
-test("exchange rejects unverified google email and links the same account type", async () => {
+test("exchange rejects unverified google email and defers a new personal account", async () => {
   const verifier = "verifier-verifier-verifier-verifier-verifier";
   const challenge = await pkceChallenge(verifier);
   resetLimits();
@@ -609,11 +610,9 @@ test("exchange rejects unverified google email and links the same account type",
   const takenCode = await exchangeCode(taken, true, verifier);
   resetLimits();
   const conflict = await handle(post("/api/v1/auth/exchange", { code: takenCode, codeVerifier: verifier }), env(), deps(taken));
-  const conflictBody = await conflict.json() as Err;
-  assert.equal(conflict.status, 409);
-  assert.equal(conflictBody.error.code, "EMAIL_TAKEN");
-  assert.equal(conflictBody.error.details?.accountType, "EMPLOYER");
-  assert.equal(conflictBody.error.message, "이 이메일은 기업 계정으로 가입되어 있어요");
+  const conflictBody = await conflict.json() as { data: { pendingToken?: string } };
+  assert.equal(conflict.status, 200);
+  assert.equal(typeof conflictBody.data.pendingToken, "string");
   assert.equal(taken.users.length, 1);
   assert.equal(calls(taken, "INSERT INTO users").length, 0);
 
@@ -629,9 +628,9 @@ test("exchange rejects unverified google email and links the same account type",
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code: linkedCode, codeVerifier: verifier }), env(), deps(linked));
   assert.equal(session.status, 200);
-  const body = await session.json() as Session;
-  assert.equal(body.data.user.id, "11111111-1111-4111-8111-111111111111");
-  assert.equal(body.data.user.accountType, "PERSONAL");
+  const body = await session.json() as { data: { pendingToken?: string; user?: { id: string } } };
+  assert.equal(typeof body.data.pendingToken, "string");
+  assert.equal(body.data.user, undefined);
   assert.equal(linked.users.length, 1);
   assert.equal(calls(linked, "INSERT INTO users").length, 0);
 
@@ -646,12 +645,11 @@ test("exchange rejects unverified google email and links the same account type",
   resetLimits();
   const made = await handle(post("/api/v1/auth/exchange", { code: createdCode, codeVerifier: verifier }), env(), deps(created));
   assert.equal(made.status, 200);
-  assert.equal(created.users.length, 1);
-  const inserted = created.sqls.find((call) => call.sql.startsWith("INSERT INTO users"));
-  assert.ok(inserted);
-  assert.deepEqual(inserted.params.slice(1), [
-    "google", "gsub", "Ada", "ko", NOW.toISOString(), "ada@push.app", NOW.toISOString(), false, null,
-  ]);
+  const madeBody = await made.json() as { data: { pendingToken?: string; expiresIn?: number } };
+  assert.equal(typeof madeBody.data.pendingToken, "string");
+  assert.equal(madeBody.data.expiresIn, 900);
+  assert.equal(created.users.length, 0);
+  assert.equal(calls(created, "INSERT INTO users").length, 0);
 });
 
 test("github callback keeps a missing email on the exchange code", async () => {
@@ -702,8 +700,10 @@ test("github callback keeps a missing email on the exchange code", async () => {
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code, codeVerifier: verifier }), env(), deps(db));
   assert.equal(session.status, 200);
-  assert.equal(db.users[0].provider, "github");
-  assert.equal(db.users[0].email, "ada@push.app");
+  const pending = await session.json() as { data: { pendingToken?: string; expiresIn?: number } };
+  assert.equal(typeof pending.data.pendingToken, "string");
+  assert.equal(pending.data.expiresIn, 900);
+  assert.equal(db.users.length, 0);
 
   resetLimits();
   const bare = createDb();

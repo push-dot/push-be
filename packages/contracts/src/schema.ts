@@ -398,7 +398,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange OAuth code for tokens
-         * @description Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.
+         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
          */
         post: operations["postAuthExchange"];
         delete?: never;
@@ -475,7 +475,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a phone code and sign in
-         * @description No session: log into the personal account for this phone, or create one (created=true). Bearer session: link the phone to that account. The same phone always returns the existing personal account and records the caller's provider on user_identities. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 429 RATE_LIMITED after too many attempts, 409 PHONE_TAKEN if that provider is already on a different account. Signup terms are not stored here.
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.
          */
         post: operations["postAuthPhoneVerify"];
         delete?: never;
@@ -3856,7 +3856,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, NOT_CONFIGURED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -5179,7 +5179,10 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["AuthTokens"];
+                        data: components["schemas"]["AuthTokens"] | {
+                            expiresIn: number;
+                            pendingToken: string;
+                        };
                     };
                 };
             };
@@ -5285,6 +5288,7 @@ export interface operations {
             content: {
                 "application/json": {
                     code: string;
+                    pendingToken?: string;
                     phone: string;
                 };
             };
@@ -5301,6 +5305,8 @@ export interface operations {
                             accessToken: string;
                             created: boolean;
                             expiresIn: number;
+                            linked?: boolean;
+                            provider?: string;
                             refreshToken: string;
                             user: {
                                 /** @enum {string} */
