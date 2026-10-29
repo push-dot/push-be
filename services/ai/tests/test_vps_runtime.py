@@ -38,11 +38,11 @@ def test_chat_executor_still_selects_external_jobs(monkeypatch):
     from app.jobs import external_jobs
 
     monkeypatch.delenv(_GONE, raising=False)
-    for mode in ("workflow", "external"):
+    monkeypatch.setenv("CHAT_EXECUTOR", "external")
+    assert external_jobs() is True
+    for mode in ("workflow", "local"):
         monkeypatch.setenv("CHAT_EXECUTOR", mode)
-        assert external_jobs() is True
-    monkeypatch.setenv("CHAT_EXECUTOR", "local")
-    assert external_jobs() is False
+        assert external_jobs() is False
 
 
 def test_dead_runtime_flag_does_not_change_framework(monkeypatch):

@@ -150,6 +150,8 @@ def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
     monkeypatch.setenv("QUEUE_BACKEND", "postgres")
     assert runs_local_chat_worker() is True
     monkeypatch.setenv("CHAT_EXECUTOR", "workflow")
+    assert runs_local_chat_worker() is True
+    monkeypatch.setenv("CHAT_EXECUTOR", "external")
     assert runs_local_chat_worker() is False
 
 

@@ -46,6 +46,7 @@ x-ai-env: &ai-env
   STORAGE_DIR: /data/sources
   PUSH_RESUME_DIR: /data/resume
   CHAT_EXECUTOR: local
+  BLOB_STORE: db
   CHECKPOINTER: postgres
   PLAYWRIGHT_NO_SANDBOX: "1"
   AI_SHARED_SECRET: ${AI_SHARED_SECRET:?AI_SHARED_SECRET is required}
@@ -128,6 +129,7 @@ services:
       - /home/app:size=8m,uid=10001,gid=10001,mode=0700
     environment:
       <<: *queue-env
+      STORAGE_DIR: /data/sources
       DISPATCH_PORT: "8091"
       DISPATCH_SECRET: ${DISPATCH_SECRET:?DISPATCH_SECRET is required}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN is required}
@@ -136,6 +138,8 @@ services:
       ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       NEON_STORAGE_LIMIT_BYTES: ${NEON_STORAGE_LIMIT_BYTES:-1073741824}
+    volumes:
+      - ai-data:/data:ro
     depends_on:
       - redis
     networks:

@@ -299,3 +299,52 @@ async def test_maintenance_pass_reconciles_credits():
     box = Dispatcher(StreamQueue(redis), open_db, SECRET)
     await box.run_once(NOW, maintain=True)
     assert seen == [NOW]
+
+
+class Pool:
+    def __init__(self):
+        self.executed = []
+        self.fetched = []
+
+    async def execute(self, sql, *args):
+        self.executed.append(sql)
+
+    async def fetch(self, sql, *args):
+        self.fetched.append(sql)
+        return []
+
+
+def box_with_pool(pool):
+    redis = FakeRedis(decode_responses=True)
+    holder = {"live": 0, "opened": 0}
+
+    async def open_db():
+        db = MemoryDB(holder, [], [])
+        db.conn = pool
+        return db
+
+    return Dispatcher(StreamQueue(redis), open_db, SECRET)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_sweeps_rate_limits_every_loop():
+    pool = Pool()
+    box = box_with_pool(pool)
+    await box.run_once(NOW)
+    await box.run_once(NOW, maintain=True)
+    await box.run_once(NOW, maintain=True)
+    assert pool.executed == [
+        "DELETE FROM rate_limits WHERE expires_at < now()",
+        "DELETE FROM rate_limits WHERE expires_at < now()",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_purges_accounts_past_30_days():
+    from app.account_purge import PURGE_SQL
+    pool = Pool()
+    box = box_with_pool(pool)
+    await box.run_once(NOW, maintain=True)
+    await box.run_once(NOW, maintain=True)
+    assert pool.fetched == [PURGE_SQL, PURGE_SQL]
+    assert "30 days" in PURGE_SQL
