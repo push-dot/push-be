@@ -2998,7 +2998,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, NOT_CONFIGURED, INTERNAL, ...",
                 "type": "string"
               },
               "details": {
@@ -7216,6 +7216,218 @@
           "auth"
         ],
         "x-owner": "gateway"
+      }
+    },
+    "/api/v1/auth/phone/send": {
+      "post": {
+        "description": "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
+        "operationId": "postAuthPhoneSend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "phone": {
+                    "pattern": "^\\+[1-9]\\d{7,14}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "phone"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "cooldownSeconds": {
+                          "type": "integer"
+                        },
+                        "expiresAt": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "cooldownSeconds",
+                        "expiresAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Send a personal phone code",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/auth/phone/verify": {
+      "post": {
+        "description": "No session: log into the personal account for this phone, or create one (created=true). Bearer session: link the phone to that account. The same phone always returns the existing personal account and records the caller's provider on user_identities. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 429 RATE_LIMITED after too many attempts, 409 PHONE_TAKEN if that provider is already on a different account. Signup terms are not stored here.",
+        "operationId": "postAuthPhoneVerify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "code": {
+                    "pattern": "^\\d{6}$",
+                    "type": "string"
+                  },
+                  "phone": {
+                    "pattern": "^\\+[1-9]\\d{7,14}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "phone",
+                  "code"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "accessToken": {
+                          "type": "string"
+                        },
+                        "created": {
+                          "type": "boolean"
+                        },
+                        "expiresIn": {
+                          "type": "integer"
+                        },
+                        "refreshToken": {
+                          "type": "string"
+                        },
+                        "user": {
+                          "properties": {
+                            "accountType": {
+                              "enum": [
+                                "PERSONAL",
+                                "EMPLOYER"
+                              ],
+                              "type": "string"
+                            },
+                            "companyId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "companyRole": {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "ADMIN",
+                                    "MEMBER"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "displayName": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "locale": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "displayName",
+                            "locale",
+                            "accountType",
+                            "companyId",
+                            "companyRole"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "accessToken",
+                        "refreshToken",
+                        "expiresIn",
+                        "created",
+                        "user"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Verify a phone code and sign in",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
       }
     },
     "/api/v1/auth/refresh": {

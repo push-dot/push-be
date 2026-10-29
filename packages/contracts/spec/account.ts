@@ -126,6 +126,40 @@ export const routes: Route[] = [
     body: body(obj({ token: str, password })),
     responses: { 204: noContent },
   }),
+  post("core", "/api/v1/auth/phone/send", {
+    tag: "auth",
+    summary: "Send a personal phone code",
+    auth: "optional",
+    description: "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
+    body: body(obj({ phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" } }, ["phone"])),
+    responses: { 202: ok(obj({ cooldownSeconds: int, expiresAt: dateTime }), "Accepted") },
+  }),
+  post("core", "/api/v1/auth/phone/verify", {
+    tag: "auth",
+    summary: "Verify a phone code and sign in",
+    auth: "optional",
+    description: "No session: log into the personal account for this phone, or create one (created=true). Bearer session: link the phone to that account. The same phone always returns the existing personal account and records the caller's provider on user_identities. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 429 RATE_LIMITED after too many attempts, 409 PHONE_TAKEN if that provider is already on a different account. Signup terms are not stored here.",
+    body: body(obj({
+      phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" },
+      code: { type: "string", pattern: "^\\d{6}$" },
+    }, ["phone", "code"])),
+    responses: {
+      200: ok(obj({
+        accessToken: str,
+        refreshToken: str,
+        expiresIn: int,
+        created: bool,
+        user: obj({
+          id: uuid,
+          displayName: str,
+          locale: str,
+          accountType,
+          companyId: nullable(uuid),
+          companyRole: nullable(companyRole),
+        }),
+      })),
+    },
+  }),
   del("core", "/api/v1/me", {
     tag: "auth",
     summary: "Delete account",

@@ -336,6 +336,11 @@ const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise
   const email = rec.email == null ? "" : String(rec.email).trim().toLowerCase();
   if (!asBool(rec.email_verified) || !email) throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
   const accountType = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
+  const byIdentity = await one(ctx.deps.query, "SELECT u.id, u.is_employer FROM user_identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.provider_subject = $2", [provider, String(rec.provider_subject ?? "")]);
+  if (byIdentity) {
+    if (accountLabel(byIdentity) !== accountType) throw emailTaken(byIdentity);
+    return String(byIdentity.id);
+  }
   const byEmail = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (byEmail) {
     if (accountLabel(byEmail) !== accountType) throw emailTaken(byEmail);

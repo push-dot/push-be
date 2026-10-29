@@ -444,6 +444,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/phone/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a personal phone code
+         * @description E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.
+         */
+        post: operations["postAuthPhoneSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/phone/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify a phone code and sign in
+         * @description No session: log into the personal account for this phone, or create one (created=true). Bearer session: link the phone to that account. The same phone always returns the existing personal account and records the caller's provider on user_identities. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 429 RATE_LIMITED after too many attempts, 409 PHONE_TAKEN if that provider is already on a different account. Signup terms are not stored here.
+         */
+        post: operations["postAuthPhoneVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/refresh": {
         parameters: {
             query?: never;
@@ -3816,7 +3856,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, NOT_CONFIGURED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -5197,6 +5237,84 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthPhoneSend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            cooldownSeconds: number;
+                            /** Format: date-time */
+                            expiresAt: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthPhoneVerify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            accessToken: string;
+                            created: boolean;
+                            expiresIn: number;
+                            refreshToken: string;
+                            user: {
+                                /** @enum {string} */
+                                accountType: "PERSONAL" | "EMPLOYER";
+                                companyId: string | null;
+                                companyRole: ("ADMIN" | "MEMBER") | null;
+                                displayName: string;
+                                /** Format: uuid */
+                                id: string;
+                                locale: string;
+                            };
+                        };
+                    };
+                };
             };
             default: components["responses"]["Error"];
         };

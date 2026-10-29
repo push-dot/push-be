@@ -1140,9 +1140,12 @@ test("email auth posts are owned by core", () => {
     "/api/v1/auth/email/login",
     "/api/v1/auth/email/password-reset",
     "/api/v1/auth/email/password-reset/confirm",
+    "/api/v1/auth/phone/send",
+    "/api/v1/auth/phone/verify",
   ]) {
     assert.equal(ownerOf("POST", path), "core");
   }
+  assert.equal(ownerOf("GET", "/api/v1/auth/phone/send"), "deny");
 });
 
 test("company routes are owned by core", () => {
