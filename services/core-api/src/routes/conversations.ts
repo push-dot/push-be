@@ -132,6 +132,7 @@ export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
   forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  await requireAgentConsent(ctx);
   if (body.audience != null && body.audience !== "PERSONAL") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
@@ -139,7 +140,6 @@ export async function createConversation(ctx: Ctx): Promise<Response> {
   if (codePoints(body.title) > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
   }
-  await requireAgentConsent(ctx);
   let applicationId: string | null = null;
   if (body.applicationId != null) {
     applicationId = requireUuid(String(body.applicationId), "applicationId");
@@ -438,13 +438,14 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
-    allowChat(ctx, ai),
   ]);
+  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (owned.company_id == null) await requireAgentConsent(ctx);
+  await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
   if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
   else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
-  if (owned && owned.company_id == null) await requireAgentConsent(ctx);
-  if (owned && owned.company_id != null) {
+  if (owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
   }

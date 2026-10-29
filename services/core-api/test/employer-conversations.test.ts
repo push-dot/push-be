@@ -258,6 +258,8 @@ test("a message intent is stored on the chat job payload", async () => {
       payload = String(next?.[3]);
       return { rows: [{ id: "job-1" }], rowCount: 1 };
     }
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(res.status, 202);
@@ -320,6 +322,9 @@ test("a company member posts on a conversation they did not create", async () =>
     if (sql.includes("chat_jobs")) {
       if (!sql.includes("company_members")) return { rows: [], rowCount: 0 };
       return { rows: [{ id: "job-team" }], rowCount: 1 };
+    }
+    if (sql.includes("co.verified_at")) {
+      return { rows: [{ company_id: COMPANY, plan: "PRO", verified_at: NOW.toISOString() }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   }));
@@ -705,27 +710,49 @@ test("archiving archives orphaned evidence in one statement", async () => {
 
 const withFetch = (query: Deps["query"]): Deps => ({ ...deps(query), fetch: (async () => new Response("{}")) as typeof fetch });
 
-test("posting a message reads settings, conversation and usage concurrently", async () => {
+test("a personal message checks consent before usage", async () => {
   resetLimits();
-  let inFlight = 0;
-  let peak = 0;
+  const sqls: string[] = [];
   const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", JSON.stringify({
     text: "hi",
     ai: { provider: "OPENAI", model: "gpt", effort: "LOW" },
   }), { "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeec" }), env(), withFetch(async (sql) => {
+    sqls.push(sql);
     if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-par" }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("chat_jobs")) return { rows: [{ id: "job" }], rowCount: 1 };
-    inFlight += 1;
-    peak = Math.max(peak, inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    inFlight -= 1;
     if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(res.status, 202);
-  assert.equal(peak >= 4, true);
+  const consentAt = sqls.findIndex((sql) => sql.includes("user_consents"));
+  const usageAt = sqls.findIndex((sql) => sql.includes("ai_usage"));
+  assert.ok(consentAt >= 0 && usageAt > consentAt);
+});
+
+test("a personal user with no credits and no consent gets CONSENT_REQUIRED", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/messages", JSON.stringify({
+    text: "hi",
+    ai: { provider: "OPENAI", model: "gpt", effort: "LOW" },
+  }), { "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeef" }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-broke" }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: "FREE", verified_at: null }], rowCount: 1 };
+    if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
+    if (sql.includes("ai_usage")) return { rows: [{ spent: 1_800_000 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 403);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "CONSENT_REQUIRED");
+  assert.equal(sqls.some((sql) => sql.includes("ai_usage")), false);
 });
 
 test("an oversized pdf upload is 413 before the form is parsed", async () => {
