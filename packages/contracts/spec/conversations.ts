@@ -297,9 +297,12 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/approvals/{approvalId}", {
     tag: "conversations",
     summary: "Answer a chat approval or choice card",
-    description: "optionId must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
+    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.",
     params: [id, pathParam("approvalId")],
-    body: body(obj({ optionId: { type: "string", minLength: 1 } })),
+    body: body(obj({
+      optionId: { type: "string", minLength: 1 },
+      optionIds: arr({ type: "string", minLength: 1 }),
+    }, [])),
     responses: {
       200: ok(ref("ConversationsApprovalAnswer")),
       202: ok(ref("ConversationsApprovalAnswer"), "Accepted; chat job resumed"),
@@ -464,6 +467,7 @@ export const schemas: Record<string, Schema> = {
     id: uuid,
     status: enumOf("APPROVED", "REJECTED"),
     optionId: str,
+    optionIds: arr(str),
     jobId: uuid,
   }, ["id", "status", "optionId"]),
   Artifact: obj({

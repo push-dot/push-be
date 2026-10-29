@@ -72,17 +72,16 @@ async def test_new_message_closes_the_waiting_tool_card():
     assert svc.messages[-1].text == "다른 얘기"
 
 
-async def test_resume_gate_answer_queues_the_next_phase_through_core():
+async def test_resume_gate_answer_resumes_personal_thread():
     rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
     seen: list = []
-    runtime, _svc = _runtime(rows, seen)
+    runtime, svc = _runtime(rows, seen)
     first = await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
     gate_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "choice")
     await run(runtime, _payload(JOB_B, ai=None, resume={"approvalId": gate_id, "optionId": "resume_based"}))
-    posted = [request for request in seen if request.url.path.endswith("/resume-jobs")]
-    assert len(posted) == 1
-    assert json.loads(posted[0].content) == {"resume": {"gate": "intake", "auto": True}}
-    assert posted[0].headers["idempotency-key"] == idempotency_key(JOB_B, "next-phase")
+    assert not any(request.url.path.endswith("/resume-jobs") for request in seen)
+    assert f"{CONV}:resume" not in svc._checkpointer.storage
+    assert str(CONV) in svc._checkpointer.storage
     saved = json.loads(rows.conversation["resume_state"])
     assert saved["phase"] == "intake"
     assert saved["work_mode"] == "resume_based"

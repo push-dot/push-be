@@ -65,12 +65,13 @@ async def test_resume_flow_saves_state_and_text_answers_the_gate():
                for mode, chunk in items)
     choice = next(chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "choice")
     assert choice["gate"] == "mode_select"
-    assert select_harness(rows.conversation).id == "resume"
+    assert select_harness(rows.conversation).id == "personal"
     await run(runtime, _payload("그만할래", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
     assert select_harness(rows.conversation).id == "personal"
     assert any("UPDATE approvals SET status = 'APPROVED'" in sql for sql, _ in rows.executed)
-    chat = await runtime._graph(select_harness({})).aget_state({"configurable": {"thread_id": str(CONV)}})
-    assert not chat.values
+    chat = await runtime._graph(REGISTRY["personal"]).aget_state({"configurable": {"thread_id": str(CONV)}})
+    assert chat.values["resume"]["status"] == "cancelled"
+    assert f"{CONV}:resume" not in svc._checkpointer.storage
 
 
 async def test_resume_turn_prefetches_pages_and_keeps_attachments(monkeypatch):
@@ -204,7 +205,7 @@ async def test_start_document_continue_choice_keeps_the_flow():
     saved = json.loads(rows.conversation["resume_state"])
     assert saved["status"] == "active"
     assert saved["phase"] == phase_before == "mode_select"
-    assert select_harness(rows.conversation).id == "resume"
+    assert select_harness(rows.conversation).id == "personal"
 
 
 async def test_answering_a_gate_without_new_work_saves_nothing():

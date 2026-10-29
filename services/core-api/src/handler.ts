@@ -8,7 +8,7 @@ import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { listUsage } from "./routes/usage.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
@@ -181,8 +181,6 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && approval) return resolveApproval(ctx, approval[1], approval[2]);
   const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
   if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
-  const resumeJob = path.match(/^\/api\/v1\/conversations\/([^/]+)\/resume-jobs$/);
-  if (method === "POST" && resumeJob) return postResumeJob(ctx, resumeJob[1]);
 
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);

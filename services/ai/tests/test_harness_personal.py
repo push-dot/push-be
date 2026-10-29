@@ -188,13 +188,14 @@ def test_core_paths_cover_non_python_tools():
 
 
 def test_router():
+    assert set(REGISTRY) == {"personal", "employer"}
     assert select_harness({}).id == "personal"
     assert select_harness({"company_id": "co-1"}).id == "employer"
-    assert select_harness({"resume_state": {"status": "active"}}).id == "resume"
+    assert select_harness({"resume_state": {"status": "active"}}).id == "personal"
     assert select_harness({
         "company_id": "co-1",
         "resume_state": {"status": "active"},
-    }).id == "resume"
+    }).id == "employer"
     assert select_harness({"resume_state": {"status": "done"}}).id == "personal"
 
 
