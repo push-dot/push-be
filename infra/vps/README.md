@@ -1,6 +1,6 @@
 # AI 서비스를 Hostinger KVM 2에 올리기
 
-대상은 Ubuntu 24.04 VPS (2 vCPU / 8 GB)다. 관리 패널은 없다. `harden.sh`가 서버를 잠그고, GitHub Actions가 `deploy` 사용자로 배포한다. 비밀값은 저장소에 없고 사람이 서버에 입력하지도 않는다. 모두 GitHub Actions 시크릿에서 배포할 때 내려간다. `AI_ORIGIN`이 비어 있으면 게이트웨이는 지금처럼 `push-be-python` 서비스 바인딩으로 보낸다.
+대상은 Ubuntu 24.04 VPS (2 vCPU / 8 GB)다. 관리 패널은 없다. `harden.sh`가 서버를 잠그고, GitHub Actions가 `deploy` 사용자로 배포한다. 비밀값은 저장소에 없고 사람이 서버에 입력하지도 않는다. 모두 GitHub Actions 시크릿에서 배포할 때 내려간다. `AI_ORIGIN`이 비어 있으면 게이트웨이는 500 `NOT_CONFIGURED`를 돌려준다. 서비스 바인딩은 없다.
 
 ## 사고 요약 (2026-10-21)
 
@@ -40,14 +40,14 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | Worker 배포와 시크릿 쓰기 |
 | `VPS_HOST` | VPS IP 또는 호스트 이름 |
 | `VPS_SSH_KEY` | `deploy`용 CI 개인 키(ed25519). 공개 키는 `keys/push-deploy.pub` |
-| `DATABASE_URL` | VPS, `push-be-python`, `push-be-core`, `push-be` |
+| `DATABASE_URL` | VPS, `push-be-core`, `push-be` |
 | `REDIS_PASSWORD` | VPS |
 | `AI_SHARED_SECRET` | VPS, `push-be-core`, `push-be` |
-| `INTERNAL_API_SECRET` | VPS, `push-be-python`, `push-be-core`, `push-be` |
+| `INTERNAL_API_SECRET` | VPS, `push-be-core`, `push-be` |
 | `DISPATCH_SECRET` | VPS, `push-be-core` |
 | `ADMIN_TOKEN` | VPS 디스패처 `/admin/*` |
-| `TOKEN_ENCRYPTION_KEY` | VPS, `push-be-python`, `push-be-core`. Google 연동 OAuth 토큰 암호화 키 |
-| `OPENROUTER_API_KEY` | VPS, `push-be-python` |
+| `TOKEN_ENCRYPTION_KEY` | VPS, `push-be-core`. Google 연동 OAuth 토큰 암호화 키 |
+| `OPENROUTER_API_KEY` | VPS |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | VPS, `push-be-core` |
 | `GOOGLE_CLIENT_SECRET` | VPS, `push-be-core` |
 | `GH_OAUTH_CLIENT_SECRET` | VPS, `push-be-core` (`GITHUB_CLIENT_SECRET`으로 들어간다) |
@@ -61,7 +61,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 CI가 하는 일:
 
 1. VPS: 저장소 tar를 `/opt/push-be/releases/<sha>`에 풀고, 위 값으로 `/opt/push-be/.env`(0600, `deploy` 소유)를 새로 쓴 뒤 `check-compose`를 통과하면 `docker compose up -d --build`를 실행한다. 값은 로그에 찍지 않는다. 작은따옴표나 줄바꿈이 든 값은 거부한다. 최근 릴리스 3개만 남긴다.
-2. Worker: `wrangler secret bulk`로 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`에는 `AI_SHARED_SECRET`을 넣지 않는다. 서비스 바인딩으로만 호출되고 공유 비밀 검사는 VPS 트래픽용이다.
+2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
 3. `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다.
 
 ## 새 VPS 준비
@@ -97,7 +97,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 
 | 대상 | 방법 |
 | --- | --- |
-| 앱 비밀값(`DATABASE_URL`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `REDIS_PASSWORD`, API 키, OAuth·Stripe 비밀) | 발급처에서 새 값을 만든다 → GitHub 시크릿을 바꾼다 → 배포를 다시 실행한다. CI가 VPS `.env`와 세 Worker를 한 번에 바꾼다. 여러 곳이 같은 값을 쓰는 비밀은 배포하는 몇 분 동안 맞지 않을 수 있다 |
+| 앱 비밀값(`DATABASE_URL`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `REDIS_PASSWORD`, API 키, OAuth·Stripe 비밀) | 발급처에서 새 값을 만든다 → GitHub 시크릿을 바꾼다 → 배포를 다시 실행한다. CI가 VPS `.env`와 게이트웨이·코어 Worker를 한 번에 바꾼다. 여러 곳이 같은 값을 쓰는 비밀은 배포하는 몇 분 동안 맞지 않을 수 있다 |
 | `DATABASE_URL` | Neon에서 역할 비밀번호를 재설정한다. 이전 값은 그 즉시 막힌다. 바로 위 방법으로 배포한다 |
 | `TOKEN_ENCRYPTION_KEY` | 값을 바꾸면 저장된 Google 연동 토큰을 복호화할 수 없다. 재암호화 마이그레이션 없이 값을 바꾸지 않는다 |
 | CI 배포 키 | `ssh-keygen -t ed25519 -C push-deploy-<날짜>`로 새 키를 만든다 → `keys/push-deploy.pub`를 바꾼다 → 콘솔에서 `harden.sh --deploy-key <새 .pub> --admin-key …`를 다시 실행한다(이전 키는 지워진다) → `VPS_SSH_KEY` 시크릿을 새 개인 키로 바꾼다 |
@@ -145,7 +145,7 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | `proxy` | Traefik. TLS를 끝내고 `AI_HOST` → `ai-worker:8080`, `DISPATCH_HOST` → `dispatcher:8091`로 보낸다. 80/443을 여는 유일한 서비스다 | 128 MB |
 | `ai-worker` | `q:chat:priority` → `q:chat` → `q:document` 순서로 읽는다. 채팅, 기업 AI, 서류 생성, 공고 적합도를 처리한다. `SERVE_API=1`이라 core로 아직 옮기지 않은 Python 경로(임시 `ai-api`)도 같은 프로세스에서 받는다. 하네스 산출물은 `ai-data` 볼륨의 `/data/resume`에 남는다 | 1,280 MB |
 | `ingest-worker` | `q:ingest`. 업로드, 링크, GitHub, 공고를 잘라 `rag_nodes`에 색인한다 | 512 MB |
-| `dispatcher` | outbox를 Redis Streams로 넘기고, 지연 큐를 승격하고, 멈춘 작업을 되돌린다. `/internal/kick`, `/admin/*`, 경보, 30일 보관 정리를 맡는다 | 128 MB |
+| `dispatcher` | outbox를 Redis Streams로 넘기고, 지연 큐를 승격하고, 멈춘 작업을 되돌린다. `/internal/kick`, `/admin/*`, 경보를 맡는다. 유지보수 루프가 만료된 `rate_limits`와 삭제 요청 후 30일이 지난 계정을 지운다 | 128 MB |
 | `notify-worker` | `q:notify`. 알림 행을 쓰고 Expo 푸시를 보낸다 | 128 MB |
 | `redis` | 큐, 속도 제한, 락, 임베딩 캐시. 외부 포트가 없고 `push-internal` 네트워크에서만 열린다. AOF `everysec`과 RDB 스냅샷을 쓴다. `maxmemory 128mb`, `volatile-lru`라서 TTL이 있는 임베딩 캐시만 밀려나고 큐 데이터는 남는다 | 192 MB |
 | `embed` | TEI `BAAI/bge-m3` (1024차원). 가중치만 약 2.3 GB라서 `--max-batch-tokens 2048`, `--max-concurrent-requests 8`로 활성 메모리를 줄였다 | 2,816 MB |
@@ -234,13 +234,9 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 
 ## 게이트웨이와 core
 
-Worker 시크릿은 CI가 GitHub에서 쓴다(위 [GitHub Actions 시크릿과 변수](#github-actions-시크릿과-변수)). `wrangler.jsonc`는 수정하지 않는다. 대시보드에서 직접 넣는 값은 다음뿐이다.
+Worker 시크릿은 CI가 GitHub에서 쓴다(위 [GitHub Actions 시크릿과 변수](#github-actions-시크릿과-변수)). `wrangler deploy`는 plain vars를 `wrangler.jsonc`로 바꾸므로 `AI_ORIGIN`은 배포 `--var`로 넣는다. 값은 `https://<AI_HOST>`다. 끝 슬래시는 없다. `AI_HOST`가 비어 있으면 값은 `https://`가 된다. 대시보드에만 넣지 않는다. 오리진이 비어 있으면 AI 경로는 500 `NOT_CONFIGURED`다.
 
-| Worker | 변수 | 값 |
-| --- | --- | --- |
-| `push-be` | `AI_ORIGIN` | `https://<AI_HOST>` (끝 슬래시 없음). 비우면 `push-be-python` 서비스 바인딩을 쓴다 |
-
-`push-be-core`의 `QUEUE_BACKEND`와 `DISPATCH_ORIGIN`은 `wrangler.jsonc`에 있다. `DISPATCH_HOST`를 바꾸면 `DISPATCH_ORIGIN`도 같이 바꾼다.
+`push-be-core`의 `QUEUE_BACKEND`와 `DISPATCH_ORIGIN`은 `wrangler.jsonc`에 있다. `postgres`로 되돌리면 코어도 같은 `AI_ORIGIN`이 필요하다. 비어 있으면 채팅 잡 삽입 뒤에 500 `NOT_CONFIGURED`다. `DISPATCH_HOST`를 바꾸면 `DISPATCH_ORIGIN`도 같이 바꾼다.
 
 Google OAuth 클라이언트의 승인된 리디렉션 URI에 `https://<게이트웨이 호스트>/api/v1/integrations/google/callback`을 추가한다. 이 경로는 이제 core가 받고, 요청이 들어온 게이트웨이 호스트로 콜백 주소를 만든다.
 
