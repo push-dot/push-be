@@ -358,3 +358,69 @@ async def test_gate_title_is_the_question():
         if event.get("type") == "choice" and snap.next
     }
     assert titles == _GATE_QUESTIONS
+
+
+async def _until_done(graph, config, payload):
+    gates = []
+    titles = {}
+    for _ in range(16):
+        events = []
+        async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
+            if mode == "custom" and isinstance(chunk, dict):
+                events.append(chunk)
+        snap = await graph.aget_state(config)
+        if snap.next:
+            choice = next(event for event in events if event.get("type") == "choice")
+            gates.append(choice["gate"])
+            titles[choice["gate"]] = choice["title"]
+            payload = Command(resume={"option_id": choice["recommended"]})
+            continue
+        if snap.values.get("status") == "done":
+            return gates, titles, snap
+        payload = {}
+    snap = await graph.aget_state(config)
+    return gates, titles, snap
+
+
+async def test_scenario_e_ends_after_fit_report():
+    db = _Approvals()
+    graph = _graph(db, model=_PhaseModel({"analyze": {"scenario": "E", "fit": {"score": 3}}}))
+    config = _config()
+    gates, _titles, snap = await _until_done(graph, config, _base(phase="analyze"))
+    assert gates == ["analyze", "present"]
+    assert snap.values["status"] == "done"
+    assert snap.values["scenario"] == "E"
+    assert "02_fit_score.json" in snap.values["artifacts"]
+    for name in ("01_parsed_resume.json", "01_github_findings.json", "01_job_analyses.json"):
+        assert name in snap.values["artifacts"]
+        assert name in db.files
+
+
+async def test_scenario_c_goes_to_design():
+    model = _PhaseModel()
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    gates, titles, snap = await _until_done(graph, config, _base(phase="analyze", scenario="C"))
+    assert "strategy" not in gates
+    assert "craft" not in gates
+    assert titles["review"] == "검증을 마쳤어요. 어떤 디자인을 적용할까요?"
+    assert "review" not in model.calls
+    assert "p4b_design" in graph.nodes
+    assert snap.values["status"] == "done"
+
+
+async def test_scenario_b_asks_before_craft():
+    graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": "B"}}))
+    gates, titles, _snap = await _until_done(graph, _config(), _base(phase="analyze"))
+    assert "strategy" not in gates
+    assert titles["feedback"] == "피드백을 반영해서 수정할까요?"
+    assert "craft" in gates
+
+
+async def test_scenarios_d_and_f_go_straight_to_craft():
+    for scenario in ("D", "F"):
+        graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": scenario}}))
+        gates, _titles, _snap = await _until_done(graph, _config(), _base(phase="analyze"))
+        assert "strategy" not in gates
+        assert "feedback" not in gates
+        assert "craft" in gates

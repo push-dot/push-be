@@ -9,6 +9,7 @@ class ResumeState(BaseModel):
     status: Literal["active", "done", "cancelled"] = "active"
     phase: Literal[
         "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+        "feedback",
     ] = "mode_select"
     work_mode: Literal["resume_based", "experience_blueprint"] | None = None
     scenario: str | None = None

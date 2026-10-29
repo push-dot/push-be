@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Send, interrupt
 from pydantic import ValidationError
 from typing_extensions import TypedDict
 
@@ -28,7 +28,6 @@ _ORDER = (
 )
 _SKIP_C = {"strategy", "craft"}
 _ARTIFACTS = {
-    "analyze": "01_parsed_resume.json",
     "present": "06_present.json",
 }
 _TARGET_IDS = ("resume", "portfolio", "cover_letter")
@@ -75,6 +74,11 @@ _GATES = {
         "title": "이 공고에 맞춰 고칠까요?",
         "recommended": "continue",
         "options": [{"id": "continue", "label": "전략으로 갈게요"}],
+    },
+    "feedback": {
+        "title": "피드백을 반영해서 수정할까요?",
+        "recommended": "continue",
+        "options": [{"id": "continue", "label": "반영해서 수정할게요"}],
     },
     "strategy": {
         "title": "이 전략대로 초안을 쓸까요?",
@@ -134,22 +138,37 @@ class ResumeGraphState(TypedDict, total=False):
     retry: bool
     reply: str
     reply_job: str
+    parsed_file: str
+    github_file: str
+    job_file: str
 
 
-def _scenario_c(state: dict) -> bool:
-    if state.get("scenario") == "C":
-        return True
-    return (state.get("inputs") or {}).get("scenario") == "C"
+def _scenario_letter(state: dict) -> str:
+    raw = state.get("scenario") or (state.get("inputs") or {}).get("scenario") or "A"
+    letter = str(raw).strip().upper()[:1]
+    return letter if letter in "ABCDEF" else "A"
+
+
+def _after_analyze(state: dict) -> str:
+    return {
+        "B": "feedback",
+        "C": "review",
+        "D": "craft",
+        "E": "present",
+        "F": "craft",
+    }.get(_scenario_letter(state), "strategy")
 
 
 def _next_phase(state: dict, phase: str) -> str | None:
     if phase == "present":
         return None
-    if phase == "analyze" and _scenario_c(state):
-        return "review"
+    if phase == "feedback":
+        return "craft"
+    if phase == "analyze":
+        return _after_analyze(state)
     index = _ORDER.index(phase) + 1
     nxt = _ORDER[index]
-    if _scenario_c(state) and nxt in _SKIP_C:
+    if _scenario_letter(state) == "C" and nxt in _SKIP_C:
         return "review"
     return nxt
 
@@ -495,17 +514,71 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         kept = {key: value for key, value in extra.items() if key not in skipped}
         return {**kept, "phase": state.get("phase") or "review", "status": "active", "goto": "end"}
 
+    async def save_named(state: dict, name: str, payload: dict) -> str:
+        body = json.dumps(payload, ensure_ascii=False)
+        return await save_artifact(_context(db, state), name, body)
+
+    async def parse_resume(state: ResumeGraphState) -> dict:
+        analysis = state.get("analysis") or {}
+        return {"parsed_file": await save_named(state, "01_parsed_resume.json", analysis)}
+
+    async def explore_github(state: ResumeGraphState) -> dict:
+        analysis = state.get("analysis") or {}
+        findings = analysis.get("github") if isinstance(analysis.get("github"), dict) else {}
+        return {"github_file": await save_named(state, "01_github_findings.json", findings)}
+
+    async def analyze_job(state: ResumeGraphState) -> dict:
+        analysis = state.get("analysis") or {}
+        jobs = analysis.get("jobs") if isinstance(analysis.get("jobs"), dict) else {}
+        return {"job_file": await save_named(state, "01_job_analyses.json", jobs)}
+
+    async def classify_scenario(state: ResumeGraphState) -> dict:
+        analysis = state.get("analysis") or {}
+        scenario = state.get("scenario") or analysis.get("scenario") or "A"
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts["01_parsed_resume.json"] = state.get("parsed_file") or ""
+        artifacts["01_github_findings.json"] = state.get("github_file") or ""
+        artifacts["01_job_analyses.json"] = state.get("job_file") or ""
+        fit_body = json.dumps({"fit": analysis.get("fit")}, ensure_ascii=False)
+        artifacts["02_fit_score.json"] = await save_artifact(
+            _context(db, state), "02_fit_score.json", fit_body)
+        return {"scenario": str(scenario), "artifacts": artifacts}
+
+    async def feedback_node(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        reply = "피드백을 정리했어요."
+        emit({"token": reply})
+        return {"reply": reply, "reply_job": current["job_id"], "phase": "feedback"}
+
+    async def design_node(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        reply = "디자인을 골라 주세요."
+        emit({"token": reply})
+        return {"reply": reply, "reply_job": current["job_id"], "phase": "review"}
+
+    def fan_out(state: ResumeGraphState):
+        payload = dict(state)
+        return [
+            Send("parse_resume", payload),
+            Send("explore_github", payload),
+            Send("analyze_job", payload),
+        ]
+
     def route_phase(state: ResumeGraphState) -> str:
+        phase = state.get("phase") or "mode_select"
+        if phase == "review" and _scenario_letter(state) == "C":
+            return "p4b_design"
         return {
             "mode_select": "p0_mode",
             "intake": "p0i_intake",
             "analyze": "p1_analyze",
             "strategy": "p2_strategy",
             "craft": "p3_craft",
+            "feedback": "p2b_feedback",
             "review": "p4a_review",
             "publish": "p5_publish",
             "present": "p6_present",
-        }.get(state.get("phase") or "mode_select", "p0_mode")
+        }.get(phase, "p0_mode")
 
     def route_goto(state: ResumeGraphState) -> str:
         return state.get("goto") or "end"
@@ -521,7 +594,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g_tone", gate_node("tone"))
     graph.add_node("g_intake", gate_node("intake"))
     graph.add_node("p1_analyze", work_node("analyze"))
+    graph.add_node("parse_resume", parse_resume)
+    graph.add_node("explore_github", explore_github)
+    graph.add_node("analyze_job", analyze_job)
+    graph.add_node("classify_scenario", classify_scenario)
     graph.add_node("g1", gate_node("analyze"))
+    graph.add_node("p2b_feedback", feedback_node)
+    graph.add_node("g_feedback", gate_node("feedback"))
+    graph.add_node("p4b_design", design_node)
     graph.add_node("p2_strategy", work_node("strategy"))
     graph.add_node("g2", gate_node("strategy"))
     graph.add_node("p3_craft", work_node("craft"))
@@ -534,12 +614,19 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p6_present", work_node("present"))
     graph.add_node("g6", gate_node("present"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
-        "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p3_craft",
-        "p4a_review", "p5_publish", "p6_present",
+        "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
+        "p4a_review", "p4b_design", "p5_publish", "p6_present",
     )})
     graph.add_edge("p0_mode", "g0")
     graph.add_edge("p0i_intake", "g_output_targets")
-    graph.add_edge("p1_analyze", "g1")
+    graph.add_conditional_edges(
+        "p1_analyze", fan_out, ["parse_resume", "explore_github", "analyze_job"])
+    graph.add_edge("parse_resume", "classify_scenario")
+    graph.add_edge("explore_github", "classify_scenario")
+    graph.add_edge("analyze_job", "classify_scenario")
+    graph.add_edge("classify_scenario", "g1")
+    graph.add_edge("p2b_feedback", "g_feedback")
+    graph.add_edge("p4b_design", "g4a")
     graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
     graph.add_edge("p3_craft", "g3")
     graph.add_edge("p4a_review", "g4a")
@@ -547,7 +634,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("p6_present", "g6")
     graph.add_edge("p3c_boost", END)
     for name in (
-        "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g2", "g3", "g4a", "g5", "g6",
+        "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
+        "g2", "g3", "g4a", "g5", "g6",
     ):
         graph.add_conditional_edges(name, route_goto, _EXITS)
     return graph.compile(checkpointer=checkpointer)
