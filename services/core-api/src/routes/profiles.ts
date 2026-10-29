@@ -60,6 +60,8 @@ function profileDto(row: Record<string, unknown>, viewerId: string, viewer: View
     careers: jsonList(row.careers),
     skills: jsonList(row.skills).map(String),
     followerCount: Number(row.follower_count ?? 0),
+    followingCount: Number(row.following_count ?? 0),
+    postCount: Number(row.post_count ?? 0),
     resumeSourceId: row.resume_source_id == null ? null : String(row.resume_source_id),
     contact: visibleContact(row, self, following),
     updatedAt: ts(row.updated_at),
@@ -84,6 +86,8 @@ function profileSelect(extra: string): string {
     split_part(lower(COALESCE(u.email, '')), '@', 2) AS email_domain,
     EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id) AS following,
     (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count,
+    (SELECT count(*)::int FROM follows f WHERE f.follower_id = p.user_id) AS following_count,
+    (SELECT count(*)::int FROM posts po WHERE po.user_id = p.user_id) AS post_count,
     COALESCE(s.contact_visibility, 'accepted') AS contact_visibility,
     to_jsonb(p) ->> 'contact' AS contact,
     EXISTS (SELECT 1 FROM offers o WHERE o.status = 'ACCEPTED' AND ((o.sender_id = $1 AND o.profile_user_id = p.user_id) OR (o.profile_user_id = $1 AND o.sender_id = p.user_id))) AS offer_accepted
@@ -258,7 +262,7 @@ function careersOf(value: unknown): unknown[] {
 
 async function patchMyProfile(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
-  rejectFields(body, ["userId", "createdAt", "updatedAt", "followerCount", "following", "offered"]);
+  rejectFields(body, ["userId", "createdAt", "updatedAt", "followerCount", "followingCount", "postCount", "following", "offered"]);
   await ensureProfile(ctx);
   const current = await one(ctx.deps.query,
     `SELECT u.display_name, p.headline, p.job_category, p.tenure_years, p.career_status, p.open_to_offers, p.intro, p.careers, p.skills, p.avatar_key, p.resume_source_id

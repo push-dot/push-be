@@ -407,6 +407,7 @@ def test_md_to_pdf_falls_back_to_plain_writer(tmp_path, monkeypatch):
     ("04_cover_letter.md", ("COVER_LETTER", "자기소개서")),
     ("04_Portfolio.md", ("PORTFOLIO", "포트폴리오")),
     ("05_final_resume.md", ("RESUME", "이력서")),
+    ("05_final_career_statement.md", ("CAREER_STATEMENT", "경력기술서")),
     ("03_misc.md", ("RESUME", "이력서")),
 ])
 def test_kind_of_maps_file_names(name, kind):

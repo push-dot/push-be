@@ -3619,7 +3619,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
             language: string;
             latestVersionId: string | null;
             revision: number;
@@ -4079,10 +4079,12 @@ export interface components {
             contact: string | null;
             displayName: string;
             followerCount: number;
+            followingCount: number;
             headline: string;
             intro: string;
             jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
             openToOffers: boolean;
+            postCount: number;
             resumeSourceId: string | null;
             skills: string[];
             tenureYears: number | null;
@@ -4099,11 +4101,13 @@ export interface components {
             displayName: string;
             followerCount: number;
             following: boolean;
+            followingCount: number;
             headline: string;
             intro: string;
             jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
             offered: boolean;
             openToOffers: boolean;
+            postCount: number;
             resumeSourceId: string | null;
             skills: string[];
             tenureYears: number | null;
@@ -6635,7 +6639,7 @@ export interface operations {
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
                 applicationId?: string;
-                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
             };
             header?: never;
             path?: never;
@@ -6674,7 +6678,7 @@ export interface operations {
                     /** Format: uuid */
                     applicationId: string;
                     /** @enum {string} */
-                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
                     language: string;
                     /**
                      * @description Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.

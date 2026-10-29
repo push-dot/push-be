@@ -26,6 +26,8 @@ const profileProps: Record<string, Schema> = {
   careers: arr(ref("SocialProfileCareer")),
   skills: arr(str),
   followerCount: int,
+  followingCount: int,
+  postCount: int,
   resumeSourceId: nullable(uuid),
   contact: nullable(str),
   updatedAt: dateTime,
