@@ -64,6 +64,33 @@ test("the ai keys routes are gone", async () => {
   }
 });
 
+test("a message stores the plan effort and ignores the client value", async () => {
+  const scheduled = { ...env(), API: { fetch: async () => new Response("{}", { status: 200 }) } };
+  const capture = (slot: { payload: string }): Deps => ({
+    ...deps(),
+    query: async (sql, params = []) => {
+      if (sql.includes("INSERT INTO chat_jobs")) slot.payload = String(params[3] ?? "");
+      return deps().query(sql, params);
+    },
+  });
+  resetLimits();
+  const sent = { payload: "" };
+  const res = await handle(message({ provider: "OPENAI", model: "gpt-x", effort: "HIGH" }, "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"), scheduled, capture(sent));
+  assert.equal(res.status, 202);
+  assert.equal(JSON.parse(sent.payload).ai.effort, "MEDIUM");
+
+  resetLimits();
+  const omittedSlot = { payload: "" };
+  const omitted = await handle(message({ provider: "OPENAI", model: "gpt-x" }, "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee"), scheduled, capture(omittedSlot));
+  assert.equal(omitted.status, 202);
+  assert.equal(JSON.parse(omittedSlot.payload).ai.effort, "MEDIUM");
+
+  resetLimits();
+  const bad = await handle(message({ provider: "OPENAI", model: "gpt-x", effort: "HUGE" }, "eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps());
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
+});
+
 test("a message is accepted whatever provider the client names", async () => {
   resetLimits();
   const api = { fetch: async () => new Response("{}", { status: 200 }) };

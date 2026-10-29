@@ -249,8 +249,8 @@ test("checkout rejects an unknown plan and an empty webhook body", async () => {
     },
     body: '{"planId":"FREE"}',
   }), env(), deps(authed));
-  assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "planId");
+  assert.equal(bad.status, 403);
+  assert.equal((await bad.json() as { error: { code: string } }).error.code, "FORBIDDEN");
 
   const hook = await handle(new Request("https://core.example/api/v1/billing/webhook", {
     method: "POST",

@@ -103,11 +103,11 @@ const postMessageBody = body(obj({
   ai: nullable(obj({
     provider: enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
     model: { type: "string", minLength: 1 },
-    effort: enumOf("LOW", "MEDIUM", "HIGH", "MAX"),
+    effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX." },
     ultraResume: { type: "boolean", description: "Requires the ULTRA plan" },
     webSearch: bool,
     models: { type: "object", additionalProperties: true },
-  }, ["provider", "model", "effort"])),
+  }, ["provider", "model"])),
   accessMode: { ...enumOf("ALWAYS_ASK", "AUTO", "BYPASS", "SUGGEST", "CONFIRM_ACTIONS"), description: "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting" },
   intent: enumOf("posting", "review", "interview", "general"),
   applicationId: nullable(uuid),

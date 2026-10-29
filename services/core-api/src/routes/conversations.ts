@@ -10,6 +10,20 @@ import type { Ctx } from "../types.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
+const PLAN_EFFORT: Record<string, string> = {
+  "PERSONAL:FREE": "LOW",
+  "PERSONAL:PRO": "MEDIUM",
+  "PERSONAL:ULTRA": "HIGH",
+  "EMPLOYER:BASIC": "MEDIUM",
+  "EMPLOYER:PRO": "HIGH",
+  "EMPLOYER:ULTRA": "MAX",
+};
+
+const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => {
+  const tier = plan == null ? "" : String(plan).trim().toUpperCase();
+  if (audience === "EMPLOYER") return PLAN_EFFORT[`EMPLOYER:${tier}`] ?? "MEDIUM";
+  return PLAN_EFFORT[`PERSONAL:${tier || "FREE"}`] ?? "LOW";
+};
 const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
 const CANONICAL_ACCESS: Record<string, string> = {
@@ -205,16 +219,18 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
   }
   const ai = raw as Record<string, unknown>;
   forbidExtra(ai, ["provider", "model", "effort", "ultraResume", "webSearch", "models"]);
-  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.effort !== "string") {
+  if (typeof ai.provider !== "string" || typeof ai.model !== "string") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   if (!AI_PROVIDERS.has(ai.provider)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });
   if (!ai.model) throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });
-  if (!EFFORTS.has(ai.effort)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
+  if (ai.effort != null && (typeof ai.effort !== "string" || !EFFORTS.has(ai.effort))) {
+    throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
+  }
   return {
     provider: ai.provider,
     model: ai.model,
-    effort: ai.effort,
+    effort: "LOW",
     ultraResume: ai.ultraResume === true,
     webSearch: ai.webSearch === true,
     models: ai.models && typeof ai.models === "object" && !Array.isArray(ai.models) ? ai.models : {},
@@ -384,6 +400,8 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     allowChat(ctx, ai),
   ]);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
+  if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
+  else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
   if (owned && owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");

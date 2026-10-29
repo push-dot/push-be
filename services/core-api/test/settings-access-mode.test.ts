@@ -60,7 +60,7 @@ test("settings round-trip aiAccessMode and reject an unknown mode", async () => 
   const query = authed(seen, async (sql, params) => {
     if (sql.includes("INSERT INTO user_settings")) return empty;
     if (sql.includes("UPDATE user_settings")) {
-      stored = String(params?.[16] ?? stored);
+      stored = String(params?.[13] ?? stored);
       return empty;
     }
     if (sql.includes("user_settings")) return { rows: [settingsRow(stored)], rowCount: 1 };
@@ -76,9 +76,9 @@ test("settings round-trip aiAccessMode and reject an unknown mode", async () => 
   assert.equal(loaded.status, 200);
   assert.equal((await loaded.json() as { data: { aiAccessMode: string } }).data.aiAccessMode, "BYPASS");
   const update = seen.find((call) => call.sql.includes("UPDATE user_settings"));
-  assert.match(update?.sql ?? "", /ai_access_mode = \$17/);
-  assert.match(update?.sql ?? "", /default_effort = \$15/);
-  assert.equal(update?.params[16], "BYPASS");
+  assert.match(update?.sql ?? "", /ai_access_mode = \$14/);
+  assert.doesNotMatch(update?.sql ?? "", /default_effort|confirm_before_edit|chat_retention_days/);
+  assert.equal(update?.params[13], "BYPASS");
 
   resetLimits();
   const bad = await handle(patch("/api/v1/me/settings", { aiAccessMode: "YOLO" }), env(), deps(authed([], async (sql) => {
