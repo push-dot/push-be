@@ -13,13 +13,14 @@ from pydantic.alias_generators import to_camel
 from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
-from app.domain.posting_fit import compute_fit
+from app.framework.fit_judge import judge_fit
 from app.graphs.chat_surface import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
 from app.harness.policy import Decision, Tier, decide
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
+from app.infrastructure.posting_fit_cache import load_fit, read_plan
 from app.jsonutil import to_jsonable
 
 bound_services: contextvars.ContextVar = contextvars.ContextVar(
@@ -286,10 +287,23 @@ async def _list_applications(ctx: ToolContext, _args: EmptyArgs) -> dict:
     return {"items": to_jsonable(page.items)}
 
 
-async def _get_fit_score(_ctx: ToolContext, args: FitArgs) -> dict:
-    return compute_fit(
-        args.requirements, args.keywords, args.description,
-        args.document_id or UUID(int=0), args.content, "FREE")
+def _user_id(ctx: ToolContext):
+    try:
+        return UUID(ctx.user_id)
+    except ValueError:
+        return None
+
+
+async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
+    if args.posting_id is not None and ctx.db is not None:
+        view = await load_fit(
+            ctx.db.q(), UUID(ctx.user_id), args.posting_id,
+            args.document_id or UUID(int=0))
+        return view if view is not None else {"error": "NOT_FOUND"}
+    query = None if ctx.db is None else ctx.db.q()
+    return await judge_fit(
+        args.requirements, args.keywords, args.description, args.content,
+        await read_plan(query, None if query is None else _user_id(ctx)))
 
 
 async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:

@@ -8,11 +8,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel
 
-from app.domain.posting_fit import compute_fit
+from app.framework.fit_judge import judge_fit
 from app.harness.policy import Tier
+from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
+from app.infrastructure.posting_fit_cache import read_plan
 from app.ingest.pdf_text import extract_pdf_bytes
 from app.ingest.web_page import fetch_github_context, github_usernames
-from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 
 _FINAL_MD = re.compile(r"05_final_\w+\.md")
 
@@ -97,10 +98,17 @@ async def _posting(ctx: ToolContext, args: PostingArgs) -> dict:
     )
 
 
-async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    return compute_fit(
-        args.requirements, args.keywords, args.description,
-        args.document_id or UUID(int=0), args.content, "FREE")
+async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
+    query = None if ctx.db is None else ctx.db.q()
+    user_id = None
+    if query is not None:
+        try:
+            user_id = UUID(ctx.user_id)
+        except ValueError:
+            user_id = None
+    plan = await read_plan(query, user_id)
+    return await judge_fit(
+        args.requirements, args.keywords, args.description, args.content, plan)
 
 
 def _artifact_id(ctx: ToolContext, name: str) -> str:

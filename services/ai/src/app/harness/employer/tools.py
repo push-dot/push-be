@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from app.domain.posting_fit import compute_fit
+from app.framework.fit_judge import judge_fit
 from app.harness.core_client import idempotency_key
 from app.harness.policy import Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
@@ -132,9 +132,8 @@ def _kept(args, drop: set[str]) -> dict:
 
 
 async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    return compute_fit(
-        args.requirements, args.keywords, args.description,
-        args.document_id or UUID(int=0), args.content, "FREE")
+    return await judge_fit(
+        args.requirements, args.keywords, args.description, args.content, "FREE")
 
 
 EMPLOYER_TOOLS = [

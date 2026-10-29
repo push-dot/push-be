@@ -26,6 +26,8 @@ class FitQuery:
 
     async def fetchrow(self, sql, *args):
         if "FROM posting_fit_cache" in sql:
+            if len(args) < 4:
+                return None
             return self.cache.get(args)
         if "FROM job_postings" in sql:
             self.posting_reads += 1
@@ -37,7 +39,7 @@ class FitQuery:
 
     async def execute(self, sql, *args):
         user_id, posting_id, document_id, score, parts, top_gap, plan = args
-        self.cache[(user_id, posting_id, document_id)] = {
+        self.cache[(user_id, posting_id, document_id, plan)] = {
             "fit_score": score, "parts": parts, "top_gap": top_gap, "plan": plan,
         }
 
@@ -56,15 +58,32 @@ def ctx_for(job):
 
 
 @pytest.mark.asyncio
-async def test_fit_handler_caches_per_posting_document():
+async def test_fit_handler_caches_per_posting_document(monkeypatch):
+    from app.domain.posting_fit import fit_view
+
+    calls = {"n": 0}
+
+    async def fake(requirements, keywords, description, content, plan, **kwargs):
+        calls["n"] += 1
+        return fit_view({
+            "techStack": 10, "experienceLink": 8, "careerLevel": 6,
+            "keyword": 4, "domain": 2,
+        }, plan)
+
+    monkeypatch.setattr(
+        "app.infrastructure.posting_fit_cache.judge_fit", fake, raising=False)
     query = FitQuery()
     handle = make_fit(lambda: query)
     first = await handle(ctx_for(fit_job()))
     second = await handle(ctx_for(fit_job()))
     assert first == second
     assert first["plan"] == "PRO"
-    assert query.posting_reads == 1
-    assert list(query.cache) == [(USER, POSTING, DOC)]
+    assert first["fitScore"] == 7.4
+    assert set(first["parts"]) == {
+        "techStack", "experienceLink", "careerLevel", "keyword", "domain"}
+    assert calls["n"] == 1
+    assert query.posting_reads == 2
+    assert list(query.cache) == [(USER, POSTING, DOC, "PRO")]
 
 
 @pytest.mark.asyncio

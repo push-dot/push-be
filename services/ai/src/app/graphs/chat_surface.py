@@ -116,12 +116,18 @@ def _fit_event(state: dict) -> dict | None:
         "type": "fit",
         "score": round(float(raw["score"]), 1),
         "parts": {
-            "techStack": int(parts.get("techStack") or 0),
-            "experienceLink": int(parts.get("experienceLink") or 0),
-            "keyword": int(parts.get("keyword") or 0),
+            "techStack": _fit_part(parts, "techStack"),
+            "experienceLink": _fit_part(parts, "experienceLink"),
+            "careerLevel": _fit_part(parts, "careerLevel"),
+            "keyword": _fit_part(parts, "keyword"),
+            "domain": _fit_part(parts, "domain"),
         },
         "topGap": raw.get("topGap") or "",
     }
+
+
+def _fit_part(parts: dict, key: str) -> float:
+    return round(float(parts.get(key) or 0), 1)
 
 
 def _choice_event(state: dict) -> dict | None:

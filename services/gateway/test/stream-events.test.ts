@@ -84,7 +84,7 @@ test("structured rows keep their fields and an unknown type does not end the str
       { id: 15, type: "choice", payload: { id: "ch-1", options: [{ id: "a", label: "A" }] } },
       { id: 16, type: "fit", payload: {
         score: 7.4,
-        parts: { techStack: 80, experienceLink: 55, keyword: 40 },
+        parts: { techStack: 8, experienceLink: 5.5, careerLevel: 6, keyword: 4, domain: 3 },
         topGap: "tests",
       } },
       { id: 17, type: "future", payload: { note: "later" } },
@@ -112,7 +112,7 @@ test("structured rows keep their fields and an unknown type does not end the str
   });
   assert.deepEqual(frames[6], {
     type: "fit", seq: 16, score: 7.4, topGap: "tests",
-    parts: { techStack: 80, experienceLink: 55, keyword: 40 },
+    parts: { techStack: 8, experienceLink: 5.5, careerLevel: 6, keyword: 4, domain: 3 },
   });
   assert.deepEqual(frames[7], { type: "future", note: "later", seq: 17 });
   assert.deepEqual(frames[8], { type: "status", text: "still going", seq: 18 });

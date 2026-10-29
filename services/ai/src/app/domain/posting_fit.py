@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-from uuid import UUID
 
 from app.domain.content import node_text
-from app.domain.services.job import part_scores
 
-_GAPS = (
-    ("techStack", "기술 스택"),
-    ("experienceLink", "경험 연관성"),
-    ("keyword", "키워드"),
+_DIMS = (
+    ("techStack", "기술 스택", 35),
+    ("experienceLink", "경험 연관성", 30),
+    ("careerLevel", "경력 수준", 15),
+    ("keyword", "키워드", 10),
+    ("domain", "도메인", 10),
 )
 
 
@@ -20,15 +20,21 @@ def plan_name(plan) -> str:
     return text or "FREE"
 
 
+def _point(value) -> float:
+    return min(10.0, max(0.0, round(float(value), 1)))
+
+
 def fit_view(parts: dict, plan) -> dict:
     scored = tuple(
-        (int(parts[key]), index, label) for index, (key, label) in enumerate(_GAPS))
-    total = scored[0][0] + scored[1][0] + scored[2][0]
-    score = min(10.0, max(0.0, round(total / 30, 1)))
+        (_point(parts.get(key, 0)), index, label, weight)
+        for index, (key, label, weight) in enumerate(_DIMS))
+    total = sum(value * weight for value, _index, _label, weight in scored)
+    score = min(10.0, max(0.0, round(total / 100, 1)))
+    gap = min(scored, key=lambda item: (item[0], item[1]))
     return {
         "fitScore": score,
-        "parts": {key: scored[index][0] for index, (key, _) in enumerate(_GAPS)},
-        "topGap": min(scored)[2],
+        "parts": {key: scored[index][0] for index, (key, _label, _weight) in enumerate(_DIMS)},
+        "topGap": gap[2],
         "plan": plan_name(plan),
     }
 
@@ -37,26 +43,18 @@ def cached_view(row) -> dict:
     parts = row["parts"]
     if isinstance(parts, str):
         parts = json.loads(parts)
+    viewed = fit_view(parts, row["plan"])
     return {
         "fitScore": float(row["fit_score"]),
-        "parts": {key: int(parts[key]) for key, _label in _GAPS},
+        "parts": viewed["parts"],
         "topGap": row["top_gap"],
-        "plan": plan_name(row["plan"]),
+        "plan": viewed["plan"],
     }
 
 
-def compute_fit(requirements, keywords, description, document_id, content, plan) -> dict:
-    evidence = _Evidence(document_id, _source_text(content))
-    parts = part_scores(
-        _requirements(requirements, description), _strings(keywords), [evidence])
-    return fit_view(parts, plan)
-
-
-class _Evidence:
-    def __init__(self, id_: UUID, source_text: str):
-        self.id = id_
-        self.skills: list[str] = []
-        self.source_text = source_text
+def fit_inputs(requirements, keywords, description, content) -> tuple[str, str]:
+    lines = ["요구사항:", *_requirements(requirements, description), "키워드:", *_strings(keywords)]
+    return "\n".join(lines), _source_text(content)
 
 
 def _source_text(content) -> str:

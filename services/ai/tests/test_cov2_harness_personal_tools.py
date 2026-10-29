@@ -123,15 +123,26 @@ async def test_search_career_runs_rag_for_the_caller(monkeypatch):
     assert seen[0] == ({"text": "결제", "user_id": USER, "job_id": "job-1"}, set())
 
 
-async def test_fit_score_without_a_document_uses_the_nil_id():
+async def test_fit_score_without_a_user_row_is_free(monkeypatch):
+    seen = []
+
+    async def fake(requirements, keywords, description, content, plan, **kwargs):
+        seen.append((plan, bool(content)))
+        return {
+            "fitScore": 4.0 if content else 1.0,
+            "parts": {}, "topGap": "", "plan": plan,
+        }
+
+    monkeypatch.setattr(tools, "judge_fit", fake, raising=False)
     out = await _run("get_fit_score", {
         "requirements": ["Python"], "keywords": ["Kafka"],
         "description": "", "content": "Python Kafka 경험"})
     assert set(out) == {"fitScore", "parts", "topGap", "plan"}
     assert out["plan"] == "FREE"
-    assert 0 <= out["fitScore"] <= 10
+    assert seen == [("FREE", True)]
     empty = await _run("get_fit_score", {"document_id": str(uuid4())})
     assert empty["fitScore"] <= out["fitScore"]
+    assert seen[1] == ("FREE", False)
 
 
 class _Approvals:
@@ -293,7 +304,13 @@ def test_model_supplied_ids_must_be_uuids(model):
         model.model_validate({field: "../../x"})
 
 
-async def test_fit_score_treats_empty_ids_as_none():
+async def test_fit_score_treats_empty_ids_as_none(monkeypatch):
+    async def fake(requirements, keywords, description, content, plan, **kwargs):
+        return {"fitScore": 1.0, "parts": {}, "topGap": "", "plan": plan}
+
+    monkeypatch.setattr(tools, "judge_fit", fake, raising=False)
     assert tools.FitArgs.model_validate({"posting_id": "", "document_id": ""}).document_id is None
-    out = await _run("get_fit_score", {"document_id": "", "requirements": ["python"], "content": "python"})
+    out = await _run(
+        "get_fit_score",
+        {"document_id": "", "requirements": ["python"], "content": "python"})
     assert isinstance(out, dict) and "error" not in out
