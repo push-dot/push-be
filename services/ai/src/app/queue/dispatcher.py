@@ -10,8 +10,10 @@ from uuid import UUID
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.account_purge import purge_deleted
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
+from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
 from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.streams import StreamQueue
@@ -121,6 +123,10 @@ class Dispatcher:
                 await db.reconcile_credits(now)
                 await db.purge_finished(now)
                 await db.expire_approvals(now)
+                pool = getattr(db, "conn", None)
+                storage = os.environ.get("STORAGE_DIR") or None
+                await sweep(pool)
+                await purge_deleted(pool, storage)
                 self.db_conditions = db_conditions(stats, await db.neon_stats())
             return stats
         finally:

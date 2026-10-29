@@ -36,6 +36,10 @@ class Rows:
         if sql.lstrip().startswith("INSERT INTO approvals"):
             kind = args[2] if isinstance(args[2], str) else "TOOL_ACTION"
             self.approvals[str(args[0])] = {"id": args[0], "kind": kind}
+        if "UPDATE approvals SET tool_args" in sql:
+            row = self.approvals.get(str(args[0]))
+            if row is not None:
+                row["tool_args"] = args[1]
         return "UPDATE 1"
 
     async def run(self, work):

@@ -26,7 +26,7 @@ def provider_of(chat, model: str) -> dict | None:
 
 def chat_model(*, api_key: str, model: str, base_url: str,
                reasoning: str = "", headers: dict | None = None,
-               provider: dict | None = None, cls=None):
+               provider: dict | None = None, cls=None, streaming: bool = True):
     """OpenAI-compatible chat model. Tools are not bound to this call."""
     if cls is None:
         from langchain_openai import ChatOpenAI
@@ -35,7 +35,7 @@ def chat_model(*, api_key: str, model: str, base_url: str,
         "api_key": api_key,
         "model": model,
         "base_url": base_url,
-        "streaming": True,
+        "streaming": streaming,
         "stream_usage": True,
         "max_tokens": 65536,
         "timeout": _TIMEOUT_SECONDS,
@@ -83,12 +83,36 @@ def _apply_usage(message, usage: dict) -> None:
         usage["finish"] = finish
 
 
+def _attach(model, callback):
+    if callback is None:
+        return model
+    model.callbacks = [*(getattr(model, "callbacks", None) or []), callback]
+    return model
+
+
+def _built_model(chat, key: str, model: str, reasoning: str,
+                 headers: dict | None, *, levers=None, web_search: bool = False,
+                 session_id: str = "", app_config=None, callback=None):
+    if levers is None:
+        lc = chat_model(
+            api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
+            reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
+    else:
+        from app.framework.llm import chat_model_for
+        lc = chat_model_for(
+            levers, web_search=web_search, streaming=True, config=app_config,
+            session_id=session_id)
+    return _attach(lc, callback)
+
+
 async def complete_langchain(chat, key: str, model: str, system: str,
                              user: str, reasoning: str = "",
-                             headers: dict | None = None) -> ent.AICompletion:
-    lc = chat_model(
-        api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-        reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
+                             headers: dict | None = None, *, levers=None,
+                             web_search: bool = False, session_id: str = "",
+                             app_config=None, callback=None) -> ent.AICompletion:
+    lc = _built_model(
+        chat, key, model, reasoning, headers, levers=levers, web_search=web_search,
+        session_id=session_id, app_config=app_config, callback=callback)
     messages = render_messages(system, user)
     result = await lc.ainvoke(messages)
     usage: dict = {}
@@ -102,10 +126,12 @@ async def complete_langchain(chat, key: str, model: str, system: str,
 async def stream_langchain(chat, key: str, model: str, system: str, user: str,
                            usage: dict, reasoning: str = "",
                            headers: dict | None = None,
-                           assistant_prefix: str = ""):
-    lc = chat_model(
-        api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-        reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
+                           assistant_prefix: str = "", *, levers=None,
+                           web_search: bool = False, session_id: str = "",
+                           app_config=None, callback=None):
+    lc = _built_model(
+        chat, key, model, reasoning, headers, levers=levers, web_search=web_search,
+        session_id=session_id, app_config=app_config, callback=callback)
     messages = render_messages(system, user, assistant_prefix)
     async for chunk in lc.astream(messages):
         _apply_usage(chunk, usage)
@@ -115,21 +141,23 @@ async def stream_langchain(chat, key: str, model: str, system: str, user: str,
 
 
 async def complete_or_none(chat, key: str, model: str, system: str, user: str,
-                           reasoning: str = "", headers: dict | None = None):
+                           reasoning: str = "", headers: dict | None = None,
+                           **factory):
     if not use_langchain() or not openai_compatible(chat):
         return None
     try:
         return await complete_langchain(
-            chat, key, model, system, user, reasoning, headers)
+            chat, key, model, system, user, reasoning, headers, **factory)
     except ImportError:
         return None
 
 
 def stream_or_none(chat, key: str, model: str, system: str, user: str,
                    usage: dict, reasoning: str = "",
-                   headers: dict | None = None, assistant_prefix: str = ""):
+                   headers: dict | None = None, assistant_prefix: str = "",
+                   **factory):
     if not use_langchain() or not openai_compatible(chat):
         return None
     return stream_langchain(
         chat, key, model, system, user, usage, reasoning, headers,
-        assistant_prefix)
+        assistant_prefix, **factory)

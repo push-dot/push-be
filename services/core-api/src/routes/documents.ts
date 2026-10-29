@@ -5,6 +5,7 @@ import {
   type Block,
 } from "../document-content.ts";
 import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
+import { enqueueIngest } from "../jobs/ingest.ts";
 import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 
@@ -169,6 +170,7 @@ const saveVersion = async (
     [docId, ctx.user.id, versionId, now, expected, doc.application_id ?? null, JSON.stringify(content), JSON.stringify(blocks),
       note, JSON.stringify(quality), extra?.proposalId ?? null]);
   if (!saved) await failedUpdate(ctx, "documents", docId);
+  await enqueueIngest(ctx, { documentId: docId });
   const document = {
     ...doc, revision: expected + 1, latest_version_id: versionId, finalized_version_id: null,
     status: doc.status === "FINALIZED" ? "DRAFT" : doc.status, updated_at: now,

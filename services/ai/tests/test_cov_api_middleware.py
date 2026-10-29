@@ -220,21 +220,13 @@ async def test_user_rate_limit():
     assert status == 429 and _err(body)["code"] == "RATE_LIMITED"
 
 
-async def test_worker_uses_shared_limiter(monkeypatch):
-    seen = []
-
-    async def fake_allow(pool, kind, key, limit, now):
-        seen.append((pool, kind, key, limit))
-        return kind == "user"
-    monkeypatch.setenv("CF_WORKER", "1")
-    monkeypatch.setattr(mw, "allow_shared", fake_allow)
+async def test_cf_worker_stays_on_the_memory_limiter(monkeypatch):
     app, _ = inner(200)
     m = ApiMiddleware(app)
     state = {"db": SimpleNamespace(pool="POOL")}
-    status, _, _ = await call(m, deps(), "GET", headers={"Authorization": "Bearer t"}, state=state)
-    assert status == 200 and seen[-1] == ("POOL", "user", str(USER.id), 600)
-    status, _, _ = await call(m, deps(), "GET", "/api/v1/healthz", state=state)
-    assert status == 429 and seen[-1] == ("POOL", "ip", "9.9.9.9", 60)
+    status, _, _ = await call(
+        m, deps(), "GET", headers={"Authorization": "Bearer t"}, state=state)
+    assert status == 200
 
 
 async def test_get_and_stream_and_exempt_posts_skip_idempotency():

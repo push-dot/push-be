@@ -126,15 +126,43 @@ _HARNESS_PHASE_INDEX = {
     "present": 6,
 }
 
+_PHASE_REFS = {
+    "analyze": ("core",),
+    "strategy": ("core", "competency-signals", "projects"),
+    "craft": (
+        "core",
+        "checklist-formulas",
+        "competency-signals",
+        "portfolio",
+        "projects",
+        "writing-voice",
+    ),
+    "review": ("checklist-formulas", "writing-voice"),
+    "blueprints": (
+        "experience-blueprints",
+        "projects",
+        "checklist-formulas",
+        "core",
+    ),
+}
 
-@lru_cache(maxsize=8)
+
+@lru_cache(maxsize=16)
 def phase_prompt_for_harness(phase: str) -> str:
-    index = _HARNESS_PHASE_INDEX[phase]
+    if phase == "blueprints":
+        skills = ("blueprint-generator",)
+        label = "Phase 2-X: 문제해결 프로젝트 기획"
+    else:
+        index = _HARNESS_PHASE_INDEX[phase]
+        skills = _PHASE_SKILLS[index]
+        label = _PHASE_LABELS[index]
     parts = []
-    for name in _PHASE_SKILLS[index]:
+    for name in skills:
         parts.append((_RES / "skills" / (name + ".md")).read_text())
+    for name in _PHASE_REFS.get(phase, ()):
+        parts.append((_RES / "references" / (name + ".md")).read_text())
     parts.append(
-        "[현재 단계] 지금 실행할 단계는 " + _PHASE_LABELS[index] + "이다. "
+        "[현재 단계] 지금 실행할 단계는 " + label + "이다. "
         "이 단계의 산출물만 만들고, 다음 단계는 사용자 응답 후에 진행한다.")
     return "\n\n---\n\n".join(parts)
 

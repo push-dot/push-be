@@ -47,22 +47,18 @@ async function relay(send: () => Promise<Response>, rid: string): Promise<Respon
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
 }
 
-export async function proxy(request: Request, binding: FrontEnv["API"] | undefined, rid: string, keepActAs = false): Promise<Response> {
+export async function proxy(request: Request, binding: FrontEnv["CORE"] | undefined, rid: string, keepActAs = false): Promise<Response> {
   if (!binding) return errorResponse(500, "INTERNAL", "internal error", rid);
   const init = forwardInit(request, rid, keepActAs);
   if (init instanceof Response) return init;
   return relay(() => binding.fetch(new Request(request.url, init)), rid);
 }
 
-/**
- * AI routes stay on the `API` service binding unless AI_ORIGIN is set.
- * The origin is the Hostinger VPS on the public internet, so it must be
- * HTTPS and carry the shared secret. The secret is not logged.
- */
+// The origin is the public VPS, so it must be HTTPS and carry the shared secret.
 export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> {
   const origin = (env.AI_ORIGIN || "").trim().replace(/\/$/, "");
-  if (!origin) return proxy(request, env.API, rid);
   const secret = (env.AI_SHARED_SECRET || "").trim();
+  if (!origin) return errorResponse(500, "NOT_CONFIGURED", "ai origin is not configured", rid);
   if (!secret || !origin.startsWith("https://")) return errorResponse(500, "INTERNAL", "internal error", rid);
   const init = forwardInit(request, rid, false);
   if (init instanceof Response) return init;

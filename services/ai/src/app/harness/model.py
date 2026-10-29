@@ -4,25 +4,22 @@ import asyncio
 from typing import Final
 
 from langchain_core.messages import AIMessage
+from langchain_core.tools import StructuredTool
 
 from app.domain import entities as ent
 from app.domain.errors import DomainError, provider_error
-from app.framework.models import _apply_usage, chat_model, provider_of
+from app.domain.plan_levers import PlanLevers
+from app.framework.llm import AiUsageCallback, chat_model_for
+from app.framework.models import _apply_usage
 from app.graphs.chat import stub_reply
+from app.harness.tools import to_structured_tool
 
 # Whole-call ceiling; long reasoning drafts can stream for minutes but never forever.
 _CALL_TIMEOUT_SECONDS: Final = 180
 
 
-def tool_schema(tool) -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.name.replace("_", " "),
-            "parameters": tool.args_model.model_json_schema(),
-        },
-    }
+def _for_model(tool):
+    return tool if isinstance(tool, StructuredTool) else to_structured_tool(tool)
 
 
 class StubModel:
@@ -58,19 +55,31 @@ class GateModel:
             await self.gate.check(self.user_id, self.ai)
             self.turn["checked"] = True
             self.turn["model"] = self.ai.model
-        chat, key, model, headers = await self.gate._route(self.user_id, self.ai)
         if "usage_id" not in self.turn:
             text = "".join(str(getattr(message, "content", "")) for message in messages)
             self.turn["usage_id"] = await self.gate._reserve(
                 self.user_id, self.ai, "", text, self.job_id)
-        reasoning = self.ai.effort.lower()
-        lc = chat_model(api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-                        reasoning=reasoning, headers=headers,
-                        provider=provider_of(chat, model), cls=self.cls)
-        runnable = lc.bind_tools([tool_schema(tool) for tool in self.tools]) if self.tools else lc
+        if hasattr(self.gate, "_factory_config"):
+            config = self.gate._factory_config(getattr(self.gate, "chat", None))
+        elif hasattr(self.gate, "_levers_config"):
+            config = self.gate._levers_config()
+        else:
+            from app.config import Config
+            config = Config()
+        web = bool(self.ai.web_search) and not str(self.ai.model).startswith("opencode-go/")
+        lc = chat_model_for(
+            PlanLevers(self.ai.model, self.ai.effort, "", "", "", 0),
+            web_search=web, streaming=True, config=config,
+            session_id=str(self.user_id or ""), cls=self.cls)
+        store = getattr(self.gate, "usage", None)
+        callback = None
+        if store is not None and self.turn.get("usage_id") is not None:
+            callback = AiUsageCallback(store, self.user_id, self.job_id, self.turn["usage_id"])
+        runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if self.tools else lc
+        invoke = {"config": {"callbacks": [callback]}} if callback is not None else {}
         try:
             async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
-                reply = await runnable.ainvoke(messages)
+                reply = await runnable.ainvoke(messages, **invoke)
         except DomainError:
             raise
         except Exception:

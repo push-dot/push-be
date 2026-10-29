@@ -322,25 +322,11 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
   }
 }
 
-// The VPS loop claims the inserted row. Skip the Cloudflare Workflow while
-// AI_ORIGIN is set. Clearing it schedules through the service binding again.
+// The VPS claims the inserted row. An empty origin is a configuration error.
 export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
   const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
-  if (origin) {
-    await wakeVps(ctx, origin, jobId);
-    return;
-  }
-  if (!ctx.env.API) throw new HttpError(500, "INTERNAL", "internal error");
-  const scheduled = await ctx.env.API.fetch(new Request("https://push-be-python/internal/chat/schedule", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-push-internal": "1",
-      "x-request-id": ctx.rid,
-    },
-    body: JSON.stringify({ jobId }),
-  }));
-  if (!scheduled.ok) throw new HttpError(500, "INTERNAL", "internal error");
+  if (!origin) throw new HttpError(500, "NOT_CONFIGURED", "ai origin is not configured");
+  await wakeVps(ctx, origin, jobId);
 };
 
 const enqueueChatMessage = async (

@@ -34,7 +34,7 @@ def _emit(payload: dict) -> None:
 
 def _blob_db() -> bool:
     import os
-    return os.environ.get("BLOB_STORE") == "db" or os.environ.get("CF_WORKER") == "1"
+    return os.environ.get("BLOB_STORE") == "db"
 
 
 def _now() -> datetime:
@@ -640,13 +640,6 @@ def bind_chat_nodes(svc):
         conv = state["conversation"]
         attachments = state["attachments"]
         completion = state.get("completion")
-        if completion is None:
-            from app.jobs import external_jobs
-            if external_jobs():
-                # A racing run can drop `completion` from the checkpoint.
-                # Storing the local stub there shipped a fake assistant
-                # message. The Workflow retries this step instead.
-                raise RuntimeError("chat completion missing")
         blocked = await _emit_persisted(state)
         now = _now()
         user_msg_id, assistant_msg_id, op_id = _stable_ids(

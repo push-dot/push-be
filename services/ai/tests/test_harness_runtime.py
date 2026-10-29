@@ -43,8 +43,8 @@ async def test_turn_uses_gate_model_and_persists_reply():
     assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
     assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
     assert svc.ai.settled == [("gate-model", 10, 5)]
-    schemas = {tool["function"]["name"]: tool for tool in ScriptedLC.bound[0]}
-    assert "posting_id" in schemas["bookmark_posting"]["function"]["parameters"]["properties"]
+    tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
+    assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
 
 
 async def test_no_ai_options_gives_the_stub_reply():
@@ -109,6 +109,101 @@ async def test_resume_turn_saves_the_assistant_message():
     assert done[0]["awaiting"] == "choice"
     assert done[0]["operation"]["result"]["value"]["assistantMessage"]["text"] == "어떤 방식으로 쓸지 골라 주세요"
     assert ("custom", {"token": "어떤 방식으로 쓸지 골라 주세요"}) in items
+
+
+async def test_start_document_cancel_choice_resets_flow():
+    from app.harness.personal import tools
+    from app.harness.router import select_harness
+    from app.harness.tools import ToolContext
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "craft"}})
+    svc = service(rows)
+    tool = next(item for item in tools.PERSONAL_TOOLS if item.name == "start_document")
+    result = await tool.run(ToolContext(
+        user_id=str(USER), company_id=None, conversation_id=str(CONV),
+        job_id="job-1", tool_call_id="call-1", db=rows, core=None,
+    ), tool.args_model.model_validate({}))
+    choice = result["choice"]
+    assert choice["kind"] == "RESUME_GATE"
+    assert choice["gate"] == "start_document"
+    assert [item["id"] for item in choice["options"]] == ["continue", "cancel"]
+    assert rows.approvals[choice["id"]]["kind"] == "RESUME_GATE"
+    assert not any("resume_state" in sql for sql, _args in rows.executed)
+    await run(HarnessRuntime(svc), _payload(
+        "", ai=None, resume={"approvalId": choice["id"], "optionId": "cancel"}))
+    saved = rows.conversation["resume_state"]
+    if isinstance(saved, str):
+        saved = json.loads(saved)
+    assert saved["status"] == "cancelled"
+    assert select_harness(rows.conversation).id == "personal"
+
+
+def _saved_resume(rows):
+    saved = rows.conversation["resume_state"]
+    if isinstance(saved, str):
+        saved = json.loads(saved)
+    return saved
+
+
+async def _ask_start(tool, rows, job_id):
+    from app.harness.tools import ToolContext
+
+    return await tool.run(ToolContext(
+        user_id=str(USER), company_id=None, conversation_id=str(CONV),
+        job_id=job_id, tool_call_id="call-" + job_id, db=rows, core=None,
+    ), tool.args_model.model_validate({}))
+
+
+async def test_start_document_second_ask_can_be_answered():
+    from app.harness.personal import tools
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "craft"}})
+    runtime = HarnessRuntime(service(rows))
+    tool = next(item for item in tools.PERSONAL_TOOLS if item.name == "start_document")
+    first = await _ask_start(tool, rows, "job-1")
+    await run(runtime, _payload(
+        "", ai=None, resume={"approvalId": first["choice"]["id"], "optionId": "cancel"}))
+    assert _saved_resume(rows)["status"] == "cancelled"
+
+    restarted = await _ask_start(tool, rows, "job-2")
+    assert restarted == {
+        "harness": "resume",
+        "resume_state": {"status": "active", "phase": "mode_select"},
+    }
+
+    second = await _ask_start(tool, rows, "job-3")
+    assert second["choice"]["id"] != first["choice"]["id"]
+    await run(runtime, _payload(
+        "", ai=None, job_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        resume={"approvalId": second["choice"]["id"], "optionId": "cancel"}))
+    assert _saved_resume(rows)["status"] == "cancelled"
+
+
+async def test_start_document_continue_choice_keeps_the_flow():
+    from app.harness.personal import tools
+    from app.harness.router import select_harness
+    from app.harness.tools import ToolContext
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    svc = service(rows)
+    runtime = HarnessRuntime(svc)
+    await run(runtime, _payload("서류", ai=None))
+    tool = next(item for item in tools.PERSONAL_TOOLS if item.name == "start_document")
+    result = await tool.run(ToolContext(
+        user_id=str(USER), company_id=None, conversation_id=str(CONV),
+        job_id="job-1", tool_call_id="call-1", db=rows, core=None,
+    ), tool.args_model.model_validate({}))
+    phase_before = json.loads(rows.conversation["resume_state"])["phase"]
+    await run(runtime, _payload(
+        "", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        resume={"approvalId": result["choice"]["id"], "optionId": "continue"}))
+    saved = json.loads(rows.conversation["resume_state"])
+    assert saved["status"] == "active"
+    assert saved["phase"] == phase_before == "mode_select"
+    assert select_harness(rows.conversation).id == "resume"
 
 
 async def test_answering_a_gate_without_new_work_saves_nothing():

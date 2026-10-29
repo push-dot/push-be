@@ -8,12 +8,10 @@ import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:00Z");
 
-function env(api?: FrontEnv["API"], core?: FrontEnv["API"]): FrontEnv {
-  const python = api ?? { async fetch() { throw new Error("python should not be called"); } };
+function env(core?: NonNullable<FrontEnv["CORE"]>): FrontEnv {
   return {
     DATABASE_URL: "postgres://example",
-    API: python,
-    CORE: core ?? python,
+    CORE: core ?? { async fetch() { throw new Error("core should not be called"); } },
     APP_ENV: "production",
     MANAGED_AI: "1",
     MANAGED_GO: "0",
@@ -350,12 +348,6 @@ test("chat enqueue and other writes are proxied", async () => {
   }), env(), d);
   const before = calls.length;
   const forwarded: string[] = [];
-  const python = {
-    async fetch(request: Request) {
-      forwarded.push("python " + request.method + " " + new URL(request.url).pathname + " " + (request.headers.get("x-push-internal") || ""));
-      return new Response('{"data":{}}', { status: 202, headers: { "content-type": "application/json" } });
-    },
-  };
   const core = {
     async fetch(request: Request) {
       forwarded.push("core " + request.method + " " + new URL(request.url).pathname);
@@ -369,7 +361,7 @@ test("chat enqueue and other writes are proxied", async () => {
     method: "POST",
     headers: { authorization: "Bearer secret-token", "idempotency-key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "content-type": "application/json", "x-push-internal": "1" },
     body: '{"text":"hi","accessMode":"SUGGEST"}',
-  }), env(python, core), d);
+  }), env(core), d);
   assert.equal(post.status, 202);
   assert.equal(post.headers.get("x-request-id"), "req_from_core");
   assert.equal(calls.length, before);
@@ -378,13 +370,19 @@ test("chat enqueue and other writes are proxied", async () => {
     method: "POST",
     headers: { authorization: "Bearer secret-token", "x-push-internal": "1", "content-type": "application/json" },
     body: "{}",
-  }), env(python, core), d);
+  }), { ...env(core), AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "test-secret" }, {
+    ...d,
+    fetch: async (input, init) => {
+      forwarded.push("python POST " + new URL(String(input)).pathname + " " + (new Headers(init?.headers).get("x-push-internal") || ""));
+      return new Response('{"data":{}}', { status: 202, headers: { "content-type": "application/json" } });
+    },
+  });
   assert.equal(generated.status, 202);
   assert.equal(forwarded[1], "python POST /api/v1/ai/generate ");
   const hidden = await handle(new Request("https://push-be.example/internal/chat/schedule", {
     method: "POST",
     headers: { "x-push-internal": "1" },
-  }), env(python, core), d);
+  }), env(core), d);
   assert.equal(hidden.status, 404);
 
 });
@@ -1066,27 +1064,21 @@ test("CORS preflight is answered without calling Python", async () => {
 test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async () => {
   resetLimits();
   const forwarded: string[] = [];
-  const python = {
-    async fetch(request: Request) {
-      forwarded.push("python " + new URL(request.url).pathname);
-      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-    },
-  };
   const core = {
     async fetch(request: Request) {
       forwarded.push("core " + new URL(request.url).pathname);
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
     },
   };
-  const postings = await handle(new Request("https://push-be.example/api/v1/postings"), env(python, core), deps(async () => []));
+  const postings = await handle(new Request("https://push-be.example/api/v1/postings"), env(core), deps(async () => []));
   assert.equal(postings.status, 200);
-  const upload = await handle(new Request("https://push-be.example/api/v1/uploads/images", { method: "POST" }), env(python, core), deps(async () => []));
+  const upload = await handle(new Request("https://push-be.example/api/v1/uploads/images", { method: "POST" }), env(core), deps(async () => []));
   assert.equal(upload.status, 200);
   assert.deepEqual(forwarded, ["core /api/v1/postings", "core /api/v1/uploads/images"]);
 
   let target = "";
   let secret = "";
-  const hosted = env(python, core);
+  const hosted = env(core);
   hosted.AI_ORIGIN = "https://ai.example.test";
   hosted.AI_SHARED_SECRET = "test-secret";
   const generated = await handle(new Request("https://push-be.example/api/v1/ai/generate", {

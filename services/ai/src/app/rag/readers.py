@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import re
 import zipfile
 from typing import Final
@@ -56,6 +57,61 @@ async def read_posting(query, posting_id: UUID) -> dict | None:
         requirements = [requirements]
     text = "\n".join([row["title"] or "", row["description"] or "", *map(str, requirements)])
     return {"company_id": row["company_id"], "text": text}
+
+
+def _text_list(value) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _blocks_text(blocks) -> str:
+    parsed = json.loads(blocks) if isinstance(blocks, str) and blocks else blocks
+    if not isinstance(parsed, list):
+        return ""
+    return "\n".join(
+        str(block.get("text") or "") for block in parsed if isinstance(block, dict))
+
+
+async def read_evidence(query, evidence_id: UUID) -> dict | None:
+    row = await query.fetchrow(
+        "SELECT id, user_id, title, source_text FROM career_evidence "
+        "WHERE id = $1 AND archived = false",
+        evidence_id)
+    if row is None:
+        return None
+    text = "\n".join([row["title"] or "", row["source_text"] or ""]).strip()
+    return {"user_id": row["user_id"], "text": text}
+
+
+async def read_document(query, document_id: UUID) -> dict | None:
+    row = await query.fetchrow(
+        "SELECT d.id, d.user_id, d.title, v.blocks FROM documents d "
+        "JOIN document_versions v ON v.id = COALESCE(d.finalized_version_id, d.latest_version_id) "
+        "WHERE d.id = $1",
+        document_id)
+    if row is None:
+        return None
+    text = "\n".join([row["title"] or "", _blocks_text(row["blocks"])]).strip()
+    return {"user_id": row["user_id"], "text": text}
+
+
+async def read_job(query, job_id: UUID) -> dict | None:
+    row = await query.fetchrow(
+        "SELECT id, user_id, company, title, source_text, requirements FROM jobs "
+        "WHERE id = $1 AND archived = false",
+        job_id)
+    if row is None:
+        return None
+    text = "\n".join([
+        row["company"] or "", row["title"] or "", row["source_text"] or "",
+        *_text_list(row["requirements"]),
+    ]).strip()
+    return {"user_id": row["user_id"], "text": text}
 
 
 async def read_web(url: str) -> str:

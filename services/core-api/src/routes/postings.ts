@@ -1,4 +1,5 @@
 import { isMissingRelation, isUndefinedColumn, isUnique, one, query } from "../db.ts";
+import { enqueueIngest } from "../jobs/ingest.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
   HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid,
@@ -362,6 +363,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
       base);
   }
+  await enqueueIngest(ctx, { postingId: id });
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,

@@ -14,7 +14,7 @@ from app.domain.services.ai import AIGate
 from app.graphs.chat import build_chat_graph
 from app.graphs.chat import event_sink
 from app.graphs.freeze import freeze_state, thaw_state
-from app.jobs import get_job_scheduler, schedule_chat_job, set_job_scheduler
+from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
@@ -387,27 +387,6 @@ class ConversationService:
                 await self.jobs.finish(job_id, "FAILED", str(e)[:500])
                 terminal = True
 
-    async def claim_for_workflow(self, job_id: str, claim: str = "") -> str:
-        jid = UUID(str(job_id))
-        if not claim:
-            # Workflows scheduled before claim tokens. A RUNNING row is the
-            # same run retrying its prepare step.
-            job = await self.jobs.claim_id(jid)
-            if job is None:
-                existing = await self.jobs.get(jid)
-                if existing is None or existing.get("status") != "RUNNING":
-                    return "skip"
-            return "ok"
-        job = await self.jobs.claim_with_token(jid, claim)
-        if job is not None:
-            return "ok"
-        if await self.jobs.touch_owner(jid, claim):
-            return "ok"
-        existing = await self.jobs.get(jid)
-        if existing is not None and existing.get("status") == "DONE":
-            return "ok"
-        return "skip"
-
     async def exec_chat_node(self, job_id: str, name: str, claim: str = "") -> str:
         from app.claimctx import claim_job, claim_token
         jid = UUID(str(job_id))
@@ -570,15 +549,3 @@ class ConversationService:
             await self.jobs.finish(job_id, "FAILED", message)
         except LostClaim:
             return
-
-    async def nudge_pending(self) -> int:
-        from app.jobs import remote_executor
-        # The resident VPS loop claims PENDING rows. A cron nudge here would
-        # start a second Workflow on the same job.
-        if remote_executor():
-            return 0
-        await self.jobs.reset_stale()
-        ids = await self.jobs.pending_ids(5)
-        for pending in ids:
-            await schedule_chat_job(pending)
-        return len(ids)

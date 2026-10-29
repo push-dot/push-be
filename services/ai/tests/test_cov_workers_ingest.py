@@ -57,6 +57,18 @@ class Store:
         self.calls.append((model, after))
         return [r for r in self.pending if after is None or r["id"] > after][:self.page]
 
+    async def evidence_missing(self, model, after=None, limit=100):
+        return []
+
+    async def documents_missing(self, model, after=None, limit=100):
+        return []
+
+    async def jobs_missing(self, model, after=None, limit=100):
+        return []
+
+    async def postings_missing(self, model, after=None, limit=100):
+        return []
+
 
 def ctx(payload, user_id=USER, company_id=None):
     beats = []

@@ -5,7 +5,7 @@ import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../sr
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:10Z");
-const env = { API: { fetch: async () => new Response("{}") }, APP_ENV: "production" } as FrontEnv;
+const env = { APP_ENV: "production" } as FrontEnv;
 
 test("returning another token's stale lease does not hold up this request", async () => {
   resetLimits();

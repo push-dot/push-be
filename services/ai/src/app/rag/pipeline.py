@@ -19,11 +19,15 @@ def approx_tokens(text: str) -> list[str]:
 
 def split_nodes(text: str, metadata: dict, tokenizer=approx_tokens) -> list:
     from llama_index.core import Document
+    from llama_index.core.ingestion import IngestionPipeline
     from llama_index.core.node_parser import SentenceSplitter
 
-    splitter = SentenceSplitter(
-        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, tokenizer=tokenizer)
-    return splitter.get_nodes_from_documents([Document(text=text, metadata=metadata)])
+    pipeline = IngestionPipeline(
+        transformations=[SentenceSplitter(
+            chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, tokenizer=tokenizer)],
+        disable_cache=True,
+    )
+    return list(pipeline.run(documents=[Document(text=text, metadata=metadata)]))
 
 
 class Ingestor:
@@ -38,6 +42,7 @@ class Ingestor:
             "user_id": str(tenant.user_id) if tenant.user_id else None,
             "company_id": str(tenant.company_id) if tenant.company_id else None,
             "source_type": source_type,
+            "kind": source_type,
             "source_id": str(source_id),
             "document_id": str(document_id) if document_id else None,
             "plan": plan,

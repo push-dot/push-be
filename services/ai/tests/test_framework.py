@@ -24,11 +24,13 @@ def _now():
 
 
 def _legacy_env(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
-
-
-def _langchain_env(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
+    for name in (
+        "app.framework.rag.use_langchain",
+        "app.framework.prompts.use_langchain",
+        "app.framework.models.use_langchain",
+        "app.framework.tools.use_langchain",
+    ):
+        monkeypatch.setattr(name, lambda: False)
 
 
 class _Page:
@@ -95,19 +97,6 @@ class _DB:
         return await fn()
 
 
-def test_cloudflare_worker_forces_legacy(monkeypatch):
-    from app.framework.flag import framework, use_langchain
-    monkeypatch.setenv("CF_WORKER", "1")
-    assert framework() == "legacy"
-    assert use_langchain() is False
-
-
-def test_worker_does_not_copy_framework_flag():
-    text = (ROOT / "src" / "worker.py").read_text()
-    keys = text.split("_ENV_KEYS = (", 1)[1].split(")", 1)[0]
-    assert "AI_FRAMEWORK" not in keys
-
-
 def test_framework_modules_do_not_import_libs_at_import_time():
     banned = ("langchain", "llama_index", "llama_index_vector_stores")
     files = list((ROOT / "src" / "app" / "framework").glob("*.py"))
@@ -115,7 +104,6 @@ def test_framework_modules_do_not_import_libs_at_import_time():
         ROOT / "src" / "app" / "graphs" / "chat.py",
         ROOT / "src" / "app" / "domain" / "services" / "ai.py",
         ROOT / "src" / "app" / "infrastructure" / "store_rag.py",
-        ROOT / "src" / "worker.py",
         ROOT / "src" / "app" / "main.py",
     ]
     for path in files:
@@ -157,7 +145,6 @@ def test_legacy_messages_match_openai_client():
 
 
 def test_langchain_prompt_keeps_source_text_in_the_variable(monkeypatch):
-    _langchain_env(monkeypatch)
     from app.framework.prompts import (
         SYSTEM_TEMPLATE, USER_TEMPLATE, render_messages)
 
@@ -197,20 +184,32 @@ def test_langchain_prompt_keeps_source_text_in_the_variable(monkeypatch):
     assert USER_TEMPLATE == "{user}"
 
 
-def test_worker_flag_skips_the_prompt_template(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
-    monkeypatch.setenv("CF_WORKER", "1")
-    from app.framework.prompts import render_messages
+def test_cf_worker_still_builds_the_prompt_template(monkeypatch):
+    from app.framework.prompts import SYSTEM_TEMPLATE, render_messages
 
-    def boom(*_args, **_kwargs):
-        raise AssertionError("template should not be built on the worker")
+    seen = {}
 
-    messages = render_messages("sys", POISON, prompt_cls=boom)
-    assert messages[1]["content"] == POISON
+    class Prompt:
+        def __init__(self, spec):
+            seen["spec"] = spec
+
+        def invoke(self, variables):
+            class Rendered:
+                def to_messages(_self):
+                    return []
+
+            return Rendered()
+
+    class Templates:
+        @staticmethod
+        def from_messages(spec):
+            return Prompt(spec)
+
+    assert render_messages("sys", POISON, prompt_cls=Templates) == []
+    assert seen["spec"][0] == ("system", SYSTEM_TEMPLATE)
 
 
 def test_tool_description_is_static(monkeypatch):
-    _langchain_env(monkeypatch)
     from app.framework.tools import (
         SEARCH_TOOL_DESCRIPTION, SEARCH_TOOL_NAME, build_search_tool,
         tool_description)
@@ -241,7 +240,7 @@ def test_tool_description_is_static(monkeypatch):
 
 
 def test_split_text_legacy_matches_chat_chunker(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
+    monkeypatch.setattr("app.framework.rag.use_langchain", lambda: False)
     from app.framework.rag import split_text
     text = "a" * 1300
     assert split_text(text) == _chunk_text(text)
@@ -311,7 +310,6 @@ async def test_legacy_collect_indexes_and_formats(monkeypatch):
 
 async def test_langchain_collect_uses_the_tool_and_swallows_index_errors(
         monkeypatch):
-    _langchain_env(monkeypatch)
     from app.framework.rag import collect_evidence
     from app.framework import tools as tools_mod
     user_id = uuid4()
@@ -522,7 +520,6 @@ def _patch_model(monkeypatch):
 
 
 async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
-    _langchain_env(monkeypatch)
     from app.domain.services.ai import AIGate
     from app.infrastructure.openai_client import OpenAIClient
     from tests.stubs import FakeDB
@@ -547,7 +544,6 @@ async def test_gate_langchain_openai_skips_the_legacy_client(monkeypatch):
 
 
 async def test_gate_import_error_falls_back(monkeypatch):
-    _langchain_env(monkeypatch)
     from app.domain.services.ai import AIGate
     from app.infrastructure.openai_client import OpenAIClient
     from tests.stubs import FakeDB
@@ -575,7 +571,6 @@ async def test_gate_import_error_falls_back(monkeypatch):
 
 
 async def test_gate_stream_frames_stay_token_strings(monkeypatch):
-    _langchain_env(monkeypatch)
     from app.domain.services.ai import AIGate
     from app.infrastructure.openai_client import OpenAIClient
     from tests.stubs import FakeDB

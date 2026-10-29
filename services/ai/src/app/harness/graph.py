@@ -15,7 +15,7 @@ from app.domain.access_mode import AccessMode
 from app.framework.models import _content
 from app.harness.approval import create_tool_approval
 from app.harness.policy import decide
-from app.harness.tools import ToolContext, emit, run_tool
+from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
 
 _CAP = 8
 _CAP_NOTE = "도구 호출 한도"
@@ -66,6 +66,7 @@ def _tool_event(name: str, state: str, summary: str, tier: str, result: dict | N
 
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
+    structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
 
     async def agent(state: HarnessState) -> dict:
         messages = list(state.get("messages") or [])
@@ -76,7 +77,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             reply = await chat.ainvoke(messages)
             reply = AIMessage(content=reply.content)
         else:
-            reply = await chat.bind_tools(spec.tools).ainvoke(messages)
+            reply = await chat.bind_tools(list(structured.values())).ainvoke(messages)
         if not reply.tool_calls and _content(reply):
             emit({"token": _content(reply)})
         return {"messages": [reply]}
@@ -90,7 +91,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 ToolMessage(content=_CAP_NOTE, tool_call_id=_parts(call)[2]) for call in pending]}
         name, raw_args, call_id = _parts(pending[0])
         tool = tools_by_name.get(name)
-        if tool is None:
+        bound = structured.get(name)
+        if tool is None or bound is None:
             return {
                 "messages": [ToolMessage(content="unknown tool", tool_call_id=call_id)],
                 "tool_calls_used": used + 1,
@@ -104,7 +106,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 "tool_calls_used": used + 1,
             }
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
-        if decide(mode, tool.tier).value == "ASK" and tool.approval_kind != "DOCUMENT_EDIT":
+        meta = bound.metadata
+        summary = meta["summary"](args)
+        tier = meta["tier"].value
+        if decide(mode, bound).value == "ASK" and meta["approval_kind"] != "DOCUMENT_EDIT":
             event, created = await create_tool_approval(
                 db,
                 user_id=state.get("user_id"),
@@ -115,7 +120,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 tool_call_id=call_id,
             )
             if created:
-                emit(_tool_event(tool.name, "wait", tool.summarize(args), tool.tier.value))
+                emit(_tool_event(tool.name, "wait", summary, tier))
                 emit(event)
             answer = interrupt({
                 "approval_id": event["id"],
@@ -124,7 +129,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             }) or {}
             if answer.get("option_id") != "approve":
                 rejected = {"rejected": True}
-                emit(_tool_event(tool.name, "err", tool.summarize(args), tool.tier.value, rejected))
+                emit(_tool_event(tool.name, "err", summary, tier, rejected))
                 return {
                     "messages": [ToolMessage(content=json.dumps(rejected), tool_call_id=call_id)],
                     "tool_calls_used": used + 1,
@@ -139,9 +144,9 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
         )
-        result, ok = await run_tool(tool, ctx, args)
+        result, ok = await call_structured(tool, args, ctx)
         tool_state = "ok" if ok else "err"
-        emit(_tool_event(tool.name, tool_state, tool.summarize(args), tool.tier.value, result))
+        emit(_tool_event(tool.name, tool_state, summary, tier, result))
         return {
             "messages": [ToolMessage(content=json.dumps(result), tool_call_id=call_id)],
             "tool_calls_used": used + 1,

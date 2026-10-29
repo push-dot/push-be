@@ -15,7 +15,6 @@ const noBinding = { async fetch(): Promise<Response> { throw new Error("binding 
 
 const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
   DATABASE_URL: "postgres://example",
-  API: noBinding,
   CORE: noBinding,
   APP_ENV: "production",
   MANAGED_AI: "1",

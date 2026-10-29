@@ -30,4 +30,6 @@ _DECISIONS = {
 
 
 def decide(mode: AccessMode, tier: Tier) -> Decision:
+    if not isinstance(tier, Tier):
+        tier = tier.metadata["tier"]
     return _DECISIONS[(mode, tier)]

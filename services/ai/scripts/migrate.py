@@ -1,10 +1,9 @@
 """Apply ``migrations/*.sql`` to Neon (or any Postgres).
 
-Workers cannot open port 5432, so run this from a laptop before
-``pywrangler deploy``. The default transport is TCP + TLS. When outbound
-5432 is blocked, set ``PG_TRANSPORT=websocket`` to use Neon's
-``wss://<host>/v2`` endpoint instead (same wire protocol). The manual
-GitHub Action defaults to websocket and can be switched to tcp.
+Run this from a laptop or the manual GitHub Action. The default transport
+is TCP + TLS. When outbound 5432 is blocked, set ``PG_TRANSPORT=websocket``
+to use Neon's ``wss://<host>/v2`` endpoint instead (same wire protocol).
+The manual GitHub Action defaults to tcp and can be switched to websocket.
 
     DATABASE_URL='postgresql://...neon.tech/neondb?sslmode=require' \\
         python services/ai/scripts/migrate.py

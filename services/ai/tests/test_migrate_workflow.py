@@ -9,12 +9,12 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "migrate.yml"
 
 
-def test_migrate_workflow_defaults_to_websocket_and_keeps_tcp():
+def test_migrate_workflow_defaults_to_tcp_and_keeps_websocket():
     text = WORKFLOW.read_text()
     steps = "\n".join(
         line for line in text.splitlines() if not line.strip().startswith("#"))
     assert "workflow_dispatch:" in text
-    assert "default: websocket" in text
+    assert "default: tcp" in text
     assert "\n          - websocket\n" in text
     assert "\n          - tcp\n" in text
     assert "PG_TRANSPORT: ${{ inputs.transport }}" in text
@@ -29,7 +29,6 @@ def test_migrate_workflow_defaults_to_websocket_and_keeps_tcp():
 
 def test_pg_transport_honors_the_workflow_env(monkeypatch):
     monkeypatch.delenv("PG_TRANSPORT", raising=False)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     assert pg_transport() == "tcp"
     monkeypatch.setenv("PG_TRANSPORT", "websocket")
     assert pg_transport() == "websocket"

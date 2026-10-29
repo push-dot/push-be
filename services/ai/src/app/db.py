@@ -187,7 +187,7 @@ def database_driver(database_url: str) -> str:
         host = urlparse(database_url).hostname or ""
     except Exception:
         host = ""
-    if host.endswith(".neon.tech") or os.environ.get("CF_WORKER") == "1":
+    if host.endswith(".neon.tech"):
         return "neon"
     return "asyncpg"
 
@@ -196,8 +196,6 @@ def pg_transport() -> str:
     explicit = os.environ.get("PG_TRANSPORT", "").strip().lower()
     if explicit in ("tcp", "websocket"):
         return explicit
-    if os.environ.get("CF_WORKER") == "1":
-        return "websocket"
     return "tcp"
 
 

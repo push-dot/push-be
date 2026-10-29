@@ -24,7 +24,6 @@ def _block(name: str, body: str, lang: str = "md") -> str:
 def root(tmp_path, monkeypatch):
     monkeypatch.setenv("PUSH_RESUME_DIR", str(tmp_path / "root"))
     monkeypatch.delenv("BLOB_STORE", raising=False)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     return tmp_path / "root"
 
 
