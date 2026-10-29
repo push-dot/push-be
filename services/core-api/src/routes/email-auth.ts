@@ -64,15 +64,9 @@ const requireDisplayName = (value: unknown): string => {
   return value.trim();
 };
 
-const requireAccountType = (value: unknown): "PERSONAL" | "EMPLOYER" => {
-  if (value !== "PERSONAL" && value !== "EMPLOYER") throw fieldError("accountType", "must be PERSONAL or EMPLOYER");
-  return value;
-};
-
-const requireConsent = (value: unknown): boolean => {
-  if (value == null) return false;
-  if (typeof value !== "boolean") throw fieldError("consentReference", "must be a boolean");
-  return value;
+const requireAccountType = (value: unknown): "EMPLOYER" => {
+  if (value !== "EMPLOYER") throw fieldError("accountType", "must be EMPLOYER");
+  return "EMPLOYER";
 };
 
 const mailerOf = (ctx: Ctx): Mailer => ctx.deps.mailer ?? createMailer(ctx.env, ctx.deps.fetch);
@@ -115,7 +109,7 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const password = requirePassword(body.password);
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
-  const consent = requireConsent(body.consentReference);
+  const consent = false;
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (existing) throw emailTaken(existing);

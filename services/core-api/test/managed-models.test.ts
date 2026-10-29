@@ -26,6 +26,8 @@ const deps = (): Deps => ({
     }
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "1" }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "PRO", is_employer: false }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("chat_jobs")) return { rows: [{ id: String(params[2]) }], rowCount: 1 };
     return empty;
   },
@@ -64,11 +66,31 @@ test("the ai keys routes are gone", async () => {
   }
 });
 
-test("a message rejects credentialMode as an unknown ai field", async () => {
+test("a message stores the plan effort and ignores the client value", async () => {
+  const scheduled = { ...env(), API: { fetch: async () => new Response("{}", { status: 200 }) } };
+  const capture = (slot: { payload: string }): Deps => ({
+    ...deps(),
+    query: async (sql, params = []) => {
+      if (sql.includes("INSERT INTO chat_jobs")) slot.payload = String(params[3] ?? "");
+      return deps().query(sql, params);
+    },
+  });
   resetLimits();
-  const res = await handle(message({ ...AI, credentialMode: "MANAGED" }, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps());
-  assert.equal(res.status, 400);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
+  const sent = { payload: "" };
+  const res = await handle(message({ provider: "OPENAI", model: "gpt-x", effort: "HIGH" }, "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"), scheduled, capture(sent));
+  assert.equal(res.status, 202);
+  assert.equal(JSON.parse(sent.payload).ai.effort, "MEDIUM");
+
+  resetLimits();
+  const omittedSlot = { payload: "" };
+  const omitted = await handle(message({ provider: "OPENAI", model: "gpt-x" }, "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee"), scheduled, capture(omittedSlot));
+  assert.equal(omitted.status, 202);
+  assert.equal(JSON.parse(omittedSlot.payload).ai.effort, "MEDIUM");
+
+  resetLimits();
+  const bad = await handle(message({ provider: "OPENAI", model: "gpt-x", effort: "HUGE" }, "eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps());
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
 });
 
 test("a message is accepted whatever provider the client names", async () => {

@@ -1859,6 +1859,76 @@
           "referenceData": {
             "type": "boolean"
           },
+          "terms": {
+            "properties": {
+              "age14At": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "marketing": {
+                "type": "boolean"
+              },
+              "marketingAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "privacyAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "serviceTermsAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "age14At",
+              "serviceTermsAt",
+              "privacyAt",
+              "marketing",
+              "marketingAt"
+            ],
+            "type": "object"
+          },
           "updatedAt": {
             "anyOf": [
               {
@@ -1873,7 +1943,8 @@
         },
         "required": [
           "referenceData",
-          "updatedAt"
+          "updatedAt",
+          "terms"
         ],
         "type": "object"
       },
@@ -2358,7 +2429,8 @@
             "enum": [
               "RESUME",
               "PORTFOLIO",
-              "COVER_LETTER"
+              "COVER_LETTER",
+              "CAREER_STATEMENT"
             ],
             "type": "string"
           },
@@ -2926,7 +2998,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ...",
                 "type": "string"
               },
               "details": {
@@ -4370,6 +4442,9 @@
           "followerCount": {
             "type": "integer"
           },
+          "followingCount": {
+            "type": "integer"
+          },
           "headline": {
             "type": "string"
           },
@@ -4398,6 +4473,9 @@
           },
           "openToOffers": {
             "type": "boolean"
+          },
+          "postCount": {
+            "type": "integer"
           },
           "resumeSourceId": {
             "anyOf": [
@@ -4448,6 +4526,8 @@
           "careers",
           "skills",
           "followerCount",
+          "followingCount",
+          "postCount",
           "resumeSourceId",
           "contact",
           "updatedAt"
@@ -4506,6 +4586,9 @@
           "following": {
             "type": "boolean"
           },
+          "followingCount": {
+            "type": "integer"
+          },
           "headline": {
             "type": "string"
           },
@@ -4537,6 +4620,9 @@
           },
           "openToOffers": {
             "type": "boolean"
+          },
+          "postCount": {
+            "type": "integer"
           },
           "resumeSourceId": {
             "anyOf": [
@@ -4587,6 +4673,8 @@
           "careers",
           "skills",
           "followerCount",
+          "followingCount",
+          "postCount",
           "resumeSourceId",
           "contact",
           "updatedAt",
@@ -5257,34 +5345,12 @@
             ],
             "type": "string"
           },
-          "chatRetentionDays": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "confirmBeforeEdit": {
-            "type": "boolean"
-          },
           "contactVisibility": {
             "enum": [
               "accepted",
               "followers",
               "everyone",
               "private"
-            ],
-            "type": "string"
-          },
-          "defaultEffort": {
-            "enum": [
-              "LOW",
-              "MEDIUM",
-              "HIGH",
-              "MAX"
             ],
             "type": "string"
           },
@@ -5336,10 +5402,7 @@
           "hideFromCurrentCompany",
           "contactVisibility",
           "defaultTone",
-          "chatRetentionDays",
           "allowAiReadMyFiles",
-          "defaultEffort",
-          "confirmBeforeEdit",
           "aiAccessMode"
         ],
         "type": "object"
@@ -6723,6 +6786,134 @@
         "x-owner": "ai"
       }
     },
+    "/api/v1/auth/apple/callback": {
+      "post": {
+        "description": "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+        "operationId": "postAuthAppleCallback",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "state"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to the app callback with ?code=",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Apple form_post callback",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/auth/apple/native": {
+      "post": {
+        "description": "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+        "operationId": "postAuthAppleNative",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "identityToken": {
+                    "type": "string"
+                  },
+                  "nonce": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "identityToken",
+                  "nonce"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/AuthTokens"
+                        },
+                        {
+                          "properties": {
+                            "expiresIn": {
+                              "type": "integer"
+                            },
+                            "pendingToken": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pendingToken",
+                            "expiresIn"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Apple native identity token",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/auth/email/login": {
       "post": {
         "description": "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.",
@@ -6891,7 +7082,7 @@
     },
     "/api/v1/auth/email/signup": {
       "post": {
-        "description": "Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+        "description": "Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
         "operationId": "postAuthEmailSignup",
         "requestBody": {
           "content": {
@@ -6900,13 +7091,9 @@
                 "properties": {
                   "accountType": {
                     "enum": [
-                      "PERSONAL",
                       "EMPLOYER"
                     ],
                     "type": "string"
-                  },
-                  "consentReference": {
-                    "type": "boolean"
                   },
                   "displayName": {
                     "maxLength": 80,
@@ -7030,7 +7217,7 @@
     },
     "/api/v1/auth/exchange": {
       "post": {
-        "description": "Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.",
+        "description": "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
         "operationId": "postAuthExchange",
         "requestBody": {
           "content": {
@@ -7061,7 +7248,26 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/AuthTokens"
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/AuthTokens"
+                        },
+                        {
+                          "properties": {
+                            "expiresIn": {
+                              "type": "integer"
+                            },
+                            "pendingToken": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pendingToken",
+                            "expiresIn"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -7159,6 +7365,227 @@
         "x-owner": "gateway"
       }
     },
+    "/api/v1/auth/phone/send": {
+      "post": {
+        "description": "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
+        "operationId": "postAuthPhoneSend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "phone": {
+                    "pattern": "^\\+[1-9]\\d{7,14}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "phone"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "cooldownSeconds": {
+                          "type": "integer"
+                        },
+                        "expiresAt": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "cooldownSeconds",
+                        "expiresAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Send a personal phone code",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/auth/phone/verify": {
+      "post": {
+        "description": "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.",
+        "operationId": "postAuthPhoneVerify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "code": {
+                    "pattern": "^\\d{6}$",
+                    "type": "string"
+                  },
+                  "pendingToken": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "pattern": "^\\+[1-9]\\d{7,14}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "phone",
+                  "code"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "accessToken": {
+                          "type": "string"
+                        },
+                        "created": {
+                          "type": "boolean"
+                        },
+                        "expiresIn": {
+                          "type": "integer"
+                        },
+                        "linked": {
+                          "type": "boolean"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "refreshToken": {
+                          "type": "string"
+                        },
+                        "user": {
+                          "properties": {
+                            "accountType": {
+                              "enum": [
+                                "PERSONAL",
+                                "EMPLOYER"
+                              ],
+                              "type": "string"
+                            },
+                            "companyId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "companyRole": {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "ADMIN",
+                                    "MEMBER"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "displayName": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "locale": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "displayName",
+                            "locale",
+                            "accountType",
+                            "companyId",
+                            "companyRole"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "accessToken",
+                        "refreshToken",
+                        "expiresIn",
+                        "created",
+                        "user"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Verify a phone code and sign in",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/auth/refresh": {
       "post": {
         "description": "Reusing a revoked refresh token revokes every session of the user.",
@@ -7214,7 +7641,7 @@
     },
     "/api/v1/auth/{provider}/callback": {
       "get": {
-        "description": "Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.",
+        "description": "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
         "operationId": "getAuthByProviderCallback",
         "parameters": [
           {
@@ -7224,7 +7651,8 @@
             "schema": {
               "enum": [
                 "google",
-                "github"
+                "github",
+                "apple"
               ],
               "type": "string"
             }
@@ -7271,7 +7699,7 @@
     },
     "/api/v1/auth/{provider}/start": {
       "get": {
-        "description": "Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+        "description": "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
         "operationId": "getAuthByProviderStart",
         "parameters": [
           {
@@ -7281,7 +7709,8 @@
             "schema": {
               "enum": [
                 "google",
-                "github"
+                "github",
+                "apple"
               ],
               "type": "string"
             }
@@ -7413,7 +7842,7 @@
     },
     "/api/v1/billing/checkout": {
       "post": {
-        "description": "PERSONAL: planId PRO or ULTRA (409 ALREADY_SUBSCRIBED with an active store subscription). EMPLOYER: company ADMIN only, planId BASIC, PRO or ULTRA.",
+        "description": "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.",
         "operationId": "postBillingCheckout",
         "parameters": [
           {
@@ -9151,7 +9580,7 @@
     },
     "/api/v1/conversations": {
       "get": {
-        "description": "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.",
+        "description": "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.",
         "operationId": "getConversations",
         "parameters": [
           {
@@ -9203,6 +9632,19 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "description": "true lists only archived conversations. Any other value excludes them.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9242,7 +9684,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.",
+        "description": "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
         "operationId": "postConversations",
         "parameters": [
           {
@@ -9406,6 +9848,34 @@
       }
     },
     "/api/v1/conversations/{id}": {
+      "delete": {
+        "description": "A personal conversation is deleted by its owner. A company conversation is deleted only by a company admin. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
+        "operationId": "deleteConversationsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a conversation",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "core"
+      },
       "patch": {
         "operationId": "patchConversationsById",
         "parameters": [
@@ -9925,7 +10395,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
         "operationId": "postConversationsByIdMessages",
         "parameters": [
           {
@@ -9962,6 +10432,7 @@
                       {
                         "properties": {
                           "effort": {
+                            "description": "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.",
                             "enum": [
                               "LOW",
                               "MEDIUM",
@@ -9998,8 +10469,7 @@
                         },
                         "required": [
                           "provider",
-                          "model",
-                          "effort"
+                          "model"
                         ],
                         "type": "object"
                       },
@@ -10221,6 +10691,7 @@
                       {
                         "properties": {
                           "effort": {
+                            "description": "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.",
                             "enum": [
                               "LOW",
                               "MEDIUM",
@@ -10257,8 +10728,7 @@
                         },
                         "required": [
                           "provider",
-                          "model",
-                          "effort"
+                          "model"
                         ],
                         "type": "object"
                       },
@@ -11567,6 +12037,72 @@
         "x-owner": "gateway"
       }
     },
+    "/api/v1/conversations/{id}/unarchive": {
+      "post": {
+        "description": "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+        "operationId": "postConversationsByIdUnarchive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "expectedRevision": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "expectedRevision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Conversation"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Unarchive a conversation",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/documents": {
       "get": {
         "operationId": "getDocuments",
@@ -11608,7 +12144,8 @@
               "enum": [
                 "RESUME",
                 "PORTFOLIO",
-                "COVER_LETTER"
+                "COVER_LETTER",
+                "CAREER_STATEMENT"
               ],
               "type": "string"
             }
@@ -11670,7 +12207,8 @@
                     "enum": [
                       "RESUME",
                       "PORTFOLIO",
-                      "COVER_LETTER"
+                      "COVER_LETTER",
+                      "CAREER_STATEMENT"
                     ],
                     "type": "string"
                   },
@@ -15134,6 +15672,70 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/me/consents/terms": {
+      "put": {
+        "description": "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+        "operationId": "putMeConsentsTerms",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "age14": {
+                    "type": "boolean"
+                  },
+                  "marketing": {
+                    "type": "boolean"
+                  },
+                  "privacy": {
+                    "type": "boolean"
+                  },
+                  "serviceTerms": {
+                    "type": "boolean"
+                  },
+                  "termsVersion": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Consents"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Store signup terms",
+        "tags": [
+          "consents"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/me/devices": {
       "post": {
         "description": "Moves the token away from any other account.",
@@ -16499,36 +17101,12 @@
                     ],
                     "type": "string"
                   },
-                  "chatRetentionDays": {
-                    "anyOf": [
-                      {
-                        "maximum": 3650,
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "confirmBeforeEdit": {
-                    "type": "boolean"
-                  },
                   "contactVisibility": {
                     "enum": [
                       "accepted",
                       "followers",
                       "everyone",
                       "private"
-                    ],
-                    "type": "string"
-                  },
-                  "defaultEffort": {
-                    "enum": [
-                      "LOW",
-                      "MEDIUM",
-                      "HIGH",
-                      "MAX"
                     ],
                     "type": "string"
                   },

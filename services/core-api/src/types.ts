@@ -1,6 +1,7 @@
 import type { StoreReceipts } from "./billing/stores.ts";
 import type { Query } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
+import type { SmsSender } from "./sms/sender.ts";
 
 export interface Fetcher {
   fetch(input: Request): Promise<Response>;
@@ -22,12 +23,16 @@ export interface CoreEnv {
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
   MANAGED_GO?: string;
-  BYOK_MASTER_KEY?: string;
+  TOKEN_ENCRYPTION_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_GMAIL_BETA_ENABLED?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  APPLE_TEAM_ID?: string;
+  APPLE_KEY_ID?: string;
+  APPLE_CLIENT_ID?: string;
+  APPLE_PRIVATE_KEY?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PRICE_PRO?: string;
@@ -46,6 +51,11 @@ export interface CoreEnv {
   INTERNAL_API_SECRET?: string;
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
+  PHONE_SMS_MODE?: string;
+  PHONE_CODE_COOLDOWN_SEC?: string;
+  PHONE_CODE_TTL_SEC?: string;
+  PHONE_CODE_MAX_ATTEMPTS?: string;
+  PENDING_SIGNUP_SECRET?: string;
   NTS_SERVICE_KEY?: string;
   IAP_PRODUCT_PRO?: string;
   IAP_PRODUCT_ULTRA?: string;
@@ -67,6 +77,7 @@ export interface Deps {
   now?: () => Date;
   fetch?: typeof fetch;
   mailer?: Mailer;
+  sms?: SmsSender;
   stores?: StoreReceipts;
 }
 

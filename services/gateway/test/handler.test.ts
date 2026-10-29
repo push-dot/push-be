@@ -175,6 +175,28 @@ test("conversation list pages with a Python-compatible cursor", async () => {
   assert.match(listSql, /to_char\(page\.created_at AT TIME ZONE 'UTC'/);
 });
 
+test("conversation list archived=true returns only archived rows", async () => {
+  resetLimits();
+  const seen: unknown[][] = [];
+  const res = await handle(new Request("https://push-be.example/api/v1/conversations?archived=true", {
+    headers: { authorization: "Bearer secret-token" },
+  }), env(), deps(async (sql, params) => {
+    seen.push([sql, params]);
+    if (sql.includes("access_tokens")) {
+      return [{
+        id: USER, display_name: "Ada", locale: "ko",
+        created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
+        hits: 1, rows: [],
+      }];
+    }
+    return [];
+  }));
+  assert.equal(res.status, 200);
+  const listSql = String(seen[0][0]);
+  assert.match(listSql, /c\.archived = true/);
+  assert.doesNotMatch(listSql, /c\.archived = false/);
+});
+
 test("message reads 404 when the conversation is missing and omit null attachments", async () => {
   resetLimits();
   const auth = async (sql: string) => {
@@ -1111,6 +1133,12 @@ test("auth/me returns employer membership from the joined row", async () => {
     '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "EMPLOYER", "companyId": "cccccccc-cccc-cccc-cccc-cccccccccccc", "companyRole": "ADMIN", "email": "", "provider": "", "plan": "FREE"}}');
 });
 
+test("apple auth posts are owned by core", () => {
+  assert.equal(ownerOf("POST", "/api/v1/auth/apple/callback"), "core");
+  assert.equal(ownerOf("POST", "/api/v1/auth/apple/native"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/auth/apple/native"), "deny");
+});
+
 test("email auth posts are owned by core", () => {
   for (const path of [
     "/api/v1/auth/email/signup",
@@ -1118,9 +1146,12 @@ test("email auth posts are owned by core", () => {
     "/api/v1/auth/email/login",
     "/api/v1/auth/email/password-reset",
     "/api/v1/auth/email/password-reset/confirm",
+    "/api/v1/auth/phone/send",
+    "/api/v1/auth/phone/verify",
   ]) {
     assert.equal(ownerOf("POST", path), "core");
   }
+  assert.equal(ownerOf("GET", "/api/v1/auth/phone/send"), "deny");
 });
 
 test("company routes are owned by core", () => {

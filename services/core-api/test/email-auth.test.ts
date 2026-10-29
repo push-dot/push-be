@@ -24,6 +24,7 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   GOOGLE_CLIENT_SECRET: "gsec",
   GITHUB_CLIENT_ID: "hid",
   GITHUB_CLIENT_SECRET: "hsec",
+  PENDING_SIGNUP_SECRET: "pending-test-secret",
   ...extra,
 });
 
@@ -36,9 +37,8 @@ const post = (path: string, body: unknown, headers?: HeadersInit): Request => ne
 const signupBody = (extra: Record<string, unknown> = {}) => ({
   email: EMAIL,
   password: PASSWORD,
-  accountType: "PERSONAL",
+  accountType: "EMPLOYER",
   displayName: "Ada",
-  consentReference: true,
   ...extra,
 });
 
@@ -269,7 +269,7 @@ const tokenFrom = (mail: Mail): string => {
 const calls = (db: ReturnType<typeof createDb>, needle: string): Call[] =>
   db.sqls.filter((call) => call.sql.includes(needle));
 
-test("signup accepts a personal account and rejects a short password", async () => {
+test("signup accepts an employer account and rejects a personal account", async () => {
   resetLimits();
   const sent: Mail[] = [];
   const db = createDb();
@@ -302,6 +302,18 @@ test("signup accepts a personal account and rejects a short password", async () 
   assert.equal(tokenInsert.params[2], db.signups[0].id);
   assert.equal(tokenInsert.params[3], "VERIFY");
   assert.equal(tokenInsert.params[5], "2026-10-22T00:00:00.000Z");
+  assert.equal(insert.params[3], true);
+  assert.equal(insert.params[5], false);
+
+  resetLimits();
+  const personal = await handle(
+    post("/api/v1/auth/email/signup", signupBody({ accountType: "PERSONAL" })),
+    env(),
+    deps(db, mailer),
+  );
+  assert.equal(personal.status, 400);
+  assert.equal((await personal.json() as Err).error.details?.field, "accountType");
+  assert.equal(sent.length, 1);
 
   resetLimits();
   const bad = await handle(
@@ -404,9 +416,7 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(inserted.params[8], true);
   assert.equal(inserted.params[9], pendingHash);
   assert.equal(db.signups.length, 0);
-  assert.equal(db.consents.length, 1);
-  assert.equal(db.consents[0].user_id, db.users[0].id);
-  assert.equal(db.consents[0].reference_data, true);
+  assert.equal(db.consents.length, 0);
   assert.equal(db.tokens[0].used_at, NOW.toISOString());
   assert.equal(body.data.user.id, db.users[0].id);
 
@@ -437,7 +447,7 @@ test("login waits for verification and checks the password", async () => {
   const ok = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(ok.status, 200);
   const body = await ok.json() as Session;
-  assert.equal(body.data.user.accountType, "PERSONAL");
+  assert.equal(body.data.user.accountType, "EMPLOYER");
   assert.ok(body.data.accessToken);
 });
 
@@ -572,7 +582,7 @@ const exchangeCode = async (db: ReturnType<typeof createDb>, verified: boolean, 
   return code;
 };
 
-test("exchange rejects unverified google email and links the same account type", async () => {
+test("exchange rejects unverified google email and defers a new personal account", async () => {
   const verifier = "verifier-verifier-verifier-verifier-verifier";
   const challenge = await pkceChallenge(verifier);
   resetLimits();
@@ -600,11 +610,9 @@ test("exchange rejects unverified google email and links the same account type",
   const takenCode = await exchangeCode(taken, true, verifier);
   resetLimits();
   const conflict = await handle(post("/api/v1/auth/exchange", { code: takenCode, codeVerifier: verifier }), env(), deps(taken));
-  const conflictBody = await conflict.json() as Err;
-  assert.equal(conflict.status, 409);
-  assert.equal(conflictBody.error.code, "EMAIL_TAKEN");
-  assert.equal(conflictBody.error.details?.accountType, "EMPLOYER");
-  assert.equal(conflictBody.error.message, "이 이메일은 기업 계정으로 가입되어 있어요");
+  const conflictBody = await conflict.json() as { data: { pendingToken?: string } };
+  assert.equal(conflict.status, 200);
+  assert.equal(typeof conflictBody.data.pendingToken, "string");
   assert.equal(taken.users.length, 1);
   assert.equal(calls(taken, "INSERT INTO users").length, 0);
 
@@ -620,9 +628,9 @@ test("exchange rejects unverified google email and links the same account type",
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code: linkedCode, codeVerifier: verifier }), env(), deps(linked));
   assert.equal(session.status, 200);
-  const body = await session.json() as Session;
-  assert.equal(body.data.user.id, "11111111-1111-4111-8111-111111111111");
-  assert.equal(body.data.user.accountType, "PERSONAL");
+  const body = await session.json() as { data: { pendingToken?: string; user?: { id: string } } };
+  assert.equal(typeof body.data.pendingToken, "string");
+  assert.equal(body.data.user, undefined);
   assert.equal(linked.users.length, 1);
   assert.equal(calls(linked, "INSERT INTO users").length, 0);
 
@@ -637,12 +645,11 @@ test("exchange rejects unverified google email and links the same account type",
   resetLimits();
   const made = await handle(post("/api/v1/auth/exchange", { code: createdCode, codeVerifier: verifier }), env(), deps(created));
   assert.equal(made.status, 200);
-  assert.equal(created.users.length, 1);
-  const inserted = created.sqls.find((call) => call.sql.startsWith("INSERT INTO users"));
-  assert.ok(inserted);
-  assert.deepEqual(inserted.params.slice(1), [
-    "google", "gsub", "Ada", "ko", NOW.toISOString(), "ada@push.app", NOW.toISOString(), false, null,
-  ]);
+  const madeBody = await made.json() as { data: { pendingToken?: string; expiresIn?: number } };
+  assert.equal(typeof madeBody.data.pendingToken, "string");
+  assert.equal(madeBody.data.expiresIn, 900);
+  assert.equal(created.users.length, 0);
+  assert.equal(calls(created, "INSERT INTO users").length, 0);
 });
 
 test("github callback keeps a missing email on the exchange code", async () => {
@@ -693,8 +700,10 @@ test("github callback keeps a missing email on the exchange code", async () => {
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code, codeVerifier: verifier }), env(), deps(db));
   assert.equal(session.status, 200);
-  assert.equal(db.users[0].provider, "github");
-  assert.equal(db.users[0].email, "ada@push.app");
+  const pending = await session.json() as { data: { pendingToken?: string; expiresIn?: number } };
+  assert.equal(typeof pending.data.pendingToken, "string");
+  assert.equal(pending.data.expiresIn, 900);
+  assert.equal(db.users.length, 0);
 
   resetLimits();
   const bare = createDb();
@@ -730,7 +739,7 @@ test("auth me for an email user includes the company fields", async () => {
   const sent: Mail[] = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
-  await handle(post("/api/v1/auth/email/signup", signupBody({ consentReference: false })), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
   const session = await verified.json() as Session;
@@ -741,7 +750,7 @@ test("auth me for an email user includes the company fields", async () => {
   }), env(), deps(db, mailer));
   assert.equal(me.status, 200);
   const body = await me.json() as { data: { accountType: string; companyId: string | null; companyRole: string | null } };
-  assert.equal(body.data.accountType, "PERSONAL");
+  assert.equal(body.data.accountType, "EMPLOYER");
   assert.equal(body.data.companyId, null);
   const meBody = body as { data: { email?: string; provider?: string; plan?: string } };
   assert.equal(meBody.data.email, EMAIL);

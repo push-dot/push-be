@@ -3,10 +3,12 @@ import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
+import { dispatchAppleAuth } from "./routes/apple-auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
+import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { listUsage } from "./routes/usage.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
@@ -44,6 +46,10 @@ const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/login",
   "/api/v1/auth/email/password-reset",
   "/api/v1/auth/email/password-reset/confirm",
+]);
+const PHONE_PUBLIC = new Set([
+  "/api/v1/auth/phone/send",
+  "/api/v1/auth/phone/verify",
 ]);
 const PENDING_MS = 5 * 60 * 1000;
 const GUEST_ID = "00000000-0000-0000-0000-000000000000";
@@ -130,6 +136,8 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
 function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
+  if (method === "POST" && PHONE_PUBLIC.has(path)) return true;
+  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
@@ -141,7 +149,10 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const method = ctx.request.method;
   const authProvider = path.match(/^\/api\/v1\/auth\/([^/]+)\/(start|callback)$/);
   if (method === "GET" && authProvider?.[2] === "start") return oauthStart(ctx);
-  if (method === "GET" && authProvider?.[2] === "callback") return oauthCallback(ctx);
+  if (method === "GET" && authProvider?.[2] === "callback") {
+    if (authProvider[1] === "apple") throw new HttpError(400, "VALIDATION_ERROR", "apple callback is POST form_post");
+    return oauthCallback(ctx);
+  }
   if (method === "POST" && path === "/api/v1/auth/exchange") return exchange(ctx);
   if (method === "POST" && path === "/api/v1/auth/refresh") return refresh(ctx);
   if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
@@ -149,12 +160,19 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
   const emailed = await dispatchEmailAuth(ctx, path);
   if (emailed) return emailed;
+  const phoned = await dispatchPhoneAuth(ctx, path);
+  if (phoned) return phoned;
+  const appled = await dispatchAppleAuth(ctx, path);
+  if (appled) return appled;
 
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
   if (method === "PATCH" && conv) return patchConversation(ctx, conv[1]);
+  if (method === "DELETE" && conv) return deleteConversation(ctx, conv[1]);
   const archive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/archive$/);
   if (method === "POST" && archive) return archiveConversation(ctx, archive[1]);
+  const unarchive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/unarchive$/);
+  if (method === "POST" && unarchive) return archiveConversation(ctx, unarchive[1], false);
   const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages(?:\/stream)?$/);
   if (method === "POST" && message) return postMessage(ctx, message[1]);
   const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);

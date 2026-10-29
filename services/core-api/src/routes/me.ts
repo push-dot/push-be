@@ -8,7 +8,6 @@ import {
   readObject,
   rejectFields,
   textOf,
-  intOf,
   boolOf,
   httpsUrl,
   jsonObject,
@@ -26,8 +25,6 @@ const TONES = new Set(["as_is", "professional", "confident", "concise", "technic
 const VISIBILITY = new Set(["everyone", "followers", "private"]);
 
 const CONTACT = new Set(["accepted", "followers", "everyone", "private"]);
-
-const EFFORT = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
 
 const AI_ACCESS_MODES = new Set(["ALWAYS_ASK", "AUTO", "BYPASS"]);
 
@@ -201,38 +198,28 @@ function settingsDto(row: Record<string, unknown>): Record<string, unknown> {
     hideFromCurrentCompany: asBool(row.hide_from_current_company),
     contactVisibility: String(row.contact_visibility ?? "accepted"),
     defaultTone: String(row.default_tone ?? "as_is"),
-    chatRetentionDays: row.chat_retention_days == null ? null : Number(row.chat_retention_days),
     allowAiReadMyFiles: asBool(row.allow_ai_read_my_files),
-    defaultEffort: row.default_effort == null || row.default_effort === "" ? "MEDIUM" : String(row.default_effort),
-    confirmBeforeEdit: row.confirm_before_edit == null ? true : asBool(row.confirm_before_edit),
     aiAccessMode: row.ai_access_mode == null || row.ai_access_mode === "" ? "AUTO" : String(row.ai_access_mode),
   };
 }
 
 const SETTINGS_SELECT = `SELECT s.notify_deadline, s.notify_offer, s.notify_comment, s.notify_ai_done, s.notify_application_stage, u.locale, s.profile_public,
             s.career_status_visibility, s.hide_from_current_company, s.contact_visibility, s.default_tone,
-            s.chat_retention_days, s.allow_ai_read_my_files,
-            to_jsonb(s) ->> 'default_effort' AS default_effort, to_jsonb(s) ->> 'confirm_before_edit' AS confirm_before_edit,
-            to_jsonb(s) ->> 'ai_access_mode' AS ai_access_mode
+            s.allow_ai_read_my_files, to_jsonb(s) ->> 'ai_access_mode' AS ai_access_mode
      FROM user_settings s JOIN users u ON u.id = s.user_id WHERE s.user_id = $1`;
 
 const SETTINGS_UPDATE = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14 WHERE user_id = $1`;
+      default_tone = $10, allow_ai_read_my_files = $11, notify_application_stage = $12, updated_at = $13 WHERE user_id = $1`;
 
 const SETTINGS_UPDATE_MODE = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14,
-      default_effort = $15, confirm_before_edit = $16, ai_access_mode = $17 WHERE user_id = $1`;
-
-const SETTINGS_UPDATE_EFFORT = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
-      profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, notify_application_stage = $13, updated_at = $14,
-      default_effort = $15, confirm_before_edit = $16 WHERE user_id = $1`;
+      default_tone = $10, allow_ai_read_my_files = $11, notify_application_stage = $12, updated_at = $13,
+      ai_access_mode = $14 WHERE user_id = $1`;
 
 const SETTINGS_UPDATE_LEGACY = `UPDATE user_settings SET notify_deadline = $2, notify_offer = $3, notify_comment = $4, notify_ai_done = $5,
       profile_public = $6, career_status_visibility = $7, hide_from_current_company = $8, contact_visibility = $9,
-      default_tone = $10, chat_retention_days = $11, allow_ai_read_my_files = $12, updated_at = $13 WHERE user_id = $1`;
+      default_tone = $10, allow_ai_read_my_files = $11, updated_at = $12 WHERE user_id = $1`;
 
 async function loadSettings(ctx: Ctx): Promise<Record<string, unknown>> {
   await query(ctx.deps.query, "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [ctx.user.id]);
@@ -285,44 +272,26 @@ async function patchSettings(ctx: Ctx): Promise<Response> {
     await query(ctx.deps.query, "UPDATE users SET locale = $2 WHERE id = $1", [ctx.user.id, body.locale]);
     next.locale = body.locale;
   }
-  if ("chatRetentionDays" in body) {
-    next.chat_retention_days = body.chatRetentionDays == null ? null : intOf(body.chatRetentionDays, "chatRetentionDays", 1, 3650);
-  }
-  if ("defaultEffort" in body) {
-    if (typeof body.defaultEffort !== "string" || !EFFORT.has(body.defaultEffort)) {
-      throw unprocessable("defaultEffort", "unsupported defaultEffort");
-    }
-    next.default_effort = body.defaultEffort;
-  }
-  if ("confirmBeforeEdit" in body) next.confirm_before_edit = boolOf(body.confirmBeforeEdit, "confirmBeforeEdit");
   if ("aiAccessMode" in body) {
     if (typeof body.aiAccessMode !== "string" || !AI_ACCESS_MODES.has(body.aiAccessMode)) {
       throw fieldError("aiAccessMode", "must be ALWAYS_ASK, AUTO, or BYPASS");
     }
     next.ai_access_mode = body.aiAccessMode;
   }
-  const effort = next.default_effort == null || next.default_effort === "" ? "MEDIUM" : String(next.default_effort);
-  const confirmEdit = next.confirm_before_edit == null ? true : asBool(next.confirm_before_edit);
   const accessMode = next.ai_access_mode == null || next.ai_access_mode === "" ? "AUTO" : String(next.ai_access_mode);
   const params = [ctx.user.id, next.notify_deadline, next.notify_offer, next.notify_comment, next.notify_ai_done, next.profile_public,
     next.career_status_visibility, next.hide_from_current_company, next.contact_visibility, next.default_tone,
-    next.chat_retention_days, next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString(), effort, confirmEdit, accessMode];
+    next.allow_ai_read_my_files, next.notify_application_stage, ctx.now.toISOString(), accessMode];
   try {
     await query(ctx.deps.query, SETTINGS_UPDATE_MODE, params);
   } catch (err) {
     if (!isUndefinedColumn(err)) throw err;
     const message = `${(err as { message?: string }).message || ""} ${String(err)}`;
     if (message.includes("ai_access_mode")) {
-      await query(ctx.deps.query, SETTINGS_UPDATE_EFFORT, params.slice(0, 16));
+      await query(ctx.deps.query, SETTINGS_UPDATE, params.slice(0, 13));
       return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
     }
-    const legacy = params.slice(0, 14);
-    try {
-      await query(ctx.deps.query, SETTINGS_UPDATE, legacy);
-    } catch (err2) {
-      if (!isUndefinedColumn(err2)) throw err2;
-      await query(ctx.deps.query, SETTINGS_UPDATE_LEGACY, legacy.filter((_, index) => index !== 12));
-    }
+    await query(ctx.deps.query, SETTINGS_UPDATE_LEGACY, params.filter((_, index) => index !== 11 && index !== 13));
   }
   return data(200, settingsDto(await loadSettings(ctx)), ctx.rid);
 }

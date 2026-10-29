@@ -119,7 +119,7 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
             except NotFoundError:
                 await UserStore(db).upsert_dev_user(cfg.dev_user_id)
 
-        cipher = new_key_cipher(cfg.byok_master_key) if cfg.byok_master_key else None
+        cipher = new_key_cipher(cfg.token_encryption_key) if cfg.token_encryption_key else None
         oauth = OAuthClient()
         stack.push_async_callback(oauth.aclose)
         openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)

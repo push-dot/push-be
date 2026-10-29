@@ -46,7 +46,8 @@ function isPython(method: string, path: string): boolean {
 }
 
 function isCore(method: string, path: string): boolean {
-  if (/^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return method === "GET";
+  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
+  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
   if (path === "/api/v1/auth/exchange" || path === "/api/v1/auth/refresh" || path === "/api/v1/auth/logout") {
     return method === "POST";
   }
@@ -56,11 +57,13 @@ function isCore(method: string, path: string): boolean {
     || path === "/api/v1/auth/email/login"
     || path === "/api/v1/auth/email/password-reset"
     || path === "/api/v1/auth/email/password-reset/confirm"
+    || path === "/api/v1/auth/phone/send"
+    || path === "/api/v1/auth/phone/verify"
   )) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
-  if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH";
-  if (/^\/api\/v1\/conversations\/[^/]+\/archive$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (/^\/api\/v1\/conversations\/[^/]+\/(archive|unarchive)$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/messages(\/stream)?$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/attachments$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+\/approvals\/[^/]+$/.test(path)) return method === "POST";

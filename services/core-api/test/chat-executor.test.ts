@@ -12,7 +12,7 @@ function env(extra: Partial<CoreEnv> = {}): CoreEnv {
     APP_ENV: "production",
     MANAGED_AI: "1",
     MANAGED_GO: "0",
-    BYOK_MASTER_KEY: "test-master-key",
+    TOKEN_ENCRYPTION_KEY: "test-master-key",
     ...extra,
   };
 }
@@ -30,6 +30,8 @@ function paidQuery(): Deps["query"] {
     }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("FROM users")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
+    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
     if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       return { rows: [{ id: "idem" }], rowCount: 1 };

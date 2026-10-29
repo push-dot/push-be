@@ -1,7 +1,7 @@
 import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
-import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
+import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
 import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
@@ -10,7 +10,21 @@ import type { Ctx } from "../types.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
-const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 30_000_000, ULTRA: 100_000_000 };
+const PLAN_EFFORT: Record<string, string> = {
+  "PERSONAL:FREE": "LOW",
+  "PERSONAL:PRO": "MEDIUM",
+  "PERSONAL:ULTRA": "HIGH",
+  "EMPLOYER:BASIC": "MEDIUM",
+  "EMPLOYER:PRO": "HIGH",
+  "EMPLOYER:ULTRA": "MAX",
+};
+
+const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => {
+  const tier = plan == null ? "" : String(plan).trim().toUpperCase();
+  if (audience === "EMPLOYER") return PLAN_EFFORT[`EMPLOYER:${tier}`] ?? "MEDIUM";
+  return PLAN_EFFORT[`PERSONAL:${tier || "FREE"}`] ?? "LOW";
+};
+const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 27_000_000, ULTRA: 108_000_000 };
 const INTENTS = new Set(["posting", "review", "interview", "general"]);
 const CANONICAL_ACCESS: Record<string, string> = {
   ALWAYS_ASK: "ALWAYS_ASK",
@@ -24,10 +38,18 @@ const FORM_OVERHEAD_BYTES = 64 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind <> 'RESUME_GATE' AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
+const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
 const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
   + " WHERE e.user_id = $1 AND e.archived = false"
   + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
   + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
+
+async function requireAgentConsent(ctx: Ctx): Promise<void> {
+  const row = await one(ctx.deps.query, AGENT_CONSENT, [ctx.user.id]);
+  if (!asBool(row?.reference_data)) {
+    throw new HttpError(403, "CONSENT_REQUIRED", "reference data consent is required");
+  }
+}
 
 function flag(value: string | undefined): boolean {
   const v = (value || "").trim().toLowerCase();
@@ -110,6 +132,7 @@ export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
   forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  await requireAgentConsent(ctx);
   if (body.audience != null && body.audience !== "PERSONAL") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
@@ -168,7 +191,37 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   return data(200, convDto(updated), ctx.rid);
 }
 
-export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Response> {
+const DELETE_OWNED = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
+  + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
+
+const DELETE_COMPANY = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND company_id IS NOT NULL), "
+  + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
+
+export async function deleteConversation(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query, "SELECT user_id, company_id FROM conversations WHERE id = $1", [id]);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (row.company_id != null) {
+    const member = await one(ctx.deps.query,
+      "SELECT role FROM company_members WHERE user_id = $1 AND company_id = $2",
+      [ctx.user.id, row.company_id]);
+    if (!member || String(member.role) !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+    const gone = await one(ctx.deps.query, DELETE_COMPANY, [id]);
+    if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    return noContent(ctx.rid);
+  }
+  const gone = await one(ctx.deps.query, DELETE_OWNED, [id, ctx.user.id]);
+  if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  return noContent(ctx.rid);
+}
+
+export async function archiveConversation(ctx: Ctx, idRaw: string, archived = true): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
   forbidExtra(body, ["expectedRevision"]);
@@ -184,16 +237,18 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = " + (archived ? "true" : "false") + ", updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
-  if (current.company_id != null) {
+  if (archived && current.company_id != null) {
     await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
   }
-  try {
-    await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
-  } catch {
-    // A conflicting evidence write does not fail the archive.
+  if (archived) {
+    try {
+      await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
+    } catch {
+      // A conflicting evidence write does not fail the archive.
+    }
   }
   return data(200, convDto(updated), ctx.rid);
 }
@@ -205,16 +260,18 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
   }
   const ai = raw as Record<string, unknown>;
   forbidExtra(ai, ["provider", "model", "effort", "ultraResume", "webSearch", "models"]);
-  if (typeof ai.provider !== "string" || typeof ai.model !== "string" || typeof ai.effort !== "string") {
+  if (typeof ai.provider !== "string" || typeof ai.model !== "string") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   if (!AI_PROVIDERS.has(ai.provider)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });
   if (!ai.model) throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });
-  if (!EFFORTS.has(ai.effort)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
+  if (ai.effort != null && (typeof ai.effort !== "string" || !EFFORTS.has(ai.effort))) {
+    throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
+  }
   return {
     provider: ai.provider,
     model: ai.model,
-    effort: ai.effort,
+    effort: "LOW",
     ultraResume: ai.ultraResume === true,
     webSearch: ai.webSearch === true,
     models: ai.models && typeof ai.models === "object" && !Array.isArray(ai.models) ? ai.models : {},
@@ -381,10 +438,14 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
-    allowChat(ctx, ai),
   ]);
+  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (owned.company_id == null) await requireAgentConsent(ctx);
+  await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
-  if (owned && owned.company_id != null) {
+  if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
+  else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
+  if (owned.company_id != null) {
     if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
     if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
   }

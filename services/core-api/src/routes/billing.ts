@@ -170,48 +170,26 @@ export async function checkout(ctx: Ctx): Promise<Response> {
   if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   const body = await readObject(ctx.request);
   if (typeof body.planId !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  if (ctx.user.accountType === "EMPLOYER") {
-    if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
-    if (!EMPLOYER_PLANS.has(body.planId)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });
-    const price = employerPrice(ctx.env, body.planId);
-    if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
-    const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
-    if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    const form = new URLSearchParams({
-      mode: "subscription",
-      "line_items[0][price]": price,
-      "line_items[0][quantity]": "1",
-      success_url: ctx.env.STRIPE_SUCCESS_URL || "",
-      cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
-      client_reference_id: ctx.user.companyId,
-      "metadata[audience]": "EMPLOYER",
-      "metadata[plan]": body.planId,
-    });
-    const customer = company.stripe_customer_id == null ? "" : String(company.stripe_customer_id);
-    if (customer) form.set("customer", customer);
-    return checkoutSession(ctx, form);
-  }
-  if (body.planId === "FREE" || !PLANS.has(body.planId)) {
-    throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });
-  }
-  const activeIap = await one(ctx.deps.query,
-    "SELECT id FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1",
-    [ctx.user.id]);
-  if (activeIap) throw new HttpError(409, "ALREADY_SUBSCRIBED", "already subscribed");
-  const price = body.planId === "PRO" ? ctx.env.STRIPE_PRICE_PRO : ctx.env.STRIPE_PRICE_ULTRA;
+  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (!EMPLOYER_PLANS.has(body.planId)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });
+  const price = employerPrice(ctx.env, body.planId);
   if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
+  const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
+  if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const form = new URLSearchParams({
     mode: "subscription",
     "line_items[0][price]": price,
     "line_items[0][quantity]": "1",
     success_url: ctx.env.STRIPE_SUCCESS_URL || "",
     cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
-    client_reference_id: ctx.user.id,
-    "metadata[planId]": body.planId,
-    "metadata[audience]": "PERSONAL",
+    client_reference_id: ctx.user.companyId,
+    "metadata[audience]": "EMPLOYER",
+    "metadata[plan]": body.planId,
   });
-  if (ctx.user.stripeCustomerId) form.set("customer", ctx.user.stripeCustomerId);
+  const customer = company.stripe_customer_id == null ? "" : String(company.stripe_customer_id);
+  if (customer) form.set("customer", customer);
   return checkoutSession(ctx, form);
 }
 

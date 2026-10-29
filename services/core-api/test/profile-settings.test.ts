@@ -35,8 +35,6 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
   return extra(sql, params);
 };
 
-const missingColumn = (): Error => Object.assign(new Error('column "default_effort" does not exist'), { code: "42703" });
-
 const get = (path: string): Request => new Request("https://core.example" + path, {
   headers: { authorization: "Bearer secret-token" },
 });
@@ -65,7 +63,7 @@ test("auth me adds email, provider, and plan", async () => {
   assert.equal(body.data.plan, "PRO");
 });
 
-test("settings add defaultEffort and confirmBeforeEdit", async () => {
+test("settings omit retired effort and retention fields", async () => {
   resetLimits();
   const seen: Call[] = [];
   const res = await handle(get("/api/v1/me/settings"), env(), deps(authed(seen, async (sql) => {
@@ -74,42 +72,59 @@ test("settings add defaultEffort and confirmBeforeEdit", async () => {
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { defaultEffort: string; confirmBeforeEdit: boolean } };
-  assert.equal(body.data.defaultEffort, "MEDIUM");
-  assert.equal(body.data.confirmBeforeEdit, true);
+  const body = await res.json() as { data: Record<string, unknown> };
+  assert.equal("defaultEffort" in body.data, false);
+  assert.equal("confirmBeforeEdit" in body.data, false);
+  assert.equal("chatRetentionDays" in body.data, false);
+  assert.equal(body.data.aiAccessMode, "AUTO");
   const select = seen.find((call) => call.sql.includes("user_settings") && call.sql.includes("to_jsonb"));
   assert.ok(select);
+  assert.doesNotMatch(select?.sql ?? "", /default_effort|confirm_before_edit|chat_retention_days/);
 
   resetLimits();
   const patchedSeen: Call[] = [];
-  const patched = await handle(patch("/api/v1/me/settings", { defaultEffort: "HIGH", confirmBeforeEdit: false }), env(), deps(authed(patchedSeen, async (sql) => {
-    if (sql.includes("default_effort") && sql.includes("UPDATE")) throw missingColumn();
+  const patched = await handle(patch("/api/v1/me/settings", {
+    defaultEffort: "HIGH",
+    confirmBeforeEdit: false,
+    chatRetentionDays: 7,
+    aiAccessMode: "BYPASS",
+  }), env(), deps(authed(patchedSeen, async (sql) => {
     if (sql.includes("INSERT INTO user_settings")) return empty;
-    if (sql.includes("user_settings") || sql.includes("FROM users")) {
-      return { rows: [{ ...settingsRow(), default_effort: "HIGH", confirm_before_edit: false }], rowCount: 1 };
-    }
+    if (sql.includes("user_settings") || sql.includes("FROM users")) return { rows: [settingsRow()], rowCount: 1 };
     return empty;
   })));
   assert.equal(patched.status, 200);
-  const patchedBody = await patched.json() as { data: { defaultEffort: string; confirmBeforeEdit: boolean } };
-  assert.equal(patchedBody.data.defaultEffort, "HIGH");
-  assert.equal(patchedBody.data.confirmBeforeEdit, false);
-  const updates = patchedSeen.filter((call) => call.sql.includes("UPDATE user_settings"));
-  assert.match(updates[0].sql, /default_effort = \$15/);
-  assert.match(updates[0].sql, /confirm_before_edit = \$16/);
-  assert.match(updates[0].sql, /notify_application_stage = \$13/);
-  assert.match(updates[0].sql, /chat_retention_days = \$11/);
-  assert.equal(updates[0].params[14], "HIGH");
-  assert.equal(updates[0].params[15], false);
-  assert.doesNotMatch(updates[1].sql, /default_effort/);
+  const update = patchedSeen.find((call) => call.sql.includes("UPDATE user_settings"));
+  assert.doesNotMatch(update?.sql ?? "", /default_effort|confirm_before_edit|chat_retention_days/);
+  assert.match(update?.sql ?? "", /ai_access_mode = \$14/);
+  assert.equal(update?.params[13], "BYPASS");
+});
 
+test("profile returns followingCount and postCount from the follow and post tables", async () => {
   resetLimits();
-  const bad = await handle(patch("/api/v1/me/settings", { defaultEffort: "HUGE" }), env(), deps(authed([], async (sql) => {
-    if (sql.includes("INSERT INTO user_settings")) return empty;
-    if (sql.includes("user_settings")) return { rows: [settingsRow()], rowCount: 1 };
+  const seen: Call[] = [];
+  const res = await handle(get("/api/v1/me/profile"), env(), deps(authed(seen, async (sql) => {
+    if (sql.includes("INSERT INTO profiles")) return empty;
+    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@push.app" }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) {
+      return {
+        rows: [{
+          user_id: USER, display_name: "Ada", updated_at: NOW, profile_public: true,
+          follower_count: 2, following_count: 4, post_count: 7,
+        }],
+        rowCount: 1,
+      };
+    }
     return empty;
   })));
-  assert.equal(bad.status, 422);
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { followerCount: number; followingCount: number; postCount: number } };
+  assert.equal(body.data.followerCount, 2);
+  assert.equal(body.data.followingCount, 4);
+  assert.equal(body.data.postCount, 7);
+  const select = seen.find((call) => call.sql.includes("AS follower_count"));
+  assert.match(select?.sql ?? "", /follower_id = p\.user_id\) AS following_count/);
+  assert.match(select?.sql ?? "", /FROM posts po WHERE po\.user_id = p\.user_id\) AS post_count/);
 });
 
 test("profile contact follows the visibility setting", async () => {

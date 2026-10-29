@@ -10,7 +10,7 @@ const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const NOW = new Date("2026-10-22T00:00:00Z");
 
 type Row = Record<string, unknown>;
-type World = { company?: Row | null; balance?: string; depth?: number };
+type World = { company?: Row | null; balance?: string; depth?: number; consent?: boolean };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production", AI_ORIGIN: "https://ai.example.test", MANAGED_AI: "1", ...extra,
@@ -25,6 +25,7 @@ const fake = (world: World = {}) => {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
     if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+    if (sql.includes("user_consents")) return rows([{ reference_data: world.consent !== false }]);
     if (sql.includes("co.verified_at")) return rows(world.company ? [world.company] : [{ company_id: null }]);
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {
       const company = world.company;
@@ -87,4 +88,13 @@ test("the stream route rejects before queueing: plan gate, unverified company, c
   const busy = await handle(stream(), env({ QUEUE_BACKEND: "redis" }), deps(fake({ depth: 1_000_000 }).query));
   assert.equal(busy.status, 429);
   assert.equal(await errorCode(busy), "QUEUE_BUSY");
+});
+
+test("a personal stream without reference consent is 403 before queueing", async () => {
+  resetLimits();
+  const db = fake({ consent: false });
+  const res = await handle(stream(), env(), deps(db.query));
+  assert.equal(res.status, 403);
+  assert.equal(await errorCode(res), "CONSENT_REQUIRED");
+  assert.equal(db.sqls.some((sql) => sql.startsWith("WITH conv") || sql.includes("INSERT INTO ai_jobs")), false);
 });

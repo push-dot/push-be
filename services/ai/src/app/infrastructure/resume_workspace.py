@@ -34,7 +34,8 @@ def _root() -> Path:
         "PUSH_RESUME_DIR", str(Path.home() / ".push-resume")))
 
 
-_DOC_KINDS = (("cover_letter", "COVER_LETTER", "자기소개서"),
+_DOC_KINDS = (("career_statement", "CAREER_STATEMENT", "경력기술서"),
+              ("cover_letter", "COVER_LETTER", "자기소개서"),
               ("portfolio", "PORTFOLIO", "포트폴리오"),
               ("resume", "RESUME", "이력서"))
 _DOC_FILE = re.compile(r"^0[345]_.+\.md$")

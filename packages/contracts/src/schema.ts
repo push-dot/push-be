@@ -290,6 +290,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/apple/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apple form_post callback
+         * @description Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.
+         */
+        post: operations["postAuthAppleCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/apple/native": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apple native identity token
+         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.
+         */
+        post: operations["postAuthAppleNative"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/email/login": {
         parameters: {
             query?: never;
@@ -361,7 +401,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -398,7 +438,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange OAuth code for tokens
-         * @description Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.
+         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
          */
         post: operations["postAuthExchange"];
         delete?: never;
@@ -444,6 +484,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/phone/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a personal phone code
+         * @description E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.
+         */
+        post: operations["postAuthPhoneSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/phone/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify a phone code and sign in
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.
+         */
+        post: operations["postAuthPhoneVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/refresh": {
         parameters: {
             query?: never;
@@ -473,7 +553,7 @@ export interface paths {
         };
         /**
          * OAuth provider callback
-         * @description Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.
+         * @description Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.
          */
         get: operations["getAuthByProviderCallback"];
         put?: never;
@@ -493,7 +573,7 @@ export interface paths {
         };
         /**
          * Start OAuth login
-         * @description Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
+         * @description Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
          */
         get: operations["getAuthByProviderStart"];
         put?: never;
@@ -535,7 +615,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe subscription checkout session
-         * @description PERSONAL: planId PRO or ULTRA (409 ALREADY_SUBSCRIBED with an active store subscription). EMPLOYER: company ADMIN only, planId BASIC, PRO or ULTRA.
+         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.
          */
         post: operations["postBillingCheckout"];
         delete?: never;
@@ -919,13 +999,13 @@ export interface paths {
         };
         /**
          * List conversations
-         * @description audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.
+         * @description audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.
          */
         get: operations["getConversations"];
         put?: never;
         /**
          * Create a conversation
-         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.
+         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.
          */
         post: operations["postConversations"];
         delete?: never;
@@ -964,7 +1044,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a conversation
+         * @description A personal conversation is deleted by its owner. A company conversation is deleted only by a company admin. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.
+         */
+        delete: operations["deleteConversationsById"];
         options?: never;
         head?: never;
         /** Rename or pin a conversation */
@@ -1083,7 +1167,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message (queue a chat job)
-         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
          */
         post: operations["postConversationsByIdMessages"];
         delete?: never;
@@ -1166,6 +1250,26 @@ export interface paths {
          * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event.
          */
         post: operations["postConversationsByIdStreamCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive a conversation
+         * @description Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.
+         */
+        post: operations["postConversationsByIdUnarchive"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1890,6 +1994,26 @@ export interface paths {
          * @description Setting referenceData false deletes the user's reference samples.
          */
         put: operations["putMeConsents"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/consents/terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Store signup terms
+         * @description Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.
+         */
+        put: operations["putMeConsentsTerms"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3495,6 +3619,14 @@ export interface components {
         };
         Consents: {
             referenceData: boolean;
+            terms: {
+                age14At: string | null;
+                marketing: boolean;
+                marketingAt: string | null;
+                privacyAt: string | null;
+                serviceTermsAt: string | null;
+                version: string | null;
+            };
             updatedAt: string | null;
         };
         Conversation: {
@@ -3619,7 +3751,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
             language: string;
             latestVersionId: string | null;
             revision: number;
@@ -3764,7 +3896,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -4079,10 +4211,12 @@ export interface components {
             contact: string | null;
             displayName: string;
             followerCount: number;
+            followingCount: number;
             headline: string;
             intro: string;
             jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
             openToOffers: boolean;
+            postCount: number;
             resumeSourceId: string | null;
             skills: string[];
             tenureYears: number | null;
@@ -4099,11 +4233,13 @@ export interface components {
             displayName: string;
             followerCount: number;
             following: boolean;
+            followingCount: number;
             headline: string;
             intro: string;
             jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
             offered: boolean;
             openToOffers: boolean;
+            postCount: number;
             resumeSourceId: string | null;
             skills: string[];
             tenureYears: number | null;
@@ -4251,12 +4387,8 @@ export interface components {
             allowAiReadMyFiles: boolean;
             /** @enum {string} */
             careerStatusVisibility: "everyone" | "followers" | "private";
-            chatRetentionDays: number | null;
-            confirmBeforeEdit: boolean;
             /** @enum {string} */
             contactVisibility: "accepted" | "followers" | "everyone" | "private";
-            /** @enum {string} */
-            defaultEffort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
             /** @enum {string} */
             defaultTone: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
             hideFromCurrentCompany: boolean;
@@ -4906,6 +5038,67 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postAuthAppleCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    code: string;
+                    state: string;
+                    user?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Redirect to the app callback with ?code= */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthAppleNative: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    identityToken: string;
+                    nonce: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"] | {
+                            expiresIn: number;
+                            pendingToken: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postAuthEmailLogin: {
         parameters: {
             query?: never;
@@ -5008,8 +5201,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    accountType: "PERSONAL" | "EMPLOYER";
-                    consentReference?: boolean;
+                    accountType: "EMPLOYER";
                     displayName: string;
                     /** Format: email */
                     email: string;
@@ -5088,7 +5280,10 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["AuthTokens"];
+                        data: components["schemas"]["AuthTokens"] | {
+                            expiresIn: number;
+                            pendingToken: string;
+                        };
                     };
                 };
             };
@@ -5150,6 +5345,87 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postAuthPhoneSend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            cooldownSeconds: number;
+                            /** Format: date-time */
+                            expiresAt: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthPhoneVerify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    pendingToken?: string;
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            accessToken: string;
+                            created: boolean;
+                            expiresIn: number;
+                            linked?: boolean;
+                            provider?: string;
+                            refreshToken: string;
+                            user: {
+                                /** @enum {string} */
+                                accountType: "PERSONAL" | "EMPLOYER";
+                                companyId: string | null;
+                                companyRole: ("ADMIN" | "MEMBER") | null;
+                                displayName: string;
+                                /** Format: uuid */
+                                id: string;
+                                locale: string;
+                            };
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postAuthRefresh: {
         parameters: {
             query?: never;
@@ -5187,7 +5463,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                provider: "google" | "github";
+                provider: "google" | "github" | "apple";
             };
             cookie?: never;
         };
@@ -5216,7 +5492,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                provider: "google" | "github";
+                provider: "google" | "github" | "apple";
             };
             cookie?: never;
         };
@@ -6061,6 +6337,8 @@ export interface operations {
                 /** @description Case-insensitive match on title or last message text */
                 q?: string;
                 audience?: "PERSONAL" | "EMPLOYER";
+                /** @description true lists only archived conversations. Any other value excludes them. */
+                archived?: "true" | "false";
             };
             header?: never;
             path?: never;
@@ -6149,6 +6427,27 @@ export interface operations {
                         };
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteConversationsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
@@ -6411,8 +6710,11 @@ export interface operations {
                      */
                     accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
                     ai?: {
-                        /** @enum {string} */
-                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        /**
+                         * @description Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.
+                         * @enum {string}
+                         */
+                        effort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                         model: string;
                         models?: {
                             [key: string]: unknown;
@@ -6491,8 +6793,11 @@ export interface operations {
                      */
                     accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
                     ai?: {
-                        /** @enum {string} */
-                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        /**
+                         * @description Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.
+                         * @enum {string}
+                         */
+                        effort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                         model: string;
                         models?: {
                             [key: string]: unknown;
@@ -6627,6 +6932,40 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postConversationsByIdUnarchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getDocuments: {
         parameters: {
             query?: {
@@ -6634,7 +6973,7 @@ export interface operations {
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
                 applicationId?: string;
-                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
             };
             header?: never;
             path?: never;
@@ -6673,7 +7012,7 @@ export interface operations {
                     /** Format: uuid */
                     applicationId: string;
                     /** @enum {string} */
-                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER";
+                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
                     language: string;
                     /**
                      * @description Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.
@@ -8210,6 +8549,39 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    putMeConsentsTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    age14?: boolean;
+                    marketing?: boolean;
+                    privacy?: boolean;
+                    serviceTerms?: boolean;
+                    termsVersion?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Consents"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postMeDevices: {
         parameters: {
             query?: never;
@@ -8835,12 +9207,8 @@ export interface operations {
                     allowAiReadMyFiles?: boolean;
                     /** @enum {string} */
                     careerStatusVisibility?: "everyone" | "followers" | "private";
-                    chatRetentionDays?: number | null;
-                    confirmBeforeEdit?: boolean;
                     /** @enum {string} */
                     contactVisibility?: "accepted" | "followers" | "everyone" | "private";
-                    /** @enum {string} */
-                    defaultEffort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                     /** @enum {string} */
                     defaultTone?: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
                     hideFromCurrentCompany?: boolean;

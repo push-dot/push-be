@@ -186,9 +186,18 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `OPENROUTER_DEEPSEEK_PROVIDERS` | FREE 모델 OpenRouter `provider.order`. 쉼표로 구분. 비우면 `Together,Fireworks,Novita`. FREE 요청은 `provider.ignore`에 `DeepSeek`을 넣는다 |
 | `OPENAI_API_KEY` | OpenAI 호환 관리형 호출을 쓸 때 |
 | `OPENCODE_GO_API_KEY` | OpenCode Go 모델을 쓸 때 |
-| `BYOK_MASTER_KEY` | Google 연동 OAuth 토큰을 암호화할 때. 이름은 예전 그대로다 |
+| `TOKEN_ENCRYPTION_KEY` | Google 연동 OAuth 토큰을 암호화한다 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub 로그인 |
+| `PHONE_SMS_MODE` | `log`이고 `APP_ENV=development`일 때만 인증번호를 로그에 남긴다. 그 외에는 503이고 코드는 로그에 없다. 실제 문자 업체는 아직 없다 |
+| `PHONE_CODE_COOLDOWN_SEC` | 재발송 대기 초. 비우면 168 |
+| `PHONE_CODE_TTL_SEC` | 인증번호 유효 시간(초). 비우면 180 |
+| `PHONE_CODE_MAX_ATTEMPTS` | 틀린 횟수 한도. 비우면 5 |
+| `PENDING_SIGNUP_SECRET` | 개인 소셜 첫 로그인의 가입 대기 토큰 HMAC. 비우면 그 경로는 503. 토큰에는 넣지 않는다 |
+| `APPLE_TEAM_ID`, `APPLE_KEY_ID` | Apple 로그인. Sign in with Apple 팀 ID와 Key ID |
+| `APPLE_CLIENT_ID` | 웹·Android Services ID. 비우면 Apple 웹 로그인은 503 |
+| `APPLE_BUNDLE_ID` | iOS identity token의 aud. 영수증 검증과 같은 번들 ID. 비우면 네이티브 로그인은 503 |
+| `APPLE_PRIVATE_KEY` | Sign in with Apple .p8 PEM. 줄바꿈은 `\n`으로 넣어도 된다. 키 파일은 커밋하지 않는다 |
 | `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
 | `RESEND_API_KEY` | 키가 있으면 운영 메일은 Resend로 보낸다. 키가 없고 EMAIL 바인딩이 있으면 그 바인딩으로 보낸다. 둘 다 없으면 로컬 로거를 쓴다 |
 | `EXPO_ACCESS_TOKEN` | 있으면 알림을 Expo Push로 `user_devices`에 보낸다. 없으면 푸시는 보내지 않는다 |
@@ -327,16 +336,16 @@ Neon 연결은 요청마다 따로 연다. isolate에 소켓 하나를 두지 �
 
 배포 잡은 코드와 wrangler vars만 올린다. `pywrangler secret put` / `wrangler secret put`은 호출하지 않고, KV 네임스페이스도 만들지 않는다. Worker에 이미 넣어 둔 런타임 시크릿은 배포를 거듭해도 그대로다.
 
-프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 연동 OAuth 토큰을 암호화하므로 `BYOK_MASTER_KEY`도 필요하다. 이름은 예전 그대로다. 저장소 시크릿 `DATABASE_URL`과 `BYOK_MASTER_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
+프런트 Worker(`push-be`)와 코어 Worker(`push-be-core`)에 `DATABASE_URL`이 필요하다. 둘 다 Neon HTTP(`@neondatabase/serverless`)를 쓴다. 코어는 연동 OAuth 토큰을 암호화하므로 `TOKEN_ENCRYPTION_KEY`도 필요하다. 저장소 시크릿 `DATABASE_URL`과 `TOKEN_ENCRYPTION_KEY`가 있으면 CD가 `wrangler secret put`으로 코어에 넣는다. 없으면 기존 Worker 시크릿을 덮어쓰지 않으니 첫 배포 뒤에 직접 넣는다.
 
 ```bash
 printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-core
-printf '%s' "$BYOK_MASTER_KEY" | npx wrangler secret put BYOK_MASTER_KEY --name push-be-core
+printf '%s' "$TOKEN_ENCRYPTION_KEY" | npx wrangler secret put TOKEN_ENCRYPTION_KEY --name push-be-core
 ```
 
 OAuth와 Stripe 시크릿(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_TOPUP`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_ULTRA`, `IAP_PRODUCT_TOPUP`, `IAP_TOPUP_CREDITS`, `APPLE_IAP_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`)도 코어에 둔다. 비어 있으면 해당 기능은 Python과 같이 `NOT_CONFIGURED`다. 이름이 같은 게이트웨이 Worker를 덮어쓰면 기존 `push-be`의 `DATABASE_URL`이 남는다.
 
-Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `BYOK_MASTER_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
+Python Worker 이름은 `push-be-python`으로 바뀐다. 시크릿은 Worker 이름에 붙어 있으므로 새 이름에는 자동으로 복사되지 않는다. CD는 값을 가지고 있지 않아 복사하지 않는다. 첫 배포 전에 기존 `push-be`와 같은 시크릿을 `push-be-python`에 한 번 넣는다. `DATABASE_URL`, `OPENROUTER_API_KEY`, 그리고 쓰던 `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `TOKEN_ENCRYPTION_KEY`, OAuth, Stripe, `CF_API_TOKEN`이 대상이다.
 
 ```bash
 printf '%s' "$DATABASE_URL" | npx wrangler secret put DATABASE_URL --name push-be-python

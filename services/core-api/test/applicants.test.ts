@@ -467,7 +467,7 @@ const settingsRow = (notify: boolean, days: number | null) => ({
   allow_ai_read_my_files: true,
 });
 
-test("settings store notifyApplicationStage and unlimited retention for FREE", async () => {
+test("settings store notifyApplicationStage and ignore retired retention", async () => {
   resetLimits();
   const notifySeen: Call[] = [];
   let notify = true;
@@ -501,9 +501,12 @@ test("settings store notifyApplicationStage and unlimited retention for FREE", a
     return empty;
   }, "FREE")));
   assert.equal(daysRes.status, 200);
-  const daysBody = await daysRes.json() as { data: { chatRetentionDays: number | null } };
-  assert.equal(daysBody.data.chatRetentionDays, null);
-  assert.equal(stored, null);
+  const daysBody = await daysRes.json() as { data: Record<string, unknown> };
+  assert.equal("chatRetentionDays" in daysBody.data, false);
+  assert.equal(stored, 7);
+  const daysUpdate = daysSeen.find((call) => call.sql.includes("UPDATE user_settings"));
+  assert.ok(daysUpdate);
+  assert.doesNotMatch(daysUpdate.sql, /chat_retention_days/);
 });
 
 test("a post author includes employer and company name", async () => {
@@ -676,9 +679,9 @@ test("settings still load before notify_application_stage exists", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { notifyApplicationStage: boolean; chatRetentionDays: number | null } };
+  const body = await res.json() as { data: { notifyApplicationStage: boolean } };
   assert.equal(body.data.notifyApplicationStage, true);
-  assert.equal(body.data.chatRetentionDays, null);
+  assert.equal("chatRetentionDays" in body.data, false);
 });
 
 test("create DRAFT stores status and CLOSED on create is 400", async () => {

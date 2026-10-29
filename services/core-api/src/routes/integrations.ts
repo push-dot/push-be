@@ -45,8 +45,8 @@ const routerCheck = (ctx: Ctx): void => {
 /** `GoogleService._check`: client credentials and the token cipher. */
 const cipher = async (ctx: Ctx): Promise<CryptoKey> => {
   if (!configured(ctx)) throw notConfigured("google integration is not configured");
-  if (!ctx.env.BYOK_MASTER_KEY) throw notConfigured("token encryption is not configured");
-  return masterKey(ctx.env.BYOK_MASTER_KEY);
+  if (!ctx.env.TOKEN_ENCRYPTION_KEY) throw notConfigured("token encryption is not configured");
+  return masterKey(ctx.env.TOKEN_ENCRYPTION_KEY);
 };
 
 const seal = async (key: CryptoKey, text: string, userId: string): Promise<{ ct: string; nonce: string }> => {
@@ -353,7 +353,7 @@ export const googleDisconnect = async (ctx: Ctx): Promise<Response> => {
   const gi = await loadIntegration(ctx);
   if (!gi) return noContent(ctx.rid);
   let key: CryptoKey | null = null;
-  try { key = ctx.env.BYOK_MASTER_KEY ? await masterKey(ctx.env.BYOK_MASTER_KEY) : null; } catch { key = null; }
+  try { key = ctx.env.TOKEN_ENCRYPTION_KEY ? await masterKey(ctx.env.TOKEN_ENCRYPTION_KEY) : null; } catch { key = null; }
   try {
     if (!key) throw new Error("no cipher");
     await revoke(ctx, await open(key, gi.access_ciphertext, gi.access_nonce, ctx.user.id));
@@ -391,7 +391,7 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
   let key: CryptoKey;
   let token = "";
   try {
-    key = await masterKey(String(ctx.env.BYOK_MASTER_KEY || ""));
+    key = await masterKey(String(ctx.env.TOKEN_ENCRYPTION_KEY || ""));
     token = await open(key, gi.access_ciphertext, gi.access_nonce, ctx.user.id);
     const expires = gi.token_expires_at == null ? null : Date.parse(String(ts(gi.token_expires_at)));
     if (expires !== null && ctx.now.getTime() > expires - 60_000 && gi.refresh_ciphertext) {

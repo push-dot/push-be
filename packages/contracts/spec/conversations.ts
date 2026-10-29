@@ -1,7 +1,7 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
-  body, ok, okPage, sse, pathParam, query, pageParams,
+  get, post, patch, del, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
+  body, ok, okPage, noContent, sse, pathParam, query, pageParams,
 } from "./shared.ts";
 
 const id = pathParam("id");
@@ -103,11 +103,11 @@ const postMessageBody = body(obj({
   ai: nullable(obj({
     provider: enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
     model: { type: "string", minLength: 1 },
-    effort: enumOf("LOW", "MEDIUM", "HIGH", "MAX"),
+    effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX." },
     ultraResume: { type: "boolean", description: "Requires the ULTRA plan" },
     webSearch: bool,
     models: { type: "object", additionalProperties: true },
-  }, ["provider", "model", "effort"])),
+  }, ["provider", "model"])),
   accessMode: { ...enumOf("ALWAYS_ASK", "AUTO", "BYPASS", "SUGGEST", "CONFIRM_ACTIONS"), description: "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting" },
   intent: enumOf("posting", "review", "interview", "general"),
   applicationId: nullable(uuid),
@@ -132,19 +132,20 @@ export const routes: Route[] = [
   get("gateway", "/api/v1/conversations", {
     tag: "conversations",
     summary: "List conversations",
-    description: "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.",
+    description: "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.",
     params: [
       ...pageParams,
       query("applicationId", uuid),
       query("q", str, "Case-insensitive match on title or last message text"),
       query("audience", enumOf("PERSONAL", "EMPLOYER")),
+      query("archived", enumOf("true", "false"), "true lists only archived conversations. Any other value excludes them."),
     ],
     responses: { 200: okPage(ref("ConversationsListItem")) },
   }),
   post("core", "/api/v1/conversations", {
     tag: "conversations",
     summary: "Create a conversation",
-    description: "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected.",
+    description: "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
     body: body(obj({
       title: { type: "string", maxLength: 300 },
       audience: enumOf("PERSONAL", "EMPLOYER"),
@@ -172,6 +173,21 @@ export const routes: Route[] = [
     body: body(expectedRevision),
     responses: { 200: ok(ref("Conversation")) },
   }),
+  post("core", "/api/v1/conversations/{id}/unarchive", {
+    tag: "conversations",
+    summary: "Unarchive a conversation",
+    description: "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+    params: [id],
+    body: body(expectedRevision),
+    responses: { 200: ok(ref("Conversation")) },
+  }),
+  del("core", "/api/v1/conversations/{id}", {
+    tag: "conversations",
+    summary: "Delete a conversation",
+    description: "A personal conversation is deleted by its owner. A company conversation is deleted only by a company admin. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
+    params: [id],
+    responses: { 204: noContent },
+  }),
   get("gateway", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "List messages",
@@ -182,7 +198,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "Send a message (queue a chat job)",
-    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
     params: [id],
     body: postMessageBody,
     responses: { 202: ok(chatJob, "Accepted") },

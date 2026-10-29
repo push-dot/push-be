@@ -12,7 +12,7 @@ const accepted = ok(obj({ accepted: { type: "boolean", const: true } }), "Accept
 const urlOnly = ok(obj({ url: str }));
 const email: Schema = { type: "string", format: "email" };
 const password: Schema = { type: "string", minLength: 8, maxLength: 128, description: "8 to 128 code points" };
-const providerParam = pathParam("provider", enumOf("google", "github"));
+const providerParam = pathParam("provider", enumOf("google", "github", "apple"));
 const tokenParam = pathParam("token", str);
 const userIdParam = pathParam("userId");
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/heic"];
@@ -35,7 +35,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Start OAuth login",
     auth: "public",
-    description: "Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+    description: "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
     params: [
       providerParam,
       query("accountType", { ...accountType, default: "PERSONAL" }),
@@ -49,17 +49,54 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "OAuth provider callback",
     auth: "public",
-    description: "Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.",
+    description: "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
     params: [providerParam, query("code"), query("state")],
     responses: { 302: redirect("Redirect to the app callback with ?code=") },
+  }),
+  post("core", "/api/v1/auth/apple/callback", {
+    tag: "auth",
+    summary: "Apple form_post callback",
+    auth: "public",
+    description: "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+    body: {
+      required: true,
+      content: {
+        "application/x-www-form-urlencoded": {
+          schema: obj({ code: str, state: str, user: str }, ["code", "state"]),
+        },
+      },
+    },
+    responses: { 302: redirect("Redirect to the app callback with ?code=") },
+  }),
+  post("core", "/api/v1/auth/apple/native", {
+    tag: "auth",
+    summary: "Apple native identity token",
+    auth: "public",
+    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+    body: body(obj({ identityToken: str, nonce: str })),
+    responses: {
+      200: ok({
+        oneOf: [
+          ref("AuthTokens"),
+          obj({ pendingToken: str, expiresIn: int }),
+        ],
+      }),
+    },
   }),
   post("core", "/api/v1/auth/exchange", {
     tag: "auth",
     summary: "Exchange OAuth code for tokens",
     auth: "public",
-    description: "Creates the user on first login. Clears a pending account deletion. 400 EMAIL_NOT_VERIFIED if the provider email is not verified; 409 EMAIL_TAKEN (details.accountType) if the email belongs to the other account type.",
+    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
     body: body(obj({ code: str, codeVerifier: str })),
-    responses: { 200: ok(ref("AuthTokens")) },
+    responses: {
+      200: ok({
+        oneOf: [
+          ref("AuthTokens"),
+          obj({ pendingToken: str, expiresIn: int }),
+        ],
+      }),
+    },
   }),
   post("core", "/api/v1/auth/refresh", {
     tag: "auth",
@@ -86,13 +123,12 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Email signup (sends verification link)",
     auth: "public",
-    description: "Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+    description: "Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
     body: body(obj({
       email,
       password,
-      accountType,
+      accountType: enumOf("EMPLOYER"),
       displayName: { type: "string", minLength: 1, maxLength: 80 },
-      consentReference: bool,
     }, ["email", "password", "accountType", "displayName"])),
     responses: { 202: accepted },
   }),
@@ -127,6 +163,43 @@ export const routes: Route[] = [
     body: body(obj({ token: str, password })),
     responses: { 204: noContent },
   }),
+  post("core", "/api/v1/auth/phone/send", {
+    tag: "auth",
+    summary: "Send a personal phone code",
+    auth: "optional",
+    description: "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
+    body: body(obj({ phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" } }, ["phone"])),
+    responses: { 202: ok(obj({ cooldownSeconds: int, expiresAt: dateTime }), "Accepted") },
+  }),
+  post("core", "/api/v1/auth/phone/verify", {
+    tag: "auth",
+    summary: "Verify a phone code and sign in",
+    auth: "optional",
+    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.",
+    body: body(obj({
+      phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" },
+      code: { type: "string", pattern: "^\\d{6}$" },
+      pendingToken: str,
+    }, ["phone", "code"])),
+    responses: {
+      200: ok(obj({
+        accessToken: str,
+        refreshToken: str,
+        expiresIn: int,
+        created: bool,
+        linked: bool,
+        provider: str,
+        user: obj({
+          id: uuid,
+          displayName: str,
+          locale: str,
+          accountType,
+          companyId: nullable(uuid),
+          companyRole: nullable(companyRole),
+        }),
+      }, ["accessToken", "refreshToken", "expiresIn", "created", "user"])),
+    },
+  }),
   del("core", "/api/v1/me", {
     tag: "auth",
     summary: "Delete account",
@@ -143,7 +216,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/billing/checkout", {
     tag: "billing",
     summary: "Create Stripe subscription checkout session",
-    description: "PERSONAL: planId PRO or ULTRA (409 ALREADY_SUBSCRIBED with an active store subscription). EMPLOYER: company ADMIN only, planId BASIC, PRO or ULTRA.",
+    description: "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.",
     body: body(obj({ planId: enumOf("PRO", "ULTRA", "BASIC") })),
     responses: { 200: ok(obj({ url: str, expiresAt: nullable(dateTime) })) },
   }),
@@ -314,6 +387,19 @@ export const routes: Route[] = [
     body: body(obj({ referenceData: bool })),
     responses: { 200: ok(ref("Consents")) },
   }),
+  put("core", "/api/v1/me/consents/terms", {
+    tag: "consents",
+    summary: "Store signup terms",
+    description: "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+    body: body(obj({
+      age14: bool,
+      serviceTerms: bool,
+      privacy: bool,
+      marketing: bool,
+      termsVersion: { type: "string", minLength: 1, maxLength: 64 },
+    }, [])),
+    responses: { 200: ok(ref("Consents")) },
+  }),
 
   post("core", "/api/v1/uploads/images", {
     tag: "uploads",
@@ -441,6 +527,14 @@ export const schemas: Record<string, Schema> = {
   Consents: obj({
     referenceData: bool,
     updatedAt: nullable(dateTime),
+    terms: obj({
+      version: nullable(str),
+      age14At: nullable(dateTime),
+      serviceTermsAt: nullable(dateTime),
+      privacyAt: nullable(dateTime),
+      marketing: bool,
+      marketingAt: nullable(dateTime),
+    }),
   }),
   UploadedImage: obj({
     key: { type: "string", pattern: "^[0-9a-f]{32}\\.(jpg|png|webp|heic)$" },

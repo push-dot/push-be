@@ -4,7 +4,7 @@ import {
   body, ok, okPage, noContent, pathParam, query, pageParams,
 } from "./shared.ts";
 
-const documentKind = enumOf("RESUME", "PORTFOLIO", "COVER_LETTER");
+const documentKind = enumOf("RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT");
 const templateInput = enumOf("SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT");
 const evidenceKind = enumOf("RESUME", "GITHUB", "CAREER", "EDUCATION", "SKILL", "PROJECT");
 const calendarType = enumOf("INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT");
