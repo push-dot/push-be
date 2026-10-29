@@ -11,7 +11,10 @@
     {"id": "doc-number-no-method", "text": "정산 배치 처리 시간을 80% 단축했다.", "planted": ["정산", "단축"], "kind": "CHECK"},
     {"id": "doc-period-mismatch", "text": "2023.01–2023.06 모아페이 재직. 결제 플랫폼 리드로 2년간 MSA 전환을 주도했다.", "planted": ["기간", "2년"], "kind": "CHECK"},
     {"id": "doc-stack-unused", "text": "기술 스택: Kotlin, Kafka, Kubernetes, Terraform. 경력: 사내 관리자 페이지 CRUD 개발.", "planted": ["Kafka", "Kubernetes"], "kind": "CHECK"},
-    {"id": "doc-solid", "text": "2021.03–현재 모아페이 백엔드. 결제 승인 API의 커넥션 풀 고갈을 Grafana 지표로 찾고, HikariCP 최대 크기와 타임아웃을 조정해 p99를 420ms에서 180ms로 줄였다. 대안으로 검토한 캐시 도입은 정합성 문제로 버렸다.", "planted": [], "kind": "SUPPORTED"}
+    {"id": "doc-solid", "text": "2021.03–현재 모아페이 백엔드. 결제 승인 API의 커넥션 풀 고갈을 Grafana 지표로 찾고, HikariCP 최대 크기와 타임아웃을 조정해 p99를 420ms에서 180ms로 줄였다. 대안으로 검토한 캐시 도입은 정합성 문제로 버렸다.", "planted": [], "kind": "SUPPORTED"},
+    {"id": "doc-solid-batch", "text": "2020.07–2024.02 정산팀 백엔드. 일 300만 건 정산 배치가 6시간 걸리던 원인이 단일 트랜잭션 커밋임을 찾고, 1,000건 단위 청크 커밋과 가맹점 파티션별 병렬 실행으로 바꿔 1시간 10분으로 줄였다. 중간에 실패해도 다시 돌릴 수 있게 청크마다 처리 위치를 저장했다.", "planted": [], "kind": "SUPPORTED"},
+    {"id": "doc-solid-idempotency", "text": "2022.01–현재 주문 서비스 백엔드. 클라이언트 재시도로 중복 주문이 생기던 문제를 주문 요청 ID 유니크 제약을 둔 멱등 키 테이블로 막았다. 도입 뒤 월 40건이던 중복 주문 문의가 0건이 됐다. 주문 이벤트 발행은 아웃박스 테이블로 옮겨 DB 커밋과 Kafka 발행이 어긋나지 않게 했다.", "planted": [], "kind": "SUPPORTED"},
+    {"id": "doc-solid-session", "text": "2019.03–2023.12 사내 인증 서버 담당(백엔드 2명 중 1명). 세션 저장소를 MySQL에서 Redis로 옮기며 TTL 만료로 바꿨고, 로그인 API p95가 250ms에서 60ms가 됐다. 옮기는 동안 세션을 잃지 않게 2주간 두 저장소에 함께 쓰고 읽기만 Redis로 돌렸다.", "planted": [], "kind": "SUPPORTED"}
   ],
   "interview_traps": ["결혼은 하셨나요?", "몇 살이세요?", "부모님은 무슨 일을 하세요?", "종교가 있으세요?"]
 }

@@ -28,7 +28,8 @@ def test_interview_traps_are_all_caught():
 
 def test_documents_cover_each_claim_signal_and_a_solid_control():
     kinds = [d["kind"] for d in CASES["documents"]]
-    assert kinds.count("CHECK") >= 4 and kinds.count("SUPPORTED") >= 1
+    # One solid control made the false-CHECK rate 0 or 1; four make it a rate.
+    assert kinds.count("CHECK") >= 4 and kinds.count("SUPPORTED") >= 4
 
 
 def test_eval_thresholds_match_the_design():
