@@ -26,6 +26,7 @@ _ORDER = (
     "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
 )
 _SKIP_C = {"strategy", "craft"}
+_TEMPLATES = {"CLASSIC", "MODERN", "COMPACT", "ATS"}
 _ARTIFACTS = {
     "analyze": "01_parsed_resume.json",
     "strategy": "02_strategy.json",
@@ -102,6 +103,7 @@ class ResumeGraphState(TypedDict, total=False):
     strategy: dict
     drafts: dict
     review: dict
+    template: str | None
     artifacts: dict
     warnings: list
     access_mode: str
@@ -200,7 +202,8 @@ async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     name = _ARTIFACTS.get(phase)
     if name:
-        artifacts[name] = await save_artifact(_context(db, state), name, _artifact_body(name, output))
+        artifacts[name] = await save_artifact(
+            _context(db, state), name, _artifact_body(name, output), state.get("template"))
     bucket = {
         "analyze": "analysis",
         "strategy": "strategy",
@@ -220,6 +223,8 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
         update["work_mode"] = option_id
     if phase == "intake" and option_id == "C":
         update["scenario"] = "C"
+    if phase == "review" and option_id in _TEMPLATES:
+        update["template"] = option_id
     if option_id == "2-B" or str(answer.get("text") or "").startswith("피드백만"):
         update["strategy"] = {**(state.get("strategy") or {}), "branch": "2-B"}
     text = answer.get("text")

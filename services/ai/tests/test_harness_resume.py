@@ -166,6 +166,28 @@ async def test_phase_output_is_saved_to_workspace_files():
     assert len(file_id) == 36
 
 
+async def test_template_choice_reaches_the_pdf_renderer():
+    import io
+
+    from pypdf import PdfReader
+
+    db = _Approvals()
+    model = _PhaseModel({"publish": {"markdown": "# 이력서\n백엔드"}})
+    graph = _graph(db, model=model)
+    config = _config()
+    await _run(graph, _base(phase="review"), config)
+    await _run(graph, Command(resume={"option_id": "ATS"}), config)
+    chosen = await graph.aget_state(config)
+    assert chosen.values["template"] == "ATS"
+    assert chosen.values["phase"] == "publish"
+    await _run(graph, {}, config)
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(io.BytesIO(db.files["05_final_resume.pdf"])).pages)
+    assert "ATS" in text
+    assert "백엔드" in text
+
+
 async def test_bypass_auto_picks_recommended():
     graph = _graph(_Approvals(), None)
     config = _config()

@@ -47,6 +47,7 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
         "strategy": saved.get("strategy") or {},
         "drafts": saved.get("drafts") or {},
         "review": saved.get("review") or {},
+        "template": saved.get("template"),
         "artifacts": saved.get("artifacts") or {},
         "warnings": saved.get("warnings") or [],
         "access_mode": mode.value,
@@ -84,7 +85,7 @@ def _state(payload: dict, conversation: dict) -> dict:
 
 _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
-    "drafts", "review", "artifacts", "warnings",
+    "drafts", "review", "template", "artifacts", "warnings",
 )
 
 

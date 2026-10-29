@@ -254,7 +254,10 @@ async def read_artifact(db, conversation_id, name: str) -> str:
     return row["body"]
 
 
-def md_to_pdf(md: str, out) -> None:
+def md_to_pdf(md: str, out, template: str | None = None) -> None:
+    if template:
+        from app.domain.entities.documents import stored_document_template
+        md = f"{md.rstrip()}\n{stored_document_template(template)}"
     try:
         _md_to_pdf_reportlab(md, out)
     except Exception:
