@@ -36,9 +36,8 @@ const post = (path: string, body: unknown, headers?: HeadersInit): Request => ne
 const signupBody = (extra: Record<string, unknown> = {}) => ({
   email: EMAIL,
   password: PASSWORD,
-  accountType: "PERSONAL",
+  accountType: "EMPLOYER",
   displayName: "Ada",
-  consentReference: true,
   ...extra,
 });
 
@@ -269,7 +268,7 @@ const tokenFrom = (mail: Mail): string => {
 const calls = (db: ReturnType<typeof createDb>, needle: string): Call[] =>
   db.sqls.filter((call) => call.sql.includes(needle));
 
-test("signup accepts a personal account and rejects a short password", async () => {
+test("signup accepts an employer account and rejects a personal account", async () => {
   resetLimits();
   const sent: Mail[] = [];
   const db = createDb();
@@ -302,6 +301,18 @@ test("signup accepts a personal account and rejects a short password", async () 
   assert.equal(tokenInsert.params[2], db.signups[0].id);
   assert.equal(tokenInsert.params[3], "VERIFY");
   assert.equal(tokenInsert.params[5], "2026-10-22T00:00:00.000Z");
+  assert.equal(insert.params[3], true);
+  assert.equal(insert.params[5], false);
+
+  resetLimits();
+  const personal = await handle(
+    post("/api/v1/auth/email/signup", signupBody({ accountType: "PERSONAL" })),
+    env(),
+    deps(db, mailer),
+  );
+  assert.equal(personal.status, 400);
+  assert.equal((await personal.json() as Err).error.details?.field, "accountType");
+  assert.equal(sent.length, 1);
 
   resetLimits();
   const bad = await handle(
@@ -404,9 +415,7 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(inserted.params[8], true);
   assert.equal(inserted.params[9], pendingHash);
   assert.equal(db.signups.length, 0);
-  assert.equal(db.consents.length, 1);
-  assert.equal(db.consents[0].user_id, db.users[0].id);
-  assert.equal(db.consents[0].reference_data, true);
+  assert.equal(db.consents.length, 0);
   assert.equal(db.tokens[0].used_at, NOW.toISOString());
   assert.equal(body.data.user.id, db.users[0].id);
 
@@ -437,7 +446,7 @@ test("login waits for verification and checks the password", async () => {
   const ok = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(ok.status, 200);
   const body = await ok.json() as Session;
-  assert.equal(body.data.user.accountType, "PERSONAL");
+  assert.equal(body.data.user.accountType, "EMPLOYER");
   assert.ok(body.data.accessToken);
 });
 
@@ -730,7 +739,7 @@ test("auth me for an email user includes the company fields", async () => {
   const sent: Mail[] = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
-  await handle(post("/api/v1/auth/email/signup", signupBody({ consentReference: false })), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
   const session = await verified.json() as Session;
@@ -741,7 +750,7 @@ test("auth me for an email user includes the company fields", async () => {
   }), env(), deps(db, mailer));
   assert.equal(me.status, 200);
   const body = await me.json() as { data: { accountType: string; companyId: string | null; companyRole: string | null } };
-  assert.equal(body.data.accountType, "PERSONAL");
+  assert.equal(body.data.accountType, "EMPLOYER");
   assert.equal(body.data.companyId, null);
   const meBody = body as { data: { email?: string; provider?: string; plan?: string } };
   assert.equal(meBody.data.email, EMAIL);

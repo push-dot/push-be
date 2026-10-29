@@ -361,7 +361,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -535,7 +535,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe subscription checkout session
-         * @description PERSONAL: planId PRO or ULTRA (409 ALREADY_SUBSCRIBED with an active store subscription). EMPLOYER: company ADMIN only, planId BASIC, PRO or ULTRA.
+         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.
          */
         post: operations["postBillingCheckout"];
         delete?: never;
@@ -4251,12 +4251,8 @@ export interface components {
             allowAiReadMyFiles: boolean;
             /** @enum {string} */
             careerStatusVisibility: "everyone" | "followers" | "private";
-            chatRetentionDays: number | null;
-            confirmBeforeEdit: boolean;
             /** @enum {string} */
             contactVisibility: "accepted" | "followers" | "everyone" | "private";
-            /** @enum {string} */
-            defaultEffort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
             /** @enum {string} */
             defaultTone: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
             hideFromCurrentCompany: boolean;
@@ -5008,8 +5004,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    accountType: "PERSONAL" | "EMPLOYER";
-                    consentReference?: boolean;
+                    accountType: "EMPLOYER";
                     displayName: string;
                     /** Format: email */
                     email: string;
@@ -6411,8 +6406,11 @@ export interface operations {
                      */
                     accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
                     ai?: {
-                        /** @enum {string} */
-                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        /**
+                         * @description Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.
+                         * @enum {string}
+                         */
+                        effort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                         model: string;
                         models?: {
                             [key: string]: unknown;
@@ -6491,8 +6489,11 @@ export interface operations {
                      */
                     accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS" | "SUGGEST" | "CONFIRM_ACTIONS";
                     ai?: {
-                        /** @enum {string} */
-                        effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                        /**
+                         * @description Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.
+                         * @enum {string}
+                         */
+                        effort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                         model: string;
                         models?: {
                             [key: string]: unknown;
@@ -8835,12 +8836,8 @@ export interface operations {
                     allowAiReadMyFiles?: boolean;
                     /** @enum {string} */
                     careerStatusVisibility?: "everyone" | "followers" | "private";
-                    chatRetentionDays?: number | null;
-                    confirmBeforeEdit?: boolean;
                     /** @enum {string} */
                     contactVisibility?: "accepted" | "followers" | "everyone" | "private";
-                    /** @enum {string} */
-                    defaultEffort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
                     /** @enum {string} */
                     defaultTone?: "as_is" | "professional" | "confident" | "concise" | "technical" | "friendly";
                     hideFromCurrentCompany?: boolean;

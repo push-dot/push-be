@@ -166,20 +166,21 @@ test("employer member checkout is forbidden", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("personal checkout of BASIC is a validation error", async () => {
+test("personal checkout is forbidden", async () => {
   resetLimits();
   const calls: { url: string; body: string }[] = [];
   const seen: Call[] = [];
   const query = authed(seen, false, null, async () => empty);
-  const res = await handle(
-    post("/api/v1/billing/checkout", { planId: "BASIC" }, "33333333-3333-4333-8333-333333333333"),
-    envOf(),
-    { query, now: () => NOW, fetch: stripeFetch(calls) },
-  );
-  assert.equal(res.status, 400);
-  const err = await codeOf(res);
-  assert.equal(err.code, "VALIDATION_ERROR");
-  assert.equal(err.details?.field, "planId");
+  for (const planId of ["BASIC", "PRO", "ULTRA"]) {
+    resetLimits();
+    const res = await handle(
+      post("/api/v1/billing/checkout", { planId }, "33333333-3333-4333-8333-333333333333"),
+      envOf(),
+      { query, now: () => NOW, fetch: stripeFetch(calls) },
+    );
+    assert.equal(res.status, 403, planId);
+    assert.equal((await codeOf(res)).code, "FORBIDDEN");
+  }
   assert.equal(calls.length, 0);
 });
 
