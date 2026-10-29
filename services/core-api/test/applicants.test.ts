@@ -44,6 +44,7 @@ const authed = (seen: Call[], employer: boolean, extra: Deps["query"], plan = "F
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: employer, display_name: "Ada" }], rowCount: 1 };
   }
+  if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
   return extra(sql, params);
 };
 

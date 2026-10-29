@@ -57,10 +57,11 @@ test("an export result can be recorded only once even when two reports race", as
 test("a new document version verifies all cited evidence in one query", async () => {
   const { handle } = await import("../src/handler.ts");
   const DOC = "d0000000-0000-4000-8000-000000000003";
-  const { calls, query } = recorder((sql) => {
+  const { calls, query } = recorder((sql, params) => {
     if (sql.startsWith("SELECT") && sql.includes("FROM documents WHERE id = $1")) return [{ id: DOC, revision: 1, status: "DRAFT", title: "t", kind: "RESUME", template: "SIMPLE", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }];
     if (sql.includes("FROM career_evidence")) return [E1, E2, E3].map((id) => ({ id, source_text: "Go and Postgres", archived: false }));
     if (sql.startsWith("WITH upd AS")) return [{ number: 2 }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
     return null;
   });
   const blocks = [E1, E2, E3].map((eid, i) => ({ id: "b" + i, text: "Go", evidenceRefs: [{ evidenceId: eid, start: 0, end: 2 }, { evidenceId: E1, start: 3, end: 6 }] }));
