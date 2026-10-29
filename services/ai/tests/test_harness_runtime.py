@@ -139,6 +139,48 @@ async def test_start_document_cancel_choice_resets_flow():
     assert select_harness(rows.conversation).id == "personal"
 
 
+def _saved_resume(rows):
+    saved = rows.conversation["resume_state"]
+    if isinstance(saved, str):
+        saved = json.loads(saved)
+    return saved
+
+
+async def _ask_start(tool, rows, job_id):
+    from app.harness.tools import ToolContext
+
+    return await tool.run(ToolContext(
+        user_id=str(USER), company_id=None, conversation_id=str(CONV),
+        job_id=job_id, tool_call_id="call-" + job_id, db=rows, core=None,
+    ), tool.args_model.model_validate({}))
+
+
+async def test_start_document_second_ask_can_be_answered():
+    from app.harness.personal import tools
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "craft"}})
+    runtime = HarnessRuntime(service(rows))
+    tool = next(item for item in tools.PERSONAL_TOOLS if item.name == "start_document")
+    first = await _ask_start(tool, rows, "job-1")
+    await run(runtime, _payload(
+        "", ai=None, resume={"approvalId": first["choice"]["id"], "optionId": "cancel"}))
+    assert _saved_resume(rows)["status"] == "cancelled"
+
+    restarted = await _ask_start(tool, rows, "job-2")
+    assert restarted == {
+        "harness": "resume",
+        "resume_state": {"status": "active", "phase": "mode_select"},
+    }
+
+    second = await _ask_start(tool, rows, "job-3")
+    assert second["choice"]["id"] != first["choice"]["id"]
+    await run(runtime, _payload(
+        "", ai=None, job_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        resume={"approvalId": second["choice"]["id"], "optionId": "cancel"}))
+    assert _saved_resume(rows)["status"] == "cancelled"
+
+
 async def test_start_document_continue_choice_keeps_the_flow():
     from app.harness.personal import tools
     from app.harness.router import select_harness
@@ -154,8 +196,6 @@ async def test_start_document_continue_choice_keeps_the_flow():
         user_id=str(USER), company_id=None, conversation_id=str(CONV),
         job_id="job-1", tool_call_id="call-1", db=rows, core=None,
     ), tool.args_model.model_validate({}))
-    choice_id = result["choice"]["id"]
-    rows.approvals[choice_id] = {"id": choice_id, "kind": "RESUME_GATE"}
     phase_before = json.loads(rows.conversation["resume_state"])["phase"]
     await run(runtime, _payload(
         "", ai=None, job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

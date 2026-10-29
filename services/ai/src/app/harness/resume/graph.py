@@ -44,7 +44,7 @@ _GATES = {
         ],
     },
     "intake": {
-        "title": "입력을 확인했습니다. 분석을 시작할까요?",
+        "title": "입력한 자료를 확인했어요. 분석을 시작할까요?",
         "recommended": "ready",
         "options": [
             {"id": "ready", "label": "이 자료로 진행할게요"},
@@ -52,12 +52,12 @@ _GATES = {
         ],
     },
     "analyze": {
-        "title": "이 공고에 맞춰서 선택한 산출물을 수정할까요?",
+        "title": "이 공고에 맞춰 고칠까요?",
         "recommended": "continue",
         "options": [{"id": "continue", "label": "전략으로 갈게요"}],
     },
     "strategy": {
-        "title": "전략대로 초안을 작성할까요?",
+        "title": "이 전략대로 초안을 쓸까요?",
         "recommended": "continue",
         "options": [
             {"id": "continue", "label": "초안 쓸게요"},
@@ -65,12 +65,12 @@ _GATES = {
         ],
     },
     "craft": {
-        "title": "첫 번째 버전(v1) 초안입니다. 마음에 드시나요?",
+        "title": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
         "recommended": "continue",
         "options": [{"id": "continue", "label": "검토할게요"}],
     },
     "review": {
-        "title": "검증 결과를 확인했습니다. 이제 디자인을 적용할까요?",
+        "title": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
         "recommended": "CLASSIC",
         "options": [
             {"id": "CLASSIC", "label": "클래식"},
@@ -80,12 +80,12 @@ _GATES = {
         ],
     },
     "publish": {
-        "title": "디자인이 적용되었습니다. PDF로 출력할까요?",
+        "title": "디자인을 적용했어요. PDF로 만들까요?",
         "recommended": "confirm",
         "options": [{"id": "confirm", "label": "이대로 마무리할게요"}],
     },
     "present": {
-        "title": "PDF 생성이 완료되었습니다. 최종 결과를 확인하시겠어요?",
+        "title": "PDF를 만들었어요. 결과를 확인할까요?",
         "recommended": "done",
         "options": [{"id": "done", "label": "확인했어요"}],
     },

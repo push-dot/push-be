@@ -225,8 +225,8 @@ async def _resume_row(ctx: ToolContext):
     )
 
 
-def start_document_choice_id(conversation_id: str) -> str:
-    return str(uuid5(NAMESPACE_URL, "push:start-document:" + conversation_id))
+def start_document_choice_id(conversation_id: str, job_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, "push:start-document:" + conversation_id + ":" + job_id))
 
 
 def _resume_status(row) -> str:
@@ -250,7 +250,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
     if _resume_status(await _resume_row(ctx)) == "active":
         choice = {
             "type": "choice",
-            "id": start_document_choice_id(ctx.conversation_id),
+            "id": start_document_choice_id(ctx.conversation_id, ctx.job_id),
             "kind": "RESUME_GATE",
             "gate": "start_document",
             "title": "이어서 작성할까요?",
@@ -260,6 +260,11 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
             ],
         }
         await insert_chat_approval(ctx.db, ctx.user_id, ctx.conversation_id, choice, None)
+        await ctx.db.q().execute(
+            "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
+            UUID(choice["id"]),
+            json.dumps({"gate": choice["gate"]}, ensure_ascii=False),
+        )
         emit(choice)
         return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}

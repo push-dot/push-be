@@ -19,7 +19,7 @@ from app.harness.core_client import idempotency_key
 from app.harness.document_edits import env_core
 from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
-from app.harness.personal.tools import bound_services, start_document_choice_id
+from app.harness.personal.tools import bound_services
 from app.harness.registry import REGISTRY
 from app.harness.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
@@ -281,12 +281,35 @@ class HarnessRuntime:
             operation = await self._persist(payload, _final_text(values), ai, turn)
             yield "values", {"operation": operation}
 
+    async def _stored_gate(self, approval_id) -> str:
+        if not approval_id:
+            return ""
+        try:
+            row = await self.svc.db.q().fetchrow(
+                "SELECT tool_args FROM approvals WHERE id = $1", UUID(str(approval_id)))
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        try:
+            raw = row["tool_args"]
+        except (KeyError, TypeError):
+            return ""
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return ""
+        if isinstance(raw, dict):
+            return str(raw.get("gate") or "")
+        return ""
+
     async def _resume_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
         config = _thread(config, payload["conversation_id"], ":resume")
         pending = _pending(await graph.aget_state(config))
         text = payload.get("text") or ""
         resume = payload.get("resume") or {}
-        if resume.get("approvalId") == start_document_choice_id(str(payload["conversation_id"])):
+        if await self._stored_gate(resume.get("approvalId")) == "start_document":
             if resume.get("optionId") != "cancel":
                 return
             if pending is None:
