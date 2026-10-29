@@ -794,6 +794,15 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 stopped = "max"
             return await _finish_boost(state, outcome, stopped)
         detail = _boost_detail(pending)
+        stopped = outcome["stopped"]
+        if stopped in {"stall", "max"}:
+            note = (
+                "더 올리기 어려워서 여기서 멈출게요."
+                if stopped == "stall"
+                else "최대 5번까지 올렸어요."
+            )
+            emit({"token": f"{detail} — {note}"})
+            return await _finish_boost(state, outcome, stopped)
         if not _must_stop(state, "boost"):
             emit(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
             answer: dict = {"option_id": "continue"}

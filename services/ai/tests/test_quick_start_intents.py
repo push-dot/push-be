@@ -259,7 +259,7 @@ async def test_boost_with_a_draft_does_not_reenter(monkeypatch):
     payload = _payload("다음", "boost")
     payload["job_id"] = "99999999-9999-4999-8999-999999999998"
     again = await run(runtime, payload)
-    assert _choice(again)["gate"] == "boost"
+    assert _choice(again)["gate"] == "review"
     assert len(seen) == 3
 
 

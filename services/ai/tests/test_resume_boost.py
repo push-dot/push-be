@@ -110,18 +110,26 @@ async def test_boost_loop_stops_at_five_cycles(monkeypatch):
         first = _cycle(snap)
         assert _score(first) == {"cycle": 1, "before": 5.0, "after": 5.1, "gain": 0.1}
         hits = [first]
+        events = []
         for _ in range(6):
-            async for _mode, _chunk in graph.astream(
+            events = []
+            async for mode, chunk in graph.astream(
                 Command(resume={"option_id": "continue"}), config, stream_mode=["custom", "values"],
             ):
-                pass
+                if mode == "custom" and isinstance(chunk, dict):
+                    events.append(chunk)
             snap = await graph.aget_state(config)
             hit = _cycle(snap)
             if hit is None:
                 break
             hits.append(hit)
-        assert [item["cycle"] for item in hits] == [1, 2, 3, 4, 5]
+        assert [item["cycle"] for item in hits] == [1, 2, 3, 4]
+        assert _cycle(snap) is None
         assert snap.values["boost_stopped"] == "max"
+        assert any(
+            event.get("token") == "적합도 5.4 → 5.5 (+0.1) — 최대 5번까지 올렸어요."
+            for event in events
+        )
         assert snap.values["phase"] == "review"
         assert snap.values["scores"] == []
         assert snap.values["boost_acked"] == 0
@@ -138,19 +146,14 @@ async def test_boost_loop_stops_on_stall(monkeypatch):
     try:
         snap, _events = await _to_first_cycle(graph, config)
         assert _score(_cycle(snap)) == {"cycle": 1, "before": 4.0, "after": 4.0, "gain": 0.0}
-        async for _mode, _chunk in graph.astream(
-            Command(resume={"option_id": "continue"}), config, stream_mode=["custom", "values"],
-        ):
-            pass
-        snap = await graph.aget_state(config)
-        assert _score(_cycle(snap)) == {"cycle": 2, "before": 4.0, "after": 4.0, "gain": 0.0}
-        async for _mode, _chunk in graph.astream(
-            Command(resume={"option_id": "continue"}), config, stream_mode=["custom", "values"],
-        ):
-            pass
-        snap = await graph.aget_state(config)
+        snap, events = await _pull(graph, Command(resume={"option_id": "continue"}), config)
         assert _cycle(snap) is None
         assert snap.values["boost_stopped"] == "stall"
+        assert any(
+            event.get("token") == "적합도 4.0 → 4.0 (+0.0) — 더 올리기 어려워서 여기서 멈출게요."
+            for event in events
+        )
+        assert not any(event.get("type") == "choice" for event in events)
         assert snap.values["phase"] == "review"
         assert snap.values["scores"] == []
         assert snap.values["boost_acked"] == 0
@@ -253,8 +256,12 @@ async def test_bypass_auto_continues_without_a_boost_interrupt(monkeypatch):
             drafts={"text": "이력서"},
         ), config)
         boosts = [event for event in events if event.get("gate") == "boost"]
-        assert [event.get("auto") for event in boosts] == [True, True]
+        assert [event.get("auto") for event in boosts] == [True]
         assert boosts[0]["detail"] == "적합도 4.0 → 4.0 (+0.0)"
+        assert any(
+            event.get("token") == "적합도 4.0 → 4.0 (+0.0) — 더 올리기 어려워서 여기서 멈출게요."
+            for event in events
+        )
         assert _cycle(snap) is None
         assert snap.values["phase"] == "review"
         assert snap.values["boost_stopped"] == "stall"

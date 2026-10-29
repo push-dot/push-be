@@ -186,7 +186,7 @@ async def test_stops_at_every_gate_in_auto():
     ]
     assert gates == [
         "mode_select", "output_targets", "tone", "intake",
-        "analyze", "strategy", "craft", "boost", "boost",
+        "analyze", "strategy", "craft", "boost",
         "review", "publish", "present",
     ]
     assert seen[-1][1].values["status"] == "done"
