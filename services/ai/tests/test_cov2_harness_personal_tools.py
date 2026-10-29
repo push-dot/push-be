@@ -114,7 +114,7 @@ async def test_search_career_runs_rag_for_the_caller(monkeypatch):
         seen.append((state, seen_ids))
         return "[관련 근거]\n- A\nb" if state["text"] else None
 
-    monkeypatch.setattr(rag, "collect_evidence", collect)
+    monkeypatch.setattr(rag, "search_career_context", collect)
     svc = SimpleNamespace(ai=object())
     assert await _run("search_career_context", {"query": "결제"}, svc=svc) == {
         "text": "[관련 근거]\n- A\nb"}

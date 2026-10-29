@@ -305,8 +305,8 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     svc = _svc()
     if svc is None or getattr(svc, "ai", None) is None:
         return {"text": ""}
-    from app.framework.rag import collect_evidence
-    text = await collect_evidence(
+    from app.framework.rag import search_career_context
+    text = await search_career_context(
         svc,
         {"text": args.query, "user_id": ctx.user_id, "job_id": ctx.job_id},
         set(),

@@ -437,8 +437,8 @@ def bind_chat_nodes(svc):
                 except Exception:
                     continue
         try:
-            from app.framework.rag import collect_evidence
-            section = await collect_evidence(svc, state, seen_evidence)
+            from app.framework.rag import search_career_context
+            section = await search_career_context(svc, state, seen_evidence)
             if section:
                 _emit({"status": "관련 근거 검색 완료"})
                 sections.append(section)

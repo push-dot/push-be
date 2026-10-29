@@ -167,14 +167,18 @@ def _retriever(svc):
     return _shared["retriever"]
 
 
-async def _llamaindex(svc, state, seen: set) -> str:
+async def search_career_context(svc, state, seen: set) -> str:
     from app.rag.tenant import Tenant
 
-    hits = await _retriever(svc).search(
-        (state.get("text") or "")[:2000], Tenant(user_id=state["user_id"]), 6)
+    hits = await _retriever(svc)._search_llamaindex(
+        (state.get("text") or "")[:2000], Tenant(user_id=state["user_id"]), 6, None)
     return format_section([
         {"title": hit.citation_id, "text": hit.text}
         for hit in hits if str(hit.source_id) not in seen])
+
+
+async def _llamaindex(svc, state, seen: set) -> str:
+    return await search_career_context(svc, state, seen)
 
 
 async def collect_evidence(svc, state, seen: set) -> str:

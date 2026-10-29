@@ -439,11 +439,12 @@ async def test_prepare_reply_keeps_the_rag_status_frame(monkeypatch):
         return _Page()
 
     svc.conversations.list_messages = list_messages
-    svc.chunks = _Chunks(hits=[{
-        "text": "shipped billing", "evidence_id": uuid4(),
-        "title": "Billing", "dist": 0.2,
-    }])
     svc.ai = _Embed()
+
+    async def search(_svc, _state, _seen):
+        return "[관련 근거]\n- Billing\nshipped billing"
+
+    monkeypatch.setattr("app.framework.rag.search_career_context", search)
     nodes = bind_chat_nodes(svc)
     sink = []
     token = event_sink.set(sink)
