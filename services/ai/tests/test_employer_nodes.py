@@ -220,14 +220,17 @@ class _FakeStructured:
         self.payload = payload
         self.seen = None
 
-    def with_structured_output(self, schema, method=None):
-        assert method == "function_calling"
+    def bind_tools(self, tools, tool_choice=None):
+        assert tool_choice == "auto"
         outer = self
 
         class _Run:
             async def ainvoke(self, messages):
+                from langchain_core.messages import AIMessage
+
                 outer.seen = messages
-                return outer.payload
+                return AIMessage(content="", tool_calls=[
+                    {"name": tools[0].__name__, "id": "call-1", "args": outer.payload}])
 
         return _Run()
 
@@ -240,4 +243,4 @@ async def test_structured_generate_validates_dict_output():
     )
     profile = await structured_generate(model)(CompanyProfile, "sys", "user")
     assert isinstance(profile, CompanyProfile) and profile.facts[0].source_url == "https://x"
-    assert model.seen[0].content == "sys" and model.seen[1].content == "user"
+    assert model.seen[0].content.startswith("sys\n\n") and model.seen[1].content == "user"

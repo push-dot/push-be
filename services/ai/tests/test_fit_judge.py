@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+from langchain_core.messages import AIMessage
+
 from app.config import Config
 from app.domain.plan_levers import levers_for
 from app.harness.tools import ToolContext
@@ -17,8 +19,8 @@ class _Scripted:
         self.schema = None
         self.structured = None
 
-    def with_structured_output(self, schema, **kwargs):
-        self.schema = schema
+    def bind_tools(self, tools, **kwargs):
+        self.schema = tools[0]
         self.structured = kwargs
         return self
 
@@ -31,8 +33,11 @@ class _Scripted:
             "model": self.kwargs.get("model"),
             "streaming": self.kwargs.get("streaming"),
         }
-        return self.schema(
-            tech_stack=10, experience_link=8, career_level=6, keyword=4, domain=2)
+        return AIMessage(content="", tool_calls=[{
+            "name": self.schema.__name__, "id": "call-fit",
+            "args": {"tech_stack": 10, "experience_link": 8, "career_level": 6,
+                     "keyword": 4, "domain": 2},
+        }])
 
 
 class _PlanDb:
@@ -62,11 +67,12 @@ async def test_judge_weights_five_dimensions_from_structured_output():
         [], ["Python"], "python service", "I use Python", "PRO",
         config=config, cls=_Scripted)
     assert set(_Scripted.last["schema"].model_fields) == _FIELDS
-    assert _Scripted.last["structured"]["method"] == "function_calling"
+    assert _Scripted.last["structured"]["tool_choice"] == "auto"
     assert _Scripted.last["streaming"] is False
     assert _Scripted.last["model"] == levers_for("PERSONAL", "PRO", config).model
     system = _Scripted.last["messages"][0].content
     assert "35" in system and "기술 스택" in system and "도메인" in system
+    assert "`FitDimensions` 도구를 한 번 호출" in system
     assert "python service" in _Scripted.last["messages"][1].content
     assert view["fitScore"] == 7.4
     assert view["plan"] == "PRO"

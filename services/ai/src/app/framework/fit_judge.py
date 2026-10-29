@@ -6,7 +6,7 @@ from app.config import Config
 from app.domain import entities as ent
 from app.domain.plan_levers import levers_for
 from app.domain.posting_fit import fit_inputs, fit_view, plan_name
-from app.framework.llm import AiUsageCallback, chat_model_for
+from app.framework.llm import AiUsageCallback, astructured_reply, chat_model_for
 
 _SYSTEM = (
     "채용 공고와 서류를 비교해 다섯 항목을 각각 0점에서 10점으로 매겨요. "
@@ -45,7 +45,6 @@ async def judge_fit(
     app_config = config or Config()
     levers = levers_for(who, tier, app_config)
     model = chat_model_for(levers, streaming=False, config=app_config, cls=cls)
-    runnable = model.with_structured_output(FitDimensions, method="function_calling")
     posting, document = fit_inputs(requirements, keywords, description, content)
     messages = [
         SystemMessage(content=_SYSTEM),
@@ -63,12 +62,13 @@ async def judge_fit(
         callback = AiUsageCallback(store, usage_user, usage_job, reservation_id)
         invoke["config"] = {"callbacks": [callback]}
     try:
-        raw = await runnable.ainvoke(messages, **invoke)
+        _raw, scores = await astructured_reply(model, FitDimensions, messages, **invoke)
     except BaseException:
         if owned is not None:
             await gate._release(owned)
         raise
-    scores = raw if isinstance(raw, FitDimensions) else FitDimensions.model_validate(raw)
+    if scores is None:
+        raise ValueError("fit judge returned an unreadable answer")
     label = tier if who == "EMPLOYER" and tier else plan_name(plan)
     return fit_view({
         "techStack": scores.tech_stack,
