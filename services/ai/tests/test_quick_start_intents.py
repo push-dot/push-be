@@ -44,7 +44,7 @@ async def _enter(intent: str, resume_state=None) -> tuple[dict, dict]:
 
 async def test_match_posting_enters_scenario_a():
     choice, saved = await _enter("match_posting")
-    assert choice["gate"] == "intake"
+    assert choice["gate"] == "output_targets"
     assert saved["status"] == "active"
     assert saved["phase"] == "intake"
     assert saved["scenario"] == "A"
@@ -69,7 +69,7 @@ async def test_gaps_enters_strategy_bottleneck():
 
 async def test_experience_enters_blueprint_mode():
     choice, saved = await _enter("experience")
-    assert choice["gate"] == "intake"
+    assert choice["gate"] == "output_targets"
     assert saved["phase"] == "intake"
     assert saved["work_mode"] == "experience_blueprint"
 
