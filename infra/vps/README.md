@@ -46,7 +46,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 | `INTERNAL_API_SECRET` | VPS, `push-be-python`, `push-be-core`, `push-be` |
 | `DISPATCH_SECRET` | VPS, `push-be-core` |
 | `ADMIN_TOKEN` | VPS 디스패처 `/admin/*` |
-| `BYOK_MASTER_KEY` | VPS, `push-be-python`, `push-be-core`. Google 연동 OAuth 토큰 암호화 키(이름만 예전 그대로) |
+| `TOKEN_ENCRYPTION_KEY` | VPS, `push-be-python`, `push-be-core`. Google 연동 OAuth 토큰 암호화 키 |
 | `OPENROUTER_API_KEY` | VPS, `push-be-python` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | VPS, `push-be-core` |
 | `GOOGLE_CLIENT_SECRET` | VPS, `push-be-core` |
@@ -99,7 +99,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | --- | --- |
 | 앱 비밀값(`DATABASE_URL`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `REDIS_PASSWORD`, API 키, OAuth·Stripe 비밀) | 발급처에서 새 값을 만든다 → GitHub 시크릿을 바꾼다 → 배포를 다시 실행한다. CI가 VPS `.env`와 세 Worker를 한 번에 바꾼다. 여러 곳이 같은 값을 쓰는 비밀은 배포하는 몇 분 동안 맞지 않을 수 있다 |
 | `DATABASE_URL` | Neon에서 역할 비밀번호를 재설정한다. 이전 값은 그 즉시 막힌다. 바로 위 방법으로 배포한다 |
-| `BYOK_MASTER_KEY` | 바꾸면 저장된 Google 연동 토큰을 복호화할 수 없다. 재암호화 마이그레이션 없이 바꾸지 않는다 |
+| `TOKEN_ENCRYPTION_KEY` | 값을 바꾸면 저장된 Google 연동 토큰을 복호화할 수 없다. 재암호화 마이그레이션 없이 값을 바꾸지 않는다 |
 | CI 배포 키 | `ssh-keygen -t ed25519 -C push-deploy-<날짜>`로 새 키를 만든다 → `keys/push-deploy.pub`를 바꾼다 → 콘솔에서 `harden.sh --deploy-key <새 .pub> --admin-key …`를 다시 실행한다(이전 키는 지워진다) → `VPS_SSH_KEY` 시크릿을 새 개인 키로 바꾼다 |
 | 관리자 키 | `harden.sh`를 새 `--admin-key`로 다시 실행한다. 빼면 그 키는 지워진다 |
 | VPS 재설치 | 새 VPS 준비를 처음부터 한다. 호스트 키가 바뀌므로 `VPS_SSH_HOST_KEY`도 바꾼다 |

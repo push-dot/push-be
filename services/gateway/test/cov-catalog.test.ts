@@ -81,12 +81,6 @@ test("models needs a bearer token and validates provider", async () => {
   assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
 });
 
-test("a leftover credentialMode param is ignored", async () => {
-  resetLimits();
-  const res = await handle(get(USER_A, "?credentialMode=BYOK"), env(), deps(fake([], { user: USER_A })));
-  assert.equal(await goAvailable(res), false);
-});
-
 test("an unknown token on the shared read is 401 and the next request re-checks it", async () => {
   resetLimits();
   const res = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" })));

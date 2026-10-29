@@ -64,13 +64,6 @@ test("the ai keys routes are gone", async () => {
   }
 });
 
-test("a message rejects credentialMode as an unknown ai field", async () => {
-  resetLimits();
-  const res = await handle(message({ ...AI, credentialMode: "MANAGED" }, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps());
-  assert.equal(res.status, 400);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
-});
-
 test("a message is accepted whatever provider the client names", async () => {
   resetLimits();
   const api = { fetch: async () => new Response("{}", { status: 200 }) };

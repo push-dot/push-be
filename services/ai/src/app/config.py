@@ -44,7 +44,7 @@ class Config:
     ai_base_url: str = "https://openrouter.ai/api/v1"
     opencode_go_key: str = ""
     opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
-    byok_master_key: str = ""
+    token_encryption_key: str = ""
     stripe_secret: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_pro: str = ""
@@ -90,7 +90,7 @@ def load_config() -> Config:
         opencode_go_key=os.environ.get("OPENCODE_GO_API_KEY", ""),
         opencode_go_base_url=env("OPENCODE_GO_BASE_URL",
                                  "https://opencode.ai/zen/go/v1"),
-        byok_master_key=os.environ.get("BYOK_MASTER_KEY", ""),
+        token_encryption_key=os.environ.get("TOKEN_ENCRYPTION_KEY", ""),
         stripe_secret=os.environ.get("STRIPE_SECRET_KEY", ""),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
         stripe_price_pro=os.environ.get("STRIPE_PRICE_PRO", ""),

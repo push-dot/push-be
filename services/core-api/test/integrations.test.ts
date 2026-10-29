@@ -45,7 +45,7 @@ test("google sync fetches gmail in parallel batches and writes every row in one 
   });
   const res = await handle(new Request("https://core.example/api/v1/integrations/google/sync", {
     method: "POST", headers: { authorization: "Bearer t", "idempotency-key": "00000000-0000-4000-8000-000000000002" },
-  }), { ...ENV, GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", BYOK_MASTER_KEY: master, GOOGLE_GMAIL_BETA_ENABLED: "true" }, { query, now: () => NOW, fetch: fetchImpl });
+  }), { ...ENV, GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", TOKEN_ENCRYPTION_KEY: master, GOOGLE_GMAIL_BETA_ENABLED: "true" }, { query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 202);
   assert.ok(peak > 1 && peak <= 10, `peak concurrency ${peak}`);
   const writes = calls.filter((c) => c.sql.includes("INSERT INTO google_messages"));
