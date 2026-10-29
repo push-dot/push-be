@@ -189,8 +189,18 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
 
     async def agent(state: HarnessState) -> dict:
         messages = list(state.get("messages") or [])
+        content = spec.prompt
+        if spec.id == "personal":
+            from app.harness.personal.reference import reference_lines
+            try:
+                lines = await reference_lines(
+                    db, state.get("user_id"), state.get("conversation_id"))
+            except Exception:
+                lines = []
+            if lines:
+                content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
         if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=spec.prompt), *messages]
+            messages = [SystemMessage(content=content), *messages]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))

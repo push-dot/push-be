@@ -171,3 +171,24 @@ def prompt_lines(samples: list[dict]) -> list[str]:
             f"수치 {metrics} 구체 {concrete} 연결 {linked}"
         )
     return lines
+
+
+def template_lines(samples: list[dict]) -> list[str]:
+    seen = set()
+    lines = []
+    for sample in samples:
+        key = (
+            sample.get("job_category"),
+            sample.get("tenure_years"),
+            sample.get("score_band"),
+        )
+        if key in seen:
+            continue
+        for item in sample.get("sentence_templates") or []:
+            text = str(item).strip()
+            if "{" not in text:
+                continue
+            seen.add(key)
+            lines.append(text)
+            break
+    return lines
