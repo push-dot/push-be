@@ -19,7 +19,7 @@ from app.harness.core_client import idempotency_key
 from app.harness.document_edits import env_core
 from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
-from app.harness.personal.tools import bound_services
+from app.harness.personal.tools import bound_services, start_document_choice_id
 from app.harness.registry import REGISTRY
 from app.harness.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
@@ -286,6 +286,17 @@ class HarnessRuntime:
         pending = _pending(await graph.aget_state(config))
         text = payload.get("text") or ""
         resume = payload.get("resume") or {}
+        if resume.get("approvalId") == start_document_choice_id(str(payload["conversation_id"])):
+            if resume.get("optionId") != "cancel":
+                return
+            if pending is None:
+                await self.svc.db.q().execute(
+                    "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",
+                    payload["conversation_id"],
+                    json.dumps({"status": "cancelled"}, ensure_ascii=False),
+                )
+                return
+            resume = {"approvalId": resume["approvalId"], "optionId": "cancel"}
         if resume.get("approvalId"):
             if pending is None:
                 return

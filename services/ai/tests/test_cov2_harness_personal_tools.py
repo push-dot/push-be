@@ -205,7 +205,8 @@ async def test_start_document_offers_a_choice_when_resume_json_is_active(emitted
     assert choice["gate"] == "start_document"
     assert [o["id"] for o in choice["options"]] == ["continue", "cancel"]
     assert emitted == [choice]
-    assert db.executed == []
+    assert any("INSERT INTO approvals" in sql for sql, _args in db.executed)
+    assert not any("resume_state" in sql for sql, _args in db.executed)
 
 
 @pytest.mark.parametrize("row", [
@@ -247,7 +248,8 @@ async def test_start_document_reads_resume_state_from_an_asyncpg_record(emitted)
     db = _ResumeDB(_Record({"resume_state": {"status": "active", "phase": "craft"}}))
     out = await _run("start_document", {}, ctx=_ctx(db=db))
     assert "choice" in out
-    assert db.executed == []
+    assert any("INSERT INTO approvals" in sql for sql, _args in db.executed)
+    assert not any("resume_state" in sql for sql, _args in db.executed)
 
 
 async def test_start_document_choice_survives_without_a_stream_writer():

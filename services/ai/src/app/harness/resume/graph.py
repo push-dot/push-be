@@ -35,28 +35,60 @@ _ARTIFACTS = {
     "present": "06_present.json",
 }
 _GATES = {
-    "mode_select": ("resume_based", [
-        {"id": "resume_based", "label": "이력서부터 쓸게요"},
-        {"id": "experience_blueprint", "label": "경험부터 정리할게요"},
-    ]),
-    "intake": ("ready", [
-        {"id": "ready", "label": "이 자료로 진행할게요"},
-        {"id": "C", "label": "시나리오 C로 갈게요"},
-    ]),
-    "analyze": ("continue", [{"id": "continue", "label": "전략으로 갈게요"}]),
-    "strategy": ("continue", [
-        {"id": "continue", "label": "초안 쓸게요"},
-        {"id": "2-B", "label": "피드백만 볼게요"},
-    ]),
-    "craft": ("continue", [{"id": "continue", "label": "검토할게요"}]),
-    "review": ("CLASSIC", [
-        {"id": "CLASSIC", "label": "클래식"},
-        {"id": "MODERN", "label": "모던"},
-        {"id": "COMPACT", "label": "컴팩트"},
-        {"id": "ATS", "label": "ATS"},
-    ]),
-    "publish": ("confirm", [{"id": "confirm", "label": "이대로 마무리할게요"}]),
-    "present": ("done", [{"id": "done", "label": "확인했어요"}]),
+    "mode_select": {
+        "title": "어떤 방식으로 진행할까요?",
+        "recommended": "resume_based",
+        "options": [
+            {"id": "resume_based", "label": "이력서부터 쓸게요"},
+            {"id": "experience_blueprint", "label": "경험부터 정리할게요"},
+        ],
+    },
+    "intake": {
+        "title": "입력을 확인했습니다. 분석을 시작할까요?",
+        "recommended": "ready",
+        "options": [
+            {"id": "ready", "label": "이 자료로 진행할게요"},
+            {"id": "C", "label": "시나리오 C로 갈게요"},
+        ],
+    },
+    "analyze": {
+        "title": "이 공고에 맞춰서 선택한 산출물을 수정할까요?",
+        "recommended": "continue",
+        "options": [{"id": "continue", "label": "전략으로 갈게요"}],
+    },
+    "strategy": {
+        "title": "전략대로 초안을 작성할까요?",
+        "recommended": "continue",
+        "options": [
+            {"id": "continue", "label": "초안 쓸게요"},
+            {"id": "2-B", "label": "피드백만 볼게요"},
+        ],
+    },
+    "craft": {
+        "title": "첫 번째 버전(v1) 초안입니다. 마음에 드시나요?",
+        "recommended": "continue",
+        "options": [{"id": "continue", "label": "검토할게요"}],
+    },
+    "review": {
+        "title": "검증 결과를 확인했습니다. 이제 디자인을 적용할까요?",
+        "recommended": "CLASSIC",
+        "options": [
+            {"id": "CLASSIC", "label": "클래식"},
+            {"id": "MODERN", "label": "모던"},
+            {"id": "COMPACT", "label": "컴팩트"},
+            {"id": "ATS", "label": "ATS"},
+        ],
+    },
+    "publish": {
+        "title": "디자인이 적용되었습니다. PDF로 출력할까요?",
+        "recommended": "confirm",
+        "options": [{"id": "confirm", "label": "이대로 마무리할게요"}],
+    },
+    "present": {
+        "title": "PDF 생성이 완료되었습니다. 최종 결과를 확인하시겠어요?",
+        "recommended": "done",
+        "options": [{"id": "done", "label": "확인했어요"}],
+    },
 }
 
 
@@ -118,7 +150,7 @@ def _cancelled(answer: dict) -> bool:
 
 
 def _choice(state: dict, phase: str, *, auto: bool) -> dict:
-    recommended, options = _GATES[phase]
+    gate = _GATES[phase]
     event = {
         "type": "choice",
         "id": str(uuid5(
@@ -126,10 +158,10 @@ def _choice(state: dict, phase: str, *, auto: bool) -> dict:
             f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}",
         )),
         "kind": "RESUME_GATE",
-        "title": phase,
+        "title": gate["title"],
         "gate": phase,
-        "recommended": recommended,
-        "options": [*options, {"id": "cancel", "label": "그만하기"}],
+        "recommended": gate["recommended"],
+        "options": [*gate["options"], {"id": "cancel", "label": "그만하기"}],
     }
     if auto:
         event["auto"] = True
@@ -311,7 +343,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         current = ResumeState.model_validate(state).model_dump()
         name = current["phase"]
         if not _must_stop(current, name):
-            recommended = _GATES[name][0]
+            recommended = _GATES[name]["recommended"]
             emit(_choice(current, name, auto=True))
             return _finish({**current, **_apply_answer(current, name, {"option_id": recommended})},
                            name, recommended)
@@ -331,7 +363,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             stayed["phase"] = "strategy" if str(answer["text"]).startswith("피드백만") else name
             stayed["status"] = "active"
             return stayed
-        option_id = str(answer.get("option_id") or _GATES[name][0])
+        option_id = str(answer.get("option_id") or _GATES[name]["recommended"])
         return _finish({**current, **_apply_answer(current, name, answer)}, name, option_id)
 
     def after_work(state: ResumeGraphState) -> str:

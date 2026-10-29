@@ -272,6 +272,9 @@ async def test_new_document_while_active_asks():
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "start_document")
 
     class DB:
+        def __init__(self):
+            self.wrote = []
+
         def q(self):
             return self
 
@@ -279,15 +282,43 @@ async def test_new_document_while_active_asks():
             return {"resume_state": {"status": "active", "phase": "intake"}}
 
         async def execute(self, sql, *args):
-            raise AssertionError("active flow must ask before reset")
+            if "resume_state" in sql:
+                raise AssertionError("active flow must ask before reset")
+            self.wrote.append(sql)
 
+    db = DB()
     result = await tool.run(ToolContext(
         user_id="user-1",
         company_id=None,
         conversation_id="conv-1",
         job_id="job-1",
         tool_call_id="call-1",
-        db=DB(),
+        db=db,
         core=CoreClient("http://core.test", "secret"),
     ), tool.args_model.model_validate({}))
     assert result["choice"]["options"][-1] == {"id": "cancel", "label": "그만하기"}
+    assert any("INSERT INTO approvals" in sql for sql in db.wrote)
+
+
+_GATE_QUESTIONS = {
+    "mode_select": "어떤 방식으로 진행할까요?",
+    "intake": "입력을 확인했습니다. 분석을 시작할까요?",
+    "analyze": "이 공고에 맞춰서 선택한 산출물을 수정할까요?",
+    "strategy": "전략대로 초안을 작성할까요?",
+    "craft": "첫 번째 버전(v1) 초안입니다. 마음에 드시나요?",
+    "review": "검증 결과를 확인했습니다. 이제 디자인을 적용할까요?",
+    "publish": "디자인이 적용되었습니다. PDF로 출력할까요?",
+    "present": "PDF 생성이 완료되었습니다. 최종 결과를 확인하시겠어요?",
+}
+
+
+async def test_gate_title_is_the_question():
+    graph = _graph(_Approvals())
+    seen = await _drive(graph, _config(), _base())
+    titles = {
+        event["gate"]: event["title"]
+        for events, snap in seen
+        for event in events
+        if event.get("type") == "choice" and snap.next
+    }
+    assert titles == _GATE_QUESTIONS
