@@ -6786,6 +6786,134 @@
         "x-owner": "ai"
       }
     },
+    "/api/v1/auth/apple/callback": {
+      "post": {
+        "description": "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+        "operationId": "postAuthAppleCallback",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "state"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to the app callback with ?code=",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Apple form_post callback",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/auth/apple/native": {
+      "post": {
+        "description": "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+        "operationId": "postAuthAppleNative",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "identityToken": {
+                    "type": "string"
+                  },
+                  "nonce": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "identityToken",
+                  "nonce"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/AuthTokens"
+                        },
+                        {
+                          "properties": {
+                            "expiresIn": {
+                              "type": "integer"
+                            },
+                            "pendingToken": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pendingToken",
+                            "expiresIn"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Apple native identity token",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/auth/email/login": {
       "post": {
         "description": "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.",
@@ -7089,7 +7217,7 @@
     },
     "/api/v1/auth/exchange": {
       "post": {
-        "description": "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
+        "description": "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
         "operationId": "postAuthExchange",
         "requestBody": {
           "content": {
@@ -7513,7 +7641,7 @@
     },
     "/api/v1/auth/{provider}/callback": {
       "get": {
-        "description": "Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.",
+        "description": "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
         "operationId": "getAuthByProviderCallback",
         "parameters": [
           {
@@ -7523,7 +7651,8 @@
             "schema": {
               "enum": [
                 "google",
-                "github"
+                "github",
+                "apple"
               ],
               "type": "string"
             }
@@ -7570,7 +7699,7 @@
     },
     "/api/v1/auth/{provider}/start": {
       "get": {
-        "description": "Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+        "description": "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
         "operationId": "getAuthByProviderStart",
         "parameters": [
           {
@@ -7580,7 +7709,8 @@
             "schema": {
               "enum": [
                 "google",
-                "github"
+                "github",
+                "apple"
               ],
               "type": "string"
             }

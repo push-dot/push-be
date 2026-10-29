@@ -194,6 +194,10 @@ uv run pywrangler secret put OPENROUTER_API_KEY
 | `PHONE_CODE_TTL_SEC` | 인증번호 유효 시간(초). 비우면 180 |
 | `PHONE_CODE_MAX_ATTEMPTS` | 틀린 횟수 한도. 비우면 5 |
 | `PENDING_SIGNUP_SECRET` | 개인 소셜 첫 로그인의 가입 대기 토큰 HMAC. 비우면 그 경로는 503. 토큰에는 넣지 않는다 |
+| `APPLE_TEAM_ID`, `APPLE_KEY_ID` | Apple 로그인. Sign in with Apple 팀 ID와 Key ID |
+| `APPLE_CLIENT_ID` | 웹·Android Services ID. 비우면 Apple 웹 로그인은 503 |
+| `APPLE_BUNDLE_ID` | iOS identity token의 aud. 영수증 검증과 같은 번들 ID. 비우면 네이티브 로그인은 503 |
+| `APPLE_PRIVATE_KEY` | Sign in with Apple .p8 PEM. 줄바꿈은 `\n`으로 넣어도 된다. 키 파일은 커밋하지 않는다 |
 | `MAIL_FROM` | 이메일 발신 주소. 운영 값은 `Push <no-reply@push.mail.devcyjoon.tech>`. 비우면 로컬 로거는 `noreply@push.local` |
 | `RESEND_API_KEY` | 키가 있으면 운영 메일은 Resend로 보낸다. 키가 없고 EMAIL 바인딩이 있으면 그 바인딩으로 보낸다. 둘 다 없으면 로컬 로거를 쓴다 |
 | `EXPO_ACCESS_TOKEN` | 있으면 알림을 Expo Push로 `user_devices`에 보낸다. 없으면 푸시는 보내지 않는다 |

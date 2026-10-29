@@ -290,6 +290,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/apple/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apple form_post callback
+         * @description Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.
+         */
+        post: operations["postAuthAppleCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/apple/native": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apple native identity token
+         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.
+         */
+        post: operations["postAuthAppleNative"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/email/login": {
         parameters: {
             query?: never;
@@ -398,7 +438,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange OAuth code for tokens
-         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
+         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
          */
         post: operations["postAuthExchange"];
         delete?: never;
@@ -513,7 +553,7 @@ export interface paths {
         };
         /**
          * OAuth provider callback
-         * @description Called by the provider. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange.
+         * @description Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.
          */
         get: operations["getAuthByProviderCallback"];
         put?: never;
@@ -533,7 +573,7 @@ export interface paths {
         };
         /**
          * Start OAuth login
-         * @description Returns the provider authorization URL. GitHub does not allow accountType=EMPLOYER. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
+         * @description Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
          */
         get: operations["getAuthByProviderStart"];
         put?: never;
@@ -4998,6 +5038,67 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postAuthAppleCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    code: string;
+                    state: string;
+                    user?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Redirect to the app callback with ?code= */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthAppleNative: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    identityToken: string;
+                    nonce: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuthTokens"] | {
+                            expiresIn: number;
+                            pendingToken: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postAuthEmailLogin: {
         parameters: {
             query?: never;
@@ -5362,7 +5463,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                provider: "google" | "github";
+                provider: "google" | "github" | "apple";
             };
             cookie?: never;
         };
@@ -5391,7 +5492,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                provider: "google" | "github";
+                provider: "google" | "github" | "apple";
             };
             cookie?: never;
         };
