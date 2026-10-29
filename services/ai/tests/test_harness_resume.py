@@ -14,7 +14,8 @@ from app.harness.tools import ToolContext
 from app.harness.core_client import CoreClient
 
 _ORDER = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+    "mode_select", "output_targets", "tone", "intake",
+    "analyze", "strategy", "craft", "review", "publish", "present",
 )
 
 
@@ -86,7 +87,7 @@ async def _drive(graph, config, first):
     posted = []
     seen = []
     payload = first
-    for _ in range(16):
+    for _ in range(24):
         events = []
         async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
             if mode == "custom" and isinstance(chunk, dict):
@@ -124,6 +125,39 @@ def test_blueprint_prompt_includes_experience_blueprints():
     text = phase_prompt_for_harness("blueprints")
     assert "최소 2개의 질문" in text
     assert "최소 2개의 질문" not in phase_prompt_for_harness("strategy")
+
+
+def test_phase_nodes_cover_p0_through_p6():
+    graph = _graph(_Approvals())
+    names = set(graph.nodes)
+    assert {
+        "p0_mode", "g0", "p0i_intake", "g_output_targets", "g_tone", "g_intake",
+        "p1_analyze", "g1", "p2_strategy", "g2", "p3_craft", "g3", "p3c_boost",
+        "p4a_review", "g4a", "p5_publish", "g5", "p6_present", "g6",
+    } <= names
+
+
+async def test_two_targets_produce_two_finals_and_two_pdfs():
+    db = _Approvals()
+    graph = _graph(db, model=_PhaseModel({"publish": {"markdown": "# 서류"}}))
+    config = _config()
+    await _run(graph, _base(phase="publish", output_targets=["resume", "portfolio"]), config)
+    snap = await graph.aget_state(config)
+    assert "05_final_resume.md" in snap.values["artifacts"]
+    assert "05_final_portfolio.md" in snap.values["artifacts"]
+    assert "05_final_resume.pdf" in db.files
+    assert "05_final_portfolio.pdf" in db.files
+
+
+async def test_output_targets_gate_keeps_option_ids():
+    graph = _graph(_Approvals())
+    config = _config()
+    await _run(graph, _base(), config)
+    await _run(graph, Command(resume={"option_id": "resume_based"}), config)
+    await _run(graph, {}, config)
+    await _run(graph, Command(resume={"option_ids": ["portfolio", "resume"]}), config)
+    snap = await graph.aget_state(config)
+    assert snap.values["output_targets"] == ["portfolio", "resume"]
 
 
 async def test_stops_at_every_gate_in_auto():
@@ -302,6 +336,8 @@ async def test_new_document_while_active_asks():
 
 _GATE_QUESTIONS = {
     "mode_select": "어떤 방식으로 진행할까요?",
+    "output_targets": "어떤 산출물을 만들까요?",
+    "tone": "어떤 말투로 쓸까요?",
     "intake": "입력한 자료를 확인했어요. 분석을 시작할까요?",
     "analyze": "이 공고에 맞춰 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",

@@ -18,6 +18,8 @@ class ResumeState(BaseModel):
     drafts: dict = Field(default_factory=dict)
     review: dict = Field(default_factory=dict)
     artifacts: dict[str, str] = Field(default_factory=dict)
+    output_targets: list[str] = Field(default_factory=list)
+    tone: str | None = None
     warnings: list[str] = Field(default_factory=list)
     access_mode: str = "AUTO"
     conversation_id: str = ""

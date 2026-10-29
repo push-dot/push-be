@@ -84,8 +84,16 @@ def _state(payload: dict, conversation: dict) -> dict:
 
 _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
-    "drafts", "review", "artifacts", "warnings",
+    "drafts", "review", "artifacts", "output_targets", "tone", "warnings",
 )
+
+
+def _gate_answer(resume: dict) -> dict:
+    answer = {"option_id": resume.get("optionId")}
+    ids = resume.get("optionIds")
+    if isinstance(ids, list) and ids:
+        answer["option_ids"] = [str(item) for item in ids]
+    return answer
 
 
 async def _turn_inputs(payload: dict) -> dict:
@@ -259,7 +267,7 @@ class HarnessRuntime:
         if resume.get("approvalId"):
             if waiting is None:
                 return
-            state = Command(resume={"option_id": resume.get("optionId")})
+            state = Command(resume=_gate_answer(resume))
         elif waiting is not None and waiting.get("kind") == "RESUME_GATE" and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await _turn_inputs(payload)})

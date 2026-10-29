@@ -14,10 +14,11 @@ from typing_extensions import TypedDict
 from app.framework.models import _content
 from app.graphs.chat_surface import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
-from app.harness.policy import Tier
+from app.harness.personal.resume.boost import boost_cycle
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
+from app.harness.policy import Tier
 from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
@@ -28,12 +29,9 @@ _ORDER = (
 _SKIP_C = {"strategy", "craft"}
 _ARTIFACTS = {
     "analyze": "01_parsed_resume.json",
-    "strategy": "02_strategy.json",
-    "craft": "03_draft.md",
-    "review": "04_review.json",
-    "publish": "05_final_resume.md",
     "present": "06_present.json",
 }
+_TARGET_IDS = ("resume", "portfolio", "cover_letter")
 _GATES = {
     "mode_select": {
         "title": "어떤 방식으로 진행할까요?",
@@ -41,6 +39,28 @@ _GATES = {
         "options": [
             {"id": "resume_based", "label": "이력서부터 쓸게요"},
             {"id": "experience_blueprint", "label": "경험부터 정리할게요"},
+        ],
+    },
+    "output_targets": {
+        "title": "어떤 산출물을 만들까요?",
+        "recommended": "resume",
+        "multiple": True,
+        "options": [
+            {"id": "resume", "label": "이력서"},
+            {"id": "portfolio", "label": "포트폴리오"},
+            {"id": "cover_letter", "label": "자기소개서"},
+        ],
+    },
+    "tone": {
+        "title": "어떤 말투로 쓸까요?",
+        "recommended": "preserve",
+        "options": [
+            {"id": "professional", "label": "전문적으로"},
+            {"id": "confident", "label": "자신 있게"},
+            {"id": "concise", "label": "짧게"},
+            {"id": "technical", "label": "기술 중심으로"},
+            {"id": "collaborative", "label": "협업 중심으로"},
+            {"id": "preserve", "label": "원래 말투로"},
         ],
     },
     "intake": {
@@ -103,8 +123,11 @@ class ResumeGraphState(TypedDict, total=False):
     drafts: dict
     review: dict
     artifacts: dict
+    output_targets: list
+    tone: str | None
     warnings: list
     access_mode: str
+    goto: str
     conversation_id: str
     user_id: str
     job_id: str
@@ -163,6 +186,8 @@ def _choice(state: dict, phase: str, *, auto: bool) -> dict:
         "recommended": gate["recommended"],
         "options": [*gate["options"], {"id": "cancel", "label": "그만하기"}],
     }
+    if gate.get("multiple"):
+        event["multiple"] = True
     if auto:
         event["auto"] = True
     return event
@@ -196,11 +221,37 @@ def _context(db, state: dict) -> ToolContext:
         core=bound_core.get(), inputs=dict(state.get("inputs") or {}))
 
 
+def _targets(state: dict) -> list[str]:
+    picked = [str(item) for item in (state.get("output_targets") or []) if str(item) in _TARGET_IDS]
+    return picked or ["resume"]
+
+
+def _bodies(phase: str, state: dict, output: dict) -> list[tuple[str, str]]:
+    if phase == "craft":
+        version = int(state.get("draft_version") or 1)
+        body = _artifact_body(f"03_draft_resume_v{version}.md", output)
+        return [(f"03_draft_{target}_v{version}.md", body) for target in _targets(state)]
+    if phase == "publish":
+        body = _artifact_body("05_final_resume.md", output)
+        return [(f"05_final_{target}.md", body) for target in _targets(state)]
+    if phase == "strategy":
+        return [
+            ("02_strategy.json", _artifact_body("02_strategy.json", output)),
+            ("02_fit_score.json", json.dumps({"fit": output.get("fit")}, ensure_ascii=False)),
+        ]
+    if phase == "review":
+        return [("04_review_report.json", _artifact_body("04_review_report.json", output))]
+    name = _ARTIFACTS.get(phase)
+    if not name:
+        return []
+    return [(name, _artifact_body(name, output))]
+
+
 async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     artifacts = dict(state.get("artifacts") or {})
-    name = _ARTIFACTS.get(phase)
-    if name:
-        artifacts[name] = await save_artifact(_context(db, state), name, _artifact_body(name, output))
+    ctx = _context(db, state)
+    for name, body in _bodies(phase, state, output):
+        artifacts[name] = await save_artifact(ctx, name, body)
     bucket = {
         "analyze": "analysis",
         "strategy": "strategy",
@@ -213,6 +264,15 @@ async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     return update
 
 
+def _option_ids(answer: dict) -> list[str]:
+    raw = answer.get("option_ids")
+    if raw is None:
+        raw = answer.get("optionIds")
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item)]
+
+
 def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
     update: dict = {}
     option_id = answer.get("option_id")
@@ -220,6 +280,14 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
         update["work_mode"] = option_id
     if phase == "intake" and option_id == "C":
         update["scenario"] = "C"
+    if phase == "output_targets":
+        picked = [item for item in _option_ids(answer) if item in _TARGET_IDS]
+        if not picked and option_id in _TARGET_IDS:
+            picked = [str(option_id)]
+        if picked:
+            update["output_targets"] = picked
+    if phase == "tone" and option_id:
+        update["tone"] = str(option_id)
     if option_id == "2-B" or str(answer.get("text") or "").startswith("피드백만"):
         update["strategy"] = {**(state.get("strategy") or {}), "branch": "2-B"}
     text = answer.get("text")
@@ -318,63 +386,168 @@ _PHASE_DONE = {
 }
 
 
-def _finish(merged: dict, name: str, option_id: str) -> dict:
-    update = _apply_answer(merged, name, {"option_id": option_id})
-    nxt = _next_phase({**merged, **update}, name)
+_GATE_PHASE = {
+    "output_targets": "intake",
+    "tone": "intake",
+}
+_INTAKE_NEXT = {
+    "output_targets": "g_tone",
+    "tone": "g_intake",
+}
+_EXITS = {
+    "end": END,
+    "g_tone": "g_tone",
+    "g_intake": "g_intake",
+    "p3c_boost": "p3c_boost",
+}
+
+
+def _auto_answer(gate_id: str) -> dict:
+    recommended = _GATES[gate_id]["recommended"]
+    if _GATES[gate_id].get("multiple"):
+        return {"option_id": recommended, "option_ids": [recommended]}
+    return {"option_id": recommended}
+
+
+def _advance(merged: dict, gate_id: str, update: dict) -> dict:
+    if gate_id in _INTAKE_NEXT:
+        return {**update, "status": "active", "phase": "intake", "goto": _INTAKE_NEXT[gate_id]}
+    phase = _GATE_PHASE.get(gate_id, gate_id)
+    nxt = _next_phase(merged, phase)
     if nxt is None:
-        return {**update, "status": "done", "phase": "present"}
-    return {**update, "status": "active", "phase": nxt}
+        return {**update, "status": "done", "phase": "present", "goto": "end"}
+    landed = {**update, "status": "active", "phase": nxt, "goto": "end"}
+    if gate_id == "craft" and nxt == "review":
+        landed["goto"] = "p3c_boost"
+    return landed
 
 
 def build_resume_graph(checkpointer, *, model=None, db=None):
-    async def work(state: ResumeGraphState) -> dict:
-        current = ResumeState.model_validate(state).model_dump()
-        name = current["phase"]
-        output = await _output(turn_model.get() or model, name, current, _context(db, current))
-        stored = await _store_output(db, current, name, output)
-        reply = _reply(name, output)
-        emit({"token": reply})
-        stored = {**stored, "reply": reply, "reply_job": current["job_id"]}
-        retries = int((current.get("strategy") or {}).get("retries") or 0)
-        if name == "strategy" and output.get("valid") is False and retries < 2:
-            stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
-            return {**stored, "phase": "strategy", "status": "active", "retry": True}
-        return {**stored, "retry": False}
+    def current_of(state: ResumeGraphState) -> dict:
+        return ResumeState.model_validate(state).model_dump()
 
-    async def gate(state: ResumeGraphState) -> dict:
-        current = ResumeState.model_validate(state).model_dump()
-        name = current["phase"]
-        if not _must_stop(current, name):
-            recommended = _GATES[name]["recommended"]
-            emit(_choice(current, name, auto=True))
-            return _finish({**current, **_apply_answer(current, name, {"option_id": recommended})},
-                           name, recommended)
-        event = _choice(current, name, auto=False)
-        if await _save_choice(db, current, event):
-            emit(event)
-        answer = interrupt({
-            "approval_id": event["id"],
-            "awaiting": "choice",
-            "kind": "RESUME_GATE",
-            "gate": name,
-        }) or {}
-        if _cancelled(answer):
-            return {"status": "cancelled", "phase": name}
-        if answer.get("text") and not answer.get("option_id"):
-            stayed = _apply_answer(current, name, answer)
-            stayed["phase"] = "strategy" if str(answer["text"]).startswith("피드백만") else name
-            stayed["status"] = "active"
-            return stayed
-        option_id = str(answer.get("option_id") or _GATES[name]["recommended"])
-        return _finish({**current, **_apply_answer(current, name, answer)}, name, option_id)
+    def work_node(phase: str):
+        async def node(state: ResumeGraphState) -> dict:
+            current = {**current_of(state), "phase": phase}
+            output = await _output(turn_model.get() or model, phase, current, _context(db, current))
+            stored = await _store_output(db, current, phase, output)
+            reply = _reply(phase, output)
+            emit({"token": reply})
+            stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
+            retries = int((current.get("strategy") or {}).get("retries") or 0)
+            if phase == "strategy" and output.get("valid") is False and retries < 2:
+                stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
+                return {**stored, "phase": "strategy", "status": "active", "retry": True}
+            return stored
+        return node
 
-    def after_work(state: ResumeGraphState) -> str:
-        return "end" if state.get("retry") else "gate"
+    async def accepted(current: dict, gate_id: str, answer: dict) -> dict:
+        update = _apply_answer(current, gate_id, answer)
+        merged = {**current, **update}
+        if gate_id == "intake":
+            artifacts = dict(merged.get("artifacts") or {})
+            body = json.dumps({
+                "work_mode": merged.get("work_mode"),
+                "output_targets": _targets(merged),
+                "tone": merged.get("tone"),
+            }, ensure_ascii=False, indent=2)
+            artifacts["01_scenario.json"] = await save_artifact(
+                _context(db, merged), "01_scenario.json", body)
+            update["artifacts"] = artifacts
+            merged = {**merged, "artifacts": artifacts}
+        return _advance(merged, gate_id, update)
+
+    def gate_node(gate_id: str):
+        async def node(state: ResumeGraphState) -> dict:
+            current = current_of(state)
+            if not _must_stop(current, gate_id):
+                if gate_id not in _INTAKE_NEXT:
+                    emit(_choice(current, gate_id, auto=True))
+                return await accepted(current, gate_id, _auto_answer(gate_id))
+            event = _choice(current, gate_id, auto=False)
+            if await _save_choice(db, current, event):
+                emit(event)
+            answer = interrupt({
+                "approval_id": event["id"],
+                "awaiting": "choice",
+                "kind": "RESUME_GATE",
+                "gate": gate_id,
+            }) or {}
+            if _cancelled(answer):
+                return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if answer.get("text") and not answer.get("option_id") and not _option_ids(answer):
+                stayed = _apply_answer(current, gate_id, answer)
+                text = str(answer["text"])
+                stayed["phase"] = "strategy" if text.startswith("피드백만") else current["phase"]
+                stayed["status"] = "active"
+                stayed["goto"] = "end"
+                return stayed
+            if not answer.get("option_id") and not _option_ids(answer):
+                answer = {**answer, **_auto_answer(gate_id)}
+            return await accepted(current, gate_id, answer)
+        return node
+
+    async def boost(state: ResumeGraphState) -> dict:
+        extra = boost_cycle(dict(state)) or {}
+        if not isinstance(extra, dict):
+            extra = {}
+        skipped = {"phase", "status", "goto"}
+        kept = {key: value for key, value in extra.items() if key not in skipped}
+        return {**kept, "phase": state.get("phase") or "review", "status": "active", "goto": "end"}
+
+    def route_phase(state: ResumeGraphState) -> str:
+        return {
+            "mode_select": "p0_mode",
+            "intake": "p0i_intake",
+            "analyze": "p1_analyze",
+            "strategy": "p2_strategy",
+            "craft": "p3_craft",
+            "review": "p4a_review",
+            "publish": "p5_publish",
+            "present": "p6_present",
+        }.get(state.get("phase") or "mode_select", "p0_mode")
+
+    def route_goto(state: ResumeGraphState) -> str:
+        return state.get("goto") or "end"
+
+    def after_strategy(state: ResumeGraphState) -> str:
+        return "end" if state.get("retry") else "g2"
 
     graph = StateGraph(ResumeGraphState)
-    graph.add_node("work", work)
-    graph.add_node("gate", gate)
-    graph.add_edge(START, "work")
-    graph.add_conditional_edges("work", after_work, {"gate": "gate", "end": END})
-    graph.add_edge("gate", END)
+    graph.add_node("p0_mode", work_node("mode_select"))
+    graph.add_node("g0", gate_node("mode_select"))
+    graph.add_node("p0i_intake", work_node("intake"))
+    graph.add_node("g_output_targets", gate_node("output_targets"))
+    graph.add_node("g_tone", gate_node("tone"))
+    graph.add_node("g_intake", gate_node("intake"))
+    graph.add_node("p1_analyze", work_node("analyze"))
+    graph.add_node("g1", gate_node("analyze"))
+    graph.add_node("p2_strategy", work_node("strategy"))
+    graph.add_node("g2", gate_node("strategy"))
+    graph.add_node("p3_craft", work_node("craft"))
+    graph.add_node("g3", gate_node("craft"))
+    graph.add_node("p3c_boost", boost)
+    graph.add_node("p4a_review", work_node("review"))
+    graph.add_node("g4a", gate_node("review"))
+    graph.add_node("p5_publish", work_node("publish"))
+    graph.add_node("g5", gate_node("publish"))
+    graph.add_node("p6_present", work_node("present"))
+    graph.add_node("g6", gate_node("present"))
+    graph.add_conditional_edges(START, route_phase, {name: name for name in (
+        "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p3_craft",
+        "p4a_review", "p5_publish", "p6_present",
+    )})
+    graph.add_edge("p0_mode", "g0")
+    graph.add_edge("p0i_intake", "g_output_targets")
+    graph.add_edge("p1_analyze", "g1")
+    graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
+    graph.add_edge("p3_craft", "g3")
+    graph.add_edge("p4a_review", "g4a")
+    graph.add_edge("p5_publish", "g5")
+    graph.add_edge("p6_present", "g6")
+    graph.add_edge("p3c_boost", END)
+    for name in (
+        "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g2", "g3", "g4a", "g5", "g6",
+    ):
+        graph.add_conditional_edges(name, route_goto, _EXITS)
     return graph.compile(checkpointer=checkpointer)
