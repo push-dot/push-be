@@ -17,3 +17,15 @@ def structured_generate(model):
         return result if isinstance(result, schema) else schema.model_validate(result)
 
     return generate
+
+
+def gate_generate(model):
+    """``generate`` over the turn's GateModel, so structured calls share the turn's metering."""
+    structured = getattr(model, "astructured", None)
+    if structured is None:
+        return structured_generate(model)
+
+    async def generate(schema, system: str, user: str):
+        return await structured(schema, [SystemMessage(content=system), HumanMessage(content=user)])
+
+    return generate

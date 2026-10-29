@@ -177,3 +177,40 @@ EMPLOYER_TOOLS = [
           lambda _args: "/api/v1/posts", write=True,
           body_of=lambda args: args.model_dump()),
 ]
+
+
+class StartPostingArgs(BaseModel):
+    reference_posting_id: UUID | None = None
+
+
+class ApplicationArgs(BaseModel):
+    application_id: UUID
+
+
+def _enter(name: str, **flow):
+    from app.harness.graph import enter_flow
+
+    return enter_flow(f"{name}_flow", flow={"name": name, "step": "start", **flow})
+
+
+async def _start_posting(_ctx: ToolContext, args: StartPostingArgs):
+    ref = str(args.reference_posting_id) if args.reference_posting_id else None
+    return _enter("posting", reference_posting_id=ref)
+
+
+async def _review_applicant(_ctx: ToolContext, args: ApplicationArgs):
+    return _enter("review", application_id=str(args.application_id))
+
+
+async def _prepare_interview(_ctx: ToolContext, args: ApplicationArgs):
+    return _enter("interview", application_id=str(args.application_id))
+
+
+EMPLOYER_TOOLS += [
+    ToolSpec("start_posting", Tier.SAFE_WRITE, StartPostingArgs, _start_posting,
+             lambda _args: "회사를 조사하고 공고 초안을 함께 만들어요"),
+    ToolSpec("review_applicant", Tier.READ, ApplicationArgs, _review_applicant,
+             lambda _args: "지원자 서류에서 면접 때 확인할 부분을 찾아요"),
+    ToolSpec("prepare_interview", Tier.READ, ApplicationArgs, _prepare_interview,
+             lambda _args: "서류 검토 결과로 검증 면접 질문을 만들어요"),
+]
