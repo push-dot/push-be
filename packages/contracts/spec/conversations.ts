@@ -159,7 +159,10 @@ const postMessageBody = body(obj({
     models: { type: "object", additionalProperties: true },
   }, ["provider", "model"])),
   accessMode: { ...enumOf("ALWAYS_ASK", "AUTO", "BYPASS", "SUGGEST", "CONFIRM_ACTIONS"), description: "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting" },
-  intent: enumOf("posting", "review", "interview", "general"),
+  intent: enumOf(
+    "posting", "review", "interview", "general",
+    "match_posting", "fit", "gaps", "experience", "boost",
+  ),
   applicationId: nullable(uuid),
 }, ["text"]));
 

@@ -6734,7 +6734,7 @@ export interface operations {
                         versionId?: string | null;
                     };
                     /** @enum {string} */
-                    intent?: "posting" | "review" | "interview" | "general";
+                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost";
                     text: string;
                 };
             };
@@ -6817,7 +6817,7 @@ export interface operations {
                         versionId?: string | null;
                     };
                     /** @enum {string} */
-                    intent?: "posting" | "review" | "interview" | "general";
+                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost";
                     text: string;
                 };
             };

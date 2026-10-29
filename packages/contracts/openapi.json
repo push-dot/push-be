@@ -10540,7 +10540,12 @@
                       "posting",
                       "review",
                       "interview",
-                      "general"
+                      "general",
+                      "match_posting",
+                      "fit",
+                      "gaps",
+                      "experience",
+                      "boost"
                     ],
                     "type": "string"
                   },
@@ -10799,7 +10804,12 @@
                       "posting",
                       "review",
                       "interview",
-                      "general"
+                      "general",
+                      "match_posting",
+                      "fit",
+                      "gaps",
+                      "experience",
+                      "boost"
                     ],
                     "type": "string"
                   },
