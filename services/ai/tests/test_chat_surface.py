@@ -37,7 +37,10 @@ def _rich() -> dict:
         "confirm_before_edit": True,
         "fit": {
             "score": 7.4,
-            "parts": {"techStack": 80, "experienceLink": 55, "keyword": 40},
+            "parts": {
+                "techStack": 8, "experienceLink": 5.5, "careerLevel": 6,
+                "keyword": 4, "domain": 3,
+            },
             "topGap": "no tests",
         },
         "choice": {
@@ -70,7 +73,10 @@ def test_rich_state_returns_tool_todo_diff_approval_fit_and_choice():
     UUID(approval["id"])
     assert events[4] == {
         "type": "fit", "score": 7.4, "topGap": "no tests",
-        "parts": {"techStack": 80, "experienceLink": 55, "keyword": 40}}
+        "parts": {
+            "techStack": 8, "experienceLink": 5.5, "careerLevel": 6,
+            "keyword": 4, "domain": 3,
+        }}
     assert events[5] == {
         "type": "choice", "id": "choice-1",
         "options": [{"id": "a", "label": "Keep"}, {"id": "b", "label": "Drop"}]}
@@ -295,7 +301,10 @@ async def test_persist_inserts_before_the_approval_event():
             },
             "fit": {
                 "score": 7.4,
-                "parts": {"techStack": 80, "experienceLink": 55, "keyword": 40},
+                "parts": {
+                    "techStack": 8, "experienceLink": 5.5, "careerLevel": 6,
+                    "keyword": 4, "domain": 3,
+                },
                 "topGap": "no tests",
             },
         })
@@ -355,7 +364,10 @@ async def test_persist_inserts_approval_and_skips_the_diff_when_confirm_is_absen
         },
         "fit": {
             "score": 7.4,
-            "parts": {"techStack": 80, "experienceLink": 55, "keyword": 40},
+            "parts": {
+                "techStack": 8, "experienceLink": 5.5, "careerLevel": 6,
+                "keyword": 4, "domain": 3,
+            },
             "topGap": "no tests",
         },
     }

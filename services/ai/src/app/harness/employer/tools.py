@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from app.domain.posting_fit import compute_fit
+from app.framework.fit_judge import judge_fit
 from app.harness.core_client import idempotency_key
 from app.harness.policy import Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
@@ -131,10 +131,25 @@ def _kept(args, drop: set[str]) -> dict:
     return {key: value for key, value in body.items() if value not in ("", None, [])}
 
 
-async def _fit(_ctx: ToolContext, args: FitArgs) -> dict:
-    return compute_fit(
-        args.requirements, args.keywords, args.description,
-        args.document_id or UUID(int=0), args.content, "FREE")
+async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
+    from app.domain.employer_chat import current_employer_plan
+    from app.harness.personal.tools import current_ai_gate
+    from app.infrastructure.posting_fit_cache import company_posting
+
+    if ctx is None or ctx.db is None or args.posting_id is None:
+        return {"error": "NOT_FOUND"}
+    try:
+        company_id = UUID(str(ctx.company_id))
+        user_id = UUID(str(ctx.user_id))
+    except (TypeError, ValueError):
+        return {"error": "NOT_FOUND"}
+    row = await company_posting(ctx.db.q(), args.posting_id, company_id)
+    if row is None:
+        return {"error": "NOT_FOUND"}
+    return await judge_fit(
+        row["requirements"], row["skills"], row["description"], args.content,
+        current_employer_plan(), audience="EMPLOYER",
+        gate=current_ai_gate(), job_id=ctx.job_id or None, user_id=user_id)
 
 
 EMPLOYER_TOOLS = [

@@ -160,14 +160,15 @@ class AIGate:
             raise not_configured("managed AI is not configured")
 
     async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
-                       system: str, user: str, job_id=None) -> Optional[UUID]:
+                       system: str, user: str, job_id=None,
+                       purpose: str = "chat") -> UUID | None:
         if queue_backend() == "redis":
             if not job_id:
                 return None
             now = _now()
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
-                id=usage_row_id(job_id, "chat"), user_id=user_id,
+                id=usage_row_id(job_id, purpose), user_id=user_id,
                 provider="OPENAI", model=ai.model,
                 managed=True, input_tokens=est_in, output_tokens=2048,
                 cost_micro_credits=ent.ai_cost_micro_credits(
@@ -191,7 +192,7 @@ class AIGate:
                     "monthly managed AI usage limit reached for plan " + (u.plan or ent.PLAN_FREE))
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
-                id=usage_row_id(job_id, "chat"), user_id=user_id,
+                id=usage_row_id(job_id, purpose), user_id=user_id,
                 provider="OPENAI", model=ai.model,
                 managed=True, input_tokens=est_in, output_tokens=2048,
                 cost_micro_credits=ent.ai_cost_micro_credits(

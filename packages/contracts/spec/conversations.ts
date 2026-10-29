@@ -66,7 +66,13 @@ const chatEvents: Record<string, Schema> = {
   fit: obj({
     type: enumOf("fit"),
     score: num,
-    parts: obj({ techStack: int, experienceLink: int, keyword: int }),
+    parts: obj({
+      techStack: num,
+      experienceLink: num,
+      careerLevel: num,
+      keyword: num,
+      domain: num,
+    }),
     topGap: str,
     seq,
   }),

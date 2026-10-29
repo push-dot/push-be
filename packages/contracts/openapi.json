@@ -11240,20 +11240,28 @@
                 "properties": {
                   "parts": {
                     "properties": {
+                      "careerLevel": {
+                        "type": "number"
+                      },
+                      "domain": {
+                        "type": "number"
+                      },
                       "experienceLink": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "keyword": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "techStack": {
-                        "type": "integer"
+                        "type": "number"
                       }
                     },
                     "required": [
                       "techStack",
                       "experienceLink",
-                      "keyword"
+                      "careerLevel",
+                      "keyword",
+                      "domain"
                     ],
                     "type": "object"
                   },
@@ -12168,20 +12176,28 @@
                 "properties": {
                   "parts": {
                     "properties": {
+                      "careerLevel": {
+                        "type": "number"
+                      },
+                      "domain": {
+                        "type": "number"
+                      },
                       "experienceLink": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "keyword": {
-                        "type": "integer"
+                        "type": "number"
                       },
                       "techStack": {
-                        "type": "integer"
+                        "type": "number"
                       }
                     },
                     "required": [
                       "techStack",
                       "experienceLink",
-                      "keyword"
+                      "careerLevel",
+                      "keyword",
+                      "domain"
                     ],
                     "type": "object"
                   },
