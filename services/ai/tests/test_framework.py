@@ -24,6 +24,7 @@ def _now():
 
 
 def _legacy_env(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     for name in (
         "app.framework.rag.use_langchain",
         "app.framework.prompts.use_langchain",
@@ -310,6 +311,7 @@ async def test_legacy_collect_indexes_and_formats(monkeypatch):
 
 async def test_langchain_collect_uses_the_tool_and_swallows_index_errors(
         monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     from app.framework.rag import collect_evidence
     from app.framework import tools as tools_mod
     user_id = uuid4()

@@ -68,7 +68,8 @@ async def test_search_without_tenant_raises():
 
 
 @pytest.mark.asyncio
-async def test_search_never_returns_other_tenant_rows():
+async def test_search_never_returns_other_tenant_rows(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     db = FakeDb([node(1, "mine"), node(2, "theirs, much longer text", user_id=OTHER)])
     hits = await Retriever(db, Embedder(), Reranker()).search("q", Tenant(user_id=USER))
     assert [h.text for h in hits] == ["mine"]
@@ -79,7 +80,8 @@ async def test_search_never_returns_other_tenant_rows():
 
 
 @pytest.mark.asyncio
-async def test_hybrid_merges_dense_and_trigram_then_reranks():
+async def test_hybrid_merges_dense_and_trigram_then_reranks(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     rows = [node(i, "장애 " * i, seq=i) if i % 2 else node(i, "x" * i, seq=i) for i in range(1, 8)]
     db = FakeDb(rows)
     reranker = Reranker()
@@ -95,7 +97,8 @@ async def test_hybrid_merges_dense_and_trigram_then_reranks():
 
 
 @pytest.mark.asyncio
-async def test_search_filters_kinds_and_model():
+async def test_search_filters_kinds_and_model(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     db = FakeDb([node(1, "a")])
     await Retriever(db, Embedder(), Reranker()).search("q", Tenant(user_id=USER), kinds=["source"])
     for kind, sql, args in db.calls:
@@ -107,7 +110,7 @@ async def test_search_filters_kinds_and_model():
 
 
 @pytest.mark.asyncio
-async def test_rag_engine_flag_keeps_legacy_path(monkeypatch):
+async def test_rag_engine_defaults_to_llamaindex(monkeypatch):
     calls = []
 
     async def legacy(svc, state, seen):
@@ -122,14 +125,15 @@ async def test_rag_engine_flag_keeps_legacy_path(monkeypatch):
     monkeypatch.setattr(framework_rag, "_langchain", legacy)
     monkeypatch.setattr(framework_rag, "_llamaindex", llama)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
-    monkeypatch.delenv("AI_FRAMEWORK", raising=False)
+    assert rag_engine() == "llamaindex"
+    assert await framework_rag.collect_evidence(None, {}, set()) == "llama"
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     assert rag_engine() == "legacy"
     assert await framework_rag.collect_evidence(None, {}, set()) == "legacy"
-    monkeypatch.setenv("RAG_ENGINE", "llamaindex")
-    assert await framework_rag.collect_evidence(None, {}, set()) == "llama"
     monkeypatch.setenv("RAG_ENGINE", "bogus")
     assert rag_engine() == "legacy"
-    assert calls == ["legacy", "llamaindex"]
+    assert await framework_rag.collect_evidence(None, {}, set()) == "legacy"
+    assert calls == ["llamaindex", "legacy", "legacy"]
 
 
 @pytest.mark.asyncio
@@ -150,7 +154,8 @@ async def test_llamaindex_section_uses_the_user_tenant(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hybrid_sql_on_pgvector_keeps_tenants_apart():
+async def test_hybrid_sql_on_pgvector_keeps_tenants_apart(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE", "legacy")
     url = os.environ.get("RAG_PG_URL")
     if not url:
         pytest.skip("RAG_PG_URL not set")

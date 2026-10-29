@@ -164,9 +164,9 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
 | `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다 |
 | `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
-| `RAG_ENGINE` | `legacy` | `run_eval.py` 결과가 기준선보다 낮지 않을 때만 `llamaindex`로 바꾼다 |
+| `RAG_ENGINE` | `llamaindex` | `legacy`로 바꾸면 기존 `rag_chunks` 경로로 돌아간다 |
 
-`RAG_ENGINE=llamaindex`로 바꾸기 전에 `q:ingest`에 `{"reindex": true}` 작업을 넣어 기존 업로드를 `rag_nodes`에 색인한다.
+기본값은 `llamaindex`다. 기존 업로드를 `rag_nodes`에 다시 색인하려면 `q:ingest`에 `{"reindex": true}`를 넣는다. 그다음 `run_eval.py`로 `legacy`와 `llamaindex`를 비교한다.
 
 ## 처리량 측정
 

@@ -33,7 +33,7 @@ class Hit:
 
 
 def rag_engine() -> str:
-    mode = (os.environ.get("RAG_ENGINE") or "legacy").strip().lower()
+    mode = (os.environ.get("RAG_ENGINE") or "llamaindex").strip().lower()
     return mode if mode in ("legacy", "llamaindex") else "legacy"
 
 
