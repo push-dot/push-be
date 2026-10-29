@@ -219,40 +219,48 @@ async def test_boost_without_a_draft_enters_intake(monkeypatch):
     _assert_kept(saved, source)
 
 
+def _flat_fit(monkeypatch):
+    seen = []
+
+    async def fake(*_args, **_kwargs):
+        seen.append(1)
+        return {"fitScore": 5.0, "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+    return seen
+
+
 async def test_boost_with_a_draft_enters_p3c_boost(monkeypatch):
-    calls: list = []
-
-    def boost_cycle(state):
-        calls.append((state.get("drafts") or {}).get("resume"))
-        return {}
-
-    monkeypatch.setattr("app.harness.personal.resume.graph.boost_cycle", boost_cycle)
+    _flat_fit(monkeypatch)
     source = _bag()
-    _runtime, rows, _items = await _open("boost", source)
+    _runtime, rows, items = await _open("boost", source)
     saved = _saved(rows)
-    assert calls == ["기존 초안"]
-    assert saved.get("goto") != "p3c_boost"
+    assert _choice(items)["gate"] == "boost"
     assert saved["drafts"]["resume"] == "기존 초안"
     _assert_kept(saved, source)
 
 
+async def test_boost_quick_start_with_markdown_enters_p3c_boost(monkeypatch):
+    _flat_fit(monkeypatch)
+    source = _bag()
+    source["drafts"] = {"markdown": "마크다운 초안"}
+    _runtime, rows, items = await _open("boost", source)
+    saved = _saved(rows)
+    assert _choice(items)["gate"] == "boost"
+    assert saved["drafts"]["markdown"] == "마크다운 초안"
+    assert saved["phase"] != "intake"
+
+
 async def test_boost_with_a_draft_does_not_reenter(monkeypatch):
-    calls: list = []
-
-    def boost_cycle(state):
-        calls.append((state.get("drafts") or {}).get("resume"))
-        return {}
-
-    monkeypatch.setattr("app.harness.personal.resume.graph.boost_cycle", boost_cycle)
-    _runtime, rows, _items = await _open("boost", _bag())
-    assert calls == ["기존 초안"]
-    assert _saved(rows).get("goto") != "p3c_boost"
-    fresh = HarnessRuntime(service(rows))
+    seen = _flat_fit(monkeypatch)
+    runtime, _rows, items = await _open("boost", _bag())
+    assert _choice(items)["gate"] == "boost"
+    assert len(seen) == 2
     payload = _payload("다음", "boost")
     payload["job_id"] = "99999999-9999-4999-8999-999999999998"
-    items = await run(fresh, payload)
-    assert calls == ["기존 초안"]
-    assert _choice(items)["gate"] == "craft"
+    again = await run(runtime, payload)
+    assert _choice(again)["gate"] == "boost"
+    assert len(seen) == 3
 
 
 def test_worker_accepts_personal_quick_start_intents():

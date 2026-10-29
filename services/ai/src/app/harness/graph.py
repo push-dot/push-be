@@ -92,8 +92,10 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
             "work_mode": "experience_blueprint",
         }
     elif intent == "boost":
+        from app.harness.personal.resume.drafts import draft_text
+
         drafts = current.get("drafts") if isinstance(current.get("drafts"), dict) else {}
-        if drafts.get("resume"):
+        if draft_text(drafts):
             seed = {
                 "status": "active", "phase": "craft", "work_mode": "resume_based",
                 "goto": "p3c_boost",

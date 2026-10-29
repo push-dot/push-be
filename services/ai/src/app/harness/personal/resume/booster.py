@@ -11,6 +11,8 @@ def boost_cycle(state: dict) -> dict:
     stall = 0
     stopped = "max"
     resumed = None
+    pending = None
+    deferred = bool(state.get("defer"))
     for after in scores[1:]:
         if len(history) == _MAX_CYCLES:
             break
@@ -18,7 +20,10 @@ def boost_cycle(state: dict) -> dict:
         step = {"cycle": len(history) + 1, "before": previous, "after": after, "gain": gain}
         history.append(step)
         if len(history) > acked:
-            resumed = interrupt(step)
+            if deferred:
+                pending = step
+            else:
+                resumed = interrupt(step)
         previous = after
         if gain < 0.1:
             stall += 1
@@ -27,6 +32,8 @@ def boost_cycle(state: dict) -> dict:
                 break
         else:
             stall = 0
+        if pending is not None:
+            break
     if stopped == "max" and len(history) < _MAX_CYCLES:
         stopped = "continue"
     return {
@@ -35,4 +42,5 @@ def boost_cycle(state: dict) -> dict:
         "stopped": stopped,
         "history": history,
         "resume": resumed,
+        "pending": pending,
     }

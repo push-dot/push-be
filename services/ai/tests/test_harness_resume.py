@@ -184,7 +184,11 @@ async def test_stops_at_every_gate_in_auto():
         for event in events
         if event.get("type") == "choice" and snap.next
     ]
-    assert gates == list(_ORDER)
+    assert gates == [
+        "mode_select", "output_targets", "tone", "intake",
+        "analyze", "strategy", "craft", "boost", "boost",
+        "review", "publish", "present",
+    ]
     assert seen[-1][1].values["status"] == "done"
 
 
@@ -455,6 +459,7 @@ _GATE_QUESTIONS = {
     "analyze": "이 공고에 맞춰 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
+    "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
     "publish": "디자인을 적용했어요. PDF로 만들까요?",
     "present": "PDF를 만들었어요. 결과를 확인할까요?",
