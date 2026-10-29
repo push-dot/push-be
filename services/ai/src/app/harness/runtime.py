@@ -25,6 +25,25 @@ from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
 
+_TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
+_EMPLOYER_INTENTS = ("posting", "review", "interview")
+
+
+def employer_start(payload: dict, conversation: dict) -> dict | None:
+    """A web entry point (intent) starts an employer flow; plain chat goes to the agent."""
+    name = str(payload.get("intent") or "")
+    if name not in _EMPLOYER_INTENTS:
+        return None
+    application_id = (payload.get("application_id") or payload.get("applicationId")
+                      or conversation.get("application_id"))
+    start = {"name": name}
+    if name == "posting" and conversation.get("posting_id"):
+        start["reference_posting_id"] = conversation["posting_id"]
+    if name in ("review", "interview") and application_id:
+        start["application_id"] = str(application_id)
+    return start
+
+
 def _saved_resume(raw) -> dict:
     if isinstance(raw, str):
         try:
@@ -163,7 +182,8 @@ class HarnessRuntime:
         }
         try:
             row = await self.svc.db.q().fetchrow(
-                "SELECT company_id, resume_state FROM conversations WHERE id = $1",
+                "SELECT company_id, resume_state, posting_id, application_id "
+                "FROM conversations WHERE id = $1",
                 payload.get("conversation_id"),
             )
         except Exception:
@@ -174,6 +194,12 @@ class HarnessRuntime:
             found["company_id"] = row["company_id"]
         if row["resume_state"] is not None:
             found["resume_state"] = row["resume_state"]
+        for key in ("posting_id", "application_id"):
+            try:
+                if row[key] is not None:
+                    found[key] = str(row[key])
+            except (KeyError, IndexError):
+                continue
         return found
 
     async def _open(self, payload):
@@ -260,10 +286,10 @@ class HarnessRuntime:
             if waiting is None:
                 return
             state = Command(resume={"option_id": resume.get("optionId")})
-        elif waiting is not None and waiting.get("kind") == "RESUME_GATE" and text:
+        elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await _turn_inputs(payload)})
-        elif waiting is not None and waiting.get("kind") == "RESUME_GATE":
+        elif waiting is not None and waiting.get("kind") in _TEXT_GATES:
             return
         else:
             state = _state(payload, conversation)
@@ -272,6 +298,10 @@ class HarnessRuntime:
             # Heal calls a crashed turn left open too, or the provider rejects every later turn.
             crashed = None if waiting is not None else {"error": "TOOL_FAILED"}
             state["messages"] = [*_rejections(snapshot.values, crashed), *state["messages"]]
+            if spec.id == "employer":
+                start = employer_start(payload, conversation)
+                if start is not None:
+                    state["start_flow"] = start
             if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
                 if _saved_resume(conversation.get("resume_state")).get("status") == "active":
                     seeded = _resume_state(payload, conversation)
@@ -332,7 +362,7 @@ class HarnessRuntime:
     async def _reject_waiting(self, conversation_id) -> None:
         await self.svc.db.q().execute(
             "UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 "
-            "WHERE conversation_id = $1 AND status = 'PENDING' AND kind <> 'RESUME_GATE' "
+            "WHERE conversation_id = $1 AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') "
             "AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL)",
             conversation_id,
         )
