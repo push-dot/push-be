@@ -18,7 +18,7 @@ from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_chat_jobs import ChatJobStore
-from app.infrastructure.store_evidence_chunks import EvidenceChunkStore
+from app.rag.store import RagNodeStore
 from app.infrastructure.store_conversations import ConversationStore
 from app.infrastructure.store_documents import DocumentStore
 from app.infrastructure.store_evidence import EvidenceStore
@@ -174,7 +174,7 @@ class ConversationService:
         self.ai = ai
         self.usage = AiUsageStore(db)
         self.jobs = ChatJobStore(db)
-        self.chunks = EvidenceChunkStore(db)
+        self.nodes = RagNodeStore(db)
         self.document_svc = document_svc
         self.job_svc = job_svc
         self.application_svc = application_svc

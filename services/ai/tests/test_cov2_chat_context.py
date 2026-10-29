@@ -174,7 +174,7 @@ class Sink:
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("PUSH_RESUME_DIR", str(tmp_path / "resume"))
-    for name in ("BLOB_STORE", "CHAT_EXECUTOR", "LLM_STREAM", "RAG_ENGINE"):
+    for name in ("BLOB_STORE", "CHAT_EXECUTOR", "LLM_STREAM"):
         monkeypatch.delenv(name, raising=False)
 
 

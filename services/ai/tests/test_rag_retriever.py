@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.framework import rag as framework_rag
-from app.rag.retriever import Retriever, rag_engine
+from app.rag.retriever import Retriever
 from app.rag.tenant import Tenant
 
 USER = UUID("33333333-3333-4333-8333-333333333333")
@@ -36,9 +36,10 @@ class FakeDb:
         visible = [r for r in self.rows
                    if (user_id is not None and r["user_id"] == user_id)
                    or (company_id is not None and r["company_id"] == company_id)]
-        if "<=>" in sql:
-            return visible[:30]
-        return [r for r in visible if "장애" in r["text"]][:30]
+        picked = visible[:30]
+        if "<=>" not in sql:
+            picked = [r for r in visible if "장애" in r["text"]][:30]
+        return [{**r, "similarity": r.get("similarity", 0.5)} for r in picked]
 
 
 class Embedder:
@@ -68,8 +69,7 @@ async def test_search_without_tenant_raises():
 
 
 @pytest.mark.asyncio
-async def test_search_never_returns_other_tenant_rows(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
+async def test_search_never_returns_other_tenant_rows():
     db = FakeDb([node(1, "mine"), node(2, "theirs, much longer text", user_id=OTHER)])
     hits = await Retriever(db, Embedder(), Reranker()).search("q", Tenant(user_id=USER))
     assert [h.text for h in hits] == ["mine"]
@@ -80,8 +80,7 @@ async def test_search_never_returns_other_tenant_rows(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hybrid_merges_dense_and_trigram_then_reranks(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
+async def test_hybrid_merges_dense_and_trigram_then_reranks():
     rows = [node(i, "장애 " * i, seq=i) if i % 2 else node(i, "x" * i, seq=i) for i in range(1, 8)]
     db = FakeDb(rows)
     reranker = Reranker()
@@ -97,8 +96,7 @@ async def test_hybrid_merges_dense_and_trigram_then_reranks(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_search_filters_kinds_and_model(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
+async def test_search_filters_kinds_and_model():
     db = FakeDb([node(1, "a")])
     await Retriever(db, Embedder(), Reranker()).search("q", Tenant(user_id=USER), kinds=["source"])
     for kind, sql, args in db.calls:
@@ -110,30 +108,16 @@ async def test_search_filters_kinds_and_model(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rag_engine_defaults_to_llamaindex(monkeypatch):
+async def test_collect_evidence_always_searches_llamaindex(monkeypatch):
     calls = []
-
-    async def legacy(svc, state, seen):
-        calls.append("legacy")
-        return "legacy"
 
     async def llama(svc, state, seen):
         calls.append("llamaindex")
         return "llama"
 
-    monkeypatch.setattr(framework_rag, "_legacy", legacy)
-    monkeypatch.setattr(framework_rag, "_langchain", legacy)
-    monkeypatch.setattr(framework_rag, "_llamaindex", llama)
-    monkeypatch.delenv("RAG_ENGINE", raising=False)
-    assert rag_engine() == "llamaindex"
+    monkeypatch.setattr(framework_rag, "search_career_context", llama)
     assert await framework_rag.collect_evidence(None, {}, set()) == "llama"
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
-    assert rag_engine() == "legacy"
-    assert await framework_rag.collect_evidence(None, {}, set()) == "legacy"
-    monkeypatch.setenv("RAG_ENGINE", "bogus")
-    assert rag_engine() == "legacy"
-    assert await framework_rag.collect_evidence(None, {}, set()) == "legacy"
-    assert calls == ["llamaindex", "legacy", "legacy"]
+    assert calls == ["llamaindex"]
 
 
 @pytest.mark.asyncio
@@ -147,15 +131,15 @@ async def test_llamaindex_section_uses_the_user_tenant(monkeypatch):
             return [Hit("근거 문장", uuid4(), None, 0.9, "source:x:0", "source")]
 
     monkeypatch.setattr(framework_rag, "_retriever", lambda svc: Stub())
-    section = await framework_rag._llamaindex(object(), {"user_id": USER, "text": "질문"}, set())
+    section = await framework_rag.search_career_context(
+        object(), {"user_id": USER, "text": "질문"}, set())
     assert seen_tenants == [Tenant(user_id=USER)]
     assert "근거 문장" in section
     assert section.startswith("[관련 근거]")
 
 
 @pytest.mark.asyncio
-async def test_hybrid_sql_on_pgvector_keeps_tenants_apart(monkeypatch):
-    monkeypatch.setenv("RAG_ENGINE", "legacy")
+async def test_hybrid_sql_on_pgvector_keeps_tenants_apart():
     url = os.environ.get("RAG_PG_URL")
     if not url:
         pytest.skip("RAG_PG_URL not set")

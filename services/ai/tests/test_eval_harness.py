@@ -50,15 +50,9 @@ def test_eval_computes_recall_and_mrr_on_tiny_fixture():
 
 
 @pytest.mark.asyncio
-async def test_legacy_engine_runs_end_to_end_offline():
-    out = await run_eval.evaluate(run_eval.Engine("legacy", BigramEmbedder()), TINY_DOCS, TINY_QUERIES, 1)
-    assert out == {"engine": "legacy", "queries": 2, "recall@1": 1.0, "mrr": 1.0, "grounded_rate": 1.0}
-
-
-@pytest.mark.asyncio
 async def test_llamaindex_engine_runs_end_to_end_offline():
     pytest.importorskip("llama_index.core")
-    engine = run_eval.Engine("llamaindex", BigramEmbedder(), LengthFreeReranker())
+    engine = run_eval.Engine(BigramEmbedder(), LengthFreeReranker())
     out = await run_eval.evaluate(engine, TINY_DOCS, TINY_QUERIES, 1)
     assert out["recall@1"] == 1.0
     assert out["mrr"] == 1.0

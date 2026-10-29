@@ -5,6 +5,10 @@ def vector_literal(values: list[float]) -> str:
     return "[" + ",".join(repr(float(v)) for v in values) + "]"
 
 
+async def lock_source(db, key: str) -> None:
+    await db.q().execute("SELECT pg_advisory_xact_lock(hashtext($1))", key)
+
+
 class RagNodeStore:
     def __init__(self, db):
         self.db = db
@@ -12,9 +16,20 @@ class RagNodeStore:
     async def replace(self, source_type: str, source_id: UUID, model: str, rows: list[dict]) -> None:
         async def work():
             q = self.db.q()
-            await q.execute(
-                "DELETE FROM rag_nodes WHERE source_type = $1 AND source_id = $2 AND embedding_model = $3",
-                source_type, source_id, model)
+            await lock_source(self.db, f"{source_type}:{source_id}")
+            user_id = rows[0]["user_id"] if rows else None
+            company_id = rows[0]["company_id"] if rows else None
+            if rows and (user_id is not None or company_id is not None):
+                await q.execute(
+                    "DELETE FROM rag_nodes WHERE source_type = $1 AND source_id = $2 "
+                    "AND embedding_model = $3 AND ($4::uuid IS NULL OR user_id = $4) "
+                    "AND ($5::uuid IS NULL OR company_id = $5)",
+                    source_type, source_id, model, user_id, company_id)
+            else:
+                await q.execute(
+                    "DELETE FROM rag_nodes WHERE source_type = $1 AND source_id = $2 "
+                    "AND embedding_model = $3",
+                    source_type, source_id, model)
             for row in rows:
                 await q.execute(
                     "INSERT INTO rag_nodes (id, user_id, company_id, source_type, source_id, document_id, "
@@ -36,6 +51,19 @@ class RagNodeStore:
     async def _missing(self, sql: str, model: str, after: UUID | None, limit: int) -> list[dict]:
         rows = await self.db.q().fetch(sql, model, after, limit)
         return [dict(row) for row in rows]
+
+    async def evidence_ids_missing_for_user(
+        self, user_id: UUID, model: str, limit: int = 10,
+    ) -> list[UUID]:
+        rows = await self.db.q().fetch(
+            "SELECT e.id FROM career_evidence e WHERE e.user_id = $1 "
+            "AND NOT e.archived AND e.source_text <> '' "
+            "AND NOT EXISTS (SELECT 1 FROM rag_nodes n "
+            "WHERE n.source_type = 'evidence' AND n.source_id = e.id "
+            "AND n.user_id = $1 AND n.embedding_model = $2) "
+            "ORDER BY e.created_at DESC LIMIT $3",
+            user_id, model, limit)
+        return [row["id"] for row in rows]
 
     async def evidence_missing(
         self, model: str, after: UUID | None = None, limit: int = 100,
