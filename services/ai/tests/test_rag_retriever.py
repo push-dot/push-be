@@ -137,7 +137,7 @@ async def test_llamaindex_section_uses_the_user_tenant(monkeypatch):
     seen_tenants = []
 
     class Stub:
-        async def search(self, query, tenant, k=5, *, kinds=None):
+        async def _search_llamaindex(self, query, tenant, k, kinds):
             seen_tenants.append(tenant)
             from app.rag.retriever import Hit
             return [Hit("근거 문장", uuid4(), None, 0.9, "source:x:0", "source")]
