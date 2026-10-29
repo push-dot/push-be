@@ -31,7 +31,6 @@ const ACT_AS_ROUTES: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
   [/^\/api\/v1\/profiles$/, new Set(["GET"])],
   [/^\/api\/v1\/profiles\/[^/]+$/, new Set(["GET"])],
   [/^\/api\/v1\/profiles\/[^/]+\/offer$/, new Set(["POST"])],
-  [/^\/api\/v1\/conversations\/[^/]+\/resume-jobs$/, new Set(["POST"])],
   [/^\/api\/v1\/documents\/[^/]+\/edits$/, new Set(["POST"])],
 ];
 

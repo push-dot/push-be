@@ -15,27 +15,27 @@ from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
 from app.graphs.chat import _stable_ids
-from app.harness.core_client import idempotency_key
 from app.harness.document_edits import env_core
 from app.harness.graph import RECURSION_LIMIT, _open_calls, build_harness_graph, turn_model
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
-from app.harness.registry import REGISTRY
-from app.harness.resume.graph import bound_core, merge_inputs
+from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
 
-def _resume_state(payload: dict, conversation: dict) -> dict:
-    saved = conversation.get("resume_state") or {}
-    if isinstance(saved, str):
+def _saved_resume(raw) -> dict:
+    if isinstance(raw, str):
         try:
-            saved = json.loads(saved)
+            raw = json.loads(raw)
         except json.JSONDecodeError:
-            saved = {}
-    if not isinstance(saved, dict):
-        saved = {}
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _resume_state(payload: dict, conversation: dict) -> dict:
+    saved = _saved_resume(conversation.get("resume_state"))
     mode = resolve_access_mode(payload.get("access_mode"), None)
     return {
         "status": saved.get("status") or "active",
@@ -101,14 +101,6 @@ async def _turn_inputs(payload: dict) -> dict:
     return {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
 
 
-def _thread(config, conversation_id, suffix: str) -> dict:
-    config = dict(config or {})
-    configurable = dict(config.get("configurable") or {})
-    configurable["thread_id"] = str(conversation_id) + suffix
-    config["configurable"] = configurable
-    return config
-
-
 def _pending(snapshot) -> dict | None:
     for task in getattr(snapshot, "tasks", ()) or ():
         for item in getattr(task, "interrupts", ()) or ():
@@ -129,6 +121,15 @@ def _final_text(values: dict) -> str:
     return ""
 
 
+def _flow_reply(snapshot) -> tuple[str, str]:
+    for task in getattr(snapshot, "tasks", ()) or ():
+        values = getattr(getattr(task, "state", None), "values", None) or {}
+        reply = values.get("reply") or ""
+        if isinstance(reply, str) and reply:
+            return reply, str(values.get("reply_job") or "")
+    return "", ""
+
+
 class HarnessRuntime:
     def __init__(self, svc, model_cls=None):
         self.svc = svc
@@ -140,17 +141,13 @@ class HarnessRuntime:
         cached = self._compiled.get(spec.id)
         if cached is not None and cached[0] is spec:
             return cached[1]
-        if spec.id == "resume":
-            from app.harness.resume.graph import build_resume_graph
-            graph = build_resume_graph(self.svc._checkpointer, db=self.svc.db)
-        else:
-            graph = build_harness_graph(
-                spec,
-                self.svc._checkpointer,
-                model=None,
-                db=self.svc.db,
-                core=self._core,
-            )
+        graph = build_harness_graph(
+            spec,
+            self.svc._checkpointer,
+            model=None,
+            db=self.svc.db,
+            core=self._core,
+        )
         self._compiled[spec.id] = (spec, graph)
         return graph
 
@@ -181,16 +178,7 @@ class HarnessRuntime:
 
     async def _open(self, payload):
         conversation = await self._conversation(payload)
-        resume = payload.get("resume") or {}
-        if resume.get("approvalId"):
-            row = await self.svc.db.q().fetchrow(
-                "SELECT kind FROM approvals WHERE id = $1", UUID(str(resume["approvalId"])))
-            gate = row is not None and row["kind"] == "RESUME_GATE"
-            spec = REGISTRY["resume"] if gate else select_harness({**conversation, "resume_state": None})
-        elif resume:
-            spec = REGISTRY["resume"]
-        else:
-            spec = select_harness(conversation)
+        spec = select_harness(conversation)
         plan = None
         if spec.id == "employer":
             plan = await self._company_plan(conversation)
@@ -237,10 +225,10 @@ class HarnessRuntime:
             (bound_core, bound_core.set(self._core)),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
-        run = self._resume_turn if spec.id == "resume" else self._chat_turn
         ok = False
         try:
-            async for item in run(graph, payload, conversation, config, stream_mode, ai, turn):
+            async for item in self._chat_turn(
+                    graph, payload, conversation, config, stream_mode, ai, turn, spec):
                 yield item
             ok = True
         finally:
@@ -252,14 +240,31 @@ class HarnessRuntime:
             for var, token in reversed(tokens):
                 var.reset(token)
 
-    async def _chat_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
+    async def _chat_turn(self, graph, payload, conversation, config, stream_mode, ai, turn, spec):
         snapshot = await graph.aget_state(config)
         waiting = _pending(snapshot)
-        resume = payload.get("resume") or {}
-        if resume:
+        resume = dict(payload.get("resume") or {})
+        text = payload.get("text") or ""
+        if await self._stored_gate(resume.get("approvalId")) == "start_document":
+            if resume.get("optionId") != "cancel":
+                return
+            if waiting is None:
+                await self.svc.db.q().execute(
+                    "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",
+                    payload["conversation_id"],
+                    json.dumps({"status": "cancelled"}, ensure_ascii=False),
+                )
+                return
+            resume["optionId"] = "cancel"
+        if resume.get("approvalId"):
             if waiting is None:
                 return
             state = Command(resume={"option_id": resume.get("optionId")})
+        elif waiting is not None and waiting.get("kind") == "RESUME_GATE" and text:
+            await self._answer_gate(waiting.get("approval_id"))
+            state = Command(resume={"text": text, **await _turn_inputs(payload)})
+        elif waiting is not None and waiting.get("kind") == "RESUME_GATE":
+            return
         else:
             state = _state(payload, conversation)
             if waiting is not None:
@@ -267,18 +272,38 @@ class HarnessRuntime:
             # Heal calls a crashed turn left open too, or the provider rejects every later turn.
             crashed = None if waiting is not None else {"error": "TOOL_FAILED"}
             state["messages"] = [*_rejections(snapshot.values, crashed), *state["messages"]]
+            if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
+                if _saved_resume(conversation.get("resume_state")).get("status") == "active":
+                    seeded = _resume_state(payload, conversation)
+                    seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
+                    state["resume"] = seeded
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
+        done = None
         try:
             async for item in self._stream_graph(graph, state, config, stream_mode):
-                if item[0] == "custom" and item[1].get("type") == "done":
+                if item[0] == "custom" and isinstance(item[1], dict) and item[1].get("type") == "done":
+                    done = item[1]
                     interrupted = True
+                    continue
                 yield item
         except GraphRecursionError:
             raise DomainError(500, INTERNAL, "tool loop hit its step limit") from None
-        if not interrupted:
-            values = (await graph.aget_state(config)).values
-            operation = await self._persist(payload, _final_text(values), ai, turn)
+        after = await graph.aget_state(config, subgraphs=True)
+        stored = _saved_resume((after.values or {}).get("resume"))
+        if spec.id == "personal" and stored.get("status"):
+            await self._save_resume_state(payload["conversation_id"], stored)
+        operation = None
+        if interrupted:
+            reply, reply_job = _flow_reply(after)
+            if reply and reply_job == str(payload.get("job_id") or ""):
+                operation = await self._persist(payload, reply, ai, turn)
+        else:
+            operation = await self._persist(payload, _final_text(after.values), ai, turn)
+        if done is not None:
+            extra = {"operation": to_jsonable(operation)} if operation is not None else {}
+            yield "custom", {**done, **extra}
+        elif operation is not None:
             yield "values", {"operation": operation}
 
     async def _stored_gate(self, approval_id) -> str:
@@ -303,65 +328,6 @@ class HarnessRuntime:
         if isinstance(raw, dict):
             return str(raw.get("gate") or "")
         return ""
-
-    async def _resume_turn(self, graph, payload, conversation, config, stream_mode, ai, turn):
-        config = _thread(config, payload["conversation_id"], ":resume")
-        pending = _pending(await graph.aget_state(config))
-        text = payload.get("text") or ""
-        resume = payload.get("resume") or {}
-        if await self._stored_gate(resume.get("approvalId")) == "start_document":
-            if resume.get("optionId") != "cancel":
-                return
-            if pending is None:
-                await self.svc.db.q().execute(
-                    "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",
-                    payload["conversation_id"],
-                    json.dumps({"status": "cancelled"}, ensure_ascii=False),
-                )
-                return
-            resume = {"approvalId": resume["approvalId"], "optionId": "cancel"}
-        if resume.get("approvalId"):
-            if pending is None:
-                return
-            state = Command(resume={"option_id": resume.get("optionId")})
-        elif pending is not None and text:
-            await self._answer_gate(pending.get("approval_id"))
-            state = Command(resume={"text": text, **await _turn_inputs(payload)})
-        elif pending is not None:
-            return
-        else:
-            state = _resume_state(payload, conversation)
-            state["inputs"] = merge_inputs(state["inputs"], await _turn_inputs(payload))
-        waiting = None
-        async for item in self._stream_graph(graph, state, config, stream_mode):
-            if item[0] == "custom" and item[1].get("type") == "done":
-                waiting = item[1]
-                continue
-            yield item
-        after = await graph.aget_state(config)
-        await self._save_resume_state(payload["conversation_id"], after.values)
-        reply = after.values.get("reply") or ""
-        operation = None
-        if reply and after.values.get("reply_job") == str(payload.get("job_id") or ""):
-            operation = await self._persist(payload, reply, ai, turn)
-        if waiting is not None:
-            yield "custom", {**waiting, **({"operation": to_jsonable(operation)} if operation else {})}
-        elif operation is not None:
-            yield "values", {"operation": operation}
-        if after.values.get("status") == "active" and _pending(after) is None:
-            await self._next_phase(payload, after.values.get("phase"))
-
-    async def _next_phase(self, payload: dict, phase) -> None:
-        try:
-            await self._core.call(
-                "POST",
-                f"/api/v1/conversations/{payload['conversation_id']}/resume-jobs",
-                user_id=str(payload["user_id"]),
-                json={"resume": {"gate": phase, "auto": True}},
-                idempotency_key=idempotency_key(str(payload.get("job_id") or ""), "next-phase"),
-            )
-        except Exception:
-            logging.getLogger(__name__).exception("next resume phase enqueue failed")
 
     async def _reject_waiting(self, conversation_id) -> None:
         await self.svc.db.q().execute(

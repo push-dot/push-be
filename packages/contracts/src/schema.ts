@@ -1066,7 +1066,7 @@ export interface paths {
         put?: never;
         /**
          * Answer a chat approval or choice card
-         * @description optionId must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.
+         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), 200 with jobId when a DOCUMENT_EDIT apply is queued, else 200 without jobId.
          */
         post: operations["postConversationsByIdApprovalsByApprovalId"];
         delete?: never;
@@ -3647,6 +3647,7 @@ export interface components {
             /** Format: uuid */
             jobId?: string;
             optionId: string;
+            optionIds?: string[];
             /** @enum {string} */
             status: "APPROVED" | "REJECTED";
         };
@@ -6501,7 +6502,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    optionId: string;
+                    optionId?: string;
+                    optionIds?: string[];
                 };
             };
         };

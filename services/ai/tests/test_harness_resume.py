@@ -8,7 +8,7 @@ from langgraph.types import Command
 
 from app.graphs.resume_prompt import phase_prompt_for_harness
 from app.harness.registry import REGISTRY
-from app.harness.resume.graph import build_resume_graph
+from app.harness.personal.resume.graph import build_resume_graph
 from app.harness.router import select_harness
 from app.harness.tools import ToolContext
 from app.harness.core_client import CoreClient

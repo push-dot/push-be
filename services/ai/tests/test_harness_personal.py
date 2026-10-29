@@ -188,13 +188,14 @@ def test_core_paths_cover_non_python_tools():
 
 
 def test_router():
+    assert set(REGISTRY) == {"personal", "employer"}
     assert select_harness({}).id == "personal"
     assert select_harness({"company_id": "co-1"}).id == "employer"
-    assert select_harness({"resume_state": {"status": "active"}}).id == "resume"
+    assert select_harness({"resume_state": {"status": "active"}}).id == "personal"
     assert select_harness({
         "company_id": "co-1",
         "resume_state": {"status": "active"},
-    }).id == "resume"
+    }).id == "employer"
     assert select_harness({"resume_state": {"status": "done"}}).id == "personal"
 
 
@@ -367,9 +368,196 @@ async def test_start_document_marks_resume_active():
         core=CoreClient("http://core.test", "secret"),
     )
     result = await tool.run(ctx, tool.args_model.model_validate({}))
-    assert result["resume_state"]["status"] == "active"
+    assert isinstance(result, Command)
+    assert result.goto == "resume_flow"
+    assert result.update["resume"]["status"] == "active"
+    assert result.update["resume"]["phase"] == "mode_select"
     assert "resume_state" in db.calls[0][0]
     assert db.calls[0][1][0] == "conv-1"
+
+
+_PHASES = (
+    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+)
+_JOB = "job-1"
+
+
+def _flow_config(conversation_id: str) -> dict:
+    return {"configurable": {"thread_id": conversation_id}}
+
+
+def _flow_graph(saver, model, db):
+    tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "start_document")
+    return build_harness_graph(
+        HarnessSpec(id="personal", prompt="p", tools=[tool]),
+        saver,
+        model=model,
+        db=db,
+        core=CoreClient("http://core.test", "secret"),
+    )
+
+
+def _flow_input(conversation_id: str, phase: str | None = None) -> dict:
+    payload = {
+        "messages": [{"role": "user", "content": "서류 써줘"}],
+        "user_id": "user-1",
+        "conversation_id": conversation_id,
+        "job_id": _JOB,
+        "access_mode": "AUTO",
+    }
+    if phase is not None:
+        payload["resume"] = {
+            "status": "active",
+            "phase": phase,
+            "conversation_id": conversation_id,
+            "user_id": "user-1",
+            "job_id": _JOB,
+            "access_mode": "AUTO",
+        }
+    return payload
+
+
+async def _drain(graph, payload, config) -> list:
+    events = []
+    async for event in astream_harness(graph, payload, config):
+        events.append(event)
+    return events
+
+
+def _gate(snapshot) -> dict:
+    for task in snapshot.tasks:
+        for item in task.interrupts:
+            if isinstance(item.value, dict):
+                return item.value
+    return {}
+
+
+async def test_start_document_enters_resume_subgraph_and_interrupts_at_mode_gate():
+    saver = MemorySaver()
+    db = _ResumeDB()
+    graph = _flow_graph(saver, ScriptedChat([{
+        "tool_calls": [{
+            "name": "start_document",
+            "id": "c1",
+            "type": "tool_call",
+            "args": {},
+        }],
+    }]), db)
+    config = _flow_config("conv-1")
+    events = await _drain(graph, _flow_input("conv-1"), config)
+    state = await graph.aget_state(config)
+    assert state.next == ("resume_flow",)
+    assert state.config["configurable"]["thread_id"] == "conv-1"
+    assert "conv-1:resume" not in saver.storage
+    assert state.values["job_id"] == _JOB
+    assert state.values["resume"]["status"] == "active"
+    assert state.values["resume"]["phase"] == "mode_select"
+    assert _gate(state)["gate"] == "mode_select"
+    assert any(event.get("gate") == "mode_select" for event in events)
+    assert any("resume_state" in sql for sql, _args in db.calls)
+
+
+async def test_paused_gate_survives_worker_restart_and_resumes_on_conversation_thread():
+    saver = MemorySaver()
+    db = _ResumeDB()
+    graph = _flow_graph(saver, ScriptedChat([{
+        "tool_calls": [{
+            "name": "start_document",
+            "id": "c1",
+            "type": "tool_call",
+            "args": {},
+        }],
+    }]), db)
+    config = _flow_config("conv-1")
+    await _drain(graph, _flow_input("conv-1"), config)
+    paused = await graph.aget_state(config)
+    assert paused.next == ("resume_flow",)
+    assert _gate(paused)["gate"] == "mode_select"
+
+    restarted = _flow_graph(saver, ScriptedChat([]), db)
+    again = await restarted.aget_state(config)
+    assert again.next == ("resume_flow",)
+    assert again.config["configurable"]["thread_id"] == "conv-1"
+    assert _gate(again)["gate"] == "mode_select"
+
+    await _drain(restarted, Command(resume={"option_id": "resume_based"}), config)
+    moved = await restarted.aget_state(config)
+    assert moved.config["configurable"]["thread_id"] == "conv-1"
+    assert "conv-1:resume" not in saver.storage
+    assert moved.next == ("resume_flow",)
+    assert moved.values["resume"]["phase"] == "intake"
+    assert moved.values["resume"]["status"] == "active"
+    assert _gate(moved)["gate"] == "intake"
+    assert moved.values["job_id"] == _JOB
+
+
+@pytest.mark.parametrize("phase", _PHASES)
+async def test_cancel_returns_to_agent_same_thread(phase):
+    conversation_id = f"conv-{phase}"
+    saver = MemorySaver()
+    graph = _flow_graph(saver, ScriptedChat([{"content": "다른 걸 도와드릴까요?"}]), None)
+    config = _flow_config(conversation_id)
+    await _drain(graph, _flow_input(conversation_id, phase), config)
+    paused = await graph.aget_state(config)
+    assert paused.next == ("resume_flow",)
+    assert _gate(paused)["gate"] == phase
+
+    events = await _drain(graph, Command(resume={"option_id": "cancel"}), config)
+    done = await graph.aget_state(config)
+    assert done.next == ()
+    assert done.config["configurable"]["thread_id"] == conversation_id
+    assert "conv-1:resume" not in saver.storage
+    assert done.values["resume"]["status"] == "cancelled"
+    assert done.values["resume"]["phase"] == phase
+    assert done.values["job_id"] == _JOB
+    assert any(event.get("token") == "다른 걸 도와드릴까요?" for event in events)
+    assert any(
+        getattr(message, "content", "") == "서류 작성을 그만뒀어요."
+        for message in done.values["messages"]
+    )
+
+
+@pytest.mark.parametrize("text", ["그만둘게요", "취소할게요", "중단할게요"])
+async def test_cancel_text_returns_to_agent_same_thread(text):
+    saver = MemorySaver()
+    graph = _flow_graph(saver, ScriptedChat([{"content": "다른 걸 도와드릴까요?"}]), None)
+    config = _flow_config("conv-text")
+    await _drain(graph, _flow_input("conv-text", "craft"), config)
+    events = await _drain(graph, Command(resume={"text": text}), config)
+    done = await graph.aget_state(config)
+    assert done.next == ()
+    assert done.values["resume"]["status"] == "cancelled"
+    assert any(event.get("token") == "다른 걸 도와드릴까요?" for event in events)
+
+
+async def test_done_returns_to_agent_same_thread():
+    saver = MemorySaver()
+    graph = _flow_graph(saver, ScriptedChat([{"content": "다음을 도와드릴까요?"}]), None)
+    config = _flow_config("conv-done")
+    await _drain(graph, _flow_input("conv-done", "present"), config)
+    events = await _drain(graph, Command(resume={"option_id": "done"}), config)
+    done = await graph.aget_state(config)
+    assert done.next == ()
+    assert done.values["resume"]["status"] == "done"
+    assert any(event.get("token") == "다음을 도와드릴까요?" for event in events)
+    assert any(
+        getattr(message, "content", "") == "서류 작성을 끝냈어요."
+        for message in done.values["messages"]
+    )
+
+
+async def test_ainvoke_into_active_resume_reaches_the_gate_without_a_stream(monkeypatch):
+    def missing_writer():
+        raise RuntimeError("Called get_stream_writer outside of a runnable context")
+
+    monkeypatch.setattr("app.harness.graph.get_stream_writer", missing_writer)
+    graph = _flow_graph(MemorySaver(), ScriptedChat([{"content": "ok"}]), None)
+    config = _flow_config("conv-invoke")
+    result = await graph.ainvoke(_flow_input("conv-invoke", "mode_select"), config)
+    assert result["__interrupt__"][0].value["gate"] == "mode_select"
+    state = await graph.aget_state(config)
+    assert state.next == ("resume_flow",)
+    assert state.config["configurable"]["thread_id"] == "conv-invoke"
 
 
 async def test_edit_document_id_cannot_rewrite_the_path():

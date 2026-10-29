@@ -495,28 +495,44 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
 };
 
-const optionIds = (raw: unknown): string[] => {
+const cardOptionIds = (raw: unknown): string[] => {
   const list = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
   if (!Array.isArray(list)) return [];
   return list.map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>).id ?? "") : ""));
+};
+
+const selectedOptions = (body: Record<string, unknown>, allowed: string[]): { optionId: string; optionIds?: string[] } => {
+  const single = typeof body.optionId === "string" ? body.optionId : "";
+  if (body.optionIds !== undefined) {
+    const raw = body.optionIds;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.some((id) => typeof id !== "string" || !id)) {
+      throw new HttpError(400, "VALIDATION_ERROR", "optionIds is required", { field: "optionIds" });
+    }
+    const optionIds = raw as string[];
+    if (optionIds.some((id) => !allowed.includes(id))) {
+      throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionIds" });
+    }
+    if (single && !optionIds.includes(single)) {
+      throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
+    }
+    return { optionId: single || optionIds[0], optionIds };
+  }
+  if (!single) throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });
+  if (!allowed.includes(single)) throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
+  return { optionId: single };
 };
 
 export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<Response> => {
   const conversationId = requireUuid(idRaw, "id");
   const approvalId = requireUuid(approvalRaw, "approvalId");
   const body = await readObject(ctx.request);
-  forbidExtra(body, ["optionId"]);
-  if (typeof body.optionId !== "string" || !body.optionId) {
-    throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });
-  }
-  const optionId = body.optionId;
+  forbidExtra(body, ["optionId", "optionIds"]);
   const row = await one(ctx.deps.query,
     "SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
     [approvalId, conversationId, ctx.user.id]);
   if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (!optionIds(row.options).includes(optionId)) {
-    throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
-  }
+  const picked = selectedOptions(body, cardOptionIds(row.options));
+  const optionId = picked.optionId;
   if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
   if (row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime()) {
     await query(ctx.deps.query, "UPDATE approvals SET status = 'EXPIRED', updated_at = now() WHERE id = $1 AND status = 'PENDING'", [approvalId]);
@@ -528,13 +544,15 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
     "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
     [status, optionId, approvalId]);
   if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
-  const result = { id: approvalId, status, optionId };
+  const result = { id: approvalId, status, optionId, ...(picked.optionIds ? { optionIds: picked.optionIds } : {}) };
   const resumes = RESUMABLE.has(kind) || row.job_id != null;
   const appliesEdit = kind === "DOCUMENT_EDIT" && optionId === "apply";
   if (!resumes && !appliesEdit) return data(200, result, ctx.rid);
+  const resume: Record<string, unknown> = { approvalId, optionId };
+  if (picked.optionIds) resume.optionIds = picked.optionIds;
   try {
     const jobId = await enqueueResumeJob(ctx, {
-      conversationId, userId: ctx.user.id, payload: { resume: { approvalId, optionId } }, idempotencyKey: `approval:${approvalId}`,
+      conversationId, userId: ctx.user.id, payload: { resume }, idempotencyKey: `approval:${approvalId}`,
     });
     return data(resumes ? 202 : 200, { ...result, jobId }, ctx.rid);
   } catch (err) {
@@ -545,35 +563,24 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   }
 };
 
-export const postResumeJob = async (ctx: Ctx, idRaw: string): Promise<Response> => {
-  const conversationId = requireUuid(idRaw, "id");
-  if (!ctx.request.headers.has("x-push-act-as")) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  const body = await readObject(ctx.request);
-  forbidExtra(body, ["resume"]);
-  if (!body.resume || typeof body.resume !== "object" || Array.isArray(body.resume)) {
-    throw new HttpError(400, "VALIDATION_ERROR", "resume is required", { field: "resume" });
-  }
-  const key = (ctx.request.headers.get("idempotency-key") || "").trim();
-  const jobId = await enqueueResumeJob(ctx, {
-    conversationId, userId: ctx.user.id, payload: { resume: body.resume }, idempotencyKey: key ? `resume:${key}` : undefined,
-  });
-  return data(202, { jobId }, ctx.rid);
-};
-
 const APPROVAL_PATH = /^\/api\/v1\/conversations\/[^/]+\/approvals\/([^/]+)$/;
 
 export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
   const approval = path.match(APPROVAL_PATH);
   if (!approval || ctx.request.headers.has("idempotency-key")) return ctx;
-  let optionId = "";
+  let mark = "";
   try {
     const body = JSON.parse(await ctx.request.clone().text()) as Record<string, unknown>;
-    optionId = typeof body.optionId === "string" ? body.optionId : "";
+    if (Array.isArray(body.optionIds) && body.optionIds.length > 0) {
+      mark = body.optionIds.filter((id): id is string => typeof id === "string").join(",");
+    }
+    if (!mark && typeof body.optionId === "string") mark = body.optionId;
   } catch {
     return ctx;
   }
+  if (!mark) return ctx;
   const headers = new Headers(ctx.request.headers);
-  headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${optionId}`));
+  headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${mark}`));
   return { ...ctx, request: new Request(ctx.request, { headers }) };
 };
 
