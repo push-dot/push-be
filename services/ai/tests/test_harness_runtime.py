@@ -91,6 +91,16 @@ async def test_resume_turn_prefetches_pages_and_keeps_attachments(monkeypatch):
     assert saved["inputs"]["attachments"] == [evidence]
 
 
+def test_gate_answer_forwards_option_ids():
+    from app.harness.runtime import _gate_answer
+
+    assert _gate_answer({"optionId": "resume"}) == {"option_id": "resume"}
+    assert _gate_answer({"optionId": "resume", "optionIds": ["portfolio", "resume"]}) == {
+        "option_id": "resume",
+        "option_ids": ["portfolio", "resume"],
+    }
+
+
 async def test_bypass_intake_with_a_page_does_not_stop():
     from app.harness.personal.resume.graph import _must_stop
     assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")

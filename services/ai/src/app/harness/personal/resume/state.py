@@ -9,6 +9,7 @@ class ResumeState(BaseModel):
     status: Literal["active", "done", "cancelled"] = "active"
     phase: Literal[
         "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+        "feedback", "approach", "blueprints",
     ] = "mode_select"
     work_mode: Literal["resume_based", "experience_blueprint"] | None = None
     scenario: str | None = None
@@ -19,7 +20,13 @@ class ResumeState(BaseModel):
     review: dict = Field(default_factory=dict)
     template: str | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
+    output_targets: list[str] = Field(default_factory=list)
+    tone: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    approach: str | None = None
+    bottleneck_level: str | None = None
+    prevention_categories: list[str] = Field(default_factory=list)
+    blueprints: dict = Field(default_factory=dict)
     access_mode: str = "AUTO"
     conversation_id: str = ""
     user_id: str = ""

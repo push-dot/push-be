@@ -487,7 +487,7 @@ async def test_paused_gate_survives_worker_restart_and_resumes_on_conversation_t
     assert moved.next == ("resume_flow",)
     assert moved.values["resume"]["phase"] == "intake"
     assert moved.values["resume"]["status"] == "active"
-    assert _gate(moved)["gate"] == "intake"
+    assert _gate(moved)["gate"] == "output_targets"
     assert moved.values["job_id"] == _JOB
 
 
@@ -500,7 +500,7 @@ async def test_cancel_returns_to_agent_same_thread(phase):
     await _drain(graph, _flow_input(conversation_id, phase), config)
     paused = await graph.aget_state(config)
     assert paused.next == ("resume_flow",)
-    assert _gate(paused)["gate"] == phase
+    assert _gate(paused)["gate"] == ("output_targets" if phase == "intake" else phase)
 
     events = await _drain(graph, Command(resume={"option_id": "cancel"}), config)
     done = await graph.aget_state(config)
