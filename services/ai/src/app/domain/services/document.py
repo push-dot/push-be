@@ -120,6 +120,31 @@ class DocumentService:
             raise internal()
         return d
 
+    async def set_template(self, user_id: UUID, doc_id: UUID, expected: int,
+                           template: str) -> ent.Document:
+        if not ent.valid_document_template(template):
+            raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
+        template = ent.stored_document_template(template)
+        out = None
+
+        async def work():
+            nonlocal out
+            d = await self._get_mutable(user_id, doc_id)
+            if d.revision != expected:
+                raise revision_conflict(d.revision)
+            if d.template != template:
+                d.template = template
+                d.updated_at = _now()
+                try:
+                    await self.documents.update(d, expected)
+                except Exception as err:
+                    raise map_revision_err(err)
+                d.revision = expected + 1
+            out = d
+
+        await self.db.run(work)
+        return out
+
     async def _get_mutable(self, user_id: UUID, id_: UUID) -> ent.Document:
         try:
             d = await self.documents.get(user_id, id_)

@@ -27,6 +27,7 @@ _ORDER = (
     "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
 )
 _SKIP_C = {"strategy", "craft"}
+_TEMPLATES = {"CLASSIC", "MODERN", "COMPACT", "ATS"}
 _ARTIFACTS = {
     "present": "06_present.json",
 }
@@ -166,6 +167,7 @@ class ResumeGraphState(TypedDict, total=False):
     strategy: dict
     drafts: dict
     review: dict
+    template: str | None
     artifacts: dict
     output_targets: list
     tone: str | None
@@ -318,8 +320,9 @@ def _bodies(phase: str, state: dict, output: dict) -> list[tuple[str, str]]:
 async def _store_output(db, state: dict, phase: str, output: dict) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     ctx = _context(db, state)
+    template = state.get("template")
     for name, body in _bodies(phase, state, output):
-        artifacts[name] = await save_artifact(ctx, name, body)
+        artifacts[name] = await save_artifact(ctx, name, body, template)
     bucket = {
         "analyze": "analysis",
         "strategy": "strategy",
@@ -349,6 +352,8 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
         update["work_mode"] = option_id
     if phase == "intake" and option_id == "C":
         update["scenario"] = "C"
+    if phase == "review" and option_id in _TEMPLATES:
+        update["template"] = option_id
     if phase == "output_targets":
         picked = [item for item in _option_ids(answer) if item in _TARGET_IDS]
         if not picked and option_id in _TARGET_IDS:

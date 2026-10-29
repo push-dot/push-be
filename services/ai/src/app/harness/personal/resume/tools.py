@@ -127,7 +127,7 @@ async def _put_pdf(ctx: ToolContext, name: str, content: bytes) -> None:
     )
 
 
-async def _document_id(ctx: ToolContext, name: str) -> str:
+async def _document_id(ctx: ToolContext, name: str, template: str | None = None) -> str:
     from app.harness.personal.tools import bound_services
     from app.infrastructure.resume_workspace import _sync_documents_db
 
@@ -144,13 +144,16 @@ async def _document_id(ctx: ToolContext, name: str) -> str:
         user_id,
         SimpleNamespace(id=ctx.conversation_id, title=""),
         [name],
+        template,
     )
     if not synced:
         return ""
     return str(synced[0]["document_id"])
 
 
-async def save_artifact(ctx: ToolContext, name: str, content: str) -> str:
+async def save_artifact(
+    ctx: ToolContext, name: str, content: str, template: str | None = None,
+) -> str:
     file_id = _artifact_id(ctx, name)
     if ctx.db is None:
         return file_id
@@ -161,9 +164,12 @@ async def save_artifact(ctx: ToolContext, name: str, content: str) -> str:
     from app.infrastructure.resume_workspace import md_to_pdf
 
     buf = io.BytesIO()
-    await asyncio.to_thread(md_to_pdf, body, buf)
+    if template:
+        await asyncio.to_thread(md_to_pdf, body, buf, template)
+    else:
+        await asyncio.to_thread(md_to_pdf, body, buf)
     await _put_pdf(ctx, name[:-3] + ".pdf", buf.getvalue())
-    document_id = await _document_id(ctx, name)
+    document_id = await _document_id(ctx, name, template)
     emit({
         "type": "file",
         "name": name,

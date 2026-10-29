@@ -254,7 +254,10 @@ async def read_artifact(db, conversation_id, name: str) -> str:
     return row["body"]
 
 
-def md_to_pdf(md: str, out) -> None:
+def md_to_pdf(md: str, out, template: str | None = None) -> None:
+    if template:
+        from app.domain.entities.documents import stored_document_template
+        md = f"{md.rstrip()}\n{stored_document_template(template)}"
     try:
         _md_to_pdf_reportlab(md, out)
     except Exception:
@@ -402,7 +405,9 @@ def _md_to_pdf_plain(md: str, out) -> None:
         Path(out).write_bytes(data)
 
 
-async def _sync_documents_db(svc, user_id, conv, saved: list[str]) -> list[dict]:
+async def _sync_documents_db(
+    svc, user_id, conv, saved: list[str], template: str | None = None,
+) -> list[dict]:
     import json
     import logging
     raw = await read_artifact(svc.db, conv.id, ".docs.json")
@@ -427,6 +432,9 @@ async def _sync_documents_db(svc, user_id, conv, saved: list[str]) -> list[dict]
         try:
             if doc_id:
                 doc = await docs.get(user_id, UUID(doc_id))
+                if template is not None and hasattr(docs, "set_template"):
+                    doc = await docs.set_template(
+                        user_id, doc.id, doc.revision, template)
                 _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat update " + name)
@@ -436,7 +444,7 @@ async def _sync_documents_db(svc, user_id, conv, saved: list[str]) -> list[dict]
                     base = await _company_label_db(svc.db, conv.id) or "생성 문서"
                 title = base + " " + label
                 doc = await docs.create(
-                    user_id, None, title, kind, "CLASSIC", "ko")
+                    user_id, None, title, kind, template or "CLASSIC", "ko")
                 _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat " + name)

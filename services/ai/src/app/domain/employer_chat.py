@@ -43,7 +43,7 @@ def apply_employer_turn(ai, plan: str | None, intent: str | None, config: object
 
 def posting_system_prompt() -> str:
     return (
-        "공고 초안은 다음 펜스 안에 JSON으로만 써.\n"
+        "공고 초안은 다음 펜스 안에 JSON으로만 쓴다.\n"
         "```posting-draft\n"
         "{\n"
         '  "title": "",\n'

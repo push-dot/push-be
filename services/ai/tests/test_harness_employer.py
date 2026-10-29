@@ -32,9 +32,14 @@ _TIERS = {
     "change_applicant_stage": Tier.RISKY_WRITE,
     "send_offer": Tier.RISKY_WRITE,
     "create_company_post": Tier.RISKY_WRITE,
+    "start_posting": Tier.SAFE_WRITE,
+    "review_applicant": Tier.READ,
+    "review_attachment": Tier.READ,
+    "find_talent": Tier.READ,
+    "prepare_interview": Tier.READ,
 }
 
-_PYTHON = {"get_fit_score"}
+_PYTHON = {"get_fit_score", "start_posting", "review_applicant", "review_attachment", "find_talent", "prepare_interview"}
 
 P = "11111111-1111-4111-8111-111111111111"
 A = "22222222-2222-4222-8222-222222222222"
