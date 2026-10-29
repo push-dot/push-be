@@ -300,7 +300,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         return "tools" if _open_calls(state) else "end"
 
     if spec.id == "employer":
-        return _build_employer_graph(agent, tools, after_agent, checkpointer, db=db)
+        return _build_employer_graph(
+            agent, tools, after_agent, checkpointer, db=db, core=core, tools_by_name=tools_by_name)
 
     use_resume = spec.id == "personal"
     if use_resume:
@@ -350,7 +351,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
     return graph.compile(checkpointer=checkpointer)
 
 
-def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db):
+def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=None,
+                          tools_by_name=None):
     from langchain_core.messages import AIMessage
 
     from app.domain.employer_chat import current_employer_plan
@@ -370,9 +372,27 @@ def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db):
     def generate_for(_state):
         return gate_generate(turn_model.get())
 
+    async def call_tool(state, name, args):
+        tool = (tools_by_name or {}).get(name)
+        if tool is None:
+            return {"error": "UNKNOWN_TOOL"}
+        ctx = ToolContext(
+            user_id=str(state.get("user_id") or ""),
+            company_id=state.get("company_id"),
+            conversation_id=str(state.get("conversation_id") or ""),
+            job_id=str(state.get("job_id") or ""),
+            # One idempotency key per target, so each offer in a batch is its own write.
+            tool_call_id="flow:" + name + ":" + json.dumps(args, sort_keys=True, default=str),
+            db=db,
+            core=core,
+            access_mode=str(state.get("access_mode") or "AUTO"),
+        )
+        result, _ok = await call_structured(tool, tool.args_model.model_validate(args), ctx)
+        return result
+
     state_type, flows = build_flows(
         db=db, generate_for=generate_for, research_text=research_text,
-        plan_of=lambda _state: current_employer_plan() or "")
+        plan_of=lambda _state: current_employer_plan() or "", call_tool=call_tool)
     flow_nodes = {f"{name}_flow": f"{name}_flow" for name in FLOWS}
 
     def _target(state) -> str:

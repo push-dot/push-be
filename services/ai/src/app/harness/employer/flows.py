@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from app.clock import utcnow
 from app.domain.employer_baseline import baseline_stats
-from app.domain.fair_hiring import DECISION_DISCLAIMER
+from app.domain.fair_hiring import DECISION_DISCLAIMER, banned_in_posting
 from app.domain.plan_levers import levers_for
 from app.graphs.chat_surface import insert_chat_approval
 from app.harness.employer import nodes
@@ -29,15 +29,17 @@ from app.harness.employer.recruit_prompts import node_prompt
 from app.harness.employer.schemas import (
     CompanyProfile,
     Match,
+    OfferDraft,
     PostingDraft,
     RoleSpec,
 )
 from app.harness.tools import emit
 from app.infrastructure.store_employer import EmployerStore, posting_text
 
-FLOWS = ("posting", "review", "interview")
+FLOWS = ("posting", "review", "interview", "sourcing")
 _PLAN_RANK = {"": 0, "BASIC": 1, "PRO": 2, "ULTRA": 3}
 _MAX_REWRITES = 3
+_SOURCING_STEPS = {"pick": "sc_pick", "draft_offers": "sc_draft_offers", "send": "sc_send"}
 _POSTING_STEPS = {
     "role_options": "pf_role_options",
     "role": "pf_role",
@@ -62,6 +64,22 @@ class RoleOptions(BaseModel):
 
 class Matches(BaseModel):
     matches: list[Match]
+
+
+class Person(BaseModel):
+    profile_id: str
+    name: str
+    reasons: list[str] = []
+
+
+class Shortlist(BaseModel):
+    people: list[Person]
+
+
+def _profiles(found) -> list[dict]:
+    data = found.get("data") if isinstance(found, dict) else found
+    items = data.get("items") if isinstance(data, dict) else data
+    return [p for p in items or [] if isinstance(p, dict)]
 
 
 def flow_of(state: dict) -> dict:
@@ -126,9 +144,12 @@ def _done(state: dict, status: str, **data) -> dict:
     return flow_update(state, status=status, **data)
 
 
-def build_flows(*, db, generate_for, research_text, plan_of, store=None, read_pdf=None):
-    """``generate_for(state)`` returns a node ``generate``; ``research_text(state, name)`` runs
-    the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
+def build_flows(
+    *, db, generate_for, research_text, plan_of, store=None, read_pdf=None, call_tool=None
+):
+    """``call_tool(state, name, args)`` runs an employer tool through core (sourcing flow).
+    ``generate_for(state)`` returns a node ``generate``; ``research_text(state, name)`` runs
+        the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
     store = store or (EmployerStore(db) if db is not None else None)
     if read_pdf is None:
         from app.ingest.pdf_text import extract_pdf_bytes as read_pdf
@@ -556,10 +577,132 @@ def build_flows(*, db, generate_for, research_text, plan_of, store=None, read_pd
     interview.add_edge(START, "iv_start")
     interview.add_edge("iv_start", END)
 
+    # ---- sourcing ----------------------------------------------------------------
+    async def sc_search(state):
+        flow = flow_of(state)
+        posting = ""
+        if flow.get("posting_id") and store:
+            posting = posting_text(
+                await store.company_posting(flow["posting_id"], state.get("company_id"))
+            )
+        query = flow.get("query") or ""
+        found = await call_tool(state, "search_profiles", {"q": query}) if call_tool else {}
+        profiles = _profiles(found)[:10]
+        if not profiles:
+            reply = "조건에 맞는 공개 프로필을 찾지 못했어요. 검색어를 바꿔 볼까요?"
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
+        shortlist = await generate_for(state)(
+            Shortlist,
+            node_prompt("sc_shortlist"),
+            f"[공고]\n{posting or query}\n\n[공개 프로필]\n"
+            + json.dumps(profiles, ensure_ascii=False)[:20000],
+        )
+        known = {str(p.get("userId") or p.get("id")) for p in profiles}
+        picks = [p for p in shortlist.people if p.profile_id in known][:10]
+        return flow_update(
+            state, step="pick", posting=posting, people=[p.model_dump() for p in picks]
+        )
+
+    async def sc_pick(state):
+        people = flow_of(state).get("people") or []
+        options = [
+            {"id": p["profile_id"], "label": f"{p['name']} · {' / '.join(p['reasons'][:2])}"}
+            for p in people
+        ]
+        answer = await gate(state, db, "sc_shortlist", "누구에게 제안을 보낼까요?", options)
+        if cancelled(answer):
+            return _done(state, "cancelled")
+        chosen = answer.get("option_ids") or (
+            [answer["option_id"]] if answer.get("option_id") else []
+        )
+        chosen = [c for c in chosen if any(p["profile_id"] == c for p in people)]
+        if not chosen:
+            return _done(state, "cancelled")
+        return flow_update(state, step="draft_offers", chosen=chosen)
+
+    async def sc_draft_offers(state):
+        flow = flow_of(state)
+        people = {p["profile_id"]: p for p in flow.get("people") or []}
+        drafts = []
+        for profile_id in flow.get("chosen") or []:
+            person = people[profile_id]
+            draft = await generate_for(state)(
+                OfferDraft,
+                node_prompt("sc_offer"),
+                f"[공고]\n{flow.get('posting') or ''}\n\n[사람]\n"
+                + json.dumps(person, ensure_ascii=False),
+            )
+            bad = banned_in_posting(draft.message)
+            if bad:
+                continue
+            drafts.append(
+                {"profile_id": profile_id, "name": person["name"], "message": draft.message}
+            )
+        if not drafts:
+            reply = "제안 메시지를 만들지 못했어요. 다시 시도해 주세요."
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
+        preview = "\n\n".join(f"**{d['name']}**\n{d['message']}" for d in drafts)
+        emit({"token": "보낼 제안 메시지예요.\n\n" + preview})
+        return flow_update(state, step="send", drafts=drafts)
+
+    async def sc_send(state):
+        drafts = flow_of(state).get("drafts") or []
+        answer = await gate(
+            state,
+            db,
+            "sc_send",
+            f"이 메시지로 {len(drafts)}명에게 보낼까요?",
+            [{"id": "send", "label": "보내기"}],
+        )
+        if answer.get("option_id") != "send":
+            return _done(state, "cancelled")
+        sent = 0
+        for draft in drafts:
+            result = await call_tool(
+                state,
+                "send_offer",
+                {
+                    "profileId": draft["profile_id"],
+                    "message": draft["message"],
+                    "postingId": flow_of(state).get("posting_id"),
+                },
+            )
+            if isinstance(result, dict) and not result.get("error"):
+                sent += 1
+        reply = (
+            f"{sent}명에게 제안을 보냈어요."
+            if sent
+            else "제안을 보내지 못했어요. 이미 보낸 사람일 수 있어요."
+        )
+        emit({"token": reply})
+        return _done(state, "done", reply=reply)
+
+    def after_sourcing(state) -> str:
+        flow = flow_of(state)
+        if flow.get("status") in ("done", "cancelled"):
+            return END
+        return _SOURCING_STEPS.get(flow.get("step"), END)
+
+    sourcing = StateGraph(EmployerState)
+    for name, fn in (
+        ("sc_search", sc_search),
+        ("sc_pick", sc_pick),
+        ("sc_draft_offers", sc_draft_offers),
+        ("sc_send", sc_send),
+    ):
+        sourcing.add_node(name, fn)
+        sourcing.add_conditional_edges(name, after_sourcing)
+    sourcing.add_conditional_edges(
+        START, lambda s: _SOURCING_STEPS.get(flow_of(s).get("step"), "sc_search")
+    )
+
     return EmployerState, {
         "posting": posting.compile(),
         "review": review.compile(),
         "interview": interview.compile(),
+        "sourcing": sourcing.compile(),
     }
 
 
@@ -604,6 +747,7 @@ def flow_summary(flow: dict) -> str:
         "posting": "공고 초안을 만들었어요.",
         "review": "서류 검토를 마쳤어요.",
         "interview": "면접 질문을 만들었어요.",
+        "sourcing": "인재 찾기를 마쳤어요.",
     }.get(name, "기업 흐름을 마쳤어요.")
 
 
