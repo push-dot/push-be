@@ -322,8 +322,8 @@ class HarnessRuntime:
                     state["resume"] = seeded
                 elif quick_start_resume(payload.get("intent"), saved) is not None:
                     state["intent"] = payload.get("intent")
-                    if saved.get("drafts"):
-                        state["resume"] = {"drafts": saved["drafts"]}
+                    if saved:
+                        state["resume"] = saved
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
         done = None

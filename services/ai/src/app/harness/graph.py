@@ -52,40 +52,57 @@ def enter_flow(name: str, **update) -> Command:
     return Command(update=update, goto=name)
 
 
-_QUICK_START = {
-    "match_posting": {
-        "status": "active", "phase": "intake",
-        "work_mode": "resume_based", "scenario": "A",
-    },
-    "fit": {
-        "status": "active", "phase": "present",
-        "work_mode": "resume_based", "scenario": "E",
-    },
-    "gaps": {
-        "status": "active", "phase": "strategy", "work_mode": "resume_based",
-        "scenario": "A", "strategy": {"focus": "bottleneck", "steps": [1, 2, 3]},
-    },
-    "experience": {
-        "status": "active", "phase": "approach", "work_mode": "experience_blueprint",
-    },
-    "boost": {
-        "status": "active", "phase": "craft", "work_mode": "resume_based",
-        "goto": "p3c_boost",
-    },
-}
+_CARRY = ("inputs", "analysis", "drafts", "artifacts", "output_targets", "tone")
+
+
+def _present(value: object) -> bool:
+    return value not in (None, "", {}, [])
+
+
+def _carried(current: dict) -> dict:
+    return {key: current[key] for key in _CARRY if _present(current.get(key))}
 
 
 def quick_start_resume(intent: object, current: dict | None = None) -> dict | None:
     if not isinstance(intent, str):
         return None
-    seed = _QUICK_START.get(intent)
-    if seed is None:
+    current = current if isinstance(current, dict) else {}
+    if intent == "match_posting":
+        seed = {
+            "status": "active", "phase": "intake",
+            "work_mode": "resume_based", "scenario": "A",
+        }
+    elif intent == "fit":
+        seed = {
+            "status": "active",
+            "phase": "analyze" if _present(current.get("inputs")) else "intake",
+            "work_mode": "resume_based", "scenario": "E",
+        }
+    elif intent == "gaps":
+        seed = {
+            "status": "active",
+            "phase": "strategy" if _present(current.get("analysis")) else "intake",
+            "work_mode": "resume_based", "scenario": "A",
+            "strategy": {"focus": "bottleneck", "steps": [1, 2, 3]},
+        }
+    elif intent == "experience":
+        seed = {
+            "status": "active",
+            "phase": "approach" if _present(current.get("analysis")) else "intake",
+            "work_mode": "experience_blueprint",
+        }
+    elif intent == "boost":
+        drafts = current.get("drafts") if isinstance(current.get("drafts"), dict) else {}
+        if drafts.get("resume"):
+            seed = {
+                "status": "active", "phase": "craft", "work_mode": "resume_based",
+                "goto": "p3c_boost",
+            }
+        else:
+            seed = {"status": "active", "phase": "intake", "work_mode": "resume_based"}
+    else:
         return None
-    resume = dict(seed)
-    drafts = (current or {}).get("drafts") or {}
-    if intent == "boost" and drafts:
-        resume = {**resume, "drafts": dict(drafts)}
-    return resume
+    return {**_carried(current), **seed}
 
 
 def leave_flow(summary: str, **update) -> Command:
