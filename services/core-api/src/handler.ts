@@ -6,7 +6,7 @@ import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
-import { archiveConversation, createConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
+import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, postResumeJob, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
 import { listUsage } from "./routes/usage.ts";
 import { createJob, getJob, listAnalyses, listJobs, patchJob } from "./routes/jobs.ts";
 import { enqueueDocumentGenerate, enqueueFit, getQueueJob } from "./routes/job-status.ts";
@@ -153,8 +153,11 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
   if (method === "PATCH" && conv) return patchConversation(ctx, conv[1]);
+  if (method === "DELETE" && conv) return deleteConversation(ctx, conv[1]);
   const archive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/archive$/);
   if (method === "POST" && archive) return archiveConversation(ctx, archive[1]);
+  const unarchive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/unarchive$/);
+  if (method === "POST" && unarchive) return archiveConversation(ctx, unarchive[1], false);
   const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages(?:\/stream)?$/);
   if (method === "POST" && message) return postMessage(ctx, message[1]);
   const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);

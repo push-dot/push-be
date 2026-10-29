@@ -1,7 +1,7 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
-  body, ok, okPage, sse, pathParam, query, pageParams,
+  get, post, patch, del, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
+  body, ok, okPage, noContent, sse, pathParam, query, pageParams,
 } from "./shared.ts";
 
 const id = pathParam("id");
@@ -132,12 +132,13 @@ export const routes: Route[] = [
   get("gateway", "/api/v1/conversations", {
     tag: "conversations",
     summary: "List conversations",
-    description: "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.",
+    description: "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.",
     params: [
       ...pageParams,
       query("applicationId", uuid),
       query("q", str, "Case-insensitive match on title or last message text"),
       query("audience", enumOf("PERSONAL", "EMPLOYER")),
+      query("archived", enumOf("true", "false"), "true lists only archived conversations. Any other value excludes them."),
     ],
     responses: { 200: okPage(ref("ConversationsListItem")) },
   }),
@@ -171,6 +172,21 @@ export const routes: Route[] = [
     params: [id],
     body: body(expectedRevision),
     responses: { 200: ok(ref("Conversation")) },
+  }),
+  post("core", "/api/v1/conversations/{id}/unarchive", {
+    tag: "conversations",
+    summary: "Unarchive a conversation",
+    description: "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+    params: [id],
+    body: body(expectedRevision),
+    responses: { 200: ok(ref("Conversation")) },
+  }),
+  del("core", "/api/v1/conversations/{id}", {
+    tag: "conversations",
+    summary: "Delete a conversation",
+    description: "The creating user only. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
+    params: [id],
+    responses: { 204: noContent },
   }),
   get("gateway", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",

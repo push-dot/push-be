@@ -9139,7 +9139,7 @@
     },
     "/api/v1/conversations": {
       "get": {
-        "description": "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.",
+        "description": "audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.",
         "operationId": "getConversations",
         "parameters": [
           {
@@ -9188,6 +9188,19 @@
               "enum": [
                 "PERSONAL",
                 "EMPLOYER"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "true lists only archived conversations. Any other value excludes them.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
               ],
               "type": "string"
             }
@@ -9394,6 +9407,34 @@
       }
     },
     "/api/v1/conversations/{id}": {
+      "delete": {
+        "description": "The creating user only. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
+        "operationId": "deleteConversationsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a conversation",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "core"
+      },
       "patch": {
         "operationId": "patchConversationsById",
         "parameters": [
@@ -11553,6 +11594,72 @@
           "conversations"
         ],
         "x-owner": "gateway"
+      }
+    },
+    "/api/v1/conversations/{id}/unarchive": {
+      "post": {
+        "description": "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+        "operationId": "postConversationsByIdUnarchive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "expectedRevision": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "expectedRevision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Conversation"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Unarchive a conversation",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "core"
       }
     },
     "/api/v1/documents": {

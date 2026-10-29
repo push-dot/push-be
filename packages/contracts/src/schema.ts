@@ -919,7 +919,7 @@ export interface paths {
         };
         /**
          * List conversations
-         * @description audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded. Ordered by updatedAt desc.
+         * @description audience=EMPLOYER lists the caller's company conversations (403 BUSINESS_NOT_VERIFIED without a company); otherwise personal ones. Archived conversations are excluded unless archived=true. Ordered by updatedAt desc.
          */
         get: operations["getConversations"];
         put?: never;
@@ -964,7 +964,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a conversation
+         * @description The creating user only. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.
+         */
+        delete: operations["deleteConversationsById"];
         options?: never;
         head?: never;
         /** Rename or pin a conversation */
@@ -1166,6 +1170,26 @@ export interface paths {
          * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event.
          */
         post: operations["postConversationsByIdStreamCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive a conversation
+         * @description Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.
+         */
+        post: operations["postConversationsByIdUnarchive"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6060,6 +6084,8 @@ export interface operations {
                 /** @description Case-insensitive match on title or last message text */
                 q?: string;
                 audience?: "PERSONAL" | "EMPLOYER";
+                /** @description true lists only archived conversations. Any other value excludes them. */
+                archived?: "true" | "false";
             };
             header?: never;
             path?: never;
@@ -6148,6 +6174,27 @@ export interface operations {
                         };
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteConversationsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
@@ -6626,6 +6673,40 @@ export interface operations {
                             /** @enum {string} */
                             status: "CANCELLED";
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postConversationsByIdUnarchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
                     };
                 };
             };

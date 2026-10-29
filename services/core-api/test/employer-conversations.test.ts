@@ -503,6 +503,67 @@ test("an employer conversation cannot link an application outside the company", 
   assert.ok(applicationSql);
 });
 
+test("delete removes the owner's conversation in one statement and hides another user's", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(new Request("https://core.example/api/v1/conversations/" + CONV, {
+    method: "DELETE",
+    headers: headers(),
+  }), env(), deps(async (sql, params = []) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.startsWith("WITH owned AS")) {
+      assert.equal(params[0], CONV);
+      assert.equal(params[1], USER);
+      return { rows: [{ id: CONV }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 204);
+  const gone = sqls.find((sql) => sql.startsWith("WITH owned AS")) ?? "";
+  assert.match(gone, /DELETE FROM chat_jobs/);
+  assert.match(gone, /DELETE FROM messages/);
+  assert.match(gone, /DELETE FROM workspace_files/);
+  assert.match(gone, /DELETE FROM conversations/);
+  assert.match(gone, /user_id = \$2/);
+
+  resetLimits();
+  const missing = await handle(new Request("https://core.example/api/v1/conversations/" + CONV, {
+    method: "DELETE",
+    headers: headers(),
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(missing.status, 404);
+});
+
+test("unarchive clears the flag and does not archive evidence", async () => {
+  resetLimits();
+  const sqls: string[] = [];
+  const res = await handle(post("/api/v1/conversations/" + CONV + "/unarchive", JSON.stringify({
+    expectedRevision: 1,
+  }), { "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeec" }), env(), deps(async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-un" }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) {
+      return { rows: [{ id: CONV, revision: 1, application_id: null, title: "t", pinned: false, company_id: COMPANY, created_at: "2026-01-02T03:04:05Z" }], rowCount: 1 };
+    }
+    if (sql.startsWith("UPDATE conversations")) {
+      return { rows: [{ id: CONV, revision: 2, application_id: null, title: "t", pinned: false, created_at: "2026-01-02T03:04:05Z", updated_at: NOW.toISOString() }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 200);
+  const update = sqls.find((sql) => sql.startsWith("UPDATE conversations")) ?? "";
+  assert.match(update, /archived = false/);
+  assert.equal(sqls.some((sql) => sql.includes("career_evidence") || sql.includes("conversation_attachments")), false);
+});
+
 test("archiving archives orphaned evidence in one statement", async () => {
   resetLimits();
   const sqls: string[] = [];

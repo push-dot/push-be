@@ -1,7 +1,7 @@
 import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
 import { one, query } from "../db.ts";
-import { HttpError, codePoints, data, requireUuid, uuid5Url } from "../http.ts";
+import { HttpError, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
 import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
@@ -182,7 +182,20 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   return data(200, convDto(updated), ctx.rid);
 }
 
-export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Response> {
+const DELETE_CONVERSATION = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
+  + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
+  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
+
+export async function deleteConversation(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const gone = await one(ctx.deps.query, DELETE_CONVERSATION, [id, ctx.user.id]);
+  if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  return noContent(ctx.rid);
+}
+
+export async function archiveConversation(ctx: Ctx, idRaw: string, archived = true): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
   forbidExtra(body, ["expectedRevision"]);
@@ -198,16 +211,18 @@ export async function archiveConversation(ctx: Ctx, idRaw: string): Promise<Resp
   }
   const now = ctx.now.toISOString();
   const updated = await revisionUpdate(ctx.deps.query, "conversations",
-    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = true, updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
+    "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = " + (archived ? "true" : "false") + ", updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
-  if (current.company_id != null) {
+  if (archived && current.company_id != null) {
     await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
   }
-  try {
-    await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
-  } catch {
-    // A conflicting evidence write does not fail the archive.
+  if (archived) {
+    try {
+      await query(ctx.deps.query, ARCHIVE_ORPHAN_EVIDENCE, [ctx.user.id, id, now]);
+    } catch {
+      // A conflicting evidence write does not fail the archive.
+    }
   }
   return data(200, convDto(updated), ctx.rid);
 }
