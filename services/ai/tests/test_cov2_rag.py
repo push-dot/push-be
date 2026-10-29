@@ -49,7 +49,6 @@ class _NoChunks:
 
 
 def _langchain(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.delenv("RAG_ENGINE", raising=False)
 
 

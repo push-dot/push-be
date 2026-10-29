@@ -221,7 +221,6 @@ async def test_user_rate_limit():
 
 
 async def test_cf_worker_stays_on_the_memory_limiter(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
     app, _ = inner(200)
     m = ApiMiddleware(app)
     state = {"db": SimpleNamespace(pool="POOL")}

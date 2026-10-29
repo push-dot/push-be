@@ -34,7 +34,7 @@ def _emit(payload: dict) -> None:
 
 def _blob_db() -> bool:
     import os
-    return os.environ.get("BLOB_STORE") == "db" or os.environ.get("CF_WORKER") == "1"
+    return os.environ.get("BLOB_STORE") == "db"
 
 
 def _now() -> datetime:

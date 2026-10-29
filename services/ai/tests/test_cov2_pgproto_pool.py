@@ -51,7 +51,6 @@ async def test_buffered_stream_reassembles_frames():
 # --- WebSocket transports ------------------------------------------------
 
 async def test_python_websocket_transport(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
     calls = {}
 
     class WS:

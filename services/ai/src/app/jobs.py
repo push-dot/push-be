@@ -20,7 +20,7 @@ _scheduler: Scheduler | None = None
 
 def external_jobs() -> bool:
     mode = os.environ.get("CHAT_EXECUTOR", "")
-    return os.environ.get("CF_WORKER") == "1" or mode in ("workflow", "external")
+    return mode in ("workflow", "external")
 
 
 def remote_executor() -> bool:

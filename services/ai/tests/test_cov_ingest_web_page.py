@@ -246,7 +246,6 @@ async def test_proxy_returns_502_when_no_validated_ip_accepts(monkeypatch):
 # --- fetch_page_text (local runtime) ------------------------------------------
 
 async def test_fetch_page_text_pins_resolved_ip_and_extracts_html(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"jobs.example": ["93.184.216.34"]})
     long_body = "<p>" + "Backend engineer " * 120 + "</p><script>x()</script>"
     pins_seen = []
@@ -269,7 +268,6 @@ async def test_fetch_page_text_pins_resolved_ip_and_extracts_html(monkeypatch):
 
 
 async def test_fetch_page_text_pins_idna_host_as_connected(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"xn--bcher-kva.de": ["93.184.216.34"]})
     pins_seen = []
 
@@ -283,7 +281,6 @@ async def test_fetch_page_text_pins_idna_host_as_connected(monkeypatch):
 
 
 async def test_fetch_page_text_caps_total_time_for_slow_drip(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.setattr(web_page, "_FETCH_DEADLINE", 0.2)
     _dns(monkeypatch, {"slow.example": ["93.184.216.34"]})
 
@@ -299,7 +296,6 @@ async def test_fetch_page_text_caps_total_time_for_slow_drip(monkeypatch):
 
 
 async def test_fetch_page_text_caps_render_time(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.setattr(web_page, "_RENDER_DEADLINE", 0.05)
     _dns(monkeypatch, {"spa.example": ["93.184.216.34"]})
     _pinned(monkeypatch, lambda r: httpx.Response(
@@ -314,7 +310,6 @@ async def test_fetch_page_text_caps_render_time(monkeypatch):
 
 
 async def test_fetch_page_text_revalidates_each_redirect_hop(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"a.example": ["93.184.216.34"], "b.example": ["93.184.216.35"]})
     pins_seen = []
 
@@ -338,7 +333,6 @@ async def test_fetch_page_text_revalidates_each_redirect_hop(monkeypatch):
     ("file:///etc/passwd", "http"),
 ])
 async def test_fetch_page_text_blocks_redirect_to_unsafe_target(monkeypatch, location, match):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"pub.example": ["93.184.216.34"], "intranet.example": ["10.0.0.5"]})
     hosts = []
 
@@ -353,7 +347,6 @@ async def test_fetch_page_text_blocks_redirect_to_unsafe_target(monkeypatch, loc
 
 
 async def test_fetch_page_text_follows_relative_redirect_and_caps_hops(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"loop.example": ["93.184.216.34"]})
     paths = []
 
@@ -368,7 +361,6 @@ async def test_fetch_page_text_follows_relative_redirect_and_caps_hops(monkeypat
 
 
 async def test_fetch_page_text_rejects_error_status_and_binary(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"pub.example": ["93.184.216.34"]})
     _pinned(monkeypatch, lambda r: httpx.Response(404))
     with pytest.raises(ValueError, match="http status 404"):
@@ -380,7 +372,6 @@ async def test_fetch_page_text_rejects_error_status_and_binary(monkeypatch):
 
 
 async def test_fetch_page_text_stops_reading_after_max_bytes(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"big.example": ["93.184.216.34"]})
     sent = []
 
@@ -397,7 +388,6 @@ async def test_fetch_page_text_stops_reading_after_max_bytes(monkeypatch):
 
 
 async def test_fetch_page_text_short_page_uses_longer_render(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"spa.example": ["93.184.216.34"]})
     _pinned(monkeypatch, lambda r: httpx.Response(
         200, headers={"content-type": "text/html"}, text=_html("<div id=app>Loading</div>")))
@@ -522,198 +512,6 @@ async def test_render_text_keeps_sandbox_by_default(monkeypatch):
     assert "--proxy-bypass-list=<-loopback>" in rec.launch["args"]
 
 
-# --- Workers runtime -----------------------------------------------------------
-
-def _patch_client(monkeypatch, handler) -> list:
-    calls = []
-
-    def wrapped(request):
-        calls.append(request)
-        return handler(request)
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(wrapped)
-        return _REAL_CLIENT(*args, **kwargs)
-
-    monkeypatch.setattr(web_page.httpx, "AsyncClient", factory)
-    return calls
-
-
-def _doh(answers: dict):
-    def respond(request):
-        name = request.url.params["name"]
-        rtype = request.url.params["type"]
-        entry = answers.get((name, rtype))
-        if entry == "error":
-            return httpx.Response(500)
-        return httpx.Response(200, json={"Answer": entry or []})
-    return respond
-
-
-async def test_reject_private_host_blocklist_and_literals(monkeypatch):
-    calls = _patch_client(monkeypatch, lambda r: httpx.Response(500))
-    with pytest.raises(ValueError, match="host not allowed"):
-        await web_page._reject_private_host("LOCALHOST")
-    with pytest.raises(ValueError, match="private"):
-        await web_page._reject_private_host("10.0.0.1")
-    await web_page._reject_private_host("8.8.8.8")
-    assert calls == []
-
-
-async def test_reject_private_host_checks_doh_answers(monkeypatch):
-    answers = {
-        ("pub.example", "A"): [{"type": 5, "data": "alias.example."},
-                               {"type": 1, "data": "93.184.216.34"}],
-        ("evil.example", "A"): [{"type": 1, "data": "93.184.216.34"}],
-        ("evil.example", "AAAA"): [{"type": 28, "data": "::1"}],
-        ("nat64.example", "A"): [{"type": 28, "data": "64:ff9b::a00:1"}],
-        ("flaky.example", "A"): "error",
-    }
-    _patch_client(monkeypatch, _doh(answers))
-    await web_page._reject_private_host("pub.example")
-    with pytest.raises(ValueError, match="private"):
-        await web_page._reject_private_host("evil.example")
-    with pytest.raises(ValueError, match="private"):
-        await web_page._reject_private_host("nat64.example")
-    # A DoH failure fails closed instead of skipping the check.
-    with pytest.raises(ValueError, match="cannot resolve"):
-        await web_page._reject_private_host("flaky.example")
-
-
-async def test_browser_markdown_requires_configuration(monkeypatch):
-    monkeypatch.delenv("CF_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CF_API_TOKEN", raising=False)
-    with pytest.raises(RuntimeError, match="not configured"):
-        await web_page._browser_markdown("https://example.com/")
-
-
-@pytest.mark.parametrize("payload,expected", [
-    ({"result": {"markdown": "#  Title\n\nbody"}}, "# Title body"),
-    ({"result": {"content": "content field"}}, "content field"),
-    ({"result": "plain   result"}, "plain result"),
-    ({"result": None}, ""),
-    (["not", "a", "dict"], ""),
-])
-async def test_browser_markdown_parses_result_shapes(monkeypatch, payload, expected):
-    monkeypatch.setenv("CF_ACCOUNT_ID", "acct")
-    monkeypatch.setenv("CF_API_TOKEN", "tok")
-    calls = _patch_client(monkeypatch, lambda r: httpx.Response(200, json=payload))
-    assert await web_page._browser_markdown("https://example.com/") == expected
-    req = calls[0]
-    assert req.url.path == "/client/v4/accounts/acct/browser-rendering/markdown"
-    assert req.headers["authorization"] == "Bearer tok"
-
-
-async def test_browser_markdown_maps_http_error(monkeypatch):
-    monkeypatch.setenv("CF_ACCOUNT_ID", "acct")
-    monkeypatch.setenv("CF_API_TOKEN", "tok")
-    _patch_client(monkeypatch, lambda r: httpx.Response(429))
-    with pytest.raises(RuntimeError, match="http 429"):
-        await web_page._browser_markdown("https://example.com/")
-
-
-def _worker_handler(pages: dict, dns: dict, render=None):
-    doh = _doh(dns)
-
-    def handler(request):
-        host = request.url.host
-        if host == "cloudflare-dns.com":
-            return doh(request)
-        if host == "api.cloudflare.com":
-            if render is None:
-                return httpx.Response(500)
-            return httpx.Response(200, json={"result": render})
-        return pages[str(request.url)]()
-    return handler
-
-
-_PUBLIC = {("pub.example", "A"): [{"type": 1, "data": "93.184.216.34"}],
-           ("next.example", "A"): [{"type": 1, "data": "93.184.216.35"}],
-           ("intra.example", "A"): [{"type": 1, "data": "10.0.0.7"}]}
-
-
-async def test_worker_fetch_follows_redirect_and_returns_plain(monkeypatch):
-    monkeypatch.setenv("CF_WORKER", "1")
-    pages = {
-        "https://pub.example/": lambda: httpx.Response(
-            302, headers={"location": "https://next.example/doc"}),
-        "https://next.example/doc": lambda: httpx.Response(
-            200, headers={"content-type": "text/plain"}, text="short plain"),
-    }
-    calls = _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC))
-    monkeypatch.delenv("CF_ACCOUNT_ID", raising=False)
-    assert await web_page._fetch_page_text_worker("https://pub.example/") == "short plain"
-    doh_names = [c.url.params["name"] for c in calls if c.url.host == "cloudflare-dns.com"]
-    assert "next.example" in doh_names
-
-
-@pytest.mark.parametrize("location,match", [
-    ("https://intra.example/", "private"),
-    ("ftp://pub.example/file", "http"),
-])
-async def test_worker_fetch_blocks_unsafe_redirect(monkeypatch, location, match):
-    pages = {"https://pub.example/": lambda: httpx.Response(
-        302, headers={"location": location})}
-    calls = _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC))
-    with pytest.raises(ValueError, match=match):
-        await web_page._fetch_page_text_worker("https://pub.example/")
-    assert not any(c.url.host == "intra.example" for c in calls)
-
-
-async def test_worker_fetch_rejects_private_origin_before_request(monkeypatch):
-    calls = _patch_client(monkeypatch, _worker_handler({}, _PUBLIC))
-    with pytest.raises(ValueError, match="private"):
-        await web_page._fetch_page_text_worker("https://intra.example/")
-    assert all(c.url.host == "cloudflare-dns.com" for c in calls)
-
-
-async def test_worker_fetch_errors(monkeypatch):
-    pages = {
-        "https://pub.example/404": lambda: httpx.Response(404),
-        "https://pub.example/bin": lambda: httpx.Response(
-            200, headers={"content-type": "image/png"}, content=b"x"),
-        "https://pub.example/loop": lambda: httpx.Response(
-            302, headers={"location": "/loop"}),
-    }
-    _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC))
-    with pytest.raises(ValueError, match="http status 404"):
-        await web_page._fetch_page_text_worker("https://pub.example/404")
-    with pytest.raises(ValueError, match="unsupported content type"):
-        await web_page._fetch_page_text_worker("https://pub.example/bin")
-    with pytest.raises(ValueError, match="too many redirects"):
-        await web_page._fetch_page_text_worker("https://pub.example/loop")
-
-
-async def test_worker_fetch_stops_at_max_bytes(monkeypatch):
-    sent = []
-
-    async def body():
-        for _ in range(200):
-            sent.append(1)
-            yield b"<p>" + b"a" * 65533
-
-    pages = {"https://pub.example/": lambda: httpx.Response(
-        200, headers={"content-type": "text/html"}, content=body())}
-    _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC))
-    text = await web_page._fetch_page_text_worker("https://pub.example/")
-    assert len(text) == web_page._MAX_TEXT
-    assert len(sent) * 65536 <= web_page._MAX_BYTES + 65536
-
-
-async def test_worker_short_page_prefers_longer_browser_render(monkeypatch):
-    monkeypatch.setenv("CF_ACCOUNT_ID", "acct")
-    monkeypatch.setenv("CF_API_TOKEN", "tok")
-    pages = {"https://pub.example/": lambda: httpx.Response(
-        200, headers={"content-type": "text/html"}, text=_html("Loading"))}
-    _patch_client(monkeypatch, _worker_handler(
-        pages, _PUBLIC, render={"markdown": "Full rendered posting"}))
-    assert await web_page._fetch_page_text_worker("https://pub.example/") == \
-        "Full rendered posting"
-
-    _patch_client(monkeypatch, _worker_handler(pages, _PUBLIC, render=None))
-    assert await web_page._fetch_page_text_worker("https://pub.example/") == "Loading"
-
-
 # --- GitHub context ------------------------------------------------------------
 
 async def test_fetch_github_context_formats_owned_repos():
@@ -748,7 +546,6 @@ async def test_fetch_github_context_returns_empty_on_failure():
 
 
 async def test_fetch_page_text_decodes_declared_charset_and_asks_for_identity(monkeypatch):
-    monkeypatch.delenv("CF_WORKER", raising=False)
     _dns(monkeypatch, {"kr.example": ["93.184.216.34"]})
     seen = []
 

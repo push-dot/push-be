@@ -144,7 +144,6 @@ def test_python_wrangler_config_is_gone():
 
 def test_postgres_chat_poller_is_off_when_redis_runs_chat(monkeypatch):
     from app.jobs import runs_local_chat_worker
-    monkeypatch.delenv("CF_WORKER", raising=False)
     monkeypatch.delenv("CHAT_EXECUTOR", raising=False)
     monkeypatch.setenv("QUEUE_BACKEND", "redis")
     assert runs_local_chat_worker() is False

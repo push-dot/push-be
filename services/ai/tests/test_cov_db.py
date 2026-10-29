@@ -59,13 +59,11 @@ async def test_init_conn_ignores_setsockopt_error():
 ])
 def test_database_driver(monkeypatch, env, url, want):
     monkeypatch.setenv("DB_DRIVER", env)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     assert database_driver(url) == want
 
 
 def test_database_driver_ignores_cf_worker(monkeypatch):
     monkeypatch.delenv("DB_DRIVER", raising=False)
-    monkeypatch.setenv("CF_WORKER", "1")
     assert database_driver("postgres://localhost/db") == "asyncpg"
 
 
@@ -75,7 +73,6 @@ def test_database_driver_ignores_cf_worker(monkeypatch):
 ])
 def test_pg_transport(monkeypatch, explicit, worker, want):
     monkeypatch.setenv("PG_TRANSPORT", explicit)
-    monkeypatch.setenv("CF_WORKER", worker)
     assert pg_transport() == want
 
 

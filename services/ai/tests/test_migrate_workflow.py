@@ -29,7 +29,6 @@ def test_migrate_workflow_defaults_to_tcp_and_keeps_websocket():
 
 def test_pg_transport_honors_the_workflow_env(monkeypatch):
     monkeypatch.delenv("PG_TRANSPORT", raising=False)
-    monkeypatch.delenv("CF_WORKER", raising=False)
     assert pg_transport() == "tcp"
     monkeypatch.setenv("PG_TRANSPORT", "websocket")
     assert pg_transport() == "websocket"
