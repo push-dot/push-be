@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo/push-app-icon-dark-tile.png" width="128" alt="Push 마스코트" />
-</p>
-
 <h1 align="center">Push BE</h1>
 
 <p align="center">
@@ -102,8 +98,6 @@ infra/vps/              운영 compose, Traefik, env.example, 배포 스크립�
 ```
 
 Python이 `/api/v1`에 올리는 라우터는 `evidence`, `jobs`, `applications`, `documents`, `projects`, `interviews`, `conversations`, `approvals`, `operations`, `ai`다. `internal` 라우터는 접두사 없이 붙는다. `GET /healthz`와 `GET /api/v1/healthz`도 앱에 있다.
-
-투명 배경 마크는 `assets/logo/push-mark-dark-transparent.svg`와 `assets/logo/push-mark-white-transparent.svg`다.
 
 ## 로컬 실행
 
