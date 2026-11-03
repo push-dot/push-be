@@ -176,6 +176,8 @@ test("signup terms store the version and marketing, and the default version is u
   assert.equal(body.data.terms.age14At, "2026-10-21T00:00:00Z");
   const upsert = seen.find((call) => call.sql.includes("INSERT INTO user_consents"));
   assert.match(upsert?.sql ?? "", /COALESCE\(user_consents\.terms_version/);
+  // Uncast parameters made Postgres reject the statement (inconsistent types for $2).
+  assert.deepEqual((upsert?.sql ?? "").match(/\$[2-6](?!::)/g), null);
   assert.deepEqual(upsert?.params, [USER, NOW, true, "v9", true, true]);
 
   resetLimits();
