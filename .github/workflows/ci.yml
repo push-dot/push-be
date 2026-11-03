@@ -173,7 +173,7 @@ jobs:
 
   test-db:
     needs: changes
-    if: needs.changes.outputs.db == 'true'
+    if: needs.changes.outputs.db == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.gateway == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -211,6 +211,34 @@ jobs:
         run: uv run --no-sync python scripts/migrate.py
       - name: Check schema invariants
         run: psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f db/tests/schema_checks.sql
+      # The core and gateway tests run on in-memory fakes that accept any SQL. Capture every
+      # statement they send and PREPARE it here, on the migrated schema, so a parameter
+      # type conflict or a missing column fails CI instead of production.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install workers
+        run: npm ci
+      - name: Capture SQL from the core and gateway tests
+        env:
+          SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
+        run: |
+          set -euo pipefail
+          register="$GITHUB_WORKSPACE/scripts/sql-check/register.mjs"
+          (cd services/core-api && node --expose-gc --experimental-strip-types --import "$register" --test 'test/**/*.ts')
+          (cd services/gateway && node --experimental-strip-types --import "$register" --test 'test/**/*.ts')
+      - name: PREPARE every captured statement
+        run: |
+          # The pre-#198 terms upsert must still be rejected, or the check has stopped working.
+          if node scripts/sql-check/prepare.mjs scripts/sql-check/known-bad.jsonl \
+            | psql postgres://push:push@localhost:5432/push -q -v ON_ERROR_STOP=1 -f - >/dev/null 2>&1; then
+            echo "::error::sql-check accepted a statement it must reject"
+            exit 1
+          fi
+          node scripts/sql-check/prepare.mjs "$RUNNER_TEMP/sql.jsonl" \
+            | psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f -
 
   test-core:
     needs: changes
