@@ -254,7 +254,7 @@ jobs:
             echo "::error::sql-check accepted a statement it must reject"
             exit 1
           fi
-          node scripts/sql-check/prepare.mjs "$RUNNER_TEMP/sql.jsonl" \
+          node scripts/sql-check/prepare.mjs "$RUNNER_TEMP/sql.jsonl" --source "$RUNNER_TEMP/fragments.jsonl" "$RUNNER_TEMP/sites.jsonl" \
             | psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f -
 
   test-core:

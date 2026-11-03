@@ -91,22 +91,65 @@ for (const program of programs) {
     });
     return out;
   };
+  // A call runs SQL when the callee is a Query (deps.query) or takes one (query(q, sql),
+  // queryToleratingCompany(q, sql)). SQL passed anywhere else (claimed(due), countWhere)
+  // is a piece of a larger statement, so it must be reached by a test instead.
+  // A wrapper (onePost(ctx, sql), userBy(ctx, sql, ...)) counts too when its body hands
+  // that parameter, unchanged, to a call that runs SQL.
+  const isQuery = (type) => type?.symbol?.name === "Query";
+  const calleeBody = (call) => {
+    const decl = resolve(call.expression);
+    if (!decl) return null;
+    if (ts.isFunctionDeclaration(decl)) return decl;
+    if (ts.isVariableDeclaration(decl) && decl.initializer
+      && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) return decl.initializer;
+    return null;
+  };
+  const executes = (call, index, depth = 0) => {
+    if (isQuery(checker.getTypeAtLocation(call.expression))) return true;
+    const signature = checker.getResolvedSignature(call);
+    if (signature?.parameters.some((p) => isQuery(checker.getTypeOfSymbolAtLocation(p, call)))) return true;
+    const fn = depth < 3 ? calleeBody(call) : null;
+    const param = fn?.parameters[index];
+    if (!param || !ts.isIdentifier(param.name)) return false;
+    const name = param.name.text;
+    let found = false;
+    const walk = (node) => {
+      if (found) return;
+      if (ts.isCallExpression(node)) {
+        node.arguments.forEach((arg, i) => {
+          if (ts.isIdentifier(arg) && arg.text === name && executes(node, i, depth + 1)) found = true;
+        });
+      }
+      node.forEachChild(walk);
+    };
+    if (fn.body) walk(fn.body);
+    return found;
+  };
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) continue;
     const visit = (node) => {
       if (ts.isCallExpression(node)) {
-        for (const arg of node.arguments) {
+        node.arguments.forEach((arg, index) => {
           const value = fold(arg);
-          if (value) {
+          const runs = value ? executes(node, index) : false;
+          if (value && runs) {
             for (const s of value) if (SQL.test(s)) statements.add(s);
-            continue;
+            return;
+          }
+          if (value) {
+            const { line } = file.getLineAndCharacterOfPosition(arg.getStart());
+            for (const s of value) {
+              if (SQL.test(s)) sites.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment: s });
+            }
+            return;
           }
           const parts = literals(arg).filter((s) => /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b/.test(s));
-          if (parts.length === 0) continue;
+          if (parts.length === 0) return;
           const { line } = file.getLineAndCharacterOfPosition(arg.getStart());
           const fragment = parts.sort((a, b) => b.length - a.length)[0];
           sites.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment });
-        }
+        });
       }
       node.forEachChild(visit);
     };
