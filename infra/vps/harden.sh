@@ -153,7 +153,8 @@ id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --u
 # docker is root-equivalent; that is why the CI key is pinned to push-deploy.
 usermod -aG docker,systemd-journal "$DEPLOY_USER"
 usermod -p '*' "$DEPLOY_USER" # no password; key login only
-install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 "$APP_ROOT" "$APP_ROOT/releases"
+install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 "$APP_ROOT" "$APP_ROOT/releases" \
+  "$APP_ROOT-staging" "$APP_ROOT-staging/releases"
 install -d -m 0755 /usr/local/lib/push
 install -m 0755 "$HERE/bin/check-compose" /usr/local/lib/push/check-compose
 install -m 0755 "$HERE/bin/push-deploy" /usr/local/bin/push-deploy

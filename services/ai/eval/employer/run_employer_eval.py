@@ -1,6 +1,8 @@
 """Employer harness quality eval (super-recruit). Run on the VPS before a release:
 
     uv run python eval/employer/run_employer_eval.py --plan PRO
+    # feature tests use Sonnet 5.5 for every plan (keeps the effort of the plan):
+    python eval/employer/run_employer_eval.py --plan ULTRA --model anthropic/claude-sonnet-5-5
 
 Uses the real model for the plan (OpenRouter key from the environment) and prints
 the metrics the design doc gates on (docs/plans/2026-10-30-employer-harness-design.md §8):
@@ -29,22 +31,34 @@ from app.harness.employer.schemas import Flag, PostingDraft
 CASES = json.loads((Path(__file__).parent / "cases.json").read_text(encoding="utf-8"))
 
 
-async def run(plan: str) -> dict:
+async def run(plan: str, model: str | None = None) -> dict:
     cfg = load_config()
     levers = levers_for("EMPLOYER", plan, cfg)
     model = chat_model_for(
-        PlanLevers(levers.model, levers.effort, "", "", "", 0), streaming=False, config=cfg
+        PlanLevers(model or levers.model, levers.effort, "", "", "", 0), streaming=False, config=cfg
     )
     generate = structured_generate(model)
-    left = 0
-    for case in CASES["postings"]:
-        review = await nodes.review_posting(generate, PostingDraft.model_validate(case["draft"]))
-        left += len(banned_in_posting(review.draft.text()))
+    # Cases are independent; at MAX effort one after another runs past 25 minutes.
+    reviews, doc_flags, kit = await asyncio.gather(
+        asyncio.gather(*(
+            nodes.review_posting(generate, PostingDraft.model_validate(case["draft"]))
+            for case in CASES["postings"]
+        )),
+        asyncio.gather(*(
+            nodes.verify_claims(
+                generate, doc["text"], "백엔드 엔지니어 4-6년", "[]", {"used": False})
+            for doc in CASES["documents"]
+        )),
+        nodes.design_interview(
+            generate,
+            [Flag(title="역할", level="CHECK", reason="본인 기여가 흐려요")],
+            "백엔드 엔지니어",
+            CASES["documents"][0]["text"],
+        ),
+    )
+    left = sum(len(banned_in_posting(review.draft.text())) for review in reviews)
     caught = planted = solid_wrong = solid = verdicts = 0
-    for doc in CASES["documents"]:
-        flags = await nodes.verify_claims(
-            generate, doc["text"], "백엔드 엔지니어 4-6년", "[]", {"used": False}
-        )
+    for doc, flags in zip(CASES["documents"], doc_flags, strict=True):
         verdicts += sum(1 for f in flags if verdicts_in(f.title + f.reason))
         checks = [f for f in flags if f.level == "CHECK"]
         if doc["kind"] == "CHECK":
@@ -53,12 +67,6 @@ async def run(plan: str) -> dict:
         else:
             solid += 1
             solid_wrong += 1 if checks else 0
-    kit = await nodes.design_interview(
-        generate,
-        [Flag(title="역할", level="CHECK", reason="본인 기여가 흐려요")],
-        "백엔드 엔지니어",
-        CASES["documents"][0]["text"],
-    )
     bad_questions = sum(1 for q in kit.questions if banned_in_interview(q.text))
     return {
         "plan": plan,
@@ -83,7 +91,10 @@ def passed(m: dict) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", default="PRO", choices=["BASIC", "PRO", "ULTRA"])
-    metrics = asyncio.run(run(parser.parse_args().plan))
+    parser.add_argument(
+        "--model", default=None, help="override the plan model, e.g. anthropic/claude-sonnet-5-5")
+    args = parser.parse_args()
+    metrics = asyncio.run(run(args.plan, args.model))
     print(json.dumps({**metrics, "passed": passed(metrics)}, ensure_ascii=False, indent=2))
     raise SystemExit(0 if passed(metrics) else 1)
 

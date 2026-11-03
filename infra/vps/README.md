@@ -64,6 +64,31 @@ CI가 하는 일:
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
 3. `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다.
 
+## 테스트 서버 (staging)
+
+develop에 push하면 테스트 서버가 배포된다. main은 지금처럼 운영 서버로 간다.
+
+| 구성 | 운영 | 테스트 |
+|---|---|---|
+| 게이트웨이 | `push-be` | `push-be-staging` (`https://push-be-staging.<account>.workers.dev/api/v1`) |
+| core | `push-be-core` | `push-be-core-staging` |
+| AI (VPS) | compose 프로젝트 `push-ai`, `/opt/push-be` | `push-ai-staging`, `/opt/push-be-staging`, `compose.staging.yaml` |
+| DB | Neon 기본 브랜치 | Neon `staging` 브랜치 |
+| 모델 | 요금제별 | 모든 요금제 `anthropic/claude-sonnet-5-5` |
+| 로그인 | OAuth, 전화 | 위에 더해 `DEV_AUTH_TOKEN`, 전화 인증번호는 문자 대신 core 로그(`wrangler tail --env staging`) |
+
+- 테스트 AI는 운영 Traefik과 운영 `embed`를 함께 쓴다. 그래서 운영을 먼저 배포해야 하고, 서비스 이름은 `staging-` 접두사로 운영과 겹치지 않게 했다.
+- GitHub 환경 `staging`이 `DATABASE_URL`, `REDIS_PASSWORD`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `TOKEN_ENCRYPTION_KEY`, `DEV_AUTH_TOKEN`과 변수 `AI_HOST`, `DISPATCH_HOST`, `CORE_ORIGIN`을 덮어쓴다. 나머지는 저장소 값을 쓴다.
+- 운영 프록시가 테스트 호스트를 받으려면 저장소 변수 `STAGING_AI_HOST`, `STAGING_DISPATCH_HOST`가 있어야 한다.
+- 마이그레이션은 `gh workflow run migrate.yml --ref develop -f transport=tcp -f environment=staging`으로 돌린다.
+- 처음 한 번은 root가 `push-deploy`를 다시 설치하고 `/opt/push-be-staging`을 만들어야 한다. `harden.sh`를 다시 돌리거나 아래 세 줄을 실행한다.
+
+```bash
+install -d -o deploy -g deploy -m 0750 /opt/push-be-staging /opt/push-be-staging/releases
+install -m 0755 /opt/push-be/current/infra/vps/bin/push-deploy /usr/local/bin/push-deploy
+install -m 0755 /opt/push-be/current/infra/vps/bin/check-compose /usr/local/lib/push/check-compose
+```
+
 ## 새 VPS 준비
 
 1. Hostinger에서 Ubuntu 24.04를 다시 설치한다. root 비밀번호를 길게 정한다. 이 비밀번호는 Hostinger 브라우저 콘솔에서만 쓴다.
