@@ -1,13 +1,22 @@
 // Reads SQL captured by register.mjs and prints a psql script that PREPAREs every unique
 // statement inside one DO block, collects failures, prints them, and exits non-zero if
 // there are any. Nothing is executed: PREPARE only parses, resolves names and types.
-// Usage: node prepare.mjs /tmp/sql.jsonl | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f -
 import { readFileSync } from "node:fs";
 
+// Usage: node prepare.mjs <statements.jsonl> [--source <fragments.jsonl>...]
+// With --source, a statement is kept only if it contains one of the source's SQL
+// fragments, so made-up SQL inside the tests' own fakes ("UPDATE t") is not checked.
 const PREPARABLE = /^\s*(WITH|SELECT|INSERT|UPDATE|DELETE|VALUES)\b/i;
-const statements = [...new Set(
-  readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
-)].filter((sql) => PREPARABLE.test(sql)).sort();
+const [input, flag, ...sources] = process.argv.slice(2);
+const read = (path) => readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+const norm = (s) => s.replace(/\s+/g, " ").trim();
+const known = flag === "--source"
+  ? sources.flatMap(read).flatMap((f) => norm(f.fragment).split(/\{[^}]*\}|\$\{[^}]*\}/)).map((p) => p.trim()).filter((p) => p.length >= 12)
+  : null;
+const statements = [...new Set(read(input))]
+  .filter((sql) => PREPARABLE.test(sql))
+  .filter((sql) => !known || known.some((part) => norm(sql).includes(part)))
+  .sort();
 
 const quote = (sql, n) => {
   const tag = "$s" + n + "$";
