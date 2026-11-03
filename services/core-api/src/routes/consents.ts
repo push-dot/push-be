@@ -8,14 +8,16 @@ const TERMS_PATH = "/api/v1/me/consents/terms";
 const TERMS_VERSION = "2026-10-29";
 const REQUIRED = ["age14", "serviceTerms", "privacy"] as const;
 const SELECT = "SELECT reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at, marketing, marketing_at FROM user_consents WHERE user_id = $1";
+// Every parameter is cast: $2 is both a VALUES column and a CASE branch, and without
+// casts Postgres reports "inconsistent types deduced for parameter $2".
 const TERMS_UPSERT = "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at, marketing, marketing_at) "
-  + "VALUES ($1, false, $2, CASE WHEN $3 THEN $4 ELSE NULL END, CASE WHEN $3 THEN $2 ELSE NULL END, CASE WHEN $3 THEN $2 ELSE NULL END, CASE WHEN $3 THEN $2 ELSE NULL END, CASE WHEN $5 THEN $6 ELSE false END, CASE WHEN $5 THEN $2 ELSE NULL END) "
+  + "VALUES ($1, false, $2::timestamptz, CASE WHEN $3::boolean THEN $4::text ELSE NULL END, CASE WHEN $3::boolean THEN $2::timestamptz ELSE NULL END, CASE WHEN $3::boolean THEN $2::timestamptz ELSE NULL END, CASE WHEN $3::boolean THEN $2::timestamptz ELSE NULL END, CASE WHEN $5::boolean THEN $6::boolean ELSE false END, CASE WHEN $5::boolean THEN $2::timestamptz ELSE NULL END) "
   + "ON CONFLICT (user_id) DO UPDATE SET terms_version = COALESCE(user_consents.terms_version, EXCLUDED.terms_version), "
   + "age14_at = COALESCE(user_consents.age14_at, EXCLUDED.age14_at), "
   + "service_terms_at = COALESCE(user_consents.service_terms_at, EXCLUDED.service_terms_at), "
   + "privacy_at = COALESCE(user_consents.privacy_at, EXCLUDED.privacy_at), "
-  + "marketing = CASE WHEN $5 THEN $6 ELSE user_consents.marketing END, "
-  + "marketing_at = CASE WHEN $5 THEN $2 ELSE user_consents.marketing_at END";
+  + "marketing = CASE WHEN $5::boolean THEN $6::boolean ELSE user_consents.marketing END, "
+  + "marketing_at = CASE WHEN $5::boolean THEN $2::timestamptz ELSE user_consents.marketing_at END";
 
 const readJson = async (request: Request): Promise<Record<string, unknown>> => {
   const raw = await request.text();
