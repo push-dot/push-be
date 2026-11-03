@@ -173,7 +173,7 @@ jobs:
 
   test-db:
     needs: changes
-    if: needs.changes.outputs.db == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.gateway == 'true'
+    if: needs.changes.outputs.db == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.gateway == 'true' || needs.changes.outputs.ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -200,7 +200,8 @@ jobs:
           cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: uv sync --locked --no-dev --extra migrate --python 3.12
+        # test: the services/ai suite runs below to capture its SQL.
+        run: uv sync --locked --extra migrate --extra test --python 3.12
       - name: Apply migrations
         working-directory: services/ai
         env:
@@ -221,7 +222,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install workers
         run: npm ci
-      - name: Capture SQL from the core and gateway tests
+      - name: Capture SQL from the core, gateway and ai tests
         env:
           SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
         run: |
@@ -229,6 +230,22 @@ jobs:
           register="$GITHUB_WORKSPACE/scripts/sql-check/register.mjs"
           (cd services/core-api && node --expose-gc --experimental-strip-types --import "$register" --test 'test/**/*.ts')
           (cd services/gateway && node --experimental-strip-types --import "$register" --test 'test/**/*.ts')
+          (cd services/ai && PYTHONPATH="$GITHUB_WORKSPACE/scripts/sql-check" uv run --no-sync pytest -q -p sql_capture)
+      # Constant SQL is checked without a test. Every runtime-built call site and every
+      # SQL-looking string must land in a checked statement, or the job fails.
+      - name: Extract constant SQL and check coverage
+        env:
+          SITES: ${{ runner.temp }}/sites.jsonl
+          FRAGMENTS: ${{ runner.temp }}/fragments.jsonl
+        run: |
+          set -euo pipefail
+          node scripts/sql-check/extract-ts.mjs services/core-api/tsconfig.json services/gateway/tsconfig.json \
+            > "$RUNNER_TEMP/static-ts.jsonl"
+          (cd services/ai && uv run --no-sync python "$GITHUB_WORKSPACE/scripts/sql-check/extract-py.py" src) \
+            > "$RUNNER_TEMP/static-py.jsonl"
+          node scripts/sql-check/coverage.mjs --sites "$SITES" --fragments "$FRAGMENTS" \
+            --checked "$RUNNER_TEMP/static-ts.jsonl" "$RUNNER_TEMP/static-py.jsonl" "$RUNNER_TEMP/sql.jsonl"
+          cat "$RUNNER_TEMP/static-ts.jsonl" "$RUNNER_TEMP/static-py.jsonl" >> "$RUNNER_TEMP/sql.jsonl"
       - name: PREPARE every captured statement
         run: |
           # The pre-#198 terms upsert must still be rejected, or the check has stopped working.
