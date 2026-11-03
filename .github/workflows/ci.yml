@@ -16,6 +16,8 @@ permissions:
 # and the gateway.
 # Set the repository variable DEPLOY_BRANCH to retarget CD. If the new
 # branch is not develop or main, add it under on.push.branches as well.
+# A push to develop deploys the test server instead (GitHub environment
+# "staging": push-be-staging Workers, compose.staging.yaml on the VPS).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,6 +31,7 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       db: ${{ steps.filter.outputs.db }}
       deploy: ${{ steps.filter.outputs.deploy }}
+      stage: ${{ steps.filter.outputs.stage }}
       vps: ${{ steps.filter.outputs.vps }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,7 +67,11 @@ jobs:
           if match '^(db/|\.github/workflows/migrate\.yml|services/ai/scripts/migrate\.py|\.github/workflows/ci\.yml)'; then db=true; fi
           if match '^(services/ai/|infra/vps/|\.github/workflows/ci\.yml)'; then vps=true; fi
           deploy=false
-          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEPLOY_BRANCH" ]; then
+          stage=production
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "develop" ] && [ "$DEPLOY_BRANCH" != "develop" ]; then
+            stage=staging
+          fi
+          if [ "$EVENT_NAME" = "push" ] && { [ "$REF_NAME" = "$DEPLOY_BRANCH" ] || [ "$stage" = "staging" ]; }; then
             ai=true
             gateway=true
             core=true
@@ -72,7 +79,7 @@ jobs:
             deploy=true
           fi
           printf '%s\n' "ai=$ai" "gateway=$gateway" "core=$core" "db=$db" \
-            "deploy=$deploy" "vps=$vps" >> "$GITHUB_OUTPUT"
+            "deploy=$deploy" "stage=$stage" "vps=$vps" >> "$GITHUB_OUTPUT"
 
   # 3.12 is the floor (requires-python, Workers); 3.15 is the VPS image (services/ai/Dockerfile).
   test-ai:
@@ -294,8 +301,15 @@ jobs:
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # staging overrides DATABASE_URL, the shared secrets, DEV_AUTH_TOKEN, AI_HOST,
+    # DISPATCH_HOST and CORE_ORIGIN; everything else comes from the repository.
+    environment: ${{ needs.changes.outputs.stage }}
+    env:
+      STAGE: ${{ needs.changes.outputs.stage }}
+      # Empty for production; "--env staging" picks the staging Workers in wrangler.jsonc.
+      WRANGLER_ENV: ${{ needs.changes.outputs.stage == 'staging' && '--env staging' || '' }}
     concurrency:
-      group: deploy-${{ vars.DEPLOY_BRANCH || 'main' }}
+      group: deploy-${{ needs.changes.outputs.stage }}
       cancel-in-progress: false
     steps:
       # Fails before anything ships when a required secret or variable is
@@ -379,6 +393,9 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
           EXPO_ACCESS_TOKEN: ${{ secrets.EXPO_ACCESS_TOKEN }}
+          DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
+          STAGING_AI_HOST: ${{ vars.STAGING_AI_HOST }}
+          STAGING_DISPATCH_HOST: ${{ vars.STAGING_DISPATCH_HOST }}
           AI_HOST: ${{ vars.AI_HOST }}
           DISPATCH_HOST: ${{ vars.DISPATCH_HOST }}
           CORE_ORIGIN: ${{ vars.CORE_ORIGIN }}
@@ -423,7 +440,8 @@ jobs:
                ADMIN_TOKEN, TOKEN_ENCRYPTION_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, EMBEDDING_API_KEY,
                STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY,
-               DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, AI_HOST, DISPATCH_HOST, CORE_ORIGIN,
+               DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, DEV_AUTH_TOKEN, STAGING_AI_HOST,
+               STAGING_DISPATCH_HOST, AI_HOST, DISPATCH_HOST, CORE_ORIGIN,
                GOOGLE_CLIENT_ID, GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO,
                STRIPE_PRICE_ULTRA, QUEUE_BACKEND, EMBEDDING_PROVIDER, EMBEDDING_API_MODEL,
                RERANK_PROVIDER, AI_BASE_URL, NEON_STORAGE_LIMIT_BYTES, ALERT_EMAIL_TO,
@@ -432,10 +450,13 @@ jobs:
             | if (.value | test("[\u0027\n\r]")) then error("\(.key) contains a quote or newline")
               else "\(.key)=\u0027\(.value)\u0027" end
           ' > "$env_file"
-          git archive --format=tar HEAD | ssh_vps release "$GITHUB_SHA"
-          ssh_vps env < "$env_file"
-          if ! ssh_vps up "$GITHUB_SHA"; then
-            ssh_vps logs || true
+          # push-deploy takes "staging" before the verb for the test server.
+          stage_arg=()
+          [ "$STAGE" = "staging" ] && stage_arg=(staging)
+          git archive --format=tar HEAD | ssh_vps "${stage_arg[@]}" release "$GITHUB_SHA"
+          ssh_vps "${stage_arg[@]}" env < "$env_file"
+          if ! ssh_vps "${stage_arg[@]}" up "$GITHUB_SHA"; then
+            ssh_vps "${stage_arg[@]}" logs || true
             exit 1
           fi
           for url in "https://${AI_HOST}/healthz" "https://${DISPATCH_HOST}/healthz"; do
@@ -452,7 +473,7 @@ jobs:
             if [ "$ok" != "1" ]; then
               echo "::error::$url did not return 200"
               cat /tmp/healthz >&2 || true
-              ssh_vps ps || true
+              ssh_vps "${stage_arg[@]}" ps || true
               exit 1
             fi
             echo "$url ok"
@@ -462,7 +483,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --var AI_ORIGIN:https://${{ vars.AI_HOST }}
+        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }}
       # OAuth client IDs and Stripe price IDs are not secret, but they are
       # stored as Worker secrets so `wrangler deploy` (which replaces plain
       # vars with wrangler.jsonc) never drops them.
@@ -481,6 +502,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
           STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO }}
@@ -493,16 +515,17 @@ jobs:
                  | {DATABASE_URL, TOKEN_ENCRYPTION_KEY, AI_SHARED_SECRET, DISPATCH_SECRET, INTERNAL_API_SECRET,
                     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
-                    GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA}
+                    GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA,
+                    DEV_AUTH_TOKEN}
                  | with_entries(select((.value // "") != ""))' >"$file"
-          npx wrangler secret bulk "$file"
+          npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"
       - name: Deploy gateway worker
         working-directory: services/gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --var AI_ORIGIN:https://${{ vars.AI_HOST }}
+        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }}
       - name: Set gateway secrets
         working-directory: services/gateway
         env:
@@ -511,11 +534,12 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           AI_SHARED_SECRET: ${{ secrets.AI_SHARED_SECRET }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+          DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
           file="$RUNNER_TEMP/secrets-gateway.json"
-          jq -n 'env | {DATABASE_URL, AI_SHARED_SECRET, INTERNAL_API_SECRET}
+          jq -n 'env | {DATABASE_URL, AI_SHARED_SECRET, INTERNAL_API_SECRET, DEV_AUTH_TOKEN}
                  | with_entries(select((.value // "") != ""))' >"$file"
-          npx wrangler secret bulk "$file"
+          npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"

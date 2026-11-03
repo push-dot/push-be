@@ -32,5 +32,26 @@
     "MODEL_CACHE_TTL": "600",
     "JOB_SITES_CACHE_TTL": "3600",
     "AUTH_CACHE_TTL": "5"
+  },
+  // Test server: push-be-staging.<account>.workers.dev, deployed from develop with
+  // `wrangler deploy --env staging`. vars and services do not inherit, so they repeat.
+  // APP_ENV=development turns on DEV_AUTH_TOKEN sign-in.
+  "env": {
+    "staging": {
+      "name": "push-be-staging",
+      "triggers": { "crons": [] },
+      "services": [
+        { "binding": "CORE", "service": "push-be-core-staging" }
+      ],
+      "vars": {
+        "APP_ENV": "development",
+        "MANAGED_AI": "1",
+        "MANAGED_GO": "0",
+        "SSE_MAX_POLLS": "20",
+        "MODEL_CACHE_TTL": "600",
+        "JOB_SITES_CACHE_TTL": "3600",
+        "AUTH_CACHE_TTL": "5"
+      }
+    }
   }
 }
