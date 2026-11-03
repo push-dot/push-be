@@ -1,0 +1,1 @@
+"INSERT INTO user_consents (user_id, reference_data, updated_at, age14_at) VALUES ($1, false, $2, CASE WHEN $3 THEN $2 ELSE NULL END)"
