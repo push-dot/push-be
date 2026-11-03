@@ -22,6 +22,7 @@ printf 'AI_HOST=ai.example.com\nDISPATCH_HOST=dispatch.example.com\n' >>"$env_fi
 
 docker compose --env-file "$env_file" -f compose.yaml config --quiet
 docker compose --env-file "$env_file" --profile rerank -f compose.yaml config --format json | bin/check-compose
+docker compose --env-file "$env_file" -f compose.staging.yaml config --format json | bin/check-compose
 
 out="$(docker compose -f test/bad-compose.yaml config --format json | bin/check-compose 2>&1)" && {
   echo "check-compose accepted test/bad-compose.yaml" >&2

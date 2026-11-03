@@ -6,13 +6,23 @@
 #   env             KEY='value' lines on stdin -> /opt/push-be/.env (0600)
 #   up <sha>        check the rendered compose, then build and start it
 #   ps | logs       current release status, last 200 log lines
+# Prefix any verb with "staging" to act on the test server instead:
+# /opt/push-be-staging, compose project push-ai-staging, infra/vps/compose.staging.yaml.
 set -euo pipefail
 
 ROOT=/opt/push-be
+PROJECT=push-ai
+COMPOSE_FILE=infra/vps/compose.yaml
 CHECK=/usr/local/lib/push/check-compose
 KEEP_RELEASES=3
 
 read -r -a argv <<<"${SSH_ORIGINAL_COMMAND:-${*:-}}"
+if [ "${argv[0]:-}" = "staging" ]; then
+  ROOT=/opt/push-be-staging
+  PROJECT=push-ai-staging
+  COMPOSE_FILE=infra/vps/compose.staging.yaml
+  argv=("${argv[@]:1}")
+fi
 verb="${argv[0]:-}"
 release="${argv[1]:-}"
 
@@ -25,7 +35,7 @@ release_dir() {
   printf '%s/releases/%s' "$ROOT" "$release"
 }
 compose() {
-  docker compose -p push-ai --env-file "$ROOT/.env" -f "$1/infra/vps/compose.yaml" "${@:2}"
+  docker compose -p "$PROJECT" --env-file "$ROOT/.env" -f "$1/$COMPOSE_FILE" "${@:2}"
 }
 
 exec 9>"$ROOT/.deploy.lock"
@@ -39,7 +49,7 @@ case "$verb" in
     # GNU tar drops leading "/" and refuses ".." members; we run as deploy, never root.
     umask 022
     tar -x --no-same-owner -C "$dir.tmp"
-    [ -f "$dir.tmp/infra/vps/compose.yaml" ] || die "archive has no infra/vps/compose.yaml"
+    [ -f "$dir.tmp/$COMPOSE_FILE" ] || die "archive has no $COMPOSE_FILE"
     rm -rf "$dir"
     mv "$dir.tmp" "$dir"
     echo "push-deploy: unpacked $release"
@@ -78,6 +88,6 @@ case "$verb" in
     compose "$ROOT/current" logs --no-color --tail 200
     ;;
   *)
-    die "usage: release <sha> | env | up <sha> | ps | logs"
+    die "usage: [staging] release <sha> | env | up <sha> | ps | logs"
     ;;
 esac

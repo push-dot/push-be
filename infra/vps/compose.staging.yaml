@@ -1,0 +1,196 @@
+# Test server ("staging"): the AI stack for push-be-staging, deployed from develop by
+# `push-deploy staging ...` as compose project push-ai-staging next to the production
+# project push-ai. It has its own Redis and data volume and points at the Neon branch
+# in /opt/push-be-staging/.env. It has no proxy and no embed: the production Traefik
+# routes STAGING_AI_HOST / STAGING_DISPATCH_HOST here (traefik/dynamic.yml), and
+# ingest uses the production TEI embed, so both projects share push-ai's networks.
+# Service names carry a staging- prefix so DNS on the shared networks never resolves
+# a production name (ai-worker, dispatcher, redis) to a staging container.
+# Every plan runs on Sonnet 5.5 here, and APP_ENV=development turns on DEV_AUTH_TOKEN.
+
+x-hardened: &hardened
+  restart: unless-stopped
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-ai-image: &ai-image
+  <<: *hardened
+  build:
+    context: ../../services/ai
+    dockerfile: Dockerfile
+  image: push-ai:staging
+  user: "10001:10001"
+  pids_limit: 256
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+    - /home/app:size=32m,uid=10001,gid=10001,mode=0700
+
+x-queue-env: &queue-env
+  APP_ENV: development
+  DB_DRIVER: asyncpg
+  PG_TRANSPORT: tcp
+  RUN_MIGRATIONS: "0"
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  QUEUE_BACKEND: redis
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@staging-redis:6379/0
+
+x-ai-env: &ai-env
+  <<: *queue-env
+  PORT: "8080"
+  STORAGE_DIR: /data/sources
+  PUSH_RESUME_DIR: /data/resume
+  CHAT_EXECUTOR: local
+  BLOB_STORE: db
+  CHECKPOINTER: postgres
+  PLAYWRIGHT_NO_SANDBOX: "1"
+  AI_SHARED_SECRET: ${AI_SHARED_SECRET:?AI_SHARED_SECRET is required}
+  DEV_AUTH_TOKEN: ${DEV_AUTH_TOKEN:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
+  MODEL_FREE: anthropic/claude-sonnet-5-5
+  MODEL_PRO: anthropic/claude-sonnet-5-5
+  MODEL_ULTRA: anthropic/claude-sonnet-5-5
+  MODEL_EMPLOYER_ULTRA: anthropic/claude-sonnet-5-5
+  TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  EMBEDDING_PROVIDER: tei
+  TEI_EMBED_URL: http://embed:80
+  RERANK_PROVIDER: similarity
+  CORE_ORIGIN: ${CORE_ORIGIN:-}
+  INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+
+services:
+  staging-dispatcher:
+    <<: *ai-image
+    command: ["python", "-m", "app.workers.dispatcher_main"]
+    mem_limit: 128m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /home/app:size=8m,uid=10001,gid=10001,mode=0700
+    environment:
+      <<: *queue-env
+      STORAGE_DIR: /data/sources
+      DISPATCH_PORT: "8091"
+      DISPATCH_SECRET: ${DISPATCH_SECRET:?DISPATCH_SECRET is required}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN is required}
+    volumes:
+      - staging-ai-data:/data:ro
+    depends_on:
+      - staging-redis
+    networks:
+      - edge
+      - push-internal
+    expose:
+      - "8091"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz')
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  staging-ai-worker:
+    <<: *ai-image
+    command: ["python", "-m", "app.workers.ai_worker_main"]
+    mem_limit: 768m
+    shm_size: 64m
+    environment:
+      <<: *ai-env
+      SERVE_API: "1"
+      QUEUE_GROUP: ai
+      QUEUE_CONCURRENCY: "2"
+    volumes:
+      - staging-ai-data:/data
+    depends_on:
+      - staging-redis
+    networks:
+      - edge
+      - push-internal
+    expose:
+      - "8080"
+
+  staging-ingest-worker:
+    <<: *ai-image
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "app.workers.ingest_worker_main"]
+    mem_limit: 384m
+    environment:
+      <<: *ai-env
+      QUEUE_GROUP: ingest
+      QUEUE_CONCURRENCY: "1"
+    volumes:
+      - staging-ai-data:/data:ro
+    depends_on:
+      - staging-redis
+    networks:
+      - push-internal
+
+  staging-notify-worker:
+    <<: *ai-image
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "app.workers.notify_worker_main"]
+    mem_limit: 128m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /home/app:size=8m,uid=10001,gid=10001,mode=0700
+    environment:
+      <<: *queue-env
+      QUEUE_GROUP: notify
+    depends_on:
+      - staging-redis
+    networks:
+      - push-internal
+
+  staging-redis:
+    <<: *hardened
+    image: redis:8.10.2-alpine@sha256:0bf6577d7774e592b29d093e3ac9390eb91e13d72c21e506afce736de5e0eeb0
+    user: redis
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - volatile-lru
+    mem_limit: 96m
+    pids_limit: 64
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - staging-redis-data:/data
+    networks:
+      - push-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  staging-ai-data:
+  staging-redis-data:
+
+# Created by the production project (push-ai); deploy production first.
+networks:
+  edge:
+    name: push-ai_edge
+    external: true
+  push-internal:
+    name: push-ai_push-internal
+    external: true

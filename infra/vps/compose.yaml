@@ -104,6 +104,8 @@ services:
     environment:
       AI_HOST: ${AI_HOST:?AI_HOST is required}
       DISPATCH_HOST: ${DISPATCH_HOST:?DISPATCH_HOST is required}
+      STAGING_AI_HOST: ${STAGING_AI_HOST:-}
+      STAGING_DISPATCH_HOST: ${STAGING_DISPATCH_HOST:-}
     ports:
       - "0.0.0.0:80:80"
       - "0.0.0.0:443:443"

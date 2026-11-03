@@ -16,8 +16,33 @@ http:
       middlewares: [security-headers, rate-limit]
       tls:
         certResolver: le
+    # Test server (compose.staging.yaml). Only when the proxy has the staging hosts.
+{{- if env "STAGING_AI_HOST" }}
+    staging-ai:
+      rule: 'Host(`{{ env "STAGING_AI_HOST" }}`)'
+      entryPoints: [websecure]
+      service: staging-ai
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+    staging-dispatch:
+      rule: 'Host(`{{ env "STAGING_DISPATCH_HOST" }}`)'
+      entryPoints: [websecure]
+      service: staging-dispatch
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+{{- end }}
 
   services:
+    staging-ai:
+      loadBalancer:
+        servers:
+          - url: http://staging-ai-worker:8080
+    staging-dispatch:
+      loadBalancer:
+        servers:
+          - url: http://staging-dispatcher:8091
     ai:
       loadBalancer:
         servers:

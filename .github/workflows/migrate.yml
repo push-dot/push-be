@@ -1,7 +1,8 @@
 name: Migrate database
 
 # Manual only. Pushes to develop/main do not migrate.
-# This job uses the GitHub secret DATABASE_URL.
+# This job uses the GitHub secret DATABASE_URL of the chosen environment:
+# production (repository secret) or staging (the test server's Neon branch).
 #
 # Default transport is tcp on port 5432. Choose websocket when 5432 is
 # closed; that path uses Neon wss://<direct-host>/v2.
@@ -16,6 +17,14 @@ on:
         options:
           - tcp
           - websocket
+      environment:
+        description: "production or staging (test server)."
+        type: choice
+        required: true
+        default: production
+        options:
+          - production
+          - staging
 
 permissions:
   contents: read
@@ -24,6 +33,7 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
