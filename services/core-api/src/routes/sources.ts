@@ -87,8 +87,13 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
       "SELECT id, file_name, mime_type, size, page_count, origin, created_at FROM sources WHERE user_id = $1" + tail, params),
     kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at FROM documents WHERE user_id = $1" + tail, params),
   ]);
+  const sourceRows = (uploads?.rows ?? []).filter((row) => {
+    const name = String(row.file_name ?? "");
+    const mime = String(row.mime_type ?? "");
+    return !name.toLowerCase().endsWith(".md") && mime.toLowerCase() !== "text/markdown";
+  });
   const items: LibraryItem[] = [
-    ...(uploads?.rows ?? []).map((row) => ({
+    ...sourceRows.map((row) => ({
       id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
       pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
       origin: row.origin ? String(row.origin) : "UPLOAD",
@@ -97,7 +102,7 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
       id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
       createdAt: ts(row.created_at), origin: "AI",
     })),
-  ].filter((item) => !item.fileName.toLowerCase().endsWith(".md") && item.mimeType.toLowerCase() !== "text/markdown").sort(newerFirst);
+  ].sort(newerFirst);
   const hasMore = items.length > page.limit;
   const slice = items.slice(0, page.limit);
   const last = slice[slice.length - 1];
