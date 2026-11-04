@@ -401,10 +401,13 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
               break;
             }
           }
-          if (terminal) break;
+          if (terminal || !open) break;
           if (rows.length >= EVENT_PAGE) continue;
           idle = rows.length ? 0 : idle + 1;
-          if (i + 1 < polls) await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          if (i + 1 < polls) {
+            if (rows.length === 0) send(": ping\n\n");
+            await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          }
         }
       } catch {
         send("data: " + pyJson({

@@ -373,7 +373,9 @@ const enqueueChatMessage = async (
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  const kick = withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  if (ctx.deps.waitUntil) ctx.deps.waitUntil(kick);
+  else await kick;
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
