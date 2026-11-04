@@ -28,6 +28,7 @@ function eventDto(row: Record<string, unknown>): Record<string, unknown> {
     externalId: row.external_id == null ? null : String(row.external_id),
     notes: String(row.notes ?? ""),
     remindAt: ts(row.remind_at),
+    location: row.location == null || row.location === "" ? null : String(row.location),
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
@@ -44,6 +45,15 @@ async function readObject(request: Request): Promise<Record<string, unknown>> {
     if (err instanceof HttpError) throw err;
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
+}
+
+function locationOf(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw new HttpError(400, "VALIDATION_ERROR", "must be a string", { field: "location" });
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 200) throw new HttpError(400, "VALIDATION_ERROR", "must be at most 200 characters", { field: "location" });
+  return trimmed;
 }
 
 function parseTime(value: unknown, field: string): string {
@@ -67,7 +77,7 @@ export async function listEvents(ctx: Ctx): Promise<Response> {
   }
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id, new Date(fromMs).toISOString(), new Date(toMs).toISOString()];
-  let sql = "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at, to_jsonb(calendar_events) ->> 'remind_at' AS remind_at FROM calendar_events WHERE user_id = $1 AND starts_at >= $2 AND starts_at <= $3";
+  let sql = "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at, to_jsonb(calendar_events) ->> 'remind_at' AS remind_at, to_jsonb(calendar_events) ->> 'location' AS location FROM calendar_events WHERE user_id = $1 AND starts_at >= $2 AND starts_at <= $3";
   const app = ctx.url.searchParams.get("applicationId");
   if (app) {
     params.push(requireUuid(app, "applicationId"));
@@ -102,6 +112,7 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
   if (!validTz(tz)) throw new HttpError(400, "VALIDATION_ERROR", "invalid IANA time zone", { field: "timeZone" });
   const notes = typeof body.notes === "string" ? body.notes : "";
   const remindAt = body.remindAt == null || body.remindAt === "" ? null : parseTime(body.remindAt, "remindAt");
+  const location = locationOf(body.location);
   let applicationId: string | null = null;
   if (body.applicationId != null) {
     applicationId = requireUuid(String(body.applicationId), "applicationId");
@@ -110,19 +121,27 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
   }
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
+  const base = [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes];
   try {
     await query(ctx.deps.query,
-      "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$11)",
-      [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes, remindAt, now]);
+      "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, location, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$12,$12)",
+      [...base, remindAt, location, now]);
   } catch (err) {
     if (!isUndefinedColumn(err)) throw err;
-    await query(ctx.deps.query,
-      "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$10)",
-      [id, ctx.user.id, applicationId, type, title, starts, ends, tz, notes, now]);
+    try {
+      await query(ctx.deps.query,
+        "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$11)",
+        [...base, remindAt, now]);
+    } catch (err2) {
+      if (!isUndefinedColumn(err2)) throw err2;
+      await query(ctx.deps.query,
+        "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$10)",
+        [...base, now]);
+    }
   }
   return data(201, eventDto({
     id, revision: 1, application_id: applicationId, type, title, starts_at: starts, ends_at: ends,
-    time_zone: tz, source: "LOCAL", external_id: null, notes, remind_at: remindAt, created_at: now, updated_at: now,
+    time_zone: tz, source: "LOCAL", external_id: null, notes, remind_at: remindAt, location, created_at: now, updated_at: now,
   }), ctx.rid);
 }
 
@@ -131,7 +150,7 @@ export async function patchEvent(ctx: Ctx, idRaw: string): Promise<Response> {
   const body = await readObject(ctx.request);
   if (typeof body.expectedRevision !== "number") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   const current = await one(ctx.deps.query,
-    "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at FROM calendar_events WHERE id = $1 AND user_id = $2",
+    "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, to_jsonb(calendar_events) ->> 'location' AS location FROM calendar_events WHERE id = $1 AND user_id = $2",
     [id, ctx.user.id]);
   if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
   if (Number(current.revision) !== body.expectedRevision) {
@@ -155,11 +174,23 @@ export async function patchEvent(ctx: Ctx, idRaw: string): Promise<Response> {
     current.time_zone = body.timeZone;
   }
   if (body.notes != null) current.notes = String(body.notes);
+  if (body.location != null) current.location = locationOf(body.location);
   const now = ctx.now.toISOString();
-  const updated = await revisionUpdate(ctx.deps.query, "calendar_events",
-    "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, updated_at = $8 WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at",
-    [id, ctx.user.id, current.title, current.starts_at, current.ends_at, current.time_zone, current.notes, now, body.expectedRevision],
-    id, ctx.user.id);
+  const fields = [id, ctx.user.id, current.title, current.starts_at, current.ends_at, current.time_zone, current.notes];
+  let updated: Record<string, unknown>;
+  try {
+    updated = await revisionUpdate(ctx.deps.query, "calendar_events",
+      "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, location = $8, updated_at = $9 WHERE id = $1 AND user_id = $2 AND revision = $10 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, location, created_at, updated_at",
+      [...fields, current.location ?? null, now, body.expectedRevision],
+      id, ctx.user.id);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    updated = await revisionUpdate(ctx.deps.query, "calendar_events",
+      "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, updated_at = $8 WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at",
+      [...fields, now, body.expectedRevision],
+      id, ctx.user.id);
+  }
+  updated.location = current.location ?? null;
   return data(200, eventDto(updated), ctx.rid);
 }
 

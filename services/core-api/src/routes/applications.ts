@@ -1,5 +1,5 @@
 import { parseTimeField, strictBody } from "../body.ts";
-import { one, query } from "../db.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
 import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -10,7 +10,7 @@ const MANUAL = "MANUAL_RECORD";
 const ADAPTER = "ADAPTER";
 
 const APP_COLS = "id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at";
-const APP_SELECT = APP_COLS + ", (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = applications.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score";
+const APP_SELECT = APP_COLS + ", (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = applications.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score, to_jsonb(applications) -> 'stage_entered_at' AS stage_entered_at";
 const EVENT_COLS = "id, user_id, application_id, type, payload, created_at";
 const DRAFT_COLS = "id, user_id, application_id, application_revision, mode, adapter, document_version_ids, confirmed_submitted, payload_hash, created_at";
 const SUB_COLS = "id, user_id, application_id, mode, adapter, status, document_version_ids, approval_id, receipt_url, error_code, created_at, updated_at";
@@ -36,6 +36,23 @@ const approvalStale = (message: string): HttpError => new HttpError(409, "APPROV
 
 const uuids = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
 
+export const stageEnteredAt = (row: Row): Record<string, string> => {
+  let raw: unknown = row.stage_entered_at;
+  if (typeof raw === "string" && raw) {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  const out: Record<string, string> = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      const at = ts(value);
+      if (at) out[key] = at;
+    }
+  }
+  if (Object.keys(out).length) return out;
+  const at = ts(row.created_at);
+  return at ? { [String(row.stage)]: at } : {};
+};
+
 const appDto = (row: Row): Row => {
   const out: Row = {
     id: String(row.id),
@@ -52,7 +69,26 @@ const appDto = (row: Row): Row => {
   if (row.fit_score != null) out.fitScore = Number(row.fit_score);
   out.createdAt = ts(row.created_at);
   out.updatedAt = ts(row.updated_at);
+  out.stageEnteredAt = stageEnteredAt(row);
   return out;
+};
+
+const queryLoose = async (ctx: Ctx, sql: string, fallback: string, params: unknown[]): Promise<void> => {
+  try {
+    await query(ctx.deps.query, sql, params);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query, fallback, params);
+  }
+};
+
+const oneLoose = async (ctx: Ctx, sql: string, fallback: string, params: unknown[]): Promise<Row | null> => {
+  try {
+    return await one(ctx.deps.query, sql, params);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    return await one(ctx.deps.query, fallback, params);
+  }
 };
 
 const eventDto = (row: Row): Row => ({
@@ -139,9 +175,10 @@ export const createApplication = async (ctx: Ctx): Promise<Response> => {
   const row: Row = {
     id: crypto.randomUUID(), revision: 1, job_id: jobId, company: job.company, title: job.title,
     stage: "DISCOVERED", notes: String(values.notes ?? ""), applied_at: null, next_action_at: null,
-    imported: false, created_at: now, updated_at: now,
+    imported: false, created_at: now, updated_at: now, stage_entered_at: { DISCOVERED: now },
   };
-  await query(ctx.deps.query,
+  await queryLoose(ctx,
+    `INSERT INTO applications (${APP_COLS}, stage_entered_at) VALUES ($1,$2,1,$3,$4,$5,'DISCOVERED',$6,NULL,NULL,false,$7,$7, jsonb_build_object('DISCOVERED', $7::timestamptz))`,
     `INSERT INTO applications (${APP_COLS}) VALUES ($1,$2,1,$3,$4,$5,'DISCOVERED',$6,NULL,NULL,false,$7,$7)`,
     [row.id, ctx.user.id, jobId, row.company, row.title, row.notes, now]);
   return data(201, appDto(row), ctx.rid);
@@ -165,9 +202,11 @@ export const importApplication = async (ctx: Ctx): Promise<Response> => {
   const row: Row = {
     id: crypto.randomUUID(), revision: 1, job_id: jobId, company: job.company, title: job.title, stage,
     notes: String(values.notes ?? ""), applied_at: appliedAt, next_action_at: null, imported: true,
-    created_at: now, updated_at: now,
+    created_at: now, updated_at: now, stage_entered_at: { [stage]: now },
   };
-  await query(ctx.deps.query,
+  await queryLoose(ctx,
+    `WITH app AS (INSERT INTO applications (${APP_COLS}, stage_entered_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,NULL,true,$9,$9, jsonb_build_object($6, $9::timestamptz)) RETURNING id)
+     INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, app.id, 'IMPORTED', $11::jsonb, $9 FROM app`,
     `WITH app AS (INSERT INTO applications (${APP_COLS}) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,NULL,true,$9,$9) RETURNING id)
      INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, app.id, 'IMPORTED', $11::jsonb, $9 FROM app`,
     [row.id, ctx.user.id, jobId, row.company, row.title, stage, row.notes, appliedAt, now,
@@ -201,6 +240,9 @@ export const patchApplication = async (ctx: Ctx, idRaw: string): Promise<Respons
     if (to === "APPLIED" && from !== "APPLIED") throw transition("APPLIED can only be reached through submissions");
     if (!canPatchStage(from, to)) throw transition(`cannot move from ${from} to ${to}`);
     if (to !== from) {
+      const times = stageEnteredAt(app);
+      if (!times[to]) times[to] = now;
+      app.stage_entered_at = times;
       app.stage = to;
       if (to === "APPLIED") app.applied_at = now;
       event = { from, to };
@@ -210,14 +252,20 @@ export const patchApplication = async (ctx: Ctx, idRaw: string): Promise<Respons
   if (clearNext) app.next_action_at = null;
   else if (nextAt !== null) app.next_action_at = nextAt;
   app.updated_at = now;
-  const updated = await one(ctx.deps.query,
+  const patchParams = [id, ctx.user.id, app.stage, app.notes, app.applied_at == null ? null : ts(app.applied_at),
+    app.next_action_at == null ? null : ts(app.next_action_at), Boolean(app.imported), now, expected,
+    crypto.randomUUID(), JSON.stringify(event ?? {}), event !== null];
+  const updated = await oneLoose(ctx,
+    `WITH upd AS (UPDATE applications SET revision = revision + 1, stage = $3, notes = $4, applied_at = $5, next_action_at = $6, imported = $7, updated_at = $8,
+       stage_entered_at = COALESCE(stage_entered_at, '{}'::jsonb) || CASE WHEN COALESCE(stage_entered_at, '{}'::jsonb) ? $3 THEN '{}'::jsonb ELSE jsonb_build_object($3, $8::timestamptz) END
+       WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id),
+     ev AS (INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, upd.id, 'STAGE_CHANGED', $11::jsonb, $8 FROM upd WHERE $12)
+     SELECT id FROM upd`,
     `WITH upd AS (UPDATE applications SET revision = revision + 1, stage = $3, notes = $4, applied_at = $5, next_action_at = $6, imported = $7, updated_at = $8
        WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id),
      ev AS (INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, upd.id, 'STAGE_CHANGED', $11::jsonb, $8 FROM upd WHERE $12)
      SELECT id FROM upd`,
-    [id, ctx.user.id, app.stage, app.notes, app.applied_at == null ? null : ts(app.applied_at),
-      app.next_action_at == null ? null : ts(app.next_action_at), Boolean(app.imported), now, expected,
-      crypto.randomUUID(), JSON.stringify(event ?? {}), event !== null]);
+    patchParams);
   if (!updated) await failedUpdate(ctx, "applications", id);
   app.revision = expected + 1;
   return data(200, appDto(app), ctx.rid);
@@ -335,7 +383,17 @@ export const submitApplication = async (ctx: Ctx, idRaw: string): Promise<Respon
     document_version_ids: uuids(draft.document_version_ids), approval_id: approvalId, receipt_url: null, error_code: null,
     created_at: now, updated_at: now,
   };
-  const done = await one(ctx.deps.query,
+  const done = await oneLoose(ctx,
+    `WITH ap AS (UPDATE approvals SET revision = revision + 1, status = 'CONSUMED', consumed_at = $3, updated_at = $3
+       WHERE id = $1 AND user_id = $2 AND revision = $4
+         AND EXISTS (SELECT 1 FROM applications WHERE id = $6 AND user_id = $2 AND revision = $10) RETURNING id),
+     sub AS (INSERT INTO submissions (${SUB_COLS}) SELECT $5, $2, $6, $7, $8, 'SUCCEEDED', $9::jsonb, ap.id, NULL, NULL, $3, $3 FROM ap RETURNING id),
+     app AS (UPDATE applications SET revision = revision + 1, stage = 'APPLIED', applied_at = $3, updated_at = $3,
+       stage_entered_at = COALESCE(stage_entered_at, '{}'::jsonb) || CASE WHEN COALESCE(stage_entered_at, '{}'::jsonb) ? 'APPLIED' THEN '{}'::jsonb ELSE jsonb_build_object('APPLIED', $3::timestamptz) END
+       FROM ap WHERE applications.id = $6 AND applications.user_id = $2 AND applications.revision = $10 AND $11 RETURNING applications.id),
+     moved AS (INSERT INTO application_events (${EVENT_COLS}) SELECT $12, $2, app.id, 'STAGE_CHANGED', $13::jsonb, $3 FROM app),
+     logged AS (INSERT INTO application_events (${EVENT_COLS}) SELECT $14, $2, $6, 'SUBMISSION', $15::jsonb, $3 FROM sub)
+     SELECT ap.id FROM ap`,
     `WITH ap AS (UPDATE approvals SET revision = revision + 1, status = 'CONSUMED', consumed_at = $3, updated_at = $3
        WHERE id = $1 AND user_id = $2 AND revision = $4
          AND EXISTS (SELECT 1 FROM applications WHERE id = $6 AND user_id = $2 AND revision = $10) RETURNING id),

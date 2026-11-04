@@ -6,6 +6,7 @@ import {
 } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { stageEnteredAt } from "./applications.ts";
 import {
   JOB_CATEGORIES,
   GUEST_ID,
@@ -413,16 +414,18 @@ function applicationDto(row: Record<string, unknown>): Record<string, unknown> {
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
     fitScore: row.fit_score == null || row.fit_score === "" ? null : Number(row.fit_score),
+    stageEnteredAt: stageEnteredAt(row),
   };
 }
 
 const companyApplicationDto = (row: Record<string, unknown>): Record<string, unknown> => {
   const dto = applicationDto(row);
   delete dto.notes;
+  delete dto.stageEnteredAt;
   return dto;
 };
 
-const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at";
+const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at, to_jsonb(a) -> 'stage_entered_at' AS stage_entered_at";
 
 const existingApplication = (ctx: Ctx, postingId: string) => one(ctx.deps.query,
   `SELECT ${APPLICATION_COLS}
@@ -443,14 +446,14 @@ const idList = (value: unknown, field: string): string[] => {
  * when the caller has no application for the posting yet, which closes most of the double-apply window.
  */
 
-const APPLY_SQL = `WITH job AS (
+const applySql = (stamp: boolean): string => `WITH job AS (
     INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
     SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
     WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
     RETURNING id
   ), app AS (
-    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
-    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9 FROM job
+    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at${stamp ? ", stage_entered_at" : ""})
+    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9${stamp ? ", jsonb_build_object('APPLIED', $9::timestamptz)" : ""} FROM job
     RETURNING id
   ), ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
@@ -466,6 +469,9 @@ const APPLY_SQL = `WITH job AS (
     FROM app, jsonb_array_elements_text($15::jsonb) AS r(id) JOIN sources s ON s.id = r.id::uuid AND s.user_id = $2
   )
   SELECT id FROM app`;
+
+const APPLY_SQL = applySql(true);
+const APPLY_SQL_BARE = applySql(false);
 
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
@@ -504,16 +510,18 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     return { document_id: docId, title: String(doc.title ?? ""), content: snapshotText(doc.content) };
   });
   let created: Record<string, unknown> | null;
+  const applyParams = [
+    jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
+    posting.deadline, now, fields.choseong, fields.jamo, applicationId,
+    JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
+  ];
   try {
-    created = await one(ctx.deps.query, APPLY_SQL, [
-      jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
-      posting.deadline, now, fields.choseong, fields.jamo, applicationId,
-      JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
-    ]);
+    created = await one(ctx.deps.query, APPLY_SQL, applyParams);
   } catch (err) {
     // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
-    if (!isUnique(err)) throw err;
-    created = null;
+    if (isUnique(err)) created = null;
+    else if (!isUndefinedColumn(err)) throw err;
+    else created = await one(ctx.deps.query, APPLY_SQL_BARE, applyParams);
   }
   if (!created) {
     // A concurrent apply for the same posting won; answer with its application.
@@ -525,6 +533,7 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
     stage: "APPLIED", notes: "", applied_at: now, next_action_at: null, imported: false, created_at: now, updated_at: now,
+    stage_entered_at: { APPLIED: now },
   }), ctx.rid);
 }
 
@@ -900,11 +909,23 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
     throw new HttpError(409, "INVALID_TRANSITION", "terminal stage");
   }
   const now = ctx.now.toISOString();
-  const updated = await one(ctx.deps.query,
-    `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
-     WHERE id = $1 AND user_id = $2
-     RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
-    [applicationId, String(current.user_id), body.stage, now]);
+  const applicantParams = [applicationId, String(current.user_id), body.stage, now];
+  let updated: Record<string, unknown> | null;
+  try {
+    updated = await one(ctx.deps.query,
+      `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4,
+       stage_entered_at = COALESCE(stage_entered_at, '{}'::jsonb) || CASE WHEN COALESCE(stage_entered_at, '{}'::jsonb) ? $3 THEN '{}'::jsonb ELSE jsonb_build_object($3, $4::timestamptz) END
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
+      applicantParams);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    updated = await one(ctx.deps.query,
+      `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
+      applicantParams);
+  }
   if (!updated) throw notFound();
   await notify(ctx, String(current.user_id), "APPLICATION_STAGE", "지원 상태가 바뀌었어요", "", { kind: "activity", id: applicationId });
   return data(200, companyApplicationDto(updated), ctx.rid);

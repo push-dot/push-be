@@ -446,6 +446,14 @@
             ],
             "type": "string"
           },
+          "stageEnteredAt": {
+            "additionalProperties": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "description": "When each stage was first entered. A missing history uses the current stage at createdAt.",
+            "type": "object"
+          },
           "title": {
             "type": "string"
           },
@@ -466,7 +474,8 @@
           "nextActionAt",
           "imported",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "stageEnteredAt"
         ],
         "type": "object"
       },
@@ -805,6 +814,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "notes": {
             "type": "string"
           },
@@ -864,6 +884,7 @@
           "externalId",
           "notes",
           "remindAt",
+          "location",
           "createdAt",
           "updatedAt"
         ],
@@ -2799,6 +2820,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Document kind given at upload, or the document kind for an AI row. Null when that kind was not stored."
+          },
           "mimeType": {
             "type": "string"
           },
@@ -2827,7 +2859,8 @@
           "size",
           "pageCount",
           "createdAt",
-          "origin"
+          "origin",
+          "kind"
         ],
         "type": "object"
       },
@@ -8358,6 +8391,17 @@
                     "format": "date-time",
                     "type": "string"
                   },
+                  "location": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "notes": {
                     "type": "string"
                   },
@@ -8518,6 +8562,17 @@
                   },
                   "expectedRevision": {
                     "type": "integer"
+                  },
+                  "location": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "notes": {
                     "anyOf": [
@@ -22409,7 +22464,7 @@
     },
     "/api/v1/sources": {
       "get": {
-        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file.",
+        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.",
         "operationId": "getSources",
         "parameters": [
           {

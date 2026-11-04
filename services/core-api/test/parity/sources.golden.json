@@ -11,7 +11,8 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -20,7 +21,8 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000002",
@@ -29,7 +31,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -38,7 +41,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     }
    ],
    "page": {
@@ -59,7 +63,8 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -68,7 +73,8 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     }
    ],
    "page": {
@@ -89,7 +95,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -98,7 +105,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     }
    ],
    "page": {
@@ -133,7 +141,8 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -142,7 +151,8 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     }
    ],
    "page": {
@@ -163,7 +173,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -172,7 +183,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     }
    ],
    "page": {
@@ -1068,7 +1080,8 @@
      "size": 20,
      "pageCount": null,
      "createdAt": "2026-10-22T12:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000001",
@@ -1077,7 +1090,8 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -1086,7 +1100,8 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000002",
@@ -1095,7 +1110,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -1104,7 +1120,8 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": null
     }
    ],
    "page": {
