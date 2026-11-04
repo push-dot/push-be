@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.domain.posting_match import CANDIDATE_CAP, SCORE_CAP
+
 TOOL_INTENTS = (
     "find_postings",
     "deadline_postings",
@@ -155,9 +157,10 @@ _SPECS = {
         "instruction": (
             "빠른 시작은 나에게 맞는 공고 찾기예요. "
             "find_matching_postings를 한 번만 호출해요. "
-            "시트 조건으로 전체 열린 공고를 비교해요. "
+            f"비슷한 공고 {CANDIDATE_CAP}개 안에서 시트 조건을 걸러요. "
+            f"적합도는 {SCORE_CAP}개만 봐요. "
             "적합도 7점 스위치가 켜져 있으면 7점 미만은 빼요. "
-            "공고를 하나씩 점수 매기지 않아요. "
+            "7점이 모자라면 기준을 낮추지 않아요. "
             "결과는 회사, 직무, 지역, 적합도 순으로 말해요."
         ),
         "inputs": _find_inputs,
@@ -216,13 +219,16 @@ _SPECS = {
         "inputs": _offer_inputs,
     },
     "coffee_chat": {
-        "read_tools": ("get_my_profile", "search_career_context"),
-        "write_tools": ("create_post",),
+        "read_tools": ("get_my_profile", "search_career_context", "search_profiles"),
+        "write_tools": ("send_offer",),
         "instruction": (
             "빠른 시작은 커피챗 제안 쓰기예요. "
             "get_my_profile과 search_career_context로 내 경력을 읽어요. "
-            "상대에게 보낼 제안 초안을 말해요. "
-            "글을 올릴 때는 create_post를 쓰고, 승인 뒤에만 실행해요."
+            "search_profiles로 고른 사람만 찾아요. "
+            "제안 초안을 말해요. "
+            "그 한 사람에게는 send_offer로 보내요. "
+            "send_offer는 승인 뒤에만 실행해요. "
+            "공개 글은 올리지 않아요."
         ),
         "inputs": _coffee_inputs,
     },

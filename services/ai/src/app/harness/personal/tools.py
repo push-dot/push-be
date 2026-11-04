@@ -97,6 +97,15 @@ class FollowUser(BaseModel):
     user_id: UUID
 
 
+class ProfileSearch(BaseModel):
+    q: str = ""
+
+
+class SendOffer(BaseModel):
+    profile_id: UUID
+    message: str
+
+
 class ProfilePatch(_Camel):
     display_name: str | None = None
     headline: str | None = None
@@ -382,6 +391,9 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/calendar/events"),
     _core("get_my_profile", Tier.READ, EmptyArgs, "내 프로필을 봐요", "GET",
           lambda _args: "/api/v1/me/profile"),
+    _core("search_profiles", Tier.READ, ProfileSearch, "허브 프로필을 찾아요", "GET",
+          lambda args: "/api/v1/profiles" + ("?" + urlencode({"q": args.q}) if args.q else ""),
+          drop=("q",)),
     _core("list_posts", Tier.READ, EmptyArgs, "글을 봐요", "GET",
           lambda _args: "/api/v1/posts"),
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
@@ -413,6 +425,9 @@ PERSONAL_TOOLS = [
     _core("send_offer_message", Tier.RISKY_WRITE, OfferMessage, "제안에 답장을 보내요", "POST",
           lambda args: f"/api/v1/me/offers/{args.offer_id}/messages",
           write=True, drop=("offer_id",)),
+    _core("send_offer", Tier.RISKY_WRITE, SendOffer, "커피챗 제안을 보내요", "POST",
+          lambda args: f"/api/v1/profiles/{args.profile_id}/offer",
+          write=True, drop=("profile_id",)),
     _core("create_post", Tier.RISKY_WRITE, PostBody, "글을 올려요", "POST",
           lambda _args: "/api/v1/posts", write=True),
     _core("create_comment", Tier.RISKY_WRITE, CommentBody, "댓글을 남겨요", "POST",

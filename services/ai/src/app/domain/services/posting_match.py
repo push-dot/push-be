@@ -31,7 +31,10 @@ async def find_matching_postings(postings, user_vectors, conditions, *, score_fi
         -item["similarity"],
         item["postingId"],
     ))
-    return {"items": items, "scored": len(chosen), "text": render_matches(items)}
+    header = None
+    if (conditions or {}).get("minFit") and len(items) < cap:
+        header = f"7점 이상인 공고가 {len(items)}개예요."
+    return {"items": items, "scored": len(chosen), "text": render_matches(items, header=header)}
 
 
 async def run_quick_match(db, user_id, inputs, job_id=None):

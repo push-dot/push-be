@@ -112,6 +112,10 @@ def test_sheet_fields_land_in_the_other_seeds():
         "coffee_chat", "이하은 님에게 보낼 커피챗 제안 글을 써 주세요", {})
     assert coffee["inputs"]["name"] == "이하은"
     assert "get_my_profile" in coffee["read_tools"]
+    assert "search_profiles" in coffee["read_tools"]
+    assert coffee["write_tools"] == ("send_offer",)
+    assert "create_post" not in coffee["write_tools"]
+    assert "공개 글은 올리지 않아요." in coffee["instruction"]
 
     post = quick_start_seed(
         "career_post", "“결제 승인 API” 커리어 글 초안을 써 주세요", {})

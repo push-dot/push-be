@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-# shortcut: cross join of every open posting, switch to ANN when open postings pass a few thousand.
+from app.domain.posting_match import CANDIDATE_CAP
+
+# shortcut: LIMIT 60 trims the cross join, switch to ANN when open postings pass a few thousand.
 
 POSTING_MATCH_SQL = (
     "SELECT p.id, p.company, p.title, p.job_category, p.career_min, p.career_max, "
@@ -12,7 +14,9 @@ POSTING_MATCH_SQL = (
     "AND user_node.source_type = ANY($2::text[]) "
     "AND ($3::uuid IS NULL OR user_node.document_id = $3) "
     "WHERE p.status = 'OPEN' AND p.closed_at IS NULL "
-    "GROUP BY p.id"
+    "GROUP BY p.id "
+    "ORDER BY similarity DESC "
+    "LIMIT $4"
 )
 
 _LATEST_DOCUMENT = (
@@ -33,5 +37,6 @@ async def latest_document_id(query, user_id):
 async def load_corpus(query, user_id, document_id):
     if query is None or user_id is None:
         return [], []
-    rows = await query.fetch(POSTING_MATCH_SQL, user_id, _USER_KINDS, document_id)
+    rows = await query.fetch(
+        POSTING_MATCH_SQL, user_id, _USER_KINDS, document_id, CANDIDATE_CAP)
     return [dict(row) for row in rows], []

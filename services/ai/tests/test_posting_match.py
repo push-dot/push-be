@@ -5,10 +5,12 @@ from uuid import UUID
 import pytest
 
 from app.domain.posting_fit import fit_view
-from app.domain.posting_match import FIT_FLOOR, SCORE_CAP, cosine_similarity, rank_postings
+from app.domain.posting_match import (
+    CANDIDATE_CAP, FIT_FLOOR, SCORE_CAP, cosine_similarity, rank_postings,
+)
 from app.domain.services.posting_match import find_matching_postings
 from app.infrastructure.posting_fit_cache import load_fit
-from app.infrastructure.posting_match import POSTING_MATCH_SQL
+from app.infrastructure.posting_match import POSTING_MATCH_SQL, load_corpus
 
 USER = UUID("00000000-0000-4000-8000-0000000000aa")
 DOC = UUID("00000000-0000-4000-8000-0000000000d1")
@@ -110,6 +112,56 @@ async def test_min_fit_switch_drops_scores_under_seven():
     assert [item["postingId"] for item in result["items"]] == [str(UUID(int=1))]
     assert "6.9" not in result["text"]
     assert "회사1" in result["text"]
+    assert result["text"].startswith("7점 이상인 공고가 1개예요.")
+
+
+@pytest.mark.asyncio
+async def test_floor_does_not_score_past_the_cap_to_fill_the_list():
+    seen = []
+
+    async def score_fit(row, document_id):
+        seen.append(row["id"])
+        score = 9.0 if row["id"] == UUID(int=1) else 6.0
+        return {"fitScore": score, "parts": PARTS, "topGap": "도메인", "plan": "FREE"}
+
+    postings = [_posting(index, embedding=[1.0, index / 100]) for index in range(1, 26)]
+    result = await find_matching_postings(
+        postings, [[1.0, 0.0]], _conditions(minFit=True), score_fit=score_fit)
+    assert len(seen) == SCORE_CAP == 20
+    assert len(result["items"]) == 1
+    assert result["text"].startswith("7점 이상인 공고가 1개예요.")
+    assert "6.0" not in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_floor_stays_quiet_when_enough_postings_clear_seven():
+    async def score_fit(row, document_id):
+        return {"fitScore": 8.0, "parts": PARTS, "topGap": "도메인", "plan": "FREE"}
+
+    postings = [_posting(index, embedding=[1.0, index / 100]) for index in range(1, 21)]
+    result = await find_matching_postings(
+        postings, [[1.0, 0.0]], _conditions(minFit=True), score_fit=score_fit)
+    assert len(result["items"]) == SCORE_CAP
+    assert "7점 이상인 공고가" not in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_sheet_filters_run_before_scoring():
+    seen = []
+
+    async def score_fit(row, document_id):
+        seen.append(row["location"])
+        return {"fitScore": 8.0, "parts": PARTS, "topGap": "도메인", "plan": "FREE"}
+
+    missed = [
+        _posting(index, location="부산", skills=["Go"], embedding=[1.0, 0.0])
+        for index in range(1, 26)
+    ]
+    kept = _posting(100, embedding=[0.0, 1.0])
+    result = await find_matching_postings(
+        [*missed, kept], [[1.0, 0.0]], _conditions(), score_fit=score_fit)
+    assert seen == ["서울 강남구"]
+    assert [item["postingId"] for item in result["items"]] == [str(kept["id"])]
 
 
 class _CacheDb:
@@ -172,4 +224,25 @@ def test_match_sql_uses_tenant_filter_and_llamaindex_similarity():
     assert "source_type = ANY($2::text[])" in POSTING_MATCH_SQL
     assert "source_type = 'posting'" in POSTING_MATCH_SQL
     assert "1 - (posting.embedding <=> user_node.embedding)" in POSTING_MATCH_SQL
+    assert "user_node.document_id = $3" in POSTING_MATCH_SQL
     assert "p.status = 'OPEN'" in POSTING_MATCH_SQL
+    assert "ORDER BY similarity DESC" in POSTING_MATCH_SQL
+    assert "LIMIT $4" in POSTING_MATCH_SQL
+    assert CANDIDATE_CAP == 60
+
+
+@pytest.mark.asyncio
+async def test_load_corpus_asks_for_sixty_candidates():
+    seen = {}
+
+    class Query:
+        async def fetch(self, sql, *args):
+            seen["sql"] = sql
+            seen["args"] = args
+            return []
+
+    rows, vectors = await load_corpus(Query(), USER, DOC)
+    assert rows == []
+    assert vectors == []
+    assert seen["sql"] == POSTING_MATCH_SQL
+    assert seen["args"] == (USER, ["document", "evidence"], DOC, 60)

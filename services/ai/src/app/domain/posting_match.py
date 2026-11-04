@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 SCORE_CAP = 20
+CANDIDATE_CAP = 60
 FIT_FLOOR = 7.0
 
 
@@ -107,10 +108,10 @@ def rank_postings(postings, user_vectors, conditions) -> list[dict]:
     return ranked
 
 
-def render_matches(items: list[dict]) -> str:
+def render_matches(items: list[dict], *, header: str | None = None) -> str:
     if not items:
-        return "조건에 맞는 공고가 없어요."
-    lines = ["조건에 맞는 공고예요."]
+        return header or "조건에 맞는 공고가 없어요."
+    lines = [header or "조건에 맞는 공고예요."]
     for index, item in enumerate(items, 1):
         score = item.get("fitScore")
         score_text = "적합도를 아직 못 봤어요" if score is None else f"적합도 {score:g}점"
