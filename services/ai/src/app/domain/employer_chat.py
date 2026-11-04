@@ -6,7 +6,11 @@ from app.domain.errors import validation_field
 from app.domain.plan_levers import levers_for
 
 INTENTS = frozenset({"posting", "review", "interview", "general"})
-PERSONAL_INTENTS = frozenset({"match_posting", "fit", "gaps", "experience", "boost"})
+PERSONAL_INTENTS = frozenset({
+    "match_posting", "fit", "gaps", "experience", "boost",
+    "find_postings", "deadline_postings", "applications", "calendar",
+    "hub_profile", "offer_reply", "coffee_chat", "career_post",
+})
 _UNSET = object()
 _plan: ContextVar[object] = ContextVar("employer_company_plan", default=_UNSET)
 

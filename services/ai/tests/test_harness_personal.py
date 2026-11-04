@@ -19,6 +19,7 @@ from tests.stubs import FakeDB
 
 _TIERS = {
     "search_postings": Tier.READ,
+    "find_matching_postings": Tier.READ,
     "get_posting": Tier.READ,
     "list_bookmarks": Tier.READ,
     "list_applications": Tier.READ,
@@ -28,6 +29,7 @@ _TIERS = {
     "get_offer": Tier.READ,
     "list_calendar_events": Tier.READ,
     "get_my_profile": Tier.READ,
+    "search_profiles": Tier.READ,
     "list_posts": Tier.READ,
     "get_fit_score": Tier.READ,
     "search_career_context": Tier.READ,
@@ -42,6 +44,7 @@ _TIERS = {
     "accept_offer": Tier.RISKY_WRITE,
     "decline_offer": Tier.RISKY_WRITE,
     "send_offer_message": Tier.RISKY_WRITE,
+    "send_offer": Tier.RISKY_WRITE,
     "create_post": Tier.RISKY_WRITE,
     "create_comment": Tier.RISKY_WRITE,
     "follow_user": Tier.RISKY_WRITE,
@@ -58,6 +61,7 @@ _PYTHON = {
     "prepare_interview",
     "search_career_context",
     "start_document",
+    "find_matching_postings",
 }
 
 P = "11111111-1111-4111-8111-111111111111"
@@ -78,6 +82,7 @@ _CORE = {
     "accept_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/accept")),
     "decline_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/decline")),
     "send_offer_message": ({"offer_id": O, "body": "hi"}, ("POST", f"/api/v1/me/offers/{O}/messages")),
+    "send_offer": ({"profile_id": U, "message": "커피챗 하실래요?"}, ("POST", f"/api/v1/profiles/{U}/offer")),
     "list_calendar_events": ({}, ("GET", "/api/v1/calendar/events")),
     "create_calendar_event": ({"type": "INTERVIEW", "title": "면접", "starts_at": "2026-10-23T01:00:00Z", "ends_at": "2026-10-23T02:00:00Z"}, ("POST", "/api/v1/calendar/events")),
     "update_calendar_event": ({"event_id": E, "title": "면접"}, ("PATCH", f"/api/v1/calendar/events/{E}")),
@@ -87,6 +92,7 @@ _CORE = {
     "create_comment": ({"post_id": T, "body": "hi"}, ("POST", f"/api/v1/posts/{T}/comments")),
     "follow_user": ({"user_id": U}, ("POST", f"/api/v1/users/{U}/follow")),
     "get_my_profile": ({}, ("GET", "/api/v1/me/profile")),
+    "search_profiles": ({"q": "이하은"}, ("GET", "/api/v1/profiles")),
     "update_my_profile": ({"display_name": "김"}, ("PATCH", "/api/v1/me/profile")),
 }
 
@@ -126,7 +132,7 @@ async def test_core_tool_paths(name):
         assert set(json.loads(seen[0].content)) <= _CORE_FIELDS
 
 
-_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline"}
+_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline", "message"}
 
 
 async def test_calendar_and_profile_bodies_use_core_names():

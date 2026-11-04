@@ -97,6 +97,15 @@ class FollowUser(BaseModel):
     user_id: UUID
 
 
+class ProfileSearch(BaseModel):
+    q: str = ""
+
+
+class SendOffer(BaseModel):
+    profile_id: UUID
+    message: str
+
+
 class ProfilePatch(_Camel):
     display_name: str | None = None
     headline: str | None = None
@@ -126,6 +135,12 @@ class FitArgs(BaseModel):
 
 class CareerQuery(BaseModel):
     query: str = ""
+
+
+class MatchArgs(BaseModel):
+    chips: list[str] = []
+    min_fit: bool = False
+    document_id: OptionalId = None
 
 
 class PrepareArgs(BaseModel):
@@ -327,6 +342,18 @@ async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:
     return to_jsonable(op)
 
 
+async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
+    from app.domain.quick_starts import conditions_from_chips
+    from app.domain.services.posting_match import run_quick_match
+
+    conditions = conditions_from_chips(args.chips)
+    conditions["minFit"] = args.min_fit
+    if args.document_id is not None:
+        conditions["documentId"] = str(args.document_id)
+    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
+    return {"items": result.get("items") or [], "text": result.get("text") or ""}
+
+
 async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     svc = _svc()
     if svc is None or getattr(svc, "ai", None) is None:
@@ -348,6 +375,7 @@ PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",
           lambda args: "/api/v1/postings" + ("?" + urlencode({"q": args.q}) if args.q else ""),
           drop=("q",)),
+    _spec("find_matching_postings", Tier.READ, MatchArgs, _find_matching_postings, "공고를 찾아요"),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
     _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",
@@ -363,6 +391,9 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/calendar/events"),
     _core("get_my_profile", Tier.READ, EmptyArgs, "내 프로필을 봐요", "GET",
           lambda _args: "/api/v1/me/profile"),
+    _core("search_profiles", Tier.READ, ProfileSearch, "허브 프로필을 찾아요", "GET",
+          lambda args: "/api/v1/profiles" + ("?" + urlencode({"q": args.q}) if args.q else ""),
+          drop=("q",)),
     _core("list_posts", Tier.READ, EmptyArgs, "글을 봐요", "GET",
           lambda _args: "/api/v1/posts"),
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
@@ -394,6 +425,9 @@ PERSONAL_TOOLS = [
     _core("send_offer_message", Tier.RISKY_WRITE, OfferMessage, "제안에 답장을 보내요", "POST",
           lambda args: f"/api/v1/me/offers/{args.offer_id}/messages",
           write=True, drop=("offer_id",)),
+    _core("send_offer", Tier.RISKY_WRITE, SendOffer, "커피챗 제안을 보내요", "POST",
+          lambda args: f"/api/v1/profiles/{args.profile_id}/offer",
+          write=True, drop=("profile_id",)),
     _core("create_post", Tier.RISKY_WRITE, PostBody, "글을 올려요", "POST",
           lambda _args: "/api/v1/posts", write=True),
     _core("create_comment", Tier.RISKY_WRITE, CommentBody, "댓글을 남겨요", "POST",

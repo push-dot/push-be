@@ -11,6 +11,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.domain import entities as ent
+from app.domain.quick_starts import quick_start_seed
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
@@ -329,6 +330,10 @@ class HarnessRuntime:
                     state["start_flow"] = start
             if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
                 saved = _saved_resume(conversation.get("resume_state"))
+                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+                state["context"] = context
+                state["quick_start"] = None
+                state["quick_start_done"] = False
                 if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
                     seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
@@ -337,6 +342,8 @@ class HarnessRuntime:
                     state["intent"] = payload.get("intent")
                     if saved:
                         state["resume"] = saved
+                elif quick_start_seed(payload.get("intent"), text, context) is not None:
+                    state["intent"] = payload.get("intent")
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
         done = None

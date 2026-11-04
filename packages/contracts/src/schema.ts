@@ -6734,7 +6734,7 @@ export interface operations {
                         versionId?: string | null;
                     };
                     /** @enum {string} */
-                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost";
+                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost" | "find_postings" | "deadline_postings" | "applications" | "calendar" | "hub_profile" | "offer_reply" | "coffee_chat" | "career_post";
                     text: string;
                 };
             };
@@ -6817,7 +6817,7 @@ export interface operations {
                         versionId?: string | null;
                     };
                     /** @enum {string} */
-                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost";
+                    intent?: "posting" | "review" | "interview" | "general" | "match_posting" | "fit" | "gaps" | "experience" | "boost" | "find_postings" | "deadline_postings" | "applications" | "calendar" | "hub_profile" | "offer_reply" | "coffee_chat" | "career_post";
                     text: string;
                 };
             };
