@@ -167,13 +167,52 @@ def _svc():
     return bound_services.get()
 
 
+_LIBRARY_SQL = (
+    "SELECT id, file_name, mime_type, size, page_count, origin, created_at "
+    "FROM sources WHERE user_id = $1 AND origin IN ('UPLOAD', 'AI') "
+    "ORDER BY created_at DESC, id DESC"
+)
+
+
+def _cell(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _library_item(row) -> dict:
+    return {
+        "id": str(_cell(row, "id")),
+        "fileName": _cell(row, "file_name") or "",
+        "mimeType": _cell(row, "mime_type") or "",
+        "size": int(_cell(row, "size") or 0),
+        "pageCount": _cell(row, "page_count"),
+        "createdAt": _cell(row, "created_at"),
+        "origin": str(_cell(row, "origin") or "UPLOAD"),
+    }
+
+
+async def _library_sources(ctx: ToolContext) -> list:
+    if ctx.db is None:
+        return []
+    try:
+        user_id = UUID(ctx.user_id)
+    except (TypeError, ValueError):
+        return []
+    rows = await ctx.db.q().fetch(_LIBRARY_SQL, user_id)
+    return [to_jsonable(_library_item(row)) for row in rows or []]
+
+
 async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    items = []
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
-    if document_svc is None:
-        return {"items": []}
-    page = await document_svc.list(UUID(ctx.user_id), None, None, PageRequest())
-    return {"items": to_jsonable(page.items)}
+    if document_svc is not None:
+        page = await document_svc.list(UUID(ctx.user_id), None, None, PageRequest())
+        items.extend(to_jsonable(page.items))
+    items.extend(await _library_sources(ctx))
+    return {"items": items}
 
 
 async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:

@@ -154,6 +154,45 @@ def _human_text(state: dict) -> str:
     return ""
 
 
+_RESUME_FIX = ("고쳐", "고치", "맞춰", "맞추", "개선", "tailor", "improve")
+
+
+def _wants_resume_fix(text: str) -> bool:
+    folded = text.casefold()
+    return any(mark in folded for mark in _RESUME_FIX)
+
+
+def _attachment_inputs(state: dict) -> dict:
+    context = state.get("context") if isinstance(state.get("context"), dict) else {}
+    attachments = []
+    for item in context.get("evidenceIds") or []:
+        text = str(item).strip()
+        if text and text not in attachments:
+            attachments.append(text)
+    inputs = {"attachments": attachments}
+    document_id = context.get("documentId")
+    if document_id:
+        inputs["documentId"] = str(document_id)
+    return inputs
+
+
+async def _resume_from_attachment(db, state: dict) -> dict | None:
+    if state.get("intent"):
+        return None
+    if not _wants_resume_fix(_human_text(state)):
+        return None
+    inputs = _attachment_inputs(state)
+    if not inputs.get("attachments") and not inputs.get("documentId"):
+        return None
+    from app.harness.personal.resume.profile_document import resolve_uploaded_source
+
+    stamped = await resolve_uploaded_source(db, {"user_id": state.get("user_id"), "inputs": inputs})
+    found = stamped.get("inputs") if isinstance(stamped, dict) else None
+    if not isinstance(found, dict) or found.get("source") != "external":
+        return None
+    return quick_start_resume("match_posting", {"inputs": found})
+
+
 def _route_resume(state: PersonalState) -> str:
     if state.get("quick_start_done"):
         return "end"
@@ -412,6 +451,9 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             seed = quick_start_resume(state.get("intent"), _resume_dict(state))
             if seed is not None:
                 return enter_flow("resume_flow", resume=seed)
+            attached = await _resume_from_attachment(db, state)
+            if attached is not None:
+                return enter_flow("resume_flow", resume=attached)
             from app.domain.quick_starts import quick_start_seed
 
             started = quick_start_seed(
