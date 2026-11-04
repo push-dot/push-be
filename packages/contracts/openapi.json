@@ -13262,6 +13262,80 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/documents/{id}/base-profile": {
+      "post": {
+        "description": "Owner only. Replaces profiles.headline from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+        "operationId": "postDocumentsByIdBaseProfile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "documentId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "profileUserId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "documentId",
+                        "profileUserId"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Set a hub profile document as the user's base profile",
+        "tags": [
+          "documents"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/documents/{id}/exports": {
       "get": {
         "operationId": "getDocumentsByIdExports",
@@ -13726,7 +13800,7 @@
     },
     "/api/v1/documents/{id}/profile": {
       "post": {
-        "description": "target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.",
+        "description": "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
         "operationId": "postDocumentsByIdProfile",
         "parameters": [
           {
@@ -13762,9 +13836,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "target"
-                ],
+                "required": [],
                 "type": "object"
               }
             }
@@ -13826,7 +13898,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Save a hub profile document as the default profile or an application profile",
+        "summary": "Save a hub profile document as an application profile",
         "tags": [
           "documents"
         ],

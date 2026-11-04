@@ -89,4 +89,7 @@ test("document routes go to core except rendering and the AI revision proposal",
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}/export`), "python");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions`), "python");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/edits`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/profile`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/base-profile`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/base-profile`), "deny");
 });
