@@ -2,7 +2,7 @@
   "components": {
     "parameters": {
       "IdempotencyKey": {
-        "description": "UUID. A retry with the same key and body replays the first response.",
+        "description": "UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR.",
         "in": "header",
         "name": "Idempotency-Key",
         "required": true,
@@ -158,6 +158,7 @@
             "type": "string"
           },
           "provider": {
+            "description": "Model family routed through OpenRouter. The only key is OPENROUTER_API_KEY.",
             "enum": [
               "OPENAI",
               "OPENROUTER",
@@ -392,8 +393,15 @@
             "type": "string"
           },
           "fitScore": {
-            "description": "Latest gap analysis fit score; omitted when none",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null."
           },
           "id": {
             "format": "uuid",
@@ -862,9 +870,11 @@
         "type": "object"
       },
       "CareerAiOptions": {
+        "additionalProperties": false,
         "description": "Client provider and model are ignored; the plan selects the managed model.",
         "properties": {
           "effort": {
+            "description": "Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever.",
             "enum": [
               "LOW",
               "MEDIUM",
@@ -2648,8 +2658,17 @@
         "type": "object"
       },
       "DocumentsAiOptions": {
+        "additionalProperties": false,
+        "description": "Client provider and model are ignored. The plan selects the managed model.",
         "properties": {
           "effort": {
+            "description": "Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever.",
+            "enum": [
+              "LOW",
+              "MEDIUM",
+              "HIGH",
+              "MAX"
+            ],
             "type": "string"
           },
           "model": {
@@ -3005,7 +3024,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, INTERNAL, ...",
                 "type": "string"
               },
               "details": {
@@ -4253,7 +4272,7 @@
             "type": "object"
           }
         ],
-        "description": "status, newApplicantCount and createdBy are present only for members of the owning company (always present on create, update and close responses)."
+        "description": "status is present for members, and also for non-members when the status column was selected. newApplicantCount and createdBy are member-only. Create and the company list load them. Get, update, and close return newApplicantCount 0 and createdBy null."
       },
       "PostingsApplicantApplication": {
         "properties": {
@@ -5313,7 +5332,7 @@
             "type": "string"
           },
           "provider": {
-            "description": "google, github, email, or empty",
+            "description": "google, github, apple, email, phone, or empty",
             "type": "string"
           }
         },
@@ -5423,7 +5442,7 @@
     }
   },
   "info": {
-    "description": "Every route a client can call through the gateway. x-owner names the worker that answers it. Webhooks, /internal and AI worker act-as routes are not listed.",
+    "description": "Every route a client can call through the gateway. x-owner names the worker that answers it. Webhooks, /internal and AI worker act-as routes are not listed. Public core routes and GET /api/v1/healthz are 60 requests per minute per IP. Authenticated core routes and gateway user routes are 600 per minute per user. Those 429 RATE_LIMITED responses have no retryAfterSec.",
     "title": "Push API",
     "version": "1.0.0"
   },
@@ -5431,7 +5450,7 @@
   "paths": {
     "/api/v1/ai/generate": {
       "post": {
-        "description": "Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations}.",
+        "description": "Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations, usage}. usage has inputTokens and outputTokens. 403 FEATURE_DISABLED when the monthly limit is reached or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI or web search is not configured. Web search failure is 502 PROVIDER_ERROR.",
         "operationId": "postAiGenerate",
         "parameters": [
           {
@@ -5442,6 +5461,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "ai": {
                     "$ref": "#/components/schemas/CareerAiOptions"
@@ -5610,6 +5630,7 @@
         "operationId": "getAiUsage",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -5630,22 +5651,20 @@
             }
           },
           {
-            "description": "Inclusive lower bound on createdAt (RFC3339)",
+            "description": "Inclusive lower bound on createdAt. Any timestamp Date.parse accepts, including a date with no time.",
             "in": "query",
             "name": "from",
             "required": false,
             "schema": {
-              "format": "date-time",
               "type": "string"
             }
           },
           {
-            "description": "Inclusive upper bound on createdAt (RFC3339)",
+            "description": "Inclusive upper bound on createdAt. Any timestamp Date.parse accepts, including a date with no time.",
             "in": "query",
             "name": "to",
             "required": false,
             "schema": {
-              "format": "date-time",
               "type": "string"
             }
           }
@@ -5692,6 +5711,7 @@
         "operationId": "getApplications",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -5789,6 +5809,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "jobId": {
                     "format": "uuid",
@@ -5850,6 +5871,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "appliedAt": {
                     "description": "RFC3339 timestamp; naive values are treated as UTC",
@@ -5984,6 +6006,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -6117,6 +6140,7 @@
     },
     "/api/v1/applications/{id}/resume-run": {
       "post": {
+        "description": "When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. No usable evidence is 400 VALIDATION_ERROR.",
         "operationId": "postApplicationsByIdResumeRun",
         "parameters": [
           {
@@ -6136,6 +6160,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "ai": {
                     "anyOf": [
@@ -6207,6 +6232,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "adapter": {
                     "type": "null"
@@ -6288,6 +6314,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -6345,7 +6372,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft, records a SUCCEEDED submission and moves the application to APPLIED. Manual drafts need confirmedSubmitted. Errors: 409 APPROVAL_REQUIRED, APPROVAL_STALE, INVALID_TRANSITION, REVISION_CONFLICT.",
+        "description": "Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft and records a SUCCEEDED submission. Stage becomes APPLIED only from DISCOVERED, PREPARING, or READY. APPLIED, SCREENING, INTERVIEW, and OFFER stay and still record the submission. ACCEPTED, REJECTED, and WITHDRAWN are 409 INVALID_TRANSITION. Manual drafts need confirmedSubmitted. Also 409 APPROVAL_REQUIRED, APPROVAL_STALE, and REVISION_CONFLICT.",
         "operationId": "postApplicationsByIdSubmissions",
         "parameters": [
           {
@@ -6365,6 +6392,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "approvalId": {
                     "format": "uuid",
@@ -6433,6 +6461,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -6495,6 +6524,7 @@
         "operationId": "getApprovals",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -6587,6 +6617,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "anyOf": [
@@ -6741,6 +6772,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "decision": {
                     "enum": [
@@ -6795,7 +6827,7 @@
     },
     "/api/v1/auth/apple/callback": {
       "post": {
-        "description": "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+        "description": "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email. 503 NOT_CONFIGURED when Apple is not configured. 502 PROVIDER_ERROR when Apple token verification fails.",
         "operationId": "postAuthAppleCallback",
         "requestBody": {
           "content": {
@@ -6847,7 +6879,7 @@
     },
     "/api/v1/auth/apple/native": {
       "post": {
-        "description": "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+        "description": "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID or PENDING_SIGNUP_SECRET is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.",
         "operationId": "postAuthAppleNative",
         "requestBody": {
           "content": {
@@ -6923,7 +6955,7 @@
     },
     "/api/v1/auth/email/login": {
       "post": {
-        "description": "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.",
+        "description": "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. 429 RATE_LIMITED (details.retryAfterSec 60) after 10 attempts per minute for that email. Clears a pending account deletion.",
         "operationId": "postAuthEmailLogin",
         "requestBody": {
           "content": {
@@ -6981,7 +7013,7 @@
     },
     "/api/v1/auth/email/password-reset": {
       "post": {
-        "description": "Always 202, whether or not the email exists.",
+        "description": "202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.",
         "operationId": "postAuthEmailPasswordReset",
         "requestBody": {
           "content": {
@@ -7089,7 +7121,7 @@
     },
     "/api/v1/auth/email/signup": {
       "post": {
-        "description": "Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+        "description": "Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
         "operationId": "postAuthEmailSignup",
         "requestBody": {
           "content": {
@@ -7103,6 +7135,7 @@
                     "type": "string"
                   },
                   "displayName": {
+                    "description": "Trimmed. Blank after trim is rejected. Max 80 code points after trim.",
                     "maxLength": 80,
                     "minLength": 1,
                     "type": "string"
@@ -7172,6 +7205,7 @@
     },
     "/api/v1/auth/email/verify": {
       "post": {
+        "description": "409 EMAIL_TAKEN (details.accountType) if a user already has that email.",
         "operationId": "postAuthEmailVerify",
         "requestBody": {
           "content": {
@@ -7224,7 +7258,7 @@
     },
     "/api/v1/auth/exchange": {
       "post": {
-        "description": "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
+        "description": "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
         "operationId": "postAuthExchange",
         "requestBody": {
           "content": {
@@ -7595,7 +7629,7 @@
     },
     "/api/v1/auth/refresh": {
       "post": {
-        "description": "Reusing a revoked refresh token revokes every session of the user.",
+        "description": "Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED.",
         "operationId": "postAuthRefresh",
         "requestBody": {
           "content": {
@@ -7648,7 +7682,7 @@
     },
     "/api/v1/auth/{provider}/callback": {
       "get": {
-        "description": "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
+        "description": "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. GET with provider apple is 400 VALIDATION_ERROR; use POST /api/v1/auth/apple/callback. 503 NOT_CONFIGURED when the provider is not configured. 502 PROVIDER_ERROR when the token exchange or identity fetch fails.",
         "operationId": "getAuthByProviderCallback",
         "parameters": [
           {
@@ -7706,7 +7740,7 @@
     },
     "/api/v1/auth/{provider}/start": {
       "get": {
-        "description": "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+        "description": "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, http://localhost:5173/auth/callback, or http://localhost|127.0.0.1:<port>/auth/callback with port 1-65535 and no query, hash, or userinfo. https://localhost is allowed only when that origin is in OAUTH_REDIRECT_ORIGINS. An allowed web origin plus /auth/callback also works. 503 NOT_CONFIGURED when the provider client or the Apple team, key, or private key is missing.",
         "operationId": "getAuthByProviderStart",
         "parameters": [
           {
@@ -7849,7 +7883,7 @@
     },
     "/api/v1/billing/checkout": {
       "post": {
-        "description": "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.",
+        "description": "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. 503 NOT_CONFIGURED when the Stripe key or the plan price is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.",
         "operationId": "postBillingCheckout",
         "parameters": [
           {
@@ -7931,7 +7965,7 @@
     },
     "/api/v1/billing/iap/verify": {
       "post": {
-        "description": "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits.",
+        "description": "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits. 503 NOT_CONFIGURED when no IAP product or verify key is set. 502 PROVIDER_ERROR when the store request fails.",
         "operationId": "postBillingIapVerify",
         "parameters": [
           {
@@ -8033,6 +8067,7 @@
         "operationId": "getBillingLedger",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -8092,7 +8127,7 @@
     },
     "/api/v1/billing/portal": {
       "post": {
-        "description": "409 INVALID_TRANSITION when the user has no Stripe customer.",
+        "description": "409 INVALID_TRANSITION when the user has no Stripe customer. 503 NOT_CONFIGURED when Stripe is unset. 502 PROVIDER_ERROR when Stripe fails.",
         "operationId": "postBillingPortal",
         "parameters": [
           {
@@ -8139,7 +8174,7 @@
     },
     "/api/v1/billing/topup": {
       "post": {
-        "description": "EMPLOYER: company ADMIN only, credits go to the company.",
+        "description": "EMPLOYER: company ADMIN only, credits go to the company. 503 NOT_CONFIGURED when the Stripe key or the top-up price is missing. 502 PROVIDER_ERROR when Stripe fails.",
         "operationId": "postBillingTopup",
         "parameters": [
           {
@@ -8238,6 +8273,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -8571,6 +8607,7 @@
         "operationId": "getCareerEvidence",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -8663,6 +8700,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "kind": {
                     "enum": [
@@ -8761,7 +8799,7 @@
     },
     "/api/v1/career-evidence/import": {
       "post": {
-        "description": "When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format returns INTEGRATION_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.",
+        "description": "When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format is 409 INTEGRATION_REQUIRED. Empty text or title, or a kind outside RESUME, GITHUB, CAREER, EDUCATION, SKILL, and PROJECT, returns 202 with operation status NEEDS_INPUT and inputRequest.code IMPORT_DETAILS_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.",
         "operationId": "postCareerEvidenceImport",
         "parameters": [
           {
@@ -8772,6 +8810,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "contentHash": {
                     "type": "string"
@@ -8926,6 +8965,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -9046,7 +9086,7 @@
     },
     "/api/v1/companies/invites/{token}/accept": {
       "post": {
-        "description": "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER.",
+        "description": "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.",
         "operationId": "postCompaniesInvitesByTokenAccept",
         "parameters": [
           {
@@ -9144,7 +9184,7 @@
                   "logoKey": {
                     "anyOf": [
                       {
-                        "description": "Key from POST /api/v1/uploads/images",
+                        "description": "Key from POST /api/v1/uploads/images. Must not contain ..",
                         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
                         "type": "string"
                       },
@@ -9168,7 +9208,7 @@
                   "website": {
                     "anyOf": [
                       {
-                        "description": "http or https URL",
+                        "description": "http or https URL with no username or password",
                         "format": "uri",
                         "maxLength": 2000,
                         "type": "string"
@@ -9252,7 +9292,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full; 409 CONFLICT if already a member.",
+        "description": "ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full. 409 CONFLICT if already a member. 502 PROVIDER_ERROR when invite mail fails. A failed resend leaves the old token in place.",
         "operationId": "postCompaniesMeInvites",
         "parameters": [
           {
@@ -9382,7 +9422,7 @@
         "x-owner": "core"
       },
       "patch": {
-        "description": "ADMIN only. The caller becomes MEMBER.",
+        "description": "ADMIN only. 204 and no change when the target is already ADMIN, including a transfer to yourself. Otherwise the caller becomes MEMBER.",
         "operationId": "patchCompaniesMeMembersByUserId",
         "parameters": [
           {
@@ -9438,6 +9478,7 @@
         "operationId": "getCompaniesMePostings",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -9510,7 +9551,7 @@
     },
     "/api/v1/companies/verify": {
       "post": {
-        "description": "EMPLOYER only. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED); 409 COMPANY_EXISTS or CONFLICT (already in a company). Profile fields are absent in this response.",
+        "description": "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.",
         "operationId": "postCompaniesVerify",
         "parameters": [
           {
@@ -9591,6 +9632,7 @@
         "operationId": "getConversations",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -9691,7 +9733,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
+        "description": "audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.",
         "operationId": "postConversations",
         "parameters": [
           {
@@ -9702,6 +9744,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "anyOf": [
@@ -9884,6 +9927,7 @@
         "x-owner": "core"
       },
       "patch": {
+        "description": "409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match. 404 when the conversation is not visible to the caller.",
         "operationId": "patchConversationsById",
         "parameters": [
           {
@@ -9900,6 +9944,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -9996,6 +10041,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "optionId": {
                     "minLength": 1,
@@ -10066,7 +10112,7 @@
     },
     "/api/v1/conversations/{id}/archive": {
       "post": {
-        "description": "Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation.",
+        "description": "Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation. 409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match.",
         "operationId": "postConversationsByIdArchive",
         "parameters": [
           {
@@ -10086,6 +10132,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -10132,6 +10179,7 @@
     },
     "/api/v1/conversations/{id}/artifacts": {
       "get": {
+        "description": "Omits markdown: a .md title, name, or file name, or mime text/markdown. Other artifacts stay.",
         "operationId": "getConversationsByIdArtifacts",
         "parameters": [
           {
@@ -10179,7 +10227,7 @@
     },
     "/api/v1/conversations/{id}/artifacts/{artifactId}": {
       "get": {
-        "description": "artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension.",
+        "description": "artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension. This route still downloads markdown. List and file events do not show it.",
         "operationId": "getConversationsByIdArtifactsByArtifactId",
         "parameters": [
           {
@@ -10249,7 +10297,7 @@
     },
     "/api/v1/conversations/{id}/attachments": {
       "post": {
-        "description": "Company conversations only (verified company, plan-gated pdf_attachment). PDF only, max 10 MiB (413 PAYLOAD_TOO_LARGE).",
+        "description": "Company members only. A personal conversation, or one the caller cannot see, is 404. An unverified company is 403 BUSINESS_NOT_VERIFIED. pdf_attachment requires ULTRA, else 403 PLAN_REQUIRED with details.requiredPlan. PDF only, else 400. Over 10 MiB is 413 PAYLOAD_TOO_LARGE.",
         "operationId": "postConversationsByIdAttachments",
         "parameters": [
           {
@@ -10337,7 +10385,7 @@
     },
     "/api/v1/conversations/{id}/messages": {
       "get": {
-        "description": "Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's.",
+        "description": "Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's. Attachments whose title or name ends in .md, or whose mime is text/markdown, are omitted.",
         "operationId": "getConversationsByIdMessages",
         "parameters": [
           {
@@ -10350,6 +10398,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -10407,7 +10456,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec.",
         "operationId": "postConversationsByIdMessages",
         "parameters": [
           {
@@ -10427,6 +10476,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "accessMode": {
                     "description": "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting",
@@ -10442,6 +10492,7 @@
                   "ai": {
                     "anyOf": [
                       {
+                        "additionalProperties": false,
                         "properties": {
                           "effort": {
                             "description": "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.",
@@ -10462,6 +10513,7 @@
                             "type": "object"
                           },
                           "provider": {
+                            "description": "Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.",
                             "enum": [
                               "OPENAI",
                               "OPENROUTER",
@@ -10502,6 +10554,7 @@
                     ]
                   },
                   "context": {
+                    "additionalProperties": false,
                     "properties": {
                       "documentId": {
                         "anyOf": [
@@ -10515,6 +10568,7 @@
                         ]
                       },
                       "evidenceIds": {
+                        "description": "Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external.",
                         "items": {
                           "format": "uuid",
                           "type": "string"
@@ -10682,7 +10736,7 @@
     },
     "/api/v1/conversations/{id}/messages/stream": {
       "post": {
-        "description": "Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.",
+        "description": "Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
         "operationId": "postConversationsByIdMessagesStream",
         "parameters": [
           {
@@ -10699,6 +10753,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "accessMode": {
                     "description": "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting",
@@ -10714,6 +10769,7 @@
                   "ai": {
                     "anyOf": [
                       {
+                        "additionalProperties": false,
                         "properties": {
                           "effort": {
                             "description": "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.",
@@ -10734,6 +10790,7 @@
                             "type": "object"
                           },
                           "provider": {
+                            "description": "Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.",
                             "enum": [
                               "OPENAI",
                               "OPENROUTER",
@@ -10774,6 +10831,7 @@
                     ]
                   },
                   "context": {
+                    "additionalProperties": false,
                     "properties": {
                       "documentId": {
                         "anyOf": [
@@ -10787,6 +10845,7 @@
                         ]
                       },
                       "evidenceIds": {
+                        "description": "Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external.",
                         "items": {
                           "format": "uuid",
                           "type": "string"
@@ -10948,6 +11007,14 @@
                   "auto": {
                     "type": "boolean"
                   },
+                  "detail": {
+                    "description": "Boost gate only: the score change for this cycle",
+                    "type": "string"
+                  },
+                  "documentId": {
+                    "description": "Present gate: the saved profile document, when there is one",
+                    "type": "string"
+                  },
                   "gate": {
                     "type": "string"
                   },
@@ -10959,6 +11026,14 @@
                       "RESUME_GATE",
                       "EMPLOYER_GATE"
                     ],
+                    "type": "string"
+                  },
+                  "multiple": {
+                    "description": "Present and true when more than one option may be selected",
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "description": "Profile present gate: where the PDF can be exported",
                     "type": "string"
                   },
                   "options": {
@@ -11172,6 +11247,12 @@
                   "error": {
                     "properties": {
                       "code": {
+                        "description": "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).",
+                        "enum": [
+                          "NOT_CONFIGURED",
+                          "PROVIDER_ERROR",
+                          "INTERNAL"
+                        ],
                         "type": "string"
                       },
                       "details": {
@@ -11226,9 +11307,11 @@
                     "type": "string"
                   },
                   "mime": {
+                    "description": "Never text/markdown.",
                     "type": "string"
                   },
                   "name": {
+                    "description": "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event.",
                     "type": "string"
                   },
                   "seq": {
@@ -11531,6 +11614,7 @@
                         "type": "string"
                       },
                       "fileName": {
+                        "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
                         "type": "string"
                       },
                       "pageLine": {
@@ -11888,6 +11972,7 @@
                     "type": "integer"
                   },
                   "state": {
+                    "description": "Current turns emit wait, ok, or err. Replay can still send run.",
                     "enum": [
                       "run",
                       "ok",
@@ -11933,7 +12018,7 @@
     },
     "/api/v1/conversations/{id}/messages/stream/active": {
       "get": {
-        "description": "Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.",
+        "description": "Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
         "operationId": "getConversationsByIdMessagesStreamActive",
         "parameters": [
           {
@@ -12067,6 +12152,14 @@
                   "auto": {
                     "type": "boolean"
                   },
+                  "detail": {
+                    "description": "Boost gate only: the score change for this cycle",
+                    "type": "string"
+                  },
+                  "documentId": {
+                    "description": "Present gate: the saved profile document, when there is one",
+                    "type": "string"
+                  },
                   "gate": {
                     "type": "string"
                   },
@@ -12078,6 +12171,14 @@
                       "RESUME_GATE",
                       "EMPLOYER_GATE"
                     ],
+                    "type": "string"
+                  },
+                  "multiple": {
+                    "description": "Present and true when more than one option may be selected",
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "description": "Profile present gate: where the PDF can be exported",
                     "type": "string"
                   },
                   "options": {
@@ -12291,6 +12392,12 @@
                   "error": {
                     "properties": {
                       "code": {
+                        "description": "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).",
+                        "enum": [
+                          "NOT_CONFIGURED",
+                          "PROVIDER_ERROR",
+                          "INTERNAL"
+                        ],
                         "type": "string"
                       },
                       "details": {
@@ -12345,9 +12452,11 @@
                     "type": "string"
                   },
                   "mime": {
+                    "description": "Never text/markdown.",
                     "type": "string"
                   },
                   "name": {
+                    "description": "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event.",
                     "type": "string"
                   },
                   "seq": {
@@ -12650,6 +12759,7 @@
                         "type": "string"
                       },
                       "fileName": {
+                        "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
                         "type": "string"
                       },
                       "pageLine": {
@@ -13007,6 +13117,7 @@
                     "type": "integer"
                   },
                   "state": {
+                    "description": "Current turns emit wait, ok, or err. Replay can still send run.",
                     "enum": [
                       "run",
                       "ok",
@@ -13179,7 +13290,7 @@
     },
     "/api/v1/conversations/{id}/unarchive": {
       "post": {
-        "description": "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+        "description": "Same caller and expectedRevision rules as archive, including 409 REVISION_CONFLICT. Does not restore evidence or attachments removed by archive.",
         "operationId": "postConversationsByIdUnarchive",
         "parameters": [
           {
@@ -13199,6 +13310,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -13248,6 +13360,7 @@
         "operationId": "getDocuments",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -13339,6 +13452,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "format": "uuid",
@@ -13358,7 +13472,7 @@
                     "type": "string"
                   },
                   "template": {
-                    "description": "Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.",
+                    "description": "CLASSIC is stored as SIMPLE, COMPACT as ATS.",
                     "enum": [
                       "SIMPLE",
                       "MODERN",
@@ -13379,6 +13493,7 @@
                   "applicationId",
                   "title",
                   "kind",
+                  "template",
                   "language"
                 ],
                 "type": "object"
@@ -13478,6 +13593,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -13564,7 +13680,7 @@
     },
     "/api/v1/documents/{id}/archive": {
       "post": {
-        "description": "Idempotent: an already archived document is returned unchanged.",
+        "description": "200 unchanged when already archived and expectedRevision matches. A mismatch is 409 REVISION_CONFLICT, including a repeat of the body that just archived it.",
         "operationId": "postDocumentsByIdArchive",
         "parameters": [
           {
@@ -13584,6 +13700,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -13630,7 +13747,7 @@
     },
     "/api/v1/documents/{id}/base-profile": {
       "post": {
-        "description": "Owner only. Replaces profiles.headline from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+        "description": "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
         "operationId": "postDocumentsByIdBaseProfile",
         "parameters": [
           {
@@ -13650,6 +13767,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {},
                 "required": [],
                 "type": "object"
@@ -13716,6 +13834,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -13793,6 +13912,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "format": {
                     "enum": [
@@ -13882,6 +14002,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "byteLength": {
                     "minimum": 0,
@@ -13977,7 +14098,7 @@
     },
     "/api/v1/documents/{id}/finalize": {
       "post": {
-        "description": "Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval.",
+        "description": "Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval. An archived document is 409 INVALID_TRANSITION.",
         "operationId": "postDocumentsByIdFinalize",
         "parameters": [
           {
@@ -13997,6 +14118,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "approvalId": {
                     "format": "uuid",
@@ -14053,7 +14175,7 @@
     },
     "/api/v1/documents/{id}/generate": {
       "post": {
-        "description": "Enqueues a document generation job; poll the job for the result. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated.",
+        "description": "Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
         "operationId": "postDocumentsByIdGenerate",
         "parameters": [
           {
@@ -14166,7 +14288,7 @@
     },
     "/api/v1/documents/{id}/profile": {
       "post": {
-        "description": "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
+        "description": "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
         "operationId": "postDocumentsByIdProfile",
         "parameters": [
           {
@@ -14186,6 +14308,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "format": "uuid",
@@ -14292,6 +14415,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "versionId": {
                     "format": "uuid",
@@ -14354,7 +14478,7 @@
     },
     "/api/v1/documents/{id}/revisions": {
       "post": {
-        "description": "Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). Apply it with /revisions/{revisionId}/apply.",
+        "description": "Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). selection.to must be greater than selection.from. An archived document is 409 INVALID_TRANSITION. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Apply it with /revisions/{revisionId}/apply.",
         "operationId": "postDocumentsByIdRevisions",
         "parameters": [
           {
@@ -14374,6 +14498,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "action": {
                     "enum": [
@@ -14402,6 +14527,7 @@
                     "type": "string"
                   },
                   "selection": {
+                    "additionalProperties": false,
                     "properties": {
                       "from": {
                         "minimum": 0,
@@ -14471,7 +14597,7 @@
     },
     "/api/v1/documents/{id}/revisions/{revisionId}/apply": {
       "post": {
-        "description": "409 APPROVAL_STALE when the document moved past the proposal's source version, 409 INVALID_TRANSITION when already applied.",
+        "description": "409 APPROVAL_STALE when the document moved past the proposal's source version or the selection text is gone. 409 INVALID_TRANSITION when already applied or the document is archived.",
         "operationId": "postDocumentsByIdRevisionsByRevisionIdApply",
         "parameters": [
           {
@@ -14500,6 +14626,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -14570,6 +14697,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -14627,7 +14755,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT.",
+        "description": "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION.",
         "operationId": "postDocumentsByIdVersions",
         "parameters": [
           {
@@ -14647,6 +14775,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "blocks": {
                     "items": {
@@ -14861,14 +14990,11 @@
             }
           },
           {
-            "description": "PDF only; 1 embeds the profile avatar",
+            "description": "PDF only. 1 embeds the profile avatar. Any other value is ignored.",
             "in": "query",
             "name": "photo",
             "required": false,
             "schema": {
-              "enum": [
-                "1"
-              ],
               "type": "string"
             }
           }
@@ -14904,6 +15030,7 @@
     },
     "/api/v1/experiments/{key}/assignment": {
       "get": {
+        "description": "An ended experiment returns variants[0] with enrolled true and createdAt equal to the request time, and stores no row. Exclusion returns the same shape with enrolled false, also unsaved. Otherwise this gets or creates the stored assignment.",
         "operationId": "getExperimentsByKeyAssignment",
         "parameters": [
           {
@@ -14987,6 +15114,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "event": {
                     "maxLength": 100,
@@ -15192,6 +15320,7 @@
     },
     "/api/v1/healthz": {
       "get": {
+        "description": "429 RATE_LIMITED when the public per-IP bucket is full (default 60 per minute).",
         "operationId": "getHealthz",
         "responses": {
           "200": {
@@ -15287,7 +15416,7 @@
     },
     "/api/v1/integrations/google/callback": {
       "get": {
-        "description": "Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds).",
+        "description": "Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds). 503 NOT_CONFIGURED when Google is not configured. Token exchange failure is 502 PROVIDER_ERROR.",
         "operationId": "getIntegrationsGoogleCallback",
         "parameters": [
           {
@@ -15332,7 +15461,7 @@
     },
     "/api/v1/integrations/google/complete": {
       "post": {
-        "description": "Exchanges the one-time integration code with the PKCE verifier and stores the tokens.",
+        "description": "Exchanges the one-time integration code with the PKCE verifier and stores the tokens. 503 NOT_CONFIGURED when Google is not configured.",
         "operationId": "postIntegrationsGoogleComplete",
         "parameters": [
           {
@@ -15343,6 +15472,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "codeVerifier": {
                     "type": "string"
@@ -15393,7 +15523,7 @@
     },
     "/api/v1/integrations/google/connect": {
       "post": {
-        "description": "Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes.",
+        "description": "Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes. 503 NOT_CONFIGURED when the client credentials or the token cipher are missing.",
         "operationId": "postIntegrationsGoogleConnect",
         "parameters": [
           {
@@ -15404,6 +15534,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "codeChallenge": {
                     "minLength": 1,
@@ -15480,9 +15611,11 @@
     },
     "/api/v1/integrations/google/events": {
       "get": {
+        "description": "503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.",
         "operationId": "getIntegrationsGoogleEvents",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -15562,10 +15695,11 @@
     },
     "/api/v1/integrations/google/messages": {
       "get": {
-        "description": "403 FEATURE_DISABLED unless Gmail beta is enabled.",
+        "description": "503 NOT_CONFIGURED when Google is not configured, then 403 FEATURE_DISABLED unless Gmail beta is enabled, then 409 INTEGRATION_REQUIRED when not connected.",
         "operationId": "getIntegrationsGoogleMessages",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -15634,6 +15768,7 @@
     },
     "/api/v1/integrations/google/messages/{id}/link": {
       "post": {
+        "description": "503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.",
         "operationId": "postIntegrationsGoogleMessagesByIdLink",
         "parameters": [
           {
@@ -15653,6 +15788,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "format": "uuid",
@@ -15700,7 +15836,7 @@
     },
     "/api/v1/integrations/google/sync": {
       "post": {
-        "description": "Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. 409 INTEGRATION_REQUIRED when not connected; 502 PROVIDER_ERROR on Google failures.",
+        "description": "Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. messages and events are integer counts. 503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected. 502 PROVIDER_ERROR on Google failures.",
         "operationId": "postIntegrationsGoogleSync",
         "parameters": [
           {
@@ -15781,6 +15917,7 @@
         "operationId": "getInterviews",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -15878,6 +16015,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "applicationId": {
                     "format": "uuid",
@@ -15885,9 +16023,10 @@
                   },
                   "companySources": {
                     "items": {
+                      "additionalProperties": false,
                       "properties": {
                         "accessedAt": {
-                          "description": "RFC3339 timestamp; naive values are treated as UTC",
+                          "description": "RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future.",
                           "type": "string"
                         },
                         "sourceText": {
@@ -15896,7 +16035,7 @@
                           "type": "string"
                         },
                         "sourceUrl": {
-                          "format": "uri",
+                          "description": "http or https URL with a hostname and no username or password",
                           "type": "string"
                         }
                       },
@@ -16047,14 +16186,16 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "companySources": {
                     "anyOf": [
                       {
                         "items": {
+                          "additionalProperties": false,
                           "properties": {
                             "accessedAt": {
-                              "description": "RFC3339 timestamp; naive values are treated as UTC",
+                              "description": "RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future.",
                               "type": "string"
                             },
                             "sourceText": {
@@ -16063,7 +16204,7 @@
                               "type": "string"
                             },
                             "sourceUrl": {
-                              "format": "uri",
+                              "description": "http or https URL with a hostname and no username or password",
                               "type": "string"
                             }
                           },
@@ -16170,6 +16311,7 @@
     },
     "/api/v1/interviews/{id}/prepare": {
       "post": {
+        "description": "When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
         "operationId": "postInterviewsByIdPrepare",
         "parameters": [
           {
@@ -16189,6 +16331,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "ai": {
                     "anyOf": [
@@ -16248,6 +16391,7 @@
         "operationId": "getJobs",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16623,6 +16767,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16682,7 +16827,7 @@
     },
     "/api/v1/jobs/{id}/analyze": {
       "post": {
-        "description": "Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS.",
+        "description": "Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS. 409 APPROVAL_REQUIRED when evidence lacks an approved EVIDENCE_USE. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
         "operationId": "postJobsByIdAnalyze",
         "parameters": [
           {
@@ -16702,6 +16847,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "ai": {
                     "anyOf": [
@@ -16793,6 +16939,7 @@
         "operationId": "getMeBookmarks",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16855,6 +17002,7 @@
         "operationId": "getMeCommentedPosts",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16997,12 +17145,13 @@
     },
     "/api/v1/me/consents/terms": {
       "put": {
-        "description": "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+        "description": "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
         "operationId": "putMeConsentsTerms",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "age14": {
                     "type": "boolean"
@@ -17160,6 +17309,7 @@
         "operationId": "getMeFollowers",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17222,6 +17372,7 @@
         "operationId": "getMeFollows",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17284,6 +17435,7 @@
         "operationId": "getMeLinks",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17356,7 +17508,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "kind is inferred from the URL host when omitted.",
+        "description": "kind is inferred from the URL host when omitted. url must be http or https with no username or password.",
         "operationId": "postMeLinks",
         "parameters": [
           {
@@ -17401,6 +17553,7 @@
                     ]
                   },
                   "url": {
+                    "description": "http or https URL with no username or password",
                     "format": "uri",
                     "maxLength": 2000,
                     "minLength": 1,
@@ -17475,6 +17628,7 @@
         "x-owner": "core"
       },
       "patch": {
+        "description": "url, when sent, must be http or https with no username or password.",
         "operationId": "patchMeLinksById",
         "parameters": [
           {
@@ -17518,6 +17672,7 @@
                     ]
                   },
                   "url": {
+                    "description": "http or https URL with no username or password",
                     "format": "uri",
                     "maxLength": 2000,
                     "minLength": 1,
@@ -17566,6 +17721,7 @@
         "operationId": "getMeNotifications",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17728,6 +17884,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17832,7 +17989,7 @@
     },
     "/api/v1/me/offers/{id}/accept": {
       "post": {
-        "description": "Recipient only. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
+        "description": "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
         "operationId": "postMeOffersByIdAccept",
         "parameters": [
           {
@@ -17905,7 +18062,7 @@
     },
     "/api/v1/me/offers/{id}/decline": {
       "post": {
-        "description": "Recipient only. 409 when the offer is not SENT or READ.",
+        "description": "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.",
         "operationId": "postMeOffersByIdDecline",
         "parameters": [
           {
@@ -17966,6 +18123,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -18094,6 +18252,7 @@
         "operationId": "getMePosts",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -18200,7 +18359,8 @@
                       {
                         "type": "null"
                       }
-                    ]
+                    ],
+                    "description": "Null or an empty string clears it. A key must not contain .."
                   },
                   "careerStatus": {
                     "anyOf": [
@@ -18298,7 +18458,8 @@
                       {
                         "type": "null"
                       }
-                    ]
+                    ],
+                    "description": "UUID of a source the caller owns. Null or empty clears it. A missing source is 404."
                   },
                   "skills": {
                     "anyOf": [
@@ -18671,6 +18832,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "fields": {
                     "additionalProperties": {
@@ -18734,6 +18896,7 @@
         "operationId": "getPostings",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -18937,8 +19100,8 @@
                     "type": "string"
                   },
                   "imageKey": {
-                    "description": "Key returned by the image upload endpoint; null or empty clears it",
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
+                    "description": "Key returned by the image upload endpoint. Null or empty clears it. A key must not contain ..",
+                    "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
                     "type": [
                       "string",
                       "null"
@@ -19344,7 +19507,7 @@
     },
     "/api/v1/postings/{id}": {
       "get": {
-        "description": "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). Member fields are present only for company members. Records a view for signed-in users.",
+        "description": "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). status is also sent to non-members when the column is present. newApplicantCount and createdBy are member-only, and on this route they are 0 and null because the query does not load them. Records a view for signed-in users.",
         "operationId": "getPostingsById",
         "parameters": [
           {
@@ -19393,7 +19556,7 @@
         "x-owner": "core"
       },
       "patch": {
-        "description": "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN.",
+        "description": "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
         "operationId": "patchPostingsById",
         "parameters": [
           {
@@ -19461,8 +19624,8 @@
                     "type": "integer"
                   },
                   "imageKey": {
-                    "description": "Key returned by the image upload endpoint; null or empty clears it",
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
+                    "description": "Key returned by the image upload endpoint. Null or empty clears it. A key must not contain ..",
+                    "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
                     "type": [
                       "string",
                       "null"
@@ -19663,7 +19826,7 @@
     },
     "/api/v1/postings/{id}/applicants": {
       "get": {
-        "description": "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total.",
+        "description": "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total. An unknown stage is an empty page, not an error.",
         "operationId": "getPostingsByIdApplicants",
         "parameters": [
           {
@@ -19676,6 +19839,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -19808,7 +19972,7 @@
         "x-owner": "core"
       },
       "patch": {
-        "description": "Company members of the posting only. Same stage returns the application unchanged. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
+        "description": "Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
         "operationId": "patchPostingsByIdApplicantsByApplicationId",
         "parameters": [
           {
@@ -19942,7 +20106,7 @@
     },
     "/api/v1/postings/{id}/apply": {
       "post": {
-        "description": "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise).",
+        "description": "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.",
         "operationId": "postPostingsByIdApply",
         "parameters": [
           {
@@ -20077,7 +20241,7 @@
     },
     "/api/v1/postings/{id}/close": {
       "post": {
-        "description": "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale.",
+        "description": "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
         "operationId": "postPostingsByIdClose",
         "parameters": [
           {
@@ -20143,7 +20307,7 @@
     },
     "/api/v1/postings/{id}/fit": {
       "post": {
-        "description": "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
+        "description": "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
         "operationId": "postPostingsByIdFit",
         "parameters": [
           {
@@ -20223,6 +20387,7 @@
         "operationId": "getPosts",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -20480,6 +20645,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -20619,6 +20785,7 @@
         "operationId": "getProfiles",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -20771,7 +20938,7 @@
     },
     "/api/v1/profiles/{id}/offer": {
       "post": {
-        "description": "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must be an open posting of the sender's company.",
+        "description": "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.",
         "operationId": "postProfilesByIdOffer",
         "parameters": [
           {
@@ -20853,6 +21020,7 @@
         "operationId": "getProjects",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -20921,6 +21089,7 @@
     },
     "/api/v1/projects/blueprints": {
       "post": {
+        "description": "403 PLAN_REQUIRED over the cap (ULTRA unlimited, PRO 20, otherwise 5). When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
         "operationId": "postProjectsBlueprints",
         "parameters": [
           {
@@ -20931,6 +21100,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "ai": {
                     "anyOf": [
@@ -21049,6 +21219,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -21106,7 +21277,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "The run must be VERIFYING or VERIFIED. Evidence starts PENDING.",
+        "description": "The run must be VERIFYING or VERIFIED. Any other state is 409 INVALID_TRANSITION. Evidence starts PENDING.",
         "operationId": "postProjectsByIdEvidence",
         "parameters": [
           {
@@ -21126,6 +21297,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "commitUrl": {
                     "description": "http(s) URL",
@@ -21217,7 +21389,7 @@
     },
     "/api/v1/projects/{id}/evidence/{evidenceId}/verify": {
       "post": {
-        "description": "Marks PENDING evidence VERIFIED when its recorded tests passed, and advances the run and blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.",
+        "description": "Marks PENDING evidence VERIFIED when its recorded tests passed. 409 INVALID_TRANSITION when already verified or exitCode is not 0. Advances a VERIFYING run to VERIFIED, and an IN_PROGRESS blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.",
         "operationId": "postProjectsByIdEvidenceByEvidenceIdVerify",
         "parameters": [
           {
@@ -21246,6 +21418,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -21304,6 +21477,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -21361,7 +21535,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "Blueprint must be SELECTED or IN_PROGRESS; a SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.",
+        "description": "Blueprint must be SELECTED or IN_PROGRESS; any other state is 409 INVALID_TRANSITION. A SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.",
         "operationId": "postProjectsByIdRuns",
         "parameters": [
           {
@@ -21381,6 +21555,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "prompt": {
                     "minLength": 1,
@@ -21442,7 +21617,7 @@
     },
     "/api/v1/projects/{id}/runs/{runId}/launch": {
       "post": {
-        "description": "Called by the bound device. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.",
+        "description": "Called by the bound device. 409 INVALID_TRANSITION when the run is not RUNNING, the device differs, or the launch status move is not allowed. 409 APPROVAL_STALE when payloadHash differs. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.",
         "operationId": "postProjectsByIdRunsByRunIdLaunch",
         "parameters": [
           {
@@ -21471,6 +21646,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "deviceId": {
                     "type": "string"
@@ -21557,7 +21733,7 @@
     },
     "/api/v1/projects/{id}/runs/{runId}/recover": {
       "post": {
-        "description": "REATTACH needs process (launch becomes STARTED); MARK_FAILED needs failureReason (run becomes FAILED).",
+        "description": "409 INVALID_TRANSITION unless launchStatus is UNKNOWN and the device matches. REATTACH needs process with pid greater than 0 (launch becomes STARTED). MARK_FAILED needs failureReason (run becomes FAILED).",
         "operationId": "postProjectsByIdRunsByRunIdRecover",
         "parameters": [
           {
@@ -21586,6 +21762,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "decision": {
                     "enum": [
@@ -21706,6 +21883,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "commitSha": {
                     "anyOf": [
@@ -21774,7 +21952,7 @@
     },
     "/api/v1/projects/{id}/runs/{runId}/start": {
       "post": {
-        "description": "Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING.",
+        "description": "Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING. Any other state is 409 INVALID_TRANSITION. A payload hash or target revision mismatch is 409 APPROVAL_STALE. A missing or unapproved approval is 409 APPROVAL_REQUIRED.",
         "operationId": "postProjectsByIdRunsByRunIdStart",
         "parameters": [
           {
@@ -21803,6 +21981,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "approvalId": {
                     "format": "uuid",
@@ -21864,7 +22043,7 @@
     },
     "/api/v1/projects/{id}/select": {
       "post": {
-        "description": "Allowed from DRAFT or SELECTED. Returns the blueprint and a starter file manifest.",
+        "description": "Allowed from DRAFT or SELECTED. Any other state is 409 INVALID_TRANSITION. Returns the blueprint and a starter file manifest.",
         "operationId": "postProjectsByIdSelect",
         "parameters": [
           {
@@ -21884,6 +22063,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "expectedRevision": {
                     "type": "integer"
@@ -21946,12 +22126,13 @@
         "operationId": "getSearch",
         "parameters": [
           {
-            "description": "Search term (must not be blank)",
+            "description": "Search term. Whitespace-only is 400. No max length on this route.",
             "in": "query",
             "name": "q",
             "required": true,
             "schema": {
               "minLength": 1,
+              "pattern": "\\S",
               "type": "string"
             }
           },
@@ -21970,6 +22151,7 @@
             }
           },
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -22075,16 +22257,18 @@
     },
     "/api/v1/search/counts": {
       "get": {
+        "description": "Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.",
         "operationId": "getSearchCounts",
         "parameters": [
           {
-            "description": "Search term (must not be blank)",
+            "description": "Search term. Whitespace-only is 400. Max 200 code points.",
             "in": "query",
             "name": "q",
             "required": true,
             "schema": {
               "maxLength": 200,
               "minLength": 1,
+              "pattern": "\\S",
               "type": "string"
             }
           }
@@ -22225,10 +22409,11 @@
     },
     "/api/v1/sources": {
       "get": {
-        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0.",
+        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file.",
         "operationId": "getSources",
         "parameters": [
           {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -22515,7 +22700,7 @@
     },
     "/api/v1/uploads/images": {
       "post": {
-        "description": "multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes (JPEG, PNG, WebP or HEIC). 413 PAYLOAD_TOO_LARGE.",
+        "description": "multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes. image/jpg and image/pjpeg count as JPEG. image/heif counts as HEIC. 413 PAYLOAD_TOO_LARGE.",
         "operationId": "postUploadsImages",
         "parameters": [
           {
@@ -22527,7 +22712,7 @@
             "multipart/form-data": {
               "encoding": {
                 "file": {
-                  "contentType": "image/jpeg, image/png, image/webp, image/heic"
+                  "contentType": "image/jpeg, image/jpg, image/pjpeg, image/png, image/webp, image/heic, image/heif"
                 }
               },
               "schema": {
@@ -22600,7 +22785,25 @@
                   "type": "string"
                 }
               },
+              "image/heif": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
               "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/pjpeg": {
                 "schema": {
                   "format": "binary",
                   "type": "string"
