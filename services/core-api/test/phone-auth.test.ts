@@ -53,6 +53,7 @@ const createDb = () => {
   const codes: Row[] = [];
   const identities: Row[] = [];
   const exchange: Row[] = [];
+  const sessions: Row[] = [];
   let now = NOW;
 
   const query: Deps["query"] = async (sql, params = []) => {
@@ -190,7 +191,10 @@ const createDb = () => {
       const row = users.find((item) => item.provider === params[0] && item.provider_subject === params[1]);
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
-    if (sql.includes("INSERT INTO refresh_tokens")) return { rows: [], rowCount: 1 };
+    if (sql.includes("INSERT INTO refresh_tokens")) {
+      sessions.push({ user_id: params[1] });
+      return { rows: [], rowCount: 1 };
+    }
     if (sql.includes("company_members") || sql.includes("FROM users WHERE id")) {
       const row = users.find((item) => item.id === params[0]);
       return { rows: row ? [{ ...row, company_id: null, company_role: null }] : [], rowCount: row ? 1 : 0 };
@@ -198,7 +202,7 @@ const createDb = () => {
     return { rows: [], rowCount: 0 };
   };
 
-  return { query, users, codes, identities, exchange, get now() { return now; }, set now(value: Date) { now = value; } };
+  return { query, users, codes, identities, exchange, sessions, get now() { return now; }, set now(value: Date) { now = value; } };
 };
 
 const deps = (db: ReturnType<typeof createDb>, sent: Sent[]): Deps => ({
@@ -506,4 +510,90 @@ test("oauth exchange prefers the phone account linked to that provider", async (
   const body = await res.json() as Session;
   assert.equal(body.data.user.id, OWNER);
   assert.equal(db.users.length, 2);
+});
+
+const VERIFIER = "verifier-verifier-verifier-verifier-verifier";
+
+const socialExchange = async (
+  db: ReturnType<typeof createDb>,
+  code: string,
+  provider: string,
+  subject: string,
+) => {
+  db.exchange.push({
+    code,
+    user_id: null,
+    code_challenge: await pkceChallenge(VERIFIER),
+    expires_at: "2099-01-01T00:00:00.000Z",
+    used_at: null,
+    provider,
+    provider_subject: subject,
+    email: "ada@push.app",
+    email_verified: true,
+    display_name: "Ada",
+    account_type: "PERSONAL",
+  });
+  resetLimits();
+  return handle(post("/api/v1/auth/exchange", { code, codeVerifier: VERIFIER }), env(), {
+    query: db.query,
+    now: () => db.now,
+  });
+};
+
+test("phone signup then a new social login stays on that account", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  await send(db, sent);
+  const created = await verify(db, sent, sent[0].code);
+  const phone = await created.json() as Session;
+  const id = phone.data.user.id;
+  assert.equal(db.users.length, 1);
+  assert.equal(db.sessions[0]?.user_id, id);
+
+  const first = await socialExchange(db, "ex-google", "google", "gsub");
+  assert.equal(first.status, 200);
+  const pendingBody = await first.json() as Session;
+  assert.equal(typeof pendingBody.data.pendingToken, "string");
+  assert.equal(pendingBody.data.user, undefined);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.sessions.length, 1);
+
+  db.now = new Date(NOW.getTime() + 169_000);
+  await send(db, sent);
+  const linked = await verify(db, sent, sent[1].code, PHONE, { pendingToken: pendingBody.data.pendingToken });
+  assert.equal(linked.status, 200);
+  const linkedBody = await linked.json() as Session;
+  assert.equal(linkedBody.data.linked, true);
+  assert.equal(linkedBody.data.provider, "google");
+  assert.equal(linkedBody.data.created, false);
+  assert.equal(linkedBody.data.user.id, id);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.users[0]?.id, id);
+  assert.equal(db.users[0]?.phone, PHONE);
+  assert.equal(db.sessions.at(-1)?.user_id, id);
+  assert.equal(db.identities.some((row) => row.user_id === id && row.provider === "google" && row.provider_subject === "gsub"), true);
+
+  db.now = new Date(NOW.getTime() + 338_000);
+  await send(db, sent);
+  const apple = await socialExchange(db, "ex-apple", "apple", "asub");
+  assert.equal(apple.status, 200);
+  const appleBody = await apple.json() as Session;
+  assert.equal(typeof appleBody.data.pendingToken, "string");
+  assert.equal(db.users.length, 1);
+  const blocked = await verify(db, sent, sent[2].code, PHONE, { pendingToken: appleBody.data.pendingToken });
+  assert.equal(blocked.status, 409);
+  const blockedBody = await blocked.json() as Err;
+  assert.equal(blockedBody.error.code, "PHONE_ALREADY_REGISTERED");
+  assert.deepEqual(blockedBody.error.details?.existingProviders, ["google"]);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.identities.some((row) => row.provider === "apple"), false);
+  assert.equal(db.sessions.length, 2);
+
+  const again = await socialExchange(db, "ex-google-2", "google", "gsub");
+  assert.equal(again.status, 200);
+  const back = await again.json() as Session;
+  assert.equal(back.data.pendingToken, undefined);
+  assert.equal(back.data.user.id, id);
+  assert.equal(db.users.length, 1);
+  assert.equal(db.sessions.at(-1)?.user_id, id);
 });
