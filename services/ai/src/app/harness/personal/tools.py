@@ -170,7 +170,7 @@ def _svc():
 _LIBRARY_SQL = (
     "SELECT id, file_name, mime_type, size, page_count, origin, created_at "
     "FROM sources WHERE user_id = $1 AND origin IN ('UPLOAD', 'AI') "
-    "ORDER BY created_at DESC, id DESC"
+    "ORDER BY created_at DESC, id DESC LIMIT 50"
 )
 
 

@@ -146,6 +146,7 @@ async def test_list_documents_returns_uploaded_sources_and_push_documents():
     sql, bound = next(query for query in rows.queries if "FROM sources" in query[0])
     assert "user_id" in sql
     assert "UPLOAD" in sql and "AI" in sql
+    assert "ORDER BY created_at DESC, id DESC LIMIT 50" in sql
     assert bound[0] == str(USER)
 
 
