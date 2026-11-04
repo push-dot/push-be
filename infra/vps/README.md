@@ -52,7 +52,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 | `GOOGLE_CLIENT_SECRET` | VPS, `push-be-core` |
 | `GH_OAUTH_CLIENT_SECRET` | VPS, `push-be-core` (`GITHUB_CLIENT_SECRET`으로 들어간다) |
 
-선택 시크릿(비어 있으면 건너뛴다): `RESEND_API_KEY`(VPS, `push-be-core`), `DISCORD_ALERT_WEBHOOK_URL`, `OPENAI_API_KEY`, `EMBEDDING_API_KEY`, `EXPO_ACCESS_TOKEN`.
+선택 시크릿(비어 있으면 건너뛴다): `RESEND_API_KEY`(VPS, `push-be-core`), `DISCORD_ALERT_WEBHOOK_URL`, `EMBEDDING_API_KEY`, `EXPO_ACCESS_TOKEN`.
 
 필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `VPS_SSH_HOST_KEY`(`harden.sh`가 출력한 `ssh-ed25519 AAAA…`. CI는 이 키만 믿는다. 처음 본 키를 믿지 않는다).
 

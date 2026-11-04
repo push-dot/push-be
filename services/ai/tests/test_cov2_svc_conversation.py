@@ -282,8 +282,7 @@ async def test_run_job_missing_provider_key_fails_without_retry():
     jobs = _RunJobs()
     err = RuntimeError(
         "Missing credentials. Please pass an `api_key`, `workload_identity`, "
-        "`admin_api_key`, or set the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` "
-        "environment variable.")
+        "`admin_api_key`.")
     svc = _run_svc(jobs, _Graph(err=err))
     await svc._run_job(_job(jobs, attempt=1))
     assert jobs.delays == []

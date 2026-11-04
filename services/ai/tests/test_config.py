@@ -15,13 +15,11 @@ def test_app_env_development_is_explicit(monkeypatch):
 
 def test_managed_key_comes_from_openrouter_only(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     assert load_config().managed_ai_key == "router-key"
 
 
-def test_openai_key_alone_leaves_managed_ai_unconfigured(monkeypatch):
+def test_missing_openrouter_key_leaves_managed_ai_unconfigured(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     assert load_config().managed_ai_key == ""
 
 

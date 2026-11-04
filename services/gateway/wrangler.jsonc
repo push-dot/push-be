@@ -23,8 +23,8 @@
   "vars": {
     "APP_ENV": "production",
     // Availability flags for GET /ai/models. These are not secrets.
-    // Set MANAGED_AI to "0" when the Python worker has neither
-    // OPENROUTER_API_KEY nor OPENAI_API_KEY. Set MANAGED_GO to "1"
+    // Set MANAGED_AI to "0" when the Python worker has no
+    // OPENROUTER_API_KEY. Set MANAGED_GO to "1"
     // when OPENCODE_GO_API_KEY is set on the Python worker.
     "MANAGED_AI": "1",
     "MANAGED_GO": "0",

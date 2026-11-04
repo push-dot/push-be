@@ -63,7 +63,6 @@ async def test_judge_without_config_uses_openrouter_not_openai(monkeypatch):
     from app.framework.fit_judge import judge_fit
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.delenv("AI_BASE_URL", raising=False)
     built = {}
 
