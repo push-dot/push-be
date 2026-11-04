@@ -1346,7 +1346,7 @@ export interface paths {
         put?: never;
         /**
          * Set a hub profile document as the user's base profile
-         * @description Owner only. Replaces profiles.headline, profiles.intro, profiles.careers, and profiles.skills from the document's latest version in one statement. A links heading also replaces user_links. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
+         * @description Owner only. Replaces profiles.headline from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdBaseProfile"];
         delete?: never;

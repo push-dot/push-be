@@ -85,9 +85,12 @@ test("a hub profile converts to the default profile or an application profile", 
   const update = calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
   assert.equal(update?.params[1], "Push 프로필");
   assert.equal(update?.params[2], "백엔드");
-  assert.equal(update?.params[3], "[]");
-  assert.equal(update?.params[4], "[]");
   assert.equal(update?.params[9], false);
+  assert.equal(update?.params[11], false);
+  assert.equal(update?.params[12], false);
+  assert.equal(update?.params[13], true);
+  assert.equal(update?.sql.includes("ELSE profiles.careers"), true);
+  assert.equal(update?.sql.includes("ELSE profiles.skills"), true);
 
   const { calls: appCalls, query: appQuery } = recorder((sql) => {
     if (sql.includes("FROM documents WHERE id")) return [{ ...doc, revision: 2 }];
@@ -173,8 +176,11 @@ test("setting the base profile copies the document onto the hub profile and repe
   const update = first.calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
   assert.equal(update?.params[1], "지원용 프로필");
   assert.equal(update?.params[2], "소개 본문");
-  assert.equal(update?.params[3], "[]");
-  assert.equal(update?.params[4], "[]");
+  assert.equal(update?.params[11], false);
+  assert.equal(update?.params[12], false);
+  assert.equal(update?.params[13], true);
+  assert.equal(update?.sql.includes("ELSE profiles.careers"), true);
+  assert.equal(update?.sql.includes("ELSE profiles.skills"), true);
   assert.equal(first.calls.some((call) => call.sql.startsWith("UPDATE documents")), false);
 
   const second = recorder(answer);
@@ -251,6 +257,9 @@ test("setting the base profile replaces careers, skills, and links from the docu
   assert.deepEqual(JSON.parse(String(write?.params[3])), careers);
   assert.deepEqual(JSON.parse(String(write?.params[4])), skills);
   assert.equal(write?.params[9], true);
+  assert.equal(write?.params[11], true);
+  assert.equal(write?.params[12], true);
+  assert.equal(write?.params[13], true);
   assert.equal(write?.sql.includes("DELETE FROM user_links"), true);
   assert.equal(write?.sql.includes(";"), false);
   assert.equal(first.calls.filter((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles")).length, 1);
@@ -274,6 +283,45 @@ test("setting the base profile replaces careers, skills, and links from the docu
   assert.equal(hub.status, 200);
   const hubWrite = profileWrite(hubCalls);
   assert.deepEqual(hubWrite?.params.slice(1, 5), write?.params.slice(1, 5));
+});
+
+test("a document without a career heading keeps the existing careers", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000080";
+  const VER = "d0000000-0000-4000-8000-000000000081";
+  const doc = {
+    id: DOC, revision: 1, application_id: null, title: "올린 이력서", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const nodes: [string, string][] = [
+    ["heading", "프로젝트"],
+    ["paragraph", "Side project"],
+  ];
+  const kept = [{ company: "Kept", role: "Eng", startedOn: null, endedOn: null, description: "" }];
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM document_versions")) return [{
+      id: VER, document_id: DOC, number: 1,
+      content: { type: "doc", content: nodes.map(([type, text], i) => ({ type, attrs: { blockId: "b" + i }, content: [{ type: "text", text }] })) },
+      blocks: nodes.map(([, text], i) => ({ id: "b" + i, text })),
+      created_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM profiles")) return [{ skills: ["Rust"], careers: kept }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000080"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const write = profileWrite(calls);
+  assert.equal(write?.params[1], "올린 이력서");
+  assert.equal(write?.params[11], false);
+  assert.equal(write?.params[12], false);
+  assert.equal(write?.params[13], false);
+  assert.equal(write?.sql.includes("ELSE profiles.careers"), true);
+  assert.equal(write?.sql.includes("ELSE profiles.skills"), true);
+  assert.equal(write?.sql.includes("ELSE profiles.intro"), true);
+  assert.equal(JSON.parse(String(write?.params[3])).some((career: { company?: string }) => career.company === "Kept"), false);
+  assert.equal(String(write?.params[5]).includes("Rust"), true);
 });
 
 test("a failed base profile write does not send a second profile write", async () => {

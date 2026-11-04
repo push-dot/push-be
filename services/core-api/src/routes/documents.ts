@@ -588,7 +588,7 @@ const linkOf = (line: string): { id: string; kind: string; url: string; title: s
   return { id: crypto.randomUUID(), kind: linkKind(url), url, title: clip(title, 300) };
 };
 
-const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; intro: string; careers: unknown[]; skills: string[]; links: { id: string; kind: string; url: string; title: string }[]; replaceLinks: boolean } => {
+const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; intro: string; careers: unknown[]; skills: string[]; links: { id: string; kind: string; url: string; title: string }[]; replaceLinks: boolean; replaceCareers: boolean; replaceSkills: boolean; replaceIntro: boolean } => {
   const lines = sectionLines(content);
   const sawHeading = lines.some((line) => line.heading);
   const buckets: Record<Exclude<SectionName, "skip">, string[]> = { intro: [], careers: [], skills: [], links: [], headline: [] };
@@ -614,6 +614,9 @@ const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; in
     skills,
     links: buckets.links.map(linkOf).filter((link) => link != null),
     replaceLinks: lines.some((line) => line.heading && sectionName(line.text) === "links"),
+    replaceCareers: lines.some((line) => line.heading && sectionName(line.text) === "careers"),
+    replaceSkills: lines.some((line) => line.heading && sectionName(line.text) === "skills"),
+    replaceIntro: lines.some((line) => line.heading && sectionName(line.text) === "intro") || (!sawHeading && introLines.length > 0),
   };
 };
 
@@ -622,9 +625,9 @@ const REPLACE_PROFILE = `WITH replaced AS (
   VALUES ($1::uuid, $2::text, $3::text, $4::jsonb, $5::jsonb, $6::text, $7::text, $8::text, $9::timestamptz, $9::timestamptz)
   ON CONFLICT (user_id) DO UPDATE SET
     headline = EXCLUDED.headline,
-    intro = EXCLUDED.intro,
-    careers = EXCLUDED.careers,
-    skills = EXCLUDED.skills,
+    intro = CASE WHEN $14::boolean THEN EXCLUDED.intro ELSE profiles.intro END,
+    careers = CASE WHEN $12::boolean THEN EXCLUDED.careers ELSE profiles.careers END,
+    skills = CASE WHEN $13::boolean THEN EXCLUDED.skills ELSE profiles.skills END,
     search_text = EXCLUDED.search_text,
     search_choseong = EXCLUDED.search_choseong,
     search_jamo = EXCLUDED.search_jamo,
@@ -640,17 +643,24 @@ SELECT link.id::uuid, replaced.user_id, link.kind, link.url, link.title, 'READ',
 FROM replaced
 JOIN jsonb_to_recordset($11::jsonb) AS link(id text, kind text, url text, title text) ON $10::boolean`;
 
+const profileSkills = async (ctx: Ctx): Promise<string[]> => {
+  const current = await one(ctx.deps.query, "SELECT skills FROM profiles WHERE user_id = $1", [ctx.user.id]);
+  return Array.isArray(current?.skills) ? current.skills.map(String) : [];
+};
+
 const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string): Promise<{ documentId: string; profileUserId: string }> => {
   const nowIso = ctx.now.toISOString();
-  const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false };
+  const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false, replaceCareers: false, replaceSkills: false, replaceIntro: false };
   const version = doc.latest_version_id == null ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
   const parsed = version == null ? empty : sectionsFrom(version.content, version.blocks);
   const headline = clip(parsed.headline || String(doc.title), 120);
   const intro = clip(parsed.intro, 2000);
-  const fields = searchFields([ctx.user.displayName, headline, parsed.skills.join(" ")].join(" "));
+  const currentSkills = parsed.replaceSkills ? parsed.skills : await profileSkills(ctx);
+  const fields = searchFields([ctx.user.displayName, headline, currentSkills.join(" ")].join(" "));
   await query(ctx.deps.query, REPLACE_PROFILE, [
     ctx.user.id, headline, intro, JSON.stringify(parsed.careers), JSON.stringify(parsed.skills),
     fields.text, fields.choseong, fields.jamo, nowIso, parsed.replaceLinks, JSON.stringify(parsed.links),
+    parsed.replaceCareers, parsed.replaceSkills, parsed.replaceIntro,
   ]);
   return { documentId: id, profileUserId: ctx.user.id };
 };
