@@ -19,7 +19,12 @@
     "STRIPE_CANCEL_URL": "push://billing/cancel",
     "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
     "QUEUE_BACKEND": "redis",
-    "DISPATCH_ORIGIN": "https://dispatch.187-127-112-169.sslip.io"
+    "DISPATCH_ORIGIN": "https://dispatch.187-127-112-169.sslip.io",
+    "IAP_PRODUCT_PRO": "push.pro.monthly",
+    "IAP_PRODUCT_ULTRA": "push.ultra.monthly",
+    "IAP_PRODUCT_TOPUP": "push.credits.topup",
+    "APPLE_BUNDLE_ID": "app.push.mobile",
+    "GOOGLE_PLAY_PACKAGE": "app.push.mobile"
   },
   // Test server: push-be-core-staging behind push-be-staging (see the gateway).
   // APP_ENV=development turns on DEV_AUTH_TOKEN; PHONE_SMS_MODE=log writes phone
@@ -39,7 +44,12 @@
         "STRIPE_CANCEL_URL": "push://billing/cancel",
         "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
         "QUEUE_BACKEND": "redis",
-        "DISPATCH_ORIGIN": "https://dispatch-staging.187-127-112-169.sslip.io"
+        "DISPATCH_ORIGIN": "https://dispatch-staging.187-127-112-169.sslip.io",
+        "IAP_PRODUCT_PRO": "push.pro.monthly",
+        "IAP_PRODUCT_ULTRA": "push.ultra.monthly",
+        "IAP_PRODUCT_TOPUP": "push.credits.topup",
+        "APPLE_BUNDLE_ID": "app.push.mobile",
+        "GOOGLE_PLAY_PACKAGE": "app.push.mobile"
       }
     }
   }

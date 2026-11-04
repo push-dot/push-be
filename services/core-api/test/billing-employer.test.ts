@@ -32,13 +32,13 @@ const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   ...extra,
 });
 
-const tokenRow = (employer: boolean, role: string | null, plan = "FREE", subscription = "NONE") => ({
+const tokenRow = (employer: boolean, role: string | null, plan = "FREE", subscription = "NONE", stripeCustomerId: string | null = null) => ({
   id: USER,
   display_name: "Ada",
   locale: "ko",
   plan,
   subscription_status: subscription,
-  stripe_customer_id: null,
+  stripe_customer_id: stripeCustomerId,
   period_ends_at: null,
   created_at: NOW.toISOString(),
   token_expires_at: "2099-01-01T00:00:00Z",
@@ -54,10 +54,11 @@ const authed = (
   extra: Deps["query"],
   plan = "FREE",
   subscription = "NONE",
+  stripeCustomerId: string | null = null,
 ): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
   if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("access_tokens")) return { rows: [tokenRow(employer, role, plan, subscription)], rowCount: 1 };
+  if (sql.includes("access_tokens")) return { rows: [tokenRow(employer, role, plan, subscription, stripeCustomerId)], rowCount: 1 };
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-1" }], rowCount: 1 };
   if (sql.includes("idempotency_keys")) return empty;
   return extra(sql, params);
@@ -188,7 +189,7 @@ test("iap verify while stripe is active returns 409", async () => {
   resetLimits();
   const seen: Call[] = [];
   let verified = 0;
-  const query = authed(seen, false, null, async () => empty, "PRO", "ACTIVE");
+  const query = authed(seen, false, null, async () => empty, "PRO", "ACTIVE", "cus_live");
   const res = await handle(
     post("/api/v1/billing/iap/verify", { platform: "APP_STORE", productId: "ios.pro", signedTransaction: "jws" }, "44444444-4444-4444-8444-444444444444"),
     envOf(),
@@ -711,13 +712,29 @@ const appleChain = async () => {
   };
 };
 
-test("a top-up charges one price unit per displayed credit", async () => {
+test("personal top-up is forbidden", async () => {
+  resetLimits();
+  const calls: { url: string; body: string }[] = [];
+  const res = await handle(
+    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777777"),
+    envOf(),
+    { query: authed([], false, null, async () => empty), now: () => NOW, fetch: stripeFetch(calls) },
+  );
+  assert.equal(res.status, 403);
+  assert.equal((await codeOf(res)).code, "FORBIDDEN");
+  assert.equal(calls.length, 0);
+});
+
+test("employer top-up charges one price unit per displayed credit", async () => {
   resetLimits();
   const calls: { url: string; body: string }[] = [];
   const seen: Call[] = [];
-  const query = authed(seen, false, null, async () => empty);
+  const query = authed(seen, true, "ADMIN", async (sql) => {
+    if (sql.includes("FROM companies")) return { rows: [{ stripe_customer_id: "cus_co" }], rowCount: 1 };
+    return empty;
+  });
   const res = await handle(
-    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777777"),
+    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777779"),
     envOf(),
     { query, now: () => NOW, fetch: stripeFetch(calls) },
   );
@@ -725,6 +742,8 @@ test("a top-up charges one price unit per displayed credit", async () => {
   const form = new URLSearchParams(calls[0]?.body);
   assert.equal(form.get("line_items[0][quantity]"), "3");
   assert.equal(form.get("metadata[amountMicroCredits]"), "18000");
+  assert.equal(form.get("metadata[audience]"), "EMPLOYER");
+  assert.equal(form.get("customer"), "cus_co");
 });
 
 const storeHook = (path: string, body: string, authorization?: string): Request => new Request("https://core.example" + path, {
@@ -817,13 +836,12 @@ test("an unverified store webhook is rejected", async () => {
     { query, now: () => NOW },
   );
   assert.equal(googleOk.status, 200);
-  const googleUnsigned = await handle(
+  const googlePush = await handle(
     storeHook("/api/v1/billing/webhook/google-play", JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } }), "Bearer " + oidcJwt),
     envOf(googleEnv),
     { query, now: () => NOW },
   );
-  assert.equal(googleUnsigned.status, 400);
-  assert.equal((await codeOf(googleUnsigned)).message, "invalid webhook signature");
+  assert.equal(googlePush.status, 200);
   const googleBare = await handle(
     storeHook("/api/v1/billing/webhook/google-play", playBody),
     envOf(googleEnv),
@@ -869,6 +887,7 @@ test("an unverified store webhook is rejected", async () => {
 });
 
 const noStores = {
+  verifyApple: async () => { throw new Error("apple"); },
   verifyGoogle: async () => { throw new Error("google"); },
   decodeAppleNotification: async () => { throw new Error("apple"); },
   decodeGoogleNotification: async () => { throw new Error("google"); },
@@ -944,30 +963,72 @@ const claimQuery = (seen: Call[]): Deps["query"] => authed(seen, false, null, as
   return empty;
 });
 
-test("device apple verify checks the x5c chain and bundle id locally", async () => {
+const partJson = (part: string): Record<string, unknown> => {
+  const pad = part.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = pad + "=".repeat((4 - (pad.length % 4)) % 4);
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(padded), (char) => char.charCodeAt(0)))) as Record<string, unknown>;
+};
+
+test("device apple verify checks the x5c chain then the App Store Server API", async () => {
   resetLimits();
   const chain = await appleChain();
+  const signing = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signing.privateKey));
+  const apiKey = `-----BEGIN PRIVATE KEY-----\n${b64std(pkcs8)}\n-----END PRIVATE KEY-----`;
   const signed = (bundleId: string, extra: Record<string, unknown> = {}) => jws({
-    bundleId, productId: "ios.pro", originalTransactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z"), type: "Auto-Renewable Subscription", ...extra,
+    bundleId, productId: "ios.pro", originalTransactionId: "tx-apple", transactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z"), type: "Auto-Renewable Subscription", ...extra,
   }, chain.privateKey, { x5c: chain.x5c });
-  const env = envOf({ APPLE_ROOT_PEM: chain.rootPem, APPLE_BUNDLE_ID: "com.push.app" });
+  const env = envOf({
+    APPLE_ROOT_PEM: chain.rootPem,
+    APPLE_BUNDLE_ID: "com.push.app",
+    APPLE_IAP_KEY: apiKey,
+    APPLE_IAP_KEY_ID: "key-1",
+    APPLE_ISSUER_ID: "issuer-1",
+  });
   let fetched = 0;
-  const fetchImpl = (async () => { fetched += 1; return new Response("{}"); }) as typeof fetch;
-  const verify = async (token: string, key: string) => handle(
+  let echo = "";
+  let mode: "echo" | "other" = "echo";
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetched += 1;
+    assert.match(String(input), /https:\/\/api\.storekit\.itunes\.apple\.com\/inApps\/v1\/transactions\/tx-apple$/);
+    const auth = new Headers(init?.headers).get("authorization") ?? "";
+    const [head, body] = auth.slice("Bearer ".length).split(".");
+    assert.equal(partJson(head ?? "").kid, "key-1");
+    const claims = partJson(body ?? "");
+    assert.equal(claims.iss, "issuer-1");
+    assert.equal(claims.aud, "appstoreconnect-v1");
+    assert.equal(claims.bid, "com.push.app");
+    const signedInfo = mode === "echo"
+      ? echo
+      : await jws({ bundleId: "com.push.app", productId: "ios.other", originalTransactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z") }, chain.privateKey, { x5c: chain.x5c });
+    return Response.json({ signedTransactionInfo: signedInfo });
+  }) as typeof fetch;
+  const verify = async (token: string, key: string, use: CoreEnv = env) => handle(
     post("/api/v1/billing/iap/verify", { platform: "APP_STORE", productId: "ios.pro", signedTransaction: token }, key),
-    env,
+    use,
     { query: claimQuery([]), now: () => NOW, fetch: fetchImpl },
   );
-  const ok = await verify(await signed("com.push.app"), "99999999-9999-4999-8999-999999999991");
+  echo = await signed("com.push.app");
+  const ok = await verify(echo, "99999999-9999-4999-8999-999999999991");
   assert.equal(ok.status, 200);
+  assert.equal(fetched, 1);
   assert.deepEqual(await ok.json(), { data: { plan: "PRO", periodEndsAt: "2026-11-21T00:00:00Z" } });
+  const beforeRejects = fetched;
   const otherApp = await verify(await signed("com.evil.app"), "99999999-9999-4999-8999-999999999992");
   assert.equal(otherApp.status, 400);
   const revoked = await verify(await signed("com.push.app", { revocationDate: 1 }), "99999999-9999-4999-8999-999999999993");
   assert.equal(revoked.status, 400);
   const forged = await verify(flipSig(await signed("com.push.app")), "99999999-9999-4999-8999-999999999994");
   assert.equal(forged.status, 400);
-  assert.equal(fetched, 0);
+  assert.equal(fetched, beforeRejects);
+  mode = "other";
+  const mismatch = await verify(echo, "99999999-9999-4999-8999-999999999995");
+  assert.equal(mismatch.status, 400);
+  const beforeMissing = fetched;
+  const unconfigured = await verify(echo, "99999999-9999-4999-8999-999999999996", envOf({ APPLE_ROOT_PEM: chain.rootPem, APPLE_BUNDLE_ID: "com.push.app" }));
+  assert.equal(unconfigured.status, 503);
+  assert.equal((await codeOf(unconfigured)).code, "NOT_CONFIGURED");
+  assert.equal(fetched, beforeMissing);
 });
 
 test("google verify grants only a purchased product or a live subscription", async () => {
@@ -993,6 +1054,128 @@ test("google verify grants only a purchased product or a live subscription", asy
   const live = await verify("pro", reply({ subscriptionState: "SUBSCRIPTION_STATE_ACTIVE", lineItems: [{ productId: "pro", expiryTime: "2026-11-21T00:00:00Z" }] }), "99999999-9999-4999-8999-99999999999d");
   assert.equal(live.status, 200);
   assert.match(urls[3] ?? "", /\/purchases\/subscriptionsv2\/tokens\/tok-1$/);
+});
+
+test("google verify exchanges a service account for an access token", async () => {
+  resetLimits();
+  const pair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  const pem = `-----BEGIN PRIVATE KEY-----\n${b64std(pkcs8)}\n-----END PRIVATE KEY-----`;
+  const key = JSON.stringify({ client_email: "play@push.iam.gserviceaccount.com", private_key: pem });
+  const calls: { url: string; auth: string }[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, auth: new Headers(init?.headers).get("authorization") ?? "" });
+    if (url === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "ya29.test" });
+    return Response.json({ purchaseState: 0, orderId: "GPA.1" });
+  }) as typeof fetch;
+  const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "app.push.mobile", IAP_PRODUCT_TOPUP: "push.credits.topup" });
+  const res = await handle(
+    post("/api/v1/billing/iap/verify", { platform: "GOOGLE_PLAY", productId: "push.credits.topup", purchaseToken: "tok-1" }, "99999999-9999-4999-8999-9999999999a1"),
+    env,
+    { query: claimQuery([]), now: () => NOW, fetch: fetchImpl },
+  );
+  assert.equal(res.status, 200);
+  assert.equal(calls[0]?.url, "https://oauth2.googleapis.com/token");
+  assert.equal(calls[1]?.auth, "Bearer ya29.test");
+  assert.equal(calls[1]?.url?.endsWith("/purchases/products/push.credits.topup/tokens/tok-1"), true);
+});
+
+test("an active in-app plan can change without a second grant for the same transaction", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const ledger: LedgerRow[] = [];
+  const capture = takeLedger(ledger);
+  const query = authed(seen, false, null, async (sql, params = []) => {
+    const taken = capture(sql, params);
+    if (taken) return taken;
+    if (sql.includes("INSERT INTO iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  }, "PRO", "ACTIVE");
+  const stores: NonNullable<Deps["stores"]> = {
+    ...noStores,
+    verifyApple: async () => ({ productId: "ios.ultra", originalTransactionId: "tx-up", expiresAt: "2026-11-21T00:00:00.000Z", consumable: false }),
+  };
+  const body = { platform: "APP_STORE", productId: "ios.ultra", signedTransaction: "jws" };
+  const first = await handle(post("/api/v1/billing/iap/verify", body, "99999999-9999-4999-8999-9999999999b1"), envOf(), { query, now: () => NOW, stores });
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { data: { plan: "ULTRA", periodEndsAt: "2026-11-21T00:00:00Z" } });
+  const second = await handle(post("/api/v1/billing/iap/verify", body, "99999999-9999-4999-8999-9999999999b2"), envOf(), { query, now: () => NOW, stores });
+  assert.equal(second.status, 200);
+  assert.equal(ledger.filter((row) => row.reference === "tx-up").length, 1);
+});
+
+test("a store expiration drops the personal plan", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("SELECT user_id FROM iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  };
+  const stores: NonNullable<Deps["stores"]> = {
+    ...noStores,
+    decodeAppleNotification: async () => ({ notificationType: "EXPIRED", originalTransactionId: "tx-1", productId: "ios.pro", expiresAt: "2026-10-01T00:00:00.000Z" }),
+  };
+  const req = () => storeHook("/api/v1/billing/webhook/app-store", "signed");
+  const first = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  assert.equal(first.status, 200);
+  const update = seen.find((call) => call.sql.includes("UPDATE users"));
+  assert.match(update?.sql ?? "", /plan = 'FREE'/);
+  assert.match(update?.sql ?? "", /subscription_status = 'CANCELED'/);
+  assert.equal(update?.params[0], USER);
+  const second = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  assert.equal(second.status, 200);
+});
+
+test("a google pubsub renewal updates the plan once", async () => {
+  resetLimits();
+  const oidc = await p256();
+  const audience = "push-google-webhook";
+  const ledger: LedgerRow[] = [];
+  const capture = takeLedger(ledger);
+  const seen: Call[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    const taken = capture(sql, params);
+    if (taken) return taken;
+    if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  };
+  const note = {
+    packageName: "app.push.mobile",
+    subscriptionNotification: { notificationType: 2, purchaseToken: "tx-renew", subscriptionId: "ios.pro" },
+  };
+  const body = JSON.stringify({ message: { data: btoa(JSON.stringify(note)), messageId: "1" }, subscription: "projects/p/subscriptions/play" });
+  const jwt = await jws({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600 }, oidc.privateKey);
+  const env = envOf({ GOOGLE_OIDC_KEY: oidc.pem, GOOGLE_OIDC_AUDIENCE: audience, GOOGLE_PLAY_PACKAGE: "app.push.mobile" });
+  const req = () => storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + jwt);
+  const first = await handle(req(), env, { query, now: () => NOW });
+  assert.equal(first.status, 200);
+  const second = await handle(req(), env, { query, now: () => NOW });
+  assert.equal(second.status, 200);
+  assert.equal(ledger.filter((row) => row.reference === "tx-renew").length, 1);
+  const update = seen.find((call) => call.sql.includes("UPDATE users") && call.params.includes("PRO"));
+  assert.equal(update?.params[1], "PRO");
+  const wrong = {
+    packageName: "com.evil.app",
+    subscriptionNotification: { notificationType: 2, purchaseToken: "tx-renew", subscriptionId: "ios.pro" },
+  };
+  const rejected = await handle(
+    storeHook("/api/v1/billing/webhook/google-play", JSON.stringify({ message: { data: btoa(JSON.stringify(wrong)) } }), "Bearer " + jwt),
+    env,
+    { query, now: () => NOW },
+  );
+  assert.equal(rejected.status, 400);
 });
 
 test("an expired google oidc bearer is rejected", async () => {

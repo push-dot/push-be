@@ -431,20 +431,15 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
   if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_TOPUP) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be a positive integer", { field: "amount" });
   }
+  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
   const price = ctx.env.STRIPE_PRICE_TOPUP;
   if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
-  let audience: "PERSONAL" | "EMPLOYER" = "PERSONAL";
-  let ownerId = ctx.user.id;
-  let customer = ctx.user.stripeCustomerId;
-  if (ctx.user.accountType === "EMPLOYER") {
-    if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
-    audience = "EMPLOYER";
-    ownerId = ctx.user.companyId;
-    const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
-    if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    customer = company.stripe_customer_id == null ? null : String(company.stripe_customer_id);
-  }
+  const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
+  if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const customer = company.stripe_customer_id == null ? null : String(company.stripe_customer_id);
+  const ownerId = ctx.user.companyId;
   try {
     const form = new URLSearchParams({
       mode: "payment",
@@ -454,7 +449,7 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
       cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
       client_reference_id: ownerId,
       "metadata[amountMicroCredits]": String(amount * DISPLAY_MICRO),
-      "metadata[audience]": audience,
+      "metadata[audience]": "EMPLOYER",
       "metadata[ownerId]": ownerId,
     });
     if (customer) form.set("customer", customer);
@@ -477,7 +472,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "productId" });
   }
   const kind = requireKind(ctx.env, body.productId);
-  if (kind !== "TOPUP" && ctx.user.subscriptionStatus === "ACTIVE") {
+  if (kind !== "TOPUP" && ctx.user.subscriptionStatus === "ACTIVE" && ctx.user.stripeCustomerId) {
     throw new HttpError(409, "ALREADY_SUBSCRIBED", "already subscribed");
   }
   if (platform === "APP_STORE" && (typeof body.signedTransaction !== "string" || !body.signedTransaction)) {
@@ -516,10 +511,17 @@ const grantNote = async (
   expiresAt: string | null,
 ): Promise<void> => {
   const upper = notificationType.toUpperCase();
-  if (upper === "REFUND" || upper === "EXPIRED") {
+  if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
+    const row = await one(ctx.deps.query,
+      "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
+      [transactionId]);
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = 'CANCELED', expires_at = COALESCE($2::timestamptz, expires_at) WHERE original_transaction_id = $1",
       [transactionId, expiresAt]);
+    if (!row?.user_id) return;
+    await query(ctx.deps.query,
+      "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
+      [String(row.user_id), expiresAt]);
     return;
   }
   const grants = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
