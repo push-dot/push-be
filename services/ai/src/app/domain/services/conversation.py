@@ -9,7 +9,7 @@ from uuid import UUID
 from app.db import DB
 from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
-from app.domain.errors import DomainError
+from app.domain.errors import DomainError, missing_provider_key
 from app.domain.services.ai import AIGate
 from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
@@ -264,7 +264,14 @@ class ConversationService:
             terminal = True
         except Exception as e:
             log.exception("chat job %s failed", job_id)
-            if job["attempt"] < 3:
+            if missing_provider_key(e):
+                await self.jobs.emit(
+                    job_id, "error",
+                    {"error": {"code": "NOT_CONFIGURED",
+                               "message": "managed AI is not configured"}})
+                await self.jobs.finish(job_id, "FAILED", "NOT_CONFIGURED")
+                terminal = True
+            elif job["attempt"] < 3:
                 await self.jobs.requeue(job_id, 2.0 * job["attempt"])
             else:
                 # The cause can hold SQL or provider text; only the job row keeps it.

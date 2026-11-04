@@ -28,6 +28,9 @@ def chat_model(*, api_key: str, model: str, base_url: str,
                reasoning: str = "", headers: dict | None = None,
                provider: dict | None = None, cls=None, streaming: bool = True):
     """OpenAI-compatible chat model. Tools are not bound to this call."""
+    if cls is None and not (api_key or "").strip():
+        from app.domain.errors import not_configured
+        raise not_configured("managed AI is not configured")
     if cls is None:
         from langchain_openai import ChatOpenAI
         cls = ChatOpenAI

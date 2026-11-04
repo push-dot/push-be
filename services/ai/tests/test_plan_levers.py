@@ -70,6 +70,13 @@ def test_empty_model_env_keeps_defaults(monkeypatch):
     assert deepseek_provider(cfg)["order"] == ORDER
 
 
+def test_client_default_base_url_is_openrouter():
+    from inspect import signature
+
+    assert signature(OpenAIClient.__init__).parameters["base_url"].default == (
+        "https://openrouter.ai/api/v1")
+
+
 def test_deepseek_provider_is_only_on_the_free_model_body():
     cfg = _cfg()
     payload = deepseek_provider(cfg)

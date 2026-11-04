@@ -313,6 +313,19 @@ async def test_gate_stream_frames_stay_token_strings(monkeypatch):
     assert usage["finish"] == "stop"
 
 
+def test_chat_model_refuses_an_empty_key_before_the_openai_sdk():
+    from app.domain.errors import DomainError
+    from app.framework.models import chat_model
+
+    try:
+        chat_model(api_key="", model="m", base_url="https://openrouter.ai/api/v1")
+    except DomainError as err:
+        assert err.code == "NOT_CONFIGURED"
+        assert err.message == "managed AI is not configured"
+        return
+    raise AssertionError("empty key built a client")
+
+
 def test_chat_model_sets_timeout_retries_and_provider_routing():
     from app.framework.models import chat_model
 

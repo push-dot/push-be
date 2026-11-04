@@ -84,8 +84,7 @@ def load_config() -> Config:
         dev_user_id=dev_user,
         google=OAuthProviderConfig(env("GOOGLE_CLIENT_ID"), env("GOOGLE_CLIENT_SECRET")),
         github=OAuthProviderConfig(env("GITHUB_CLIENT_ID"), env("GITHUB_CLIENT_SECRET")),
-        managed_ai_key=os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("OPENAI_API_KEY", ""),
+        managed_ai_key=os.environ.get("OPENROUTER_API_KEY", ""),
         ai_base_url=env("AI_BASE_URL", "https://openrouter.ai/api/v1"),
         opencode_go_key=os.environ.get("OPENCODE_GO_API_KEY", ""),
         opencode_go_base_url=env("OPENCODE_GO_BASE_URL",

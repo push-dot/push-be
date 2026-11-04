@@ -365,6 +365,34 @@ async def test_long_job_heartbeats_and_renews_conversation_lock():
     assert max(beats) > 1
 
 
+_MISSING_KEY = (
+    "Missing credentials. Please pass an `api_key`, `workload_identity`, "
+    "`admin_api_key`, or set the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` "
+    "environment variable."
+)
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_key_fails_without_retry():
+    redis = FakeRedis(decode_responses=True)
+    db = MemoryJobs()
+    db.jobs[FIRST] = queued(FIRST)
+
+    async def missing(_ctx):
+        raise RuntimeError(_MISSING_KEY)
+
+    box = worker(redis, db, {"chat": missing})
+    assert await box.process(await _read_one(box, FIRST)) == "failed"
+    assert db.jobs[FIRST]["status"] == "FAILED"
+    assert db.jobs[FIRST]["attempts"] == 0
+    assert await redis.zcard("q:delayed") == 0
+    assert db.events[FIRST] == [("error", {"error": {
+        "code": "NOT_CONFIGURED",
+        "message": "managed AI is not configured",
+        "details": None,
+    }})]
+
+
 @pytest.mark.asyncio
 async def test_handler_past_its_deadline_is_failed_for_retry(monkeypatch):
     monkeypatch.setenv("JOB_DEADLINE_CHAT_S", "0")
