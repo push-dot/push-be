@@ -10854,7 +10854,7 @@
                 }
               }
             },
-            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled.",
+            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled.",
             "x-sse-events": {
               "approval": {
                 "properties": {
@@ -11481,6 +11481,189 @@
                   "seq"
                 ],
                 "type": "object"
+              },
+              "result": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "actions": {
+                        "items": {
+                          "properties": {
+                            "id": {
+                              "enum": [
+                                "apply",
+                                "convert",
+                                "view"
+                              ],
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "method": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "cardMeta": {
+                        "type": "string"
+                      },
+                      "checklist": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "company": {
+                        "type": "string"
+                      },
+                      "documentId": {
+                        "type": "string"
+                      },
+                      "fileName": {
+                        "type": "string"
+                      },
+                      "pageLine": {
+                        "type": "string"
+                      },
+                      "savedLine": {
+                        "type": "string"
+                      },
+                      "seq": {
+                        "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                        "type": "integer"
+                      },
+                      "source": {
+                        "enum": [
+                          "external"
+                        ],
+                        "type": "string"
+                      },
+                      "taskLine": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "enum": [
+                          "result"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "source",
+                      "taskLine",
+                      "checklist",
+                      "documentId",
+                      "fileName",
+                      "pageLine",
+                      "cardMeta",
+                      "actions",
+                      "seq"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "actions": {
+                        "items": {
+                          "properties": {
+                            "id": {
+                              "enum": [
+                                "apply",
+                                "convert",
+                                "view"
+                              ],
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "method": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "checklist": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "company": {
+                        "type": "string"
+                      },
+                      "documentId": {
+                        "type": "string"
+                      },
+                      "headline": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "seq": {
+                        "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                        "type": "integer"
+                      },
+                      "source": {
+                        "enum": [
+                          "profile"
+                        ],
+                        "type": "string"
+                      },
+                      "subtitle": {
+                        "type": "string"
+                      },
+                      "taskLine": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "enum": [
+                          "result"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "source",
+                      "taskLine",
+                      "checklist",
+                      "documentId",
+                      "name",
+                      "headline",
+                      "title",
+                      "subtitle",
+                      "actions",
+                      "seq"
+                    ],
+                    "type": "object"
+                  }
+                ]
               },
               "review_report": {
                 "properties": {
@@ -11790,7 +11973,7 @@
                 }
               }
             },
-            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled.",
+            "description": "Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled.",
             "x-sse-events": {
               "approval": {
                 "properties": {
@@ -12417,6 +12600,189 @@
                   "seq"
                 ],
                 "type": "object"
+              },
+              "result": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "actions": {
+                        "items": {
+                          "properties": {
+                            "id": {
+                              "enum": [
+                                "apply",
+                                "convert",
+                                "view"
+                              ],
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "method": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "cardMeta": {
+                        "type": "string"
+                      },
+                      "checklist": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "company": {
+                        "type": "string"
+                      },
+                      "documentId": {
+                        "type": "string"
+                      },
+                      "fileName": {
+                        "type": "string"
+                      },
+                      "pageLine": {
+                        "type": "string"
+                      },
+                      "savedLine": {
+                        "type": "string"
+                      },
+                      "seq": {
+                        "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                        "type": "integer"
+                      },
+                      "source": {
+                        "enum": [
+                          "external"
+                        ],
+                        "type": "string"
+                      },
+                      "taskLine": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "enum": [
+                          "result"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "source",
+                      "taskLine",
+                      "checklist",
+                      "documentId",
+                      "fileName",
+                      "pageLine",
+                      "cardMeta",
+                      "actions",
+                      "seq"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "actions": {
+                        "items": {
+                          "properties": {
+                            "id": {
+                              "enum": [
+                                "apply",
+                                "convert",
+                                "view"
+                              ],
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "method": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "checklist": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "company": {
+                        "type": "string"
+                      },
+                      "documentId": {
+                        "type": "string"
+                      },
+                      "headline": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "seq": {
+                        "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                        "type": "integer"
+                      },
+                      "source": {
+                        "enum": [
+                          "profile"
+                        ],
+                        "type": "string"
+                      },
+                      "subtitle": {
+                        "type": "string"
+                      },
+                      "taskLine": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "enum": [
+                          "result"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "source",
+                      "taskLine",
+                      "checklist",
+                      "documentId",
+                      "name",
+                      "headline",
+                      "title",
+                      "subtitle",
+                      "actions",
+                      "seq"
+                    ],
+                    "type": "object"
+                  }
+                ]
               },
               "review_report": {
                 "properties": {
