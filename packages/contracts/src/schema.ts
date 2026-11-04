@@ -1346,7 +1346,7 @@ export interface paths {
         put?: never;
         /**
          * Set a hub profile document as the user's base profile
-         * @description Owner only. Copies the document title into profiles.headline and the latest version text into profiles.intro. Careers and skills already on the profile stay. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
+         * @description Owner only. Replaces profiles.headline, profiles.intro, profiles.careers, and profiles.skills from the document's latest version in one statement. A links heading also replaces user_links. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdBaseProfile"];
         delete?: never;
@@ -1447,7 +1447,7 @@ export interface paths {
         put?: never;
         /**
          * Save a hub profile document as an application profile
-         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub copies the document title and body into the user's hub profile. The document kind stays HUB_PROFILE.
+         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;

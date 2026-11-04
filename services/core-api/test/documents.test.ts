@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { postJson, recorder } from "../test-support/recorder.ts";
+import { postJson, recorder, USER } from "../test-support/recorder.ts";
 
 const NOW = new Date("2026-10-21T00:00:00Z");
 const ENV = { APP_ENV: "production" };
@@ -82,10 +82,12 @@ test("a hub profile converts to the default profile or an application profile", 
   assert.equal(hubBody.data.target, "hub");
   assert.equal(hubBody.data.documentId, DOC);
   assert.equal(typeof hubBody.data.profileUserId, "string");
-  const update = calls.find((call) => call.sql.includes("UPDATE profiles SET headline"));
+  const update = calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
   assert.equal(update?.params[1], "Push 프로필");
   assert.equal(update?.params[2], "백엔드");
-  assert.equal(update?.sql.includes("careers"), false);
+  assert.equal(update?.params[3], "[]");
+  assert.equal(update?.params[4], "[]");
+  assert.equal(update?.params[9], false);
 
   const { calls: appCalls, query: appQuery } = recorder((sql) => {
     if (sql.includes("FROM documents WHERE id")) return [{ ...doc, revision: 2 }];
@@ -168,10 +170,11 @@ test("setting the base profile copies the document onto the hub profile and repe
   const onceBody = await once.json() as { data: { documentId: string; profileUserId: string } };
   assert.equal(onceBody.data.documentId, DOC);
   assert.equal(typeof onceBody.data.profileUserId, "string");
-  const update = first.calls.find((call) => call.sql.includes("UPDATE profiles SET headline"));
+  const update = first.calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
   assert.equal(update?.params[1], "지원용 프로필");
   assert.equal(update?.params[2], "소개 본문");
-  assert.equal(update?.sql.includes("careers"), false);
+  assert.equal(update?.params[3], "[]");
+  assert.equal(update?.params[4], "[]");
   assert.equal(first.calls.some((call) => call.sql.startsWith("UPDATE documents")), false);
 
   const second = recorder(answer);
@@ -179,8 +182,8 @@ test("setting the base profile copies the document onto the hub profile and repe
   assert.equal(again.status, 200);
   const againBody = await again.json() as { data: { documentId: string; profileUserId: string } };
   assert.equal(againBody.data.profileUserId, onceBody.data.profileUserId);
-  const againUpdate = second.calls.find((call) => call.sql.includes("UPDATE profiles SET headline"));
-  assert.deepEqual(againUpdate?.params.slice(1, 3), ["지원용 프로필", "소개 본문"]);
+  const againUpdate = second.calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
+  assert.deepEqual(againUpdate?.params.slice(1, 5), ["지원용 프로필", "소개 본문", "[]", "[]"]);
 
   const missing = recorder(() => null);
   const hidden = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000042"), ENV, { query: missing.query, now: () => NOW });
@@ -189,6 +192,146 @@ test("setting the base profile copies the document onto the hub profile and repe
   const resume = recorder((sql) => sql.includes("FROM documents WHERE id") ? [{ ...doc, kind: "RESUME" }] : null);
   const rejected = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000043"), ENV, { query: resume.query, now: () => NOW });
   assert.equal(rejected.status, 400);
+});
+
+const profileSections = () => {
+  const nodes: [string, string][] = [
+    ["heading", "소개"],
+    ["paragraph", "새 소개"],
+    ["heading", "경력"],
+    ["paragraph", "Acme | Engineer | 2020-01-01 | 2022-06-01 | 백엔드"],
+    ["heading", "기술 스택"],
+    ["paragraph", "TypeScript, Go"],
+    ["heading", "링크"],
+    ["paragraph", "GitHub | https://github.com/ada"],
+    ["paragraph", "not a url"],
+    ["heading", "프로젝트"],
+    ["paragraph", "Side project"],
+    ["heading", "학력"],
+    ["paragraph", "대학교"],
+  ];
+  return {
+    content: {
+      type: "doc",
+      content: nodes.map(([type, text], i) => ({
+        type, attrs: { blockId: "b" + i }, content: [{ type: "text", text }],
+      })),
+    },
+    blocks: nodes.map(([, text], i) => ({ id: "b" + i, text })),
+  };
+};
+
+const profileWrite = (calls: { sql: string; params: unknown[] }[]) =>
+  calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
+
+test("setting the base profile replaces careers, skills, and links from the document", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000050";
+  const VER = "d0000000-0000-4000-8000-000000000051";
+  const doc = {
+    id: DOC, revision: 3, application_id: "a0000000-0000-4000-8000-000000000051", title: "지원용 프로필", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const version = { id: VER, document_id: DOC, number: 1, ...profileSections(), created_at: "2026-10-01T00:00:00Z" };
+  const answer = (sql: string) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM document_versions")) return [version];
+    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Rust"] }];
+    return null;
+  };
+  const careers = [{ company: "Acme", role: "Engineer", startedOn: "2020-01-01", endedOn: "2022-06-01", description: "백엔드" }];
+  const skills = ["TypeScript", "Go"];
+  const first = recorder(answer);
+  const once = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000050"), ENV, { query: first.query, now: () => NOW });
+  assert.equal(once.status, 200);
+  const write = profileWrite(first.calls);
+  assert.equal(write?.params[1], "지원용 프로필");
+  assert.equal(write?.params[2], "새 소개");
+  assert.deepEqual(JSON.parse(String(write?.params[3])), careers);
+  assert.deepEqual(JSON.parse(String(write?.params[4])), skills);
+  assert.equal(write?.params[9], true);
+  assert.equal(write?.sql.includes("DELETE FROM user_links"), true);
+  assert.equal(write?.sql.includes(";"), false);
+  assert.equal(first.calls.filter((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles")).length, 1);
+  const links = JSON.parse(String(write?.params[10])) as { kind: string; url: string; title: string }[];
+  assert.deepEqual(links.map((link) => ({ kind: link.kind, url: link.url, title: link.title })), [
+    { kind: "github", url: "https://github.com/ada", title: "GitHub" },
+  ]);
+  assert.equal(String(write?.params[3]).includes("Side project"), false);
+  assert.equal(String(write?.params[2]).includes("대학교"), false);
+
+  const second = recorder(answer);
+  const again = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000051"), ENV, { query: second.query, now: () => NOW });
+  assert.equal(again.status, 200);
+  const againWrite = profileWrite(second.calls);
+  assert.deepEqual(againWrite?.params.slice(1, 5), write?.params.slice(1, 5));
+  const againLinks = JSON.parse(String(againWrite?.params[10])) as { url: string }[];
+  assert.deepEqual(againLinks.map((link) => link.url), links.map((link) => link.url));
+
+  const { calls: hubCalls, query: hubQuery } = recorder(answer);
+  const hub = await handle(postJson(`/api/v1/documents/${DOC}/profile`, { target: "hub" }, "00000000-0000-4000-8000-000000000052"), ENV, { query: hubQuery, now: () => NOW });
+  assert.equal(hub.status, 200);
+  const hubWrite = profileWrite(hubCalls);
+  assert.deepEqual(hubWrite?.params.slice(1, 5), write?.params.slice(1, 5));
+});
+
+test("a failed base profile write does not send a second profile write", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000060";
+  const VER = "d0000000-0000-4000-8000-000000000061";
+  const doc = {
+    id: DOC, revision: 1, application_id: null, title: "지원용 프로필", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM document_versions")) return [{
+      id: VER, document_id: DOC, number: 1, ...profileSections(), created_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("DELETE FROM user_links")) throw new Error("db down");
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000060"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 500);
+  const writes = calls.filter((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles"));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].sql.includes("DELETE FROM user_links"), true);
+  assert.equal(writes[0].sql.includes("careers"), true);
+});
+
+test("only the document owner can set the base profile", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000070";
+  const bare = new Request(`https://core.example/api/v1/documents/${DOC}/base-profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": "00000000-0000-4000-8000-000000000070" },
+    body: "{}",
+  });
+  const denied = await handle(bare, ENV, { query: recorder().query, now: () => NOW });
+  assert.equal(denied.status, 401);
+
+  const doc = {
+    id: DOC, revision: 1, application_id: null, title: "지원용 프로필", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: null,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const owned = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Go"] }];
+    return null;
+  });
+  const ok = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000071"), ENV, { query: owned.query, now: () => NOW });
+  assert.equal(ok.status, 200);
+  const load = owned.calls.find((call) => call.sql.includes("FROM documents WHERE id"));
+  assert.equal(load?.sql.includes("user_id"), true);
+  assert.equal(load?.params[1], USER);
+  const write = profileWrite(owned.calls);
+  assert.equal(write?.params[0], USER);
+
+  const hidden = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000072"), ENV, { query: recorder(() => null).query, now: () => NOW });
+  assert.equal(hidden.status, 404);
 });
 
 test("create accepts CAREER_STATEMENT and rejects an unknown kind", async () => {

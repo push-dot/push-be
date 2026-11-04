@@ -8,6 +8,7 @@ import {
 import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { listPage, pageOf, ts } from "../page.ts";
+import { httpsUrl } from "./recruiting-shared.ts";
 import type { Ctx } from "../types.ts";
 
 const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, language, status, latest_version_id, finalized_version_id, created_at, updated_at";
@@ -512,27 +513,145 @@ const clip = (value: string, max: number): string => {
   return points.length <= max ? value : points.slice(0, max).join("");
 };
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+type DocNode = { type?: unknown; text?: unknown; content?: unknown };
+type SectionName = "intro" | "careers" | "skills" | "links" | "headline" | "skip";
+
+const nodeText = (node: DocNode): string => {
+  const own = typeof node.text === "string" ? node.text : "";
+  const nested = Array.isArray(node.content) ? node.content.map((child) => nodeText(child as DocNode)).join("") : "";
+  return own + nested;
+};
+
+const sectionLines = (content: unknown): { heading: boolean; text: string }[] => {
+  const lines: { heading: boolean; text: string }[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const typed = node as DocNode;
+    const type = typeof typed.type === "string" ? typed.type : "";
+    if (type === "heading" || type === "paragraph" || type === "listItem") {
+      lines.push({ heading: type === "heading", text: nodeText(typed).trim() });
+      return;
+    }
+    if (Array.isArray(typed.content)) for (const child of typed.content) visit(child);
+  };
+  visit(content);
+  return lines;
+};
+
+const sectionName = (label: string): SectionName => {
+  const key = label.trim().replace(/[:：]\s*$/, "").toLowerCase();
+  if (key === "소개" || key === "intro") return "intro";
+  if (key === "경력" || key === "careers" || key === "career") return "careers";
+  if (key === "기술" || key === "기술 스택" || key === "skills" || key === "skill") return "skills";
+  if (key === "링크" || key === "links" || key === "link") return "links";
+  if (key === "한 줄" || key === "헤드라인" || key === "headline") return "headline";
+  // shortcut: projects and education have no profile column, drop them until a migration adds one.
+  return "skip";
+};
+
+const careerOf = (line: string): { company: string; role: string; startedOn: string | null; endedOn: string | null; description: string } | null => {
+  const parts = line.split("|").map((part) => part.trim());
+  if (parts.length >= 2 && parts[0] && parts[1]) {
+    return {
+      company: clip(parts[0], 200),
+      role: clip(parts[1], 200),
+      startedOn: DATE.test(parts[2] ?? "") ? parts[2] : null,
+      endedOn: DATE.test(parts[3] ?? "") ? parts[3] : null,
+      description: clip(parts[4] ?? "", 500),
+    };
+  }
+  const name = clip(line.trim(), 200);
+  if (!name) return null;
+  return { company: name, role: name, startedOn: null, endedOn: null, description: "" };
+};
+
+const linkKind = (url: string): string => {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return "other"; }
+  if (host === "github.com" || host.endsWith(".github.com")) return "github";
+  if (/(^|\.)((velog\.io)|(tistory\.com)|(medium\.com)|(blogspot\.com)|(brunch\.co\.kr))$/.test(host)) return "blog";
+  if (/(^|\.)((notion\.site)|(notion\.so)|(behance\.net)|(dribbble\.com))$/.test(host)) return "portfolio";
+  return "other";
+};
+
+const linkOf = (line: string): { id: string; kind: string; url: string; title: string } | null => {
+  const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
+  const url = clip(parts.length >= 2 ? parts[parts.length - 1] : parts[0] ?? "", 2000);
+  if (!httpsUrl(url)) return null;
+  const title = parts.length >= 2 ? parts.slice(0, -1).join(" | ") : "";
+  return { id: crypto.randomUUID(), kind: linkKind(url), url, title: clip(title, 300) };
+};
+
+const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; intro: string; careers: unknown[]; skills: string[]; links: { id: string; kind: string; url: string; title: string }[]; replaceLinks: boolean } => {
+  const lines = sectionLines(content);
+  const sawHeading = lines.some((line) => line.heading);
+  const buckets: Record<Exclude<SectionName, "skip">, string[]> = { intro: [], careers: [], skills: [], links: [], headline: [] };
+  let current: SectionName = "skip";
+  let headed = false;
+  for (const line of lines) {
+    if (line.heading) {
+      headed = true;
+      current = sectionName(line.text);
+      continue;
+    }
+    const text = line.text.replace(/^•\s*/, "").trim();
+    if (!text) continue;
+    if (!headed) buckets.intro.push(text);
+    else if (current !== "skip") buckets[current].push(text);
+  }
+  const introLines = sawHeading ? buckets.intro : blocksOf(blocks).map((block) => block.text).filter(Boolean);
+  const skills = buckets.skills.flatMap((line) => line.split(/[,·、]/)).map((item) => clip(item.trim(), 40)).filter(Boolean).slice(0, 50);
+  return {
+    headline: buckets.headline.join("\n"),
+    intro: introLines.join("\n"),
+    careers: buckets.careers.map(careerOf).filter((career) => career != null).slice(0, 30),
+    skills,
+    links: buckets.links.map(linkOf).filter((link) => link != null),
+    replaceLinks: lines.some((line) => line.heading && sectionName(line.text) === "links"),
+  };
+};
+
+const REPLACE_PROFILE = `WITH replaced AS (
+  INSERT INTO profiles (user_id, headline, intro, careers, skills, search_text, search_choseong, search_jamo, created_at, updated_at)
+  VALUES ($1::uuid, $2::text, $3::text, $4::jsonb, $5::jsonb, $6::text, $7::text, $8::text, $9::timestamptz, $9::timestamptz)
+  ON CONFLICT (user_id) DO UPDATE SET
+    headline = EXCLUDED.headline,
+    intro = EXCLUDED.intro,
+    careers = EXCLUDED.careers,
+    skills = EXCLUDED.skills,
+    search_text = EXCLUDED.search_text,
+    search_choseong = EXCLUDED.search_choseong,
+    search_jamo = EXCLUDED.search_jamo,
+    updated_at = EXCLUDED.updated_at
+  RETURNING user_id
+), cleared AS (
+  DELETE FROM user_links
+  WHERE user_id = (SELECT user_id FROM replaced) AND $10::boolean
+  RETURNING id
+)
+INSERT INTO user_links (id, user_id, kind, url, title, status, fit_count, ai_read, created_at)
+SELECT link.id::uuid, replaced.user_id, link.kind, link.url, link.title, 'READ', 0, false, $9::timestamptz
+FROM replaced
+JOIN jsonb_to_recordset($11::jsonb) AS link(id text, kind text, url text, title text) ON $10::boolean`;
+
 const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string): Promise<{ documentId: string; profileUserId: string }> => {
   const nowIso = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    "INSERT INTO profiles (user_id, created_at, updated_at) VALUES ($1,$2,$2) ON CONFLICT (user_id) DO NOTHING",
-    [ctx.user.id, nowIso]);
-  let intro = "";
-  if (doc.latest_version_id != null) {
-    const version = await loadVersion(ctx, id, String(doc.latest_version_id));
-    intro = blocksOf(version.blocks).map((block) => block.text).filter(Boolean).join("\n");
-  }
-  intro = clip(intro, 2000);
-  const headline = clip(String(doc.title), 120);
-  const current = await one(ctx.deps.query,
-    "SELECT u.display_name, p.skills FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = $1",
-    [ctx.user.id]);
-  if (!current) throw notFound();
-  const skills = Array.isArray(current.skills) ? current.skills.map(String) : [];
-  const fields = searchFields([String(current.display_name ?? ""), headline, skills.join(" ")].join(" "));
-  await query(ctx.deps.query,
-    "UPDATE profiles SET headline = $2, intro = $3, search_text = $4, search_choseong = $5, search_jamo = $6, updated_at = $7 WHERE user_id = $1",
-    [ctx.user.id, headline, intro, fields.text, fields.choseong, fields.jamo, nowIso]);
+  const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false };
+  const version = doc.latest_version_id == null ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
+  const parsed = version == null ? empty : sectionsFrom(version.content, version.blocks);
+  const headline = clip(parsed.headline || String(doc.title), 120);
+  const intro = clip(parsed.intro, 2000);
+  const fields = searchFields([ctx.user.displayName, headline, parsed.skills.join(" ")].join(" "));
+  await query(ctx.deps.query, REPLACE_PROFILE, [
+    ctx.user.id, headline, intro, JSON.stringify(parsed.careers), JSON.stringify(parsed.skills),
+    fields.text, fields.choseong, fields.jamo, nowIso, parsed.replaceLinks, JSON.stringify(parsed.links),
+  ]);
   return { documentId: id, profileUserId: ctx.user.id };
 };
 
