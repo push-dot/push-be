@@ -107,6 +107,33 @@ async def test_bypass_intake_with_a_page_does_not_stop():
     assert _must_stop({"access_mode": "BYPASS", "inputs": {}}, "intake")
 
 
+async def test_intake_text_followup_sends_the_choice_with_done():
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": None})
+    runtime = HarnessRuntime(service(rows))
+    first = await run(runtime, _payload(
+        "내 프로필로 점수 올려 줘", ai=None, intent="boost", access_mode="BYPASS"))
+    assert any(
+        mode == "custom" and chunk.get("type") == "choice" and chunk.get("gate") == "intake"
+        for mode, chunk in first)
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in first)
+    second = await run(runtime, _payload(
+        "이력서 만들기만 할게요. 자료는 지금 없어요.",
+        ai=None,
+        access_mode="BYPASS",
+        job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ))
+    assert any(
+        mode == "custom" and chunk.get("type") == "choice" and chunk.get("gate") == "intake"
+        for mode, chunk in second)
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in second)
+
+
 async def test_resume_turn_saves_the_assistant_message():
     from tests.harness_fakes import Rows
     ScriptedLC.replies = [{"content": json.dumps({"message": "어떤 방식으로 쓸지 골라 주세요"})}]

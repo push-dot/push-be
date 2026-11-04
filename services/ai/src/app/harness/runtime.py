@@ -91,6 +91,7 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
         "job_id": str(payload.get("job_id") or ""),
         "profile_document_id": saved.get("profile_document_id") or "",
         "intake_asks": int(saved.get("intake_asks") or 0),
+        "gate_epoch": int(saved.get("gate_epoch") or 0),
     }
 
 
@@ -124,7 +125,7 @@ _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
     "drafts", "review", "template", "artifacts", "output_targets", "tone", "warnings",
     "approach", "bottleneck_level", "prevention_categories", "blueprints",
-    "profile_document_id", "intake_asks",
+    "profile_document_id", "intake_asks", "gate_epoch",
 )
 
 

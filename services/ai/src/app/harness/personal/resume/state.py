@@ -34,3 +34,4 @@ class ResumeState(BaseModel):
     profile_document_id: str = ""
     source_saved: bool | None = None
     intake_asks: int = 0
+    gate_epoch: int = 0
