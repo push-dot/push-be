@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -109,12 +110,13 @@ async def test_fit_report_continues_into_boost(monkeypatch):
     seen = _flat(monkeypatch)
     graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": "E"}}))
     config = _config()
-    await _run(graph, _base(
+    events = await _events(graph, _base(
         phase="analyze", scenario="E", inputs={"document": "선택한 서류 본문"},
     ), config)
+    assert not any(event.get("gate") == "analyze" for event in events)
     snap = await graph.aget_state(config)
     assert "02_fit_score.json" in snap.values["artifacts"]
-    await _events(graph, Command(resume={"option_id": "continue"}), config)
+    assert snap.values["phase"] == "craft"
     choice = _choice(await _events(graph, {}, config))
     assert choice["gate"] == "boost"
     assert choice["title"] == "점수를 한 번 더 올릴까요?"
@@ -139,7 +141,6 @@ async def test_boost_uses_the_chosen_document_body(monkeypatch):
         phase="analyze", scenario="E", user_id=user_id,
         inputs={"documentId": _DOC},
     ), config)
-    await _events(graph, Command(resume={"option_id": "continue"}), config)
     await _events(graph, {}, config)
     assert seen[0] == "문서 본문"
 
@@ -226,6 +227,105 @@ async def test_present_card_points_at_the_profile(monkeypatch):
     assert store.versions
 
 
+_ANALYZE_TITLE = "이 공고에 맞춰 이력서를 고칠까요?"
+_FEEDBACK_TITLE = "피드백을 반영해서 수정할까요?"
+_FIX_LABEL = "네, 맞춰서 고쳐 주세요"
+_FEEDBACK_ONLY = "피드백만 받을게요"
+_SCORE_ONLY = "점수만 보고 끝낼게요"
+_APPLY_FEEDBACK = "반영해서 수정할게요"
+
+
+class _RecordingModel(_PhaseModel):
+    def __init__(self, outputs=None):
+        super().__init__(outputs)
+        self.payloads = []
+
+    async def ainvoke(self, messages, **kwargs):
+        self.payloads.append(json.loads(messages[-1].content))
+        return await super().ainvoke(messages, **kwargs)
+
+
+async def _open_analyze():
+    model = _RecordingModel({"analyze": {"scenario": "A", "message": "키워드가 부족해요"}})
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    events = await _events(graph, _base(phase="analyze"), config)
+    return graph, config, model, events
+
+
+async def test_analyze_gate_offers_the_three_design_options():
+    _graph_obj, _config_obj, _model, events = await _open_analyze()
+    choice = _choice(events)
+    assert choice["title"] == _ANALYZE_TITLE
+    assert choice["recommended"] == "continue"
+    assert choice["options"] == [
+        {"id": "continue", "label": _FIX_LABEL},
+        {"id": "feedback", "label": _FEEDBACK_ONLY},
+        {"id": "score", "label": _SCORE_ONLY},
+    ]
+
+
+async def test_analyze_fix_goes_to_strategy():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "continue"}), config)
+    choice = _choice(await _events(graph, {}, config))
+    assert choice["gate"] == "strategy"
+    assert "craft" not in model.calls
+
+
+async def test_analyze_score_ends_at_the_score():
+    graph, config, model, _opened = await _open_analyze()
+    snap = await graph.aget_state(config)
+    assert "02_fit_score.json" in snap.values["artifacts"]
+    await _events(graph, Command(resume={"option_id": "score"}), config)
+    done = await graph.aget_state(config)
+    assert done.values["status"] == "done"
+    assert done.values["phase"] == "analyze"
+    assert done.next == ()
+    assert "strategy" not in model.calls
+    assert "craft" not in model.calls
+
+
+async def test_analyze_feedback_shows_fixes_then_the_feedback_card():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "feedback"}), config)
+    events = await _events(graph, {}, config)
+    assert any(event.get("token") == "키워드가 부족해요" for event in events)
+    choice = _choice(events)
+    assert choice["title"] == _FEEDBACK_TITLE
+    assert choice["options"] == [
+        {"id": "continue", "label": _APPLY_FEEDBACK},
+        {"id": "cancel", "label": "그만하기"},
+    ]
+    assert "craft" not in model.calls
+
+
+async def test_feedback_continue_rewrites_with_the_feedback():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "feedback"}), config)
+    card = _choice(await _events(graph, {}, config))
+    assert card["gate"] == "feedback"
+    assert card["title"] == _FEEDBACK_TITLE
+    await _events(graph, Command(resume={"option_id": "continue"}), config)
+    await _events(graph, {}, config)
+    craft = next(item for item in model.payloads if item.get("phase") == "craft")
+    assert craft["analysis"]["message"] == "키워드가 부족해요"
+    assert "strategy" not in model.calls
+
+
+async def test_feedback_cancel_ends_without_a_rewrite():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "feedback"}), config)
+    card = _choice(await _events(graph, {}, config))
+    assert card["gate"] == "feedback"
+    await _events(graph, Command(resume={"option_id": "cancel"}), config)
+    snap = await graph.aget_state(config)
+    assert snap.values["status"] == "cancelled"
+    assert snap.next == ()
+    assert "craft" not in model.calls
+    assert "strategy" not in model.calls
+
+
 def test_fit_seed_uses_the_chosen_document_without_dropping_a_draft():
     kept = quick_start_resume("fit", {
         "inputs": {"job": "backend", "document": "본문"},
@@ -247,7 +347,8 @@ def test_publish_prompt_does_not_ask_for_a_pdf():
     assert _NOTE in phase_prompt_for_harness("present")
 
 
-async def test_fit_quick_start_copies_context_document_id():
+async def test_fit_quick_start_copies_context_document_id(monkeypatch):
+    _flat(monkeypatch)
     rows = Rows({"company_id": None, "resume_state": None})
     runtime = HarnessRuntime(service(rows))
     payload = {
@@ -267,5 +368,5 @@ async def test_fit_quick_start_copies_context_document_id():
         saved = json.loads(saved)
     assert saved["inputs"]["documentId"] == _DOC
     assert saved["scenario"] == "E"
-    assert saved["phase"] == "analyze"
+    assert saved["phase"] == "craft"
     assert UUID(saved["inputs"]["documentId"])
