@@ -60,7 +60,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/profiles/{id}/offer", {
     tag,
     summary: "Send an offer to a profile",
-    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must be an open posting of the sender's company.",
+    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.",
     params: [id],
     body: body(obj({ message: text(1, 500), postingId: nullable(uuid) }, ["message"])),
     responses: { 201: ok(ref("Offer"), "Created") },
@@ -96,8 +96,8 @@ export const routes: Route[] = [
       intro: nullable(text(0, 2000)),
       careers: { type: "array", maxItems: 30, items: ref("SocialProfileCareerInput") },
       skills: nullable({ type: "array", maxItems: 50, items: text(1, 40) }),
-      avatarKey: nullable(IMAGE_KEY),
-      resumeSourceId: nullable(str),
+      avatarKey: { ...nullable(IMAGE_KEY), description: "Null or an empty string clears it. A key must not contain .." },
+      resumeSourceId: { ...nullable(str), description: "UUID of a source the caller owns. Null or empty clears it. A missing source is 404." },
       contact: nullable(text(0, 200)),
     }, [])),
     responses: { 200: ok(ref("ProfileDetail")) },
@@ -118,7 +118,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/accept", {
     tag,
     summary: "Accept an offer",
-    description: "Recipient only. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
+    description: "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
     params: [id],
     body: body(obj({ reply: nullable(text(1, 2000)) }, []), false),
     responses: { 200: ok(ref("Offer")) },
@@ -126,7 +126,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/decline", {
     tag,
     summary: "Decline an offer",
-    description: "Recipient only. 409 when the offer is not SENT or READ.",
+    description: "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.",
     params: [id],
     responses: { 200: ok(ref("Offer")) },
   }),
@@ -154,9 +154,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/links", {
     tag,
     summary: "Add a link",
-    description: "kind is inferred from the URL host when omitted.",
+    description: "kind is inferred from the URL host when omitted. url must be http or https with no username or password.",
     body: body(obj({
-      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri" },
+      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri", description: "http or https URL with no username or password" },
       kind: LINK_KIND,
       title: nullable(text(0, 300)),
       aiRead: nullable(bool),
@@ -166,9 +166,10 @@ export const routes: Route[] = [
   patch("core", "/api/v1/me/links/{id}", {
     tag,
     summary: "Update a link",
+    description: "url, when sent, must be http or https with no username or password.",
     params: [id],
     body: body(obj({
-      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri" },
+      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri", description: "http or https URL with no username or password" },
       kind: LINK_KIND,
       title: nullable(text(0, 300)),
       aiRead: bool,

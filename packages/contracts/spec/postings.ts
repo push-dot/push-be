@@ -9,7 +9,7 @@ const employmentType = enumOf("full_time", "contract", "intern", "freelance", "d
 const postingStatus = enumOf("DRAFT", "OPEN", "CLOSED");
 const applicationStage = enumOf("DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN");
 const csv = (description: string): Schema => ({ type: "string", description });
-const imageKey: Schema = { type: ["string", "null"], pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key returned by the image upload endpoint; null or empty clears it" };
+const imageKey: Schema = { type: ["string", "null"], pattern: "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .." };
 const sourceUrl: Schema = { type: ["string", "null"], format: "uri", minLength: 1, maxLength: 2000, description: "http(s) URL without credentials" };
 const textList = (maxItems: number, maxLength: number): Schema => ({ type: "array", maxItems, items: { type: "string", minLength: 1, maxLength } });
 const careerYears: Schema = { type: "integer", minimum: 0, maximum: 80 };
@@ -85,14 +85,14 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Get a posting",
     auth: "optional",
-    description: "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). Member fields are present only for company members. Records a view for signed-in users.",
+    description: "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). status is also sent to non-members when the column is present. newApplicantCount and createdBy are member-only, and on this route they are 0 and null because the query does not load them. Records a view for signed-in users.",
     params: [pathParam("id")],
     responses: { 200: ok(ref("PostingDetail")) },
   }),
   patch("core", "/api/v1/postings/{id}", {
     tag: "postings",
     summary: "Update a posting",
-    description: "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN.",
+    description: "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
     params: [pathParam("id")],
     body: body(obj({ expectedRevision: int, ...postingWriteFields }, ["expectedRevision"])),
     responses: { 200: ok(ref("PostingDetail")) },
@@ -108,7 +108,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/postings/{id}/applicants", {
     tag: "postings",
     summary: "List applicants of a posting",
-    description: "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total.",
+    description: "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total. An unknown stage is an empty page, not an error.",
     params: [pathParam("id"), ...pageParams, query("stage", applicationStage, "Exact stage filter")],
     responses: { 200: okPage(ref("Applicant")) },
   }),
@@ -122,7 +122,7 @@ export const routes: Route[] = [
   patch("core", "/api/v1/postings/{id}/applicants/{applicationId}", {
     tag: "postings",
     summary: "Change an applicant's stage",
-    description: "Company members of the posting only. Same stage returns the application unchanged. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
+    description: "Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
     params: [pathParam("id"), pathParam("applicationId")],
     body: body(obj({ stage: enumOf("SCREENING", "INTERVIEW", "OFFER", "REJECTED") })),
     responses: { 200: ok(ref("PostingsApplicantApplication")) },
@@ -137,7 +137,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/apply", {
     tag: "postings",
     summary: "Apply to a posting",
-    description: "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise).",
+    description: "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.",
     params: [pathParam("id")],
     body: body(obj({ documentIds: arr(uuid), sourceIds: arr(uuid) }, [])),
     responses: { 201: ok(ref("Application"), "Created") },
@@ -158,7 +158,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/close", {
     tag: "postings",
     summary: "Close a posting",
-    description: "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale.",
+    description: "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
     params: [pathParam("id")],
     body: body(obj({ expectedRevision: int })),
     responses: { 200: ok(ref("PostingDetail")) },
@@ -176,7 +176,7 @@ export const routes: Route[] = [
     auth: "optional",
     description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending.",
     params: [
-      requiredQuery("q", { type: "string", minLength: 1 }, "Search term (must not be blank)"),
+      requiredQuery("q", { type: "string", minLength: 1, pattern: "\\S" }, "Search term. Whitespace-only is 400. No max length on this route."),
       query("type", { type: "string", enum: ["postings", "people", "posts"], default: "postings" }),
       ...pageParams,
       query("category", csv("type=people only: comma-separated job categories")),
@@ -190,7 +190,8 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Result counts per search type",
     auth: "optional",
-    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200 }, "Search term (must not be blank)")],
+    description: "Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.",
+    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" }, "Search term. Whitespace-only is 400. Max 200 code points.")],
     responses: { 200: ok(obj({ postings: int, people: int, posts: int })) },
   }),
   get("core", "/api/v1/search/trending", {
@@ -241,7 +242,7 @@ export const schemas: Record<string, Schema> = {
         ...memberFields,
       }, ["description", "requirements", "workConditions", "preferred", "applicantCount"]),
     ],
-    description: "status, newApplicantCount and createdBy are present only for members of the owning company (always present on create, update and close responses).",
+    description: "status is present for members, and also for non-members when the status column was selected. newApplicantCount and createdBy are member-only. Create and the company list load them. Get, update, and close return newApplicantCount 0 and createdBy null.",
   },
   PostingsCompanyPosting: {
     allOf: [ref("Posting"), obj(memberFields)],

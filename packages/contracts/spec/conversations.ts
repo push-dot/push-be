@@ -1,6 +1,6 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, del, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
+  get, post, patch, del, ref, nullable, obj, closed, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
   body, ok, okPage, noContent, sse, pathParam, query, pageParams,
 } from "./shared.ts";
 
@@ -11,7 +11,10 @@ const seq = { type: "integer", description: "chat_events id; send back as ?after
 const option = obj({ id: str, label: str });
 
 const sseError = obj({
-  code: str,
+  code: {
+    ...enumOf("NOT_CONFIGURED", "PROVIDER_ERROR", "INTERNAL"),
+    description: "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).",
+  },
   message: str,
   details: nullable({ type: "object", additionalProperties: true }),
 }, ["code", "message"]);
@@ -29,7 +32,7 @@ const chatEvents: Record<string, Schema> = {
   tool: obj({
     type: enumOf("tool"),
     name: str,
-    state: enumOf("run", "ok", "err", "wait"),
+    state: { ...enumOf("run", "ok", "err", "wait"), description: "Current turns emit wait, ok, or err. Replay can still send run." },
     summary: str,
     tier: str,
     result: any,
@@ -67,6 +70,10 @@ const chatEvents: Record<string, Schema> = {
     gate: str,
     recommended: str,
     auto: bool,
+    multiple: { type: "boolean", description: "Present and true when more than one option may be selected" },
+    detail: { type: "string", description: "Boost gate only: the score change for this cycle" },
+    note: { type: "string", description: "Profile present gate: where the PDF can be exported" },
+    documentId: { type: "string", description: "Present gate: the saved profile document, when there is one" },
     options: arr(option),
     seq,
   }, ["type", "id", "options", "seq"]),
@@ -85,8 +92,8 @@ const chatEvents: Record<string, Schema> = {
   }),
   file: obj({
     type: enumOf("file"),
-    name: str,
-    mime: str,
+    name: { type: "string", description: "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event." },
+    mime: { type: "string", description: "Never text/markdown." },
     fileId: str,
     documentId: { type: "string", description: "Empty string when the document was not synced" },
     downloadUrl: { type: "string", description: "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}" },
@@ -150,7 +157,10 @@ const chatEvents: Record<string, Schema> = {
         taskLine: str,
         checklist: arr(str),
         documentId: str,
-        fileName: str,
+        fileName: {
+          type: "string",
+          description: "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
+        },
         pageLine: str,
         savedLine: str,
         cardMeta: str,
@@ -185,18 +195,27 @@ const chatEvents: Record<string, Schema> = {
 };
 
 const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. "
-  + "The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
-  + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.";
+  + "The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. "
+  + "The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
+  + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. "
+  + "The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. "
+  + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.";
 
-const postMessageBody = body(obj({
+const postMessageBody = body(closed({
   text: { type: "string", minLength: 1, maxLength: 20000 },
-  context: obj({
+  context: closed({
     documentId: nullable(uuid),
     versionId: nullable(uuid),
-    evidenceIds: arr(uuid),
+    evidenceIds: {
+      ...arr(uuid),
+      description: "Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external.",
+    },
   }, []),
-  ai: nullable(obj({
-    provider: enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
+  ai: nullable(closed({
+    provider: {
+      ...enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
+      description: "Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.",
+    },
     model: { type: "string", minLength: 1 },
     effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX." },
     ultraResume: { type: "boolean", description: "Requires the ULTRA plan" },
@@ -226,7 +245,7 @@ const chatJob = obj({
   updatedAt: dateTime,
 });
 
-const expectedRevision = obj({ expectedRevision: int });
+const expectedRevision = closed({ expectedRevision: int });
 
 export const routes: Route[] = [
   get("gateway", "/api/v1/conversations", {
@@ -245,8 +264,8 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations", {
     tag: "conversations",
     summary: "Create a conversation",
-    description: "audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.",
-    body: body(obj({
+    description: "audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.",
+    body: body(closed({
       title: { type: "string", maxLength: 300 },
       audience: enumOf("PERSONAL", "EMPLOYER"),
       applicationId: nullable(uuid),
@@ -257,8 +276,9 @@ export const routes: Route[] = [
   patch("core", "/api/v1/conversations/{id}", {
     tag: "conversations",
     summary: "Rename or pin a conversation",
+    description: "409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match. 404 when the conversation is not visible to the caller.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       title: nullable({ type: "string", maxLength: 300 }),
       pinned: nullable(bool),
@@ -268,7 +288,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/archive", {
     tag: "conversations",
     summary: "Archive a conversation",
-    description: "Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation.",
+    description: "Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation. 409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match.",
     params: [id],
     body: body(expectedRevision),
     responses: { 200: ok(ref("Conversation")) },
@@ -276,7 +296,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/unarchive", {
     tag: "conversations",
     summary: "Unarchive a conversation",
-    description: "Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.",
+    description: "Same caller and expectedRevision rules as archive, including 409 REVISION_CONFLICT. Does not restore evidence or attachments removed by archive.",
     params: [id],
     body: body(expectedRevision),
     responses: { 200: ok(ref("Conversation")) },
@@ -291,14 +311,14 @@ export const routes: Route[] = [
   get("gateway", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "List messages",
-    description: "Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's.",
+    description: "Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's. Attachments whose title or name ends in .md, or whose mime is text/markdown, are omitted.",
     params: [id, ...pageParams],
     responses: { 200: okPage(ref("Message")) },
   }),
   post("core", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "Send a message (queue a chat job)",
-    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.",
+    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec.",
     params: [id],
     body: postMessageBody,
     responses: { 202: ok(chatJob, "Accepted") },
@@ -332,7 +352,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/attachments", {
     tag: "conversations",
     summary: "Upload a PDF attachment",
-    description: "Company conversations only (verified company, plan-gated pdf_attachment). PDF only, max 10 MiB (413 PAYLOAD_TOO_LARGE).",
+    description: "Company members only. A personal conversation, or one the caller cannot see, is 404. An unverified company is 403 BUSINESS_NOT_VERIFIED. pdf_attachment requires ULTRA, else 403 PLAN_REQUIRED with details.requiredPlan. PDF only, else 400. Over 10 MiB is 413 PAYLOAD_TOO_LARGE.",
     params: [id],
     body: {
       required: true,
@@ -349,7 +369,7 @@ export const routes: Route[] = [
     summary: "Answer a chat approval or choice card",
     description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
     params: [id, pathParam("approvalId")],
-    body: body(obj({
+    body: body(closed({
       optionId: { type: "string", minLength: 1 },
       optionIds: arr({ type: "string", minLength: 1 }),
     }, [])),
@@ -361,7 +381,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/conversations/{id}/artifacts/{artifactId}", {
     tag: "conversations",
     summary: "Download a conversation artifact",
-    description: "artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension.",
+    description: "artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension. This route still downloads markdown. List and file events do not show it.",
     params: [id, pathParam("artifactId", str)],
     responses: {
       200: {
@@ -376,6 +396,7 @@ export const routes: Route[] = [
   get("ai", "/api/v1/conversations/{id}/artifacts", {
     tag: "conversations",
     summary: "List document artifacts attached to messages",
+    description: "Omits markdown: a .md title, name, or file name, or mime text/markdown. Other artifacts stay.",
     params: [id],
     responses: { 200: ok(arr(ref("Artifact"))) },
   }),
@@ -413,7 +434,7 @@ export const routes: Route[] = [
     tag: "approvals",
     summary: "Request an approval",
     description: "Hashes the current target so a later change makes the approval stale. Expires after the default TTL.",
-    body: body(obj({
+    body: body(closed({
       kind: enumOf("EVIDENCE_USE", "DOCUMENT_FINALIZE", "APPLICATION_SUBMIT", "CLI_EXECUTE"),
       applicationId: nullable(uuid),
       targetId: uuid,
@@ -432,7 +453,7 @@ export const routes: Route[] = [
     summary: "Approve or deny",
     description: "Only EVIDENCE_USE, DOCUMENT_FINALIZE, APPLICATION_SUBMIT, CLI_EXECUTE approvals; chat cards use POST /conversations/{id}/approvals/{approvalId}. An expired approval is marked EXPIRED and the call fails.",
     params: [id],
-    body: body(obj({ expectedRevision: int, decision: enumOf("APPROVED", "DENIED") })),
+    body: body(closed({ expectedRevision: int, decision: enumOf("APPROVED", "DENIED") })),
     responses: { 200: ok(ref("Approval")) },
   }),
   get("ai", "/api/v1/operations/{id}", {
@@ -459,7 +480,7 @@ export const routes: Route[] = [
     summary: "Submit input to an operation awaiting it",
     description: "Only when status is NEEDS_INPUT; otherwise an invalid transition error.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       fields: { type: "object", additionalProperties: str, default: {} },
       sourceId: nullable(uuid),
     }, [])),

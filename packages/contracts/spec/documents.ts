@@ -1,6 +1,6 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, del, ref, nullable, obj, arr, str, int, num, bool, uuid, dateTime, enumOf,
+  get, post, patch, del, ref, nullable, obj, closed, arr, str, int, num, bool, uuid, dateTime, enumOf,
   body, ok, okPage, noContent, pathParam, query, pageParams,
 } from "./shared.ts";
 
@@ -14,6 +14,7 @@ const tiptap: Schema = {
   description: "TipTap JSON (root type doc; nodes doc, paragraph, heading, bulletList, orderedList, listItem, text; only link marks; paragraph, heading and listItem need attrs.blockId)",
 };
 const expectedRevision = obj({ expectedRevision: int });
+const strictRevision: Schema = { ...expectedRevision, additionalProperties: false };
 const id = pathParam("id");
 const versionId = pathParam("versionId");
 const key = pathParam("key", str);
@@ -36,13 +37,13 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents", {
     tag: "documents",
     summary: "Create a document",
-    body: body(obj({
+    body: body(closed({
       applicationId: uuid,
       title: { type: "string", minLength: 1, maxLength: 300 },
       kind: documentKind,
-      template: { ...templateInput, description: "Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS." },
+      template: { ...templateInput, description: "CLASSIC is stored as SIMPLE, COMPACT as ATS." },
       language: str,
-    }, ["applicationId", "title", "kind", "language"])),
+    }, ["applicationId", "title", "kind", "template", "language"])),
     responses: { 201: ok(ref("Document"), "Created") },
   }),
   get("core", "/api/v1/documents/{id}", {
@@ -56,7 +57,7 @@ export const routes: Route[] = [
     summary: "Update document title, template or language",
     description: "Null fields are left unchanged. Changing the template clears the finalized version and moves a FINALIZED document back to DRAFT. Archived documents return 409 INVALID_TRANSITION.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       title: nullable({ type: "string", minLength: 1, maxLength: 300 }),
       template: nullable(templateInput),
@@ -67,9 +68,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/archive", {
     tag: "documents",
     summary: "Archive a document",
-    description: "Idempotent: an already archived document is returned unchanged.",
+    description: "200 unchanged when already archived and expectedRevision matches. A mismatch is 409 REVISION_CONFLICT, including a repeat of the body that just archived it.",
     params: [id],
-    body: body(expectedRevision),
+    body: body(strictRevision),
     responses: { 200: ok(ref("Document")) },
   }),
   get("core", "/api/v1/documents/{id}/exports", {
@@ -83,15 +84,15 @@ export const routes: Route[] = [
     summary: "Create an export record for a profile or finalized version",
     description: "Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise.",
     params: [id],
-    body: body(obj({ versionId: uuid, format: enumOf("PDF", "DOCX"), rendererVersion: { type: "string", minLength: 1 } })),
+    body: body(closed({ versionId: uuid, format: enumOf("PDF", "DOCX"), rendererVersion: { type: "string", minLength: 1 } })),
     responses: { 201: ok(ref("DocumentExport"), "Created") },
   }),
   post("core", "/api/v1/documents/{id}/profile", {
     tag: "documents",
     summary: "Save a hub profile document as an application profile",
-    description: "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
+    description: "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       target: enumOf("hub", "application"),
       applicationId: uuid,
       expectedRevision: int,
@@ -108,9 +109,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/base-profile", {
     tag: "documents",
     summary: "Set a hub profile document as the user's base profile",
-    description: "Owner only. Replaces profiles.headline from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+    description: "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
     params: [id],
-    body: body(obj({}, [])),
+    body: body(closed({}, [])),
     responses: {
       200: ok(obj({ documentId: uuid, profileUserId: uuid }, ["documentId", "profileUserId"])),
     },
@@ -120,7 +121,7 @@ export const routes: Route[] = [
     summary: "Record the render result of an export",
     description: "Allowed once per export while status is READY_TO_RENDER; otherwise 409 INVALID_TRANSITION.",
     params: [id, pathParam("exportId")],
-    body: body(obj({
+    body: body(closed({
       sha256: { type: "string", minLength: 1 },
       byteLength: { type: "integer", minimum: 0 },
       pageCount: nullable(int),
@@ -133,15 +134,15 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/finalize", {
     tag: "documents",
     summary: "Finalize a document version",
-    description: "Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval.",
+    description: "Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
-    body: body(obj({ expectedRevision: int, versionId: uuid, approvalId: uuid })),
+    body: body(closed({ expectedRevision: int, versionId: uuid, approvalId: uuid })),
     responses: { 200: ok(ref("Document")) },
   }),
   post("core", "/api/v1/documents/{id}/generate", {
     tag: "documents",
     summary: "Queue AI generation of a document",
-    description: "Enqueues a document generation job; poll the job for the result. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated.",
+    description: "Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
     params: [id],
     body: body(obj({
       expectedRevision: int,
@@ -156,18 +157,18 @@ export const routes: Route[] = [
     tag: "documents",
     summary: "Review evidence support of a version",
     params: [id],
-    body: body(obj({ versionId: uuid })),
+    body: body(closed({ versionId: uuid })),
     responses: { 200: ok(obj({ quality: ref("DocumentsQuality"), blocks: arr(ref("DocumentsBlock")) })) },
   }),
   post("ai", "/api/v1/documents/{id}/revisions", {
     tag: "documents",
     summary: "Create an AI revision proposal for a selection",
-    description: "Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). Apply it with /revisions/{revisionId}/apply.",
+    description: "Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). selection.to must be greater than selection.from. An archived document is 409 INVALID_TRANSITION. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Apply it with /revisions/{revisionId}/apply.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       versionId: uuid,
-      selection: obj({ from: { type: "integer", minimum: 0 }, to: int, text: { type: "string", minLength: 1 } }),
+      selection: closed({ from: { type: "integer", minimum: 0 }, to: int, text: { type: "string", minLength: 1 } }),
       action: enumOf("REWRITE", "SHORTEN", "EMPHASIZE_METRICS", "CHANGE_TONE", "TAILOR_TO_JOB"),
       instruction: str,
       ai: nullable(ref("DocumentsAiOptions")),
@@ -177,9 +178,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/revisions/{revisionId}/apply", {
     tag: "documents",
     summary: "Apply a revision proposal as a new version",
-    description: "409 APPROVAL_STALE when the document moved past the proposal's source version, 409 INVALID_TRANSITION when already applied.",
+    description: "409 APPROVAL_STALE when the document moved past the proposal's source version or the selection text is gone. 409 INVALID_TRANSITION when already applied or the document is archived.",
     params: [id, pathParam("revisionId")],
-    body: body(expectedRevision),
+    body: body(strictRevision),
     responses: { 200: versionSaved },
   }),
   get("core", "/api/v1/documents/{id}/versions", {
@@ -191,9 +192,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/versions", {
     tag: "documents",
     summary: "Save a new document version",
-    description: "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT.",
+    description: "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       content: tiptap,
       blocks: arr(obj({
@@ -220,14 +221,14 @@ export const routes: Route[] = [
       versionId,
       query("format", { ...enumOf("PDF", "DOCX"), default: "PDF" }, "Case-insensitive"),
       query("template", templateInput, "PDF only; defaults to the document template"),
-      query("photo", enumOf("1"), "PDF only; 1 embeds the profile avatar"),
+      query("photo", str, "PDF only. 1 embeds the profile avatar. Any other value is ignored."),
     ],
     responses: { 200: exportBinary },
   }),
   get("core", "/api/v1/sources", {
     tag: "sources",
     summary: "List the file library",
-    description: "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0.",
+    description: "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file.",
     params: [...pageParams, query("kind", enumOf("UPLOAD", "AI"))],
     responses: { 200: okPage(ref("DocumentsLibraryItem")) },
   }),
@@ -280,7 +281,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/career-evidence", {
     tag: "career-evidence",
     summary: "Create career evidence",
-    body: body(obj({
+    body: body(closed({
       kind: evidenceKind,
       title: { type: "string", minLength: 1, maxLength: 200 },
       sourceText: { type: "string", minLength: 1, maxLength: 100000 },
@@ -293,8 +294,8 @@ export const routes: Route[] = [
   post("ai", "/api/v1/career-evidence/import", {
     tag: "career-evidence",
     summary: "Import career evidence from text or a source",
-    description: "When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format returns INTEGRATION_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.",
-    body: body(obj({
+    description: "When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format is 409 INTEGRATION_REQUIRED. Empty text or title, or a kind outside RESUME, GITHUB, CAREER, EDUCATION, SKILL, and PROJECT, returns 202 with operation status NEEDS_INPUT and inputRequest.code IMPORT_DETAILS_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.",
+    body: body(closed({
       sourceId: nullable(uuid),
       text: str,
       sourceUrl: nullable(str),
@@ -316,12 +317,13 @@ export const routes: Route[] = [
     summary: "Archive career evidence",
     description: "Idempotent: already archived evidence is returned unchanged.",
     params: [id],
-    body: body(expectedRevision),
+    body: body(strictRevision),
     responses: { 200: ok(ref("CareerEvidence")) },
   }),
   get("core", "/api/v1/experiments/{key}/assignment", {
     tag: "experiments",
     summary: "Get or create the caller's experiment assignment",
+    description: "An ended experiment returns variants[0] with enrolled true and createdAt equal to the request time, and stores no row. Exclusion returns the same shape with enrolled false, also unsaved. Otherwise this gets or creates the stored assignment.",
     params: [key],
     responses: { 200: ok(obj({ experimentKey: str, variant: str, enrolled: bool, createdAt: dateTime })) },
   }),
@@ -330,7 +332,7 @@ export const routes: Route[] = [
     summary: "Record an experiment event",
     description: "Not stored when the caller is not enrolled (exclusion group); still returns recorded true.",
     params: [key],
-    body: body(obj({ event: { type: "string", minLength: 1, maxLength: 100 } })),
+    body: body(closed({ event: { type: "string", minLength: 1, maxLength: 100 } })),
     responses: { 201: ok(obj({ recorded: { type: "boolean", const: true } }), "Created") },
   }),
   get("core", "/api/v1/experiments/{key}/results", {
@@ -478,14 +480,17 @@ export const schemas: Record<string, Schema> = {
     createdAt: dateTime,
     updatedAt: dateTime,
   }),
-  DocumentsAiOptions: obj({
-    provider: str,
-    model: str,
-    effort: str,
-    ultraResume: { type: "boolean", default: false },
-    webSearch: { type: "boolean", default: false },
-    models: { type: "object", additionalProperties: true, default: {} },
-  }, ["provider", "model", "effort"]),
+  DocumentsAiOptions: {
+    ...closed({
+      provider: str,
+      model: str,
+      effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever." },
+      ultraResume: { type: "boolean", default: false },
+      webSearch: { type: "boolean", default: false },
+      models: { type: "object", additionalProperties: true, default: {} },
+    }, ["provider", "model", "effort"]),
+    description: "Client provider and model are ignored. The plan selects the managed model.",
+  },
   Source: obj({
     id: uuid,
     fileName: str,

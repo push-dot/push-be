@@ -15,7 +15,7 @@ const password: Schema = { type: "string", minLength: 8, maxLength: 128, descrip
 const providerParam = pathParam("provider", enumOf("google", "github", "apple"));
 const tokenParam = pathParam("token", str);
 const userIdParam = pathParam("userId");
-const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/heic"];
+const imageTypes = ["image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
 export const routes: Route[] = [
   get("gateway", "/healthz", {
@@ -27,6 +27,7 @@ export const routes: Route[] = [
   get("gateway", "/api/v1/healthz", {
     tag: "health",
     summary: "Liveness check (rate limited per IP)",
+    description: "429 RATE_LIMITED when the public per-IP bucket is full (default 60 per minute).",
     auth: "public",
     responses: { 200: ok(obj({ status: enumOf("ok") })) },
   }),
@@ -35,7 +36,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Start OAuth login",
     auth: "public",
-    description: "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.",
+    description: "Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, http://localhost:5173/auth/callback, or http://localhost|127.0.0.1:<port>/auth/callback with port 1-65535 and no query, hash, or userinfo. https://localhost is allowed only when that origin is in OAUTH_REDIRECT_ORIGINS. An allowed web origin plus /auth/callback also works. 503 NOT_CONFIGURED when the provider client or the Apple team, key, or private key is missing.",
     params: [
       providerParam,
       query("accountType", { ...accountType, default: "PERSONAL" }),
@@ -49,7 +50,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "OAuth provider callback",
     auth: "public",
-    description: "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.",
+    description: "Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. GET with provider apple is 400 VALIDATION_ERROR; use POST /api/v1/auth/apple/callback. 503 NOT_CONFIGURED when the provider is not configured. 502 PROVIDER_ERROR when the token exchange or identity fetch fails.",
     params: [providerParam, query("code"), query("state")],
     responses: { 302: redirect("Redirect to the app callback with ?code=") },
   }),
@@ -57,7 +58,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Apple form_post callback",
     auth: "public",
-    description: "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.",
+    description: "Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email. 503 NOT_CONFIGURED when Apple is not configured. 502 PROVIDER_ERROR when Apple token verification fails.",
     body: {
       required: true,
       content: {
@@ -72,7 +73,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Apple native identity token",
     auth: "public",
-    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.",
+    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID or PENDING_SIGNUP_SECRET is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.",
     body: body(obj({ identityToken: str, nonce: str })),
     responses: {
       200: ok({
@@ -87,7 +88,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Exchange OAuth code for tokens",
     auth: "public",
-    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
+    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
     body: body(obj({ code: str, codeVerifier: str })),
     responses: {
       200: ok({
@@ -102,7 +103,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Rotate refresh token",
     auth: "public",
-    description: "Reusing a revoked refresh token revokes every session of the user.",
+    description: "Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED.",
     body: body(obj({ refreshToken: str })),
     responses: { 200: ok(ref("AuthTokens")) },
   }),
@@ -123,12 +124,12 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Email signup (sends verification link)",
     auth: "public",
-    description: "Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+    description: "Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
     body: body(obj({
       email,
       password,
       accountType: enumOf("EMPLOYER"),
-      displayName: { type: "string", minLength: 1, maxLength: 80 },
+      displayName: { type: "string", minLength: 1, maxLength: 80, description: "Trimmed. Blank after trim is rejected. Max 80 code points after trim." },
     }, ["email", "password", "accountType", "displayName"])),
     responses: { 202: accepted },
   }),
@@ -136,6 +137,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Verify email and create the account",
     auth: "public",
+    description: "409 EMAIL_TAKEN (details.accountType) if a user already has that email.",
     body: body(obj({ token: str })),
     responses: { 200: ok(ref("AuthTokens")) },
   }),
@@ -143,7 +145,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Email login",
     auth: "public",
-    description: "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.",
+    description: "401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. 429 RATE_LIMITED (details.retryAfterSec 60) after 10 attempts per minute for that email. Clears a pending account deletion.",
     body: body(obj({ email, password: str })),
     responses: { 200: ok(ref("AuthTokens")) },
   }),
@@ -151,7 +153,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Request password reset link",
     auth: "public",
-    description: "Always 202, whether or not the email exists.",
+    description: "202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.",
     body: body(obj({ email })),
     responses: { 202: accepted },
   }),
@@ -216,27 +218,27 @@ export const routes: Route[] = [
   post("core", "/api/v1/billing/checkout", {
     tag: "billing",
     summary: "Create Stripe subscription checkout session",
-    description: "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.",
+    description: "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. 503 NOT_CONFIGURED when the Stripe key or the plan price is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.",
     body: body(obj({ planId: enumOf("PRO", "ULTRA", "BASIC") })),
     responses: { 200: ok(obj({ url: str, expiresAt: nullable(dateTime) })) },
   }),
   post("core", "/api/v1/billing/topup", {
     tag: "billing",
     summary: "Create Stripe credit top-up checkout session",
-    description: "EMPLOYER: company ADMIN only, credits go to the company.",
+    description: "EMPLOYER: company ADMIN only, credits go to the company. 503 NOT_CONFIGURED when the Stripe key or the top-up price is missing. 502 PROVIDER_ERROR when Stripe fails.",
     body: body(obj({ amount: { type: "integer", minimum: 1, maximum: 100000, description: "Credit units (quantity of the top-up price)" } })),
     responses: { 200: urlOnly },
   }),
   post("core", "/api/v1/billing/portal", {
     tag: "billing",
     summary: "Create Stripe customer portal session",
-    description: "409 INVALID_TRANSITION when the user has no Stripe customer.",
+    description: "409 INVALID_TRANSITION when the user has no Stripe customer. 503 NOT_CONFIGURED when Stripe is unset. 502 PROVIDER_ERROR when Stripe fails.",
     responses: { 200: urlOnly },
   }),
   post("core", "/api/v1/billing/iap/verify", {
     tag: "billing",
     summary: "Verify an App Store / Google Play purchase",
-    description: "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits.",
+    description: "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits. 503 NOT_CONFIGURED when no IAP product or verify key is set. 502 PROVIDER_ERROR when the store request fails.",
     body: body(obj({
       platform: enumOf("APP_STORE", "GOOGLE_PLAY"),
       productId: str,
@@ -258,8 +260,8 @@ export const routes: Route[] = [
     summary: "AI usage records",
     params: [
       ...pageParams,
-      query("from", dateTime, "Inclusive lower bound on createdAt (RFC3339)"),
-      query("to", dateTime, "Inclusive upper bound on createdAt (RFC3339)"),
+      query("from", str, "Inclusive lower bound on createdAt. Any timestamp Date.parse accepts, including a date with no time."),
+      query("to", str, "Inclusive upper bound on createdAt. Any timestamp Date.parse accepts, including a date with no time."),
     ],
     responses: { 200: okPage(ref("AccountAiUsage")) },
   }),
@@ -273,7 +275,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/fit", {
     tag: "ai",
     summary: "Queue a posting fit analysis",
-    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
+    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
     params: [pathParam("id")],
     body: body(obj({ documentId: uuid })),
     responses: { 202: ok(obj({ jobId: uuid }), "Accepted") },
@@ -293,7 +295,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/verify", {
     tag: "companies",
     summary: "Verify business registration and create company",
-    description: "EMPLOYER only. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED); 409 COMPANY_EXISTS or CONFLICT (already in a company). Profile fields are absent in this response.",
+    description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.",
     body: body(obj({
       bNo: { type: "string", pattern: "^\\d{10}$", description: "Business registration number" },
       startDt: { type: "string", pattern: "^\\d{8}$", description: "Opening date YYYYMMDD" },
@@ -315,9 +317,9 @@ export const routes: Route[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        logoKey: nullable({ type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key from POST /api/v1/uploads/images" }),
+        logoKey: nullable({ type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key from POST /api/v1/uploads/images. Must not contain .." }),
         industry: nullable({ type: "string", minLength: 1, maxLength: 80 }),
-        website: nullable({ type: "string", format: "uri", maxLength: 2000, description: "http or https URL" }),
+        website: nullable({ type: "string", format: "uri", maxLength: 2000, description: "http or https URL with no username or password" }),
         intro: nullable({ type: "string", minLength: 1, maxLength: 2000 }),
         representativeName: nullable({ type: "string", minLength: 1, maxLength: 80 }),
       },
@@ -332,7 +334,7 @@ export const routes: Route[] = [
   patch("core", "/api/v1/companies/me/members/{userId}", {
     tag: "companies",
     summary: "Transfer ADMIN role to a member",
-    description: "ADMIN only. The caller becomes MEMBER.",
+    description: "ADMIN only. 204 and no change when the target is already ADMIN, including a transfer to yourself. Otherwise the caller becomes MEMBER.",
     params: [userIdParam],
     body: body({ type: "object", additionalProperties: false, properties: { role: enumOf("ADMIN") }, required: ["role"] }),
     responses: { 204: noContent },
@@ -353,7 +355,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/me/invites", {
     tag: "companies",
     summary: "Invite a member by email",
-    description: "ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full; 409 CONFLICT if already a member.",
+    description: "ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full. 409 CONFLICT if already a member. 502 PROVIDER_ERROR when invite mail fails. A failed resend leaves the old token in place.",
     body: body(obj({ email })),
     responses: { 201: ok(obj({ email: str }), "Created") },
   }),
@@ -370,7 +372,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/invites/{token}/accept", {
     tag: "companies",
     summary: "Accept an invite",
-    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER.",
+    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.",
     params: [tokenParam],
     responses: { 204: noContent },
   }),
@@ -390,21 +392,24 @@ export const routes: Route[] = [
   put("core", "/api/v1/me/consents/terms", {
     tag: "consents",
     summary: "Store signup terms",
-    description: "Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
-    body: body(obj({
-      age14: bool,
-      serviceTerms: bool,
-      privacy: bool,
-      marketing: bool,
-      termsVersion: { type: "string", minLength: 1, maxLength: 64 },
-    }, [])),
+    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+    body: body({
+      ...obj({
+        age14: bool,
+        serviceTerms: bool,
+        privacy: bool,
+        marketing: bool,
+        termsVersion: { type: "string", minLength: 1, maxLength: 64 },
+      }, []),
+      additionalProperties: false,
+    }),
     responses: { 200: ok(ref("Consents")) },
   }),
 
   post("core", "/api/v1/uploads/images", {
     tag: "uploads",
     summary: "Upload an image",
-    description: "multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes (JPEG, PNG, WebP or HEIC). 413 PAYLOAD_TOO_LARGE.",
+    description: "multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes. image/jpg and image/pjpeg count as JPEG. image/heif counts as HEIC. 413 PAYLOAD_TOO_LARGE.",
     body: {
       required: true,
       content: {
@@ -440,7 +445,7 @@ export const schemas: Record<string, Schema> = {
     companyId: nullable(uuid),
     companyRole: nullable(companyRole),
     email: { type: "string", description: "Empty string when unknown" },
-    provider: { type: "string", description: "google, github, email, or empty" },
+    provider: { type: "string", description: "google, github, apple, email, phone, or empty" },
     plan: enumOf("FREE", "PRO", "ULTRA"),
   }),
   AuthTokens: obj({
@@ -541,7 +546,10 @@ export const schemas: Record<string, Schema> = {
     url: { type: "string", description: "/api/v1/uploads/images/<key>" },
   }),
   AiModel: obj({
-    provider: enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
+    provider: {
+      ...enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
+      description: "Model family routed through OpenRouter. The only key is OPENROUTER_API_KEY.",
+    },
     model: str,
     label: str,
     available: bool,

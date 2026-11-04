@@ -15,7 +15,7 @@ export interface paths {
         put?: never;
         /**
          * Generate free-form AI text for an application
-         * @description Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations}.
+         * @description Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations, usage}. usage has inputTokens and outputTokens. 403 FEATURE_DISABLED when the monthly limit is reached or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI or web search is not configured. Web search failure is 502 PROVIDER_ERROR.
          */
         post: operations["postAiGenerate"];
         delete?: never;
@@ -166,7 +166,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Run the resume workflow for an application */
+        /**
+         * Run the resume workflow for an application
+         * @description When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. No usable evidence is 400 VALIDATION_ERROR.
+         */
         post: operations["postApplicationsByIdResumeRun"];
         delete?: never;
         options?: never;
@@ -206,7 +209,7 @@ export interface paths {
         put?: never;
         /**
          * Submit an application
-         * @description Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft, records a SUCCEEDED submission and moves the application to APPLIED. Manual drafts need confirmedSubmitted. Errors: 409 APPROVAL_REQUIRED, APPROVAL_STALE, INVALID_TRANSITION, REVISION_CONFLICT.
+         * @description Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft and records a SUCCEEDED submission. Stage becomes APPLIED only from DISCOVERED, PREPARING, or READY. APPLIED, SCREENING, INTERVIEW, and OFFER stay and still record the submission. ACCEPTED, REJECTED, and WITHDRAWN are 409 INVALID_TRANSITION. Manual drafts need confirmedSubmitted. Also 409 APPROVAL_REQUIRED, APPROVAL_STALE, and REVISION_CONFLICT.
          */
         post: operations["postApplicationsByIdSubmissions"];
         delete?: never;
@@ -301,7 +304,7 @@ export interface paths {
         put?: never;
         /**
          * Apple form_post callback
-         * @description Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email.
+         * @description Apple sends application/x-www-form-urlencoded code and state. Redirects to the redirectUri from start with ?code= for POST /api/v1/auth/exchange. Does not join an existing account by email. 503 NOT_CONFIGURED when Apple is not configured. 502 PROVIDER_ERROR when Apple token verification fails.
          */
         post: operations["postAuthAppleCallback"];
         delete?: never;
@@ -321,7 +324,7 @@ export interface paths {
         put?: never;
         /**
          * Apple native identity token
-         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email.
+         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID or PENDING_SIGNUP_SECRET is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.
          */
         post: operations["postAuthAppleNative"];
         delete?: never;
@@ -341,7 +344,7 @@ export interface paths {
         put?: never;
         /**
          * Email login
-         * @description 401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. Rate limited to 10 per minute per email. Clears a pending account deletion.
+         * @description 401 INVALID_CREDENTIALS, 403 EMAIL_NOT_VERIFIED. 429 RATE_LIMITED (details.retryAfterSec 60) after 10 attempts per minute for that email. Clears a pending account deletion.
          */
         post: operations["postAuthEmailLogin"];
         delete?: never;
@@ -361,7 +364,7 @@ export interface paths {
         put?: never;
         /**
          * Request password reset link
-         * @description Always 202, whether or not the email exists.
+         * @description 202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.
          */
         post: operations["postAuthEmailPasswordReset"];
         delete?: never;
@@ -401,7 +404,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Employer accounts only. Rate limited to 3 mails per minute per email. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -419,7 +422,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Verify email and create the account */
+        /**
+         * Verify email and create the account
+         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email.
+         */
         post: operations["postAuthEmailVerify"];
         delete?: never;
         options?: never;
@@ -438,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange OAuth code for tokens
-         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
+         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
          */
         post: operations["postAuthExchange"];
         delete?: never;
@@ -535,7 +541,7 @@ export interface paths {
         put?: never;
         /**
          * Rotate refresh token
-         * @description Reusing a revoked refresh token revokes every session of the user.
+         * @description Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED.
          */
         post: operations["postAuthRefresh"];
         delete?: never;
@@ -553,7 +559,7 @@ export interface paths {
         };
         /**
          * OAuth provider callback
-         * @description Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. Apple uses POST /api/v1/auth/apple/callback.
+         * @description Called by Google or GitHub. Redirects to the redirectUri given at start with ?code=<exchange code> (valid 60s) for POST /api/v1/auth/exchange. GET with provider apple is 400 VALIDATION_ERROR; use POST /api/v1/auth/apple/callback. 503 NOT_CONFIGURED when the provider is not configured. 502 PROVIDER_ERROR when the token exchange or identity fetch fails.
          */
         get: operations["getAuthByProviderCallback"];
         put?: never;
@@ -573,7 +579,7 @@ export interface paths {
         };
         /**
          * Start OAuth login
-         * @description Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, a localhost/127.0.0.1 /auth/callback URL, or an allowed web origin + /auth/callback.
+         * @description Returns the provider authorization URL. GitHub and Apple do not allow accountType=EMPLOYER. Apple uses response_mode=form_post; its callback is POST /api/v1/auth/apple/callback, not GET. redirectUri must be push://auth/callback, http://localhost:5173/auth/callback, or http://localhost|127.0.0.1:<port>/auth/callback with port 1-65535 and no query, hash, or userinfo. https://localhost is allowed only when that origin is in OAUTH_REDIRECT_ORIGINS. An allowed web origin plus /auth/callback also works. 503 NOT_CONFIGURED when the provider client or the Apple team, key, or private key is missing.
          */
         get: operations["getAuthByProviderStart"];
         put?: never;
@@ -615,7 +621,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe subscription checkout session
-         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only.
+         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. 503 NOT_CONFIGURED when the Stripe key or the plan price is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingCheckout"];
         delete?: never;
@@ -635,7 +641,7 @@ export interface paths {
         put?: never;
         /**
          * Verify an App Store / Google Play purchase
-         * @description signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits.
+         * @description signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits. 503 NOT_CONFIGURED when no IAP product or verify key is set. 502 PROVIDER_ERROR when the store request fails.
          */
         post: operations["postBillingIapVerify"];
         delete?: never;
@@ -675,7 +681,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe customer portal session
-         * @description 409 INVALID_TRANSITION when the user has no Stripe customer.
+         * @description 409 INVALID_TRANSITION when the user has no Stripe customer. 503 NOT_CONFIGURED when Stripe is unset. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingPortal"];
         delete?: never;
@@ -695,7 +701,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe credit top-up checkout session
-         * @description EMPLOYER: company ADMIN only, credits go to the company.
+         * @description EMPLOYER: company ADMIN only, credits go to the company. 503 NOT_CONFIGURED when the Stripe key or the top-up price is missing. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingTopup"];
         delete?: never;
@@ -778,7 +784,7 @@ export interface paths {
         put?: never;
         /**
          * Import career evidence from text or a source
-         * @description When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format returns INTEGRATION_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.
+         * @description When sourceId is set and text is empty, text is extracted from the source (PDF or text). GITHUB format is 409 INTEGRATION_REQUIRED. Empty text or title, or a kind outside RESUME, GITHUB, CAREER, EDUCATION, SKILL, and PROJECT, returns 202 with operation status NEEDS_INPUT and inputRequest.code IMPORT_DETAILS_REQUIRED. On success the operation result value is {evidence: [CareerEvidence], warnings: []}.
          */
         post: operations["postCareerEvidenceImport"];
         delete?: never;
@@ -855,7 +861,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an invite
-         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER.
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.
          */
         post: operations["postCompaniesInvitesByTokenAccept"];
         delete?: never;
@@ -900,7 +906,7 @@ export interface paths {
         put?: never;
         /**
          * Invite a member by email
-         * @description ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full; 409 CONFLICT if already a member.
+         * @description ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full. 409 CONFLICT if already a member. 502 PROVIDER_ERROR when invite mail fails. A failed resend leaves the old token in place.
          */
         post: operations["postCompaniesMeInvites"];
         delete?: never;
@@ -945,7 +951,7 @@ export interface paths {
         head?: never;
         /**
          * Transfer ADMIN role to a member
-         * @description ADMIN only. The caller becomes MEMBER.
+         * @description ADMIN only. 204 and no change when the target is already ADMIN, including a transfer to yourself. Otherwise the caller becomes MEMBER.
          */
         patch: operations["patchCompaniesMeMembersByUserId"];
         trace?: never;
@@ -981,7 +987,7 @@ export interface paths {
         put?: never;
         /**
          * Verify business registration and create company
-         * @description EMPLOYER only. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED); 409 COMPANY_EXISTS or CONFLICT (already in a company). Profile fields are absent in this response.
+         * @description EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.
          */
         post: operations["postCompaniesVerify"];
         delete?: never;
@@ -1005,7 +1011,7 @@ export interface paths {
         put?: never;
         /**
          * Create a conversation
-         * @description audience=EMPLOYER creates a company conversation (verified company members only; postingId/applicationId allowed). Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. Employer creates are not gated.
+         * @description audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.
          */
         post: operations["postConversations"];
         delete?: never;
@@ -1051,7 +1057,10 @@ export interface paths {
         delete: operations["deleteConversationsById"];
         options?: never;
         head?: never;
-        /** Rename or pin a conversation */
+        /**
+         * Rename or pin a conversation
+         * @description 409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match. 404 when the conversation is not visible to the caller.
+         */
         patch: operations["patchConversationsById"];
         trace?: never;
     };
@@ -1086,7 +1095,7 @@ export interface paths {
         put?: never;
         /**
          * Archive a conversation
-         * @description Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation.
+         * @description Also deletes company conversation PDF attachments and archives career evidence referenced only by this conversation. 409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match.
          */
         post: operations["postConversationsByIdArchive"];
         delete?: never;
@@ -1102,7 +1111,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List document artifacts attached to messages */
+        /**
+         * List document artifacts attached to messages
+         * @description Omits markdown: a .md title, name, or file name, or mime text/markdown. Other artifacts stay.
+         */
         get: operations["getConversationsByIdArtifacts"];
         put?: never;
         post?: never;
@@ -1121,7 +1133,7 @@ export interface paths {
         };
         /**
          * Download a conversation artifact
-         * @description artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension.
+         * @description artifactId is the artifact file name (e.g. final.md, final.pdf), URL-encoded. Served as an attachment; type by extension. This route still downloads markdown. List and file events do not show it.
          */
         get: operations["getConversationsByIdArtifactsByArtifactId"];
         put?: never;
@@ -1143,7 +1155,7 @@ export interface paths {
         put?: never;
         /**
          * Upload a PDF attachment
-         * @description Company conversations only (verified company, plan-gated pdf_attachment). PDF only, max 10 MiB (413 PAYLOAD_TOO_LARGE).
+         * @description Company members only. A personal conversation, or one the caller cannot see, is 404. An unverified company is 403 BUSINESS_NOT_VERIFIED. pdf_attachment requires ULTRA, else 403 PLAN_REQUIRED with details.requiredPlan. PDF only, else 400. Over 10 MiB is 413 PAYLOAD_TOO_LARGE.
          */
         post: operations["postConversationsByIdAttachments"];
         delete?: never;
@@ -1161,13 +1173,13 @@ export interface paths {
         };
         /**
          * List messages
-         * @description Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's.
+         * @description Newest first. In a personal conversation only the caller's messages are returned; company conversations show every member's. Attachments whose title or name ends in .md, or whose mime is text/markdown, are omitted.
          */
         get: operations["getConversationsByIdMessages"];
         put?: never;
         /**
          * Send a message (queue a chat job)
-         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations are not gated. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume without ULTRA; 503 NOT_CONFIGURED without managed AI; 429 QUEUE_BUSY with details.retryAfterSec; employer interview intent is plan-gated.
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec.
          */
         post: operations["postConversationsByIdMessages"];
         delete?: never;
@@ -1187,7 +1199,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message and stream the reply
-         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.
+         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
          */
         post: operations["postConversationsByIdMessagesStream"];
         delete?: never;
@@ -1205,7 +1217,7 @@ export interface paths {
         };
         /**
          * Replay the active chat stream
-         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.
+         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
          */
         get: operations["getConversationsByIdMessagesStreamActive"];
         put?: never;
@@ -1267,7 +1279,7 @@ export interface paths {
         put?: never;
         /**
          * Unarchive a conversation
-         * @description Same caller and expectedRevision rules as archive. Does not restore evidence or attachments removed by archive.
+         * @description Same caller and expectedRevision rules as archive, including 409 REVISION_CONFLICT. Does not restore evidence or attachments removed by archive.
          */
         post: operations["postConversationsByIdUnarchive"];
         delete?: never;
@@ -1326,7 +1338,7 @@ export interface paths {
         put?: never;
         /**
          * Archive a document
-         * @description Idempotent: an already archived document is returned unchanged.
+         * @description 200 unchanged when already archived and expectedRevision matches. A mismatch is 409 REVISION_CONFLICT, including a repeat of the body that just archived it.
          */
         post: operations["postDocumentsByIdArchive"];
         delete?: never;
@@ -1346,7 +1358,7 @@ export interface paths {
         put?: never;
         /**
          * Set a hub profile document as the user's base profile
-         * @description Owner only. Replaces profiles.headline from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
+         * @description Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdBaseProfile"];
         delete?: never;
@@ -1407,7 +1419,7 @@ export interface paths {
         put?: never;
         /**
          * Finalize a document version
-         * @description Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval.
+         * @description Every block must be SUPPORTED (409 UNSUPPORTED_CLAIM), every cited evidence needs an approved EVIDENCE_USE approval, and approvalId must be an APPROVED DOCUMENT_FINALIZE approval for this version (409 APPROVAL_REQUIRED / APPROVAL_STALE). Consumes the approval. An archived document is 409 INVALID_TRANSITION.
          */
         post: operations["postDocumentsByIdFinalize"];
         delete?: never;
@@ -1427,7 +1439,7 @@ export interface paths {
         put?: never;
         /**
          * Queue AI generation of a document
-         * @description Enqueues a document generation job; poll the job for the result. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated.
+         * @description Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.
          */
         post: operations["postDocumentsByIdGenerate"];
         delete?: never;
@@ -1447,7 +1459,7 @@ export interface paths {
         put?: never;
         /**
          * Save a hub profile document as an application profile
-         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.
+         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;
@@ -1484,7 +1496,7 @@ export interface paths {
         put?: never;
         /**
          * Create an AI revision proposal for a selection
-         * @description Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). Apply it with /revisions/{revisionId}/apply.
+         * @description Returns a SUCCEEDED DOCUMENT_REVISE operation whose result.value is the revision proposal (id, documentId, sourceVersionId, sourceRevision, selection, replacement, evidenceRefs, claimStatus, appliedAt, createdAt). selection.to must be greater than selection.from. An archived document is 409 INVALID_TRANSITION. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Apply it with /revisions/{revisionId}/apply.
          */
         post: operations["postDocumentsByIdRevisions"];
         delete?: never;
@@ -1504,7 +1516,7 @@ export interface paths {
         put?: never;
         /**
          * Apply a revision proposal as a new version
-         * @description 409 APPROVAL_STALE when the document moved past the proposal's source version, 409 INVALID_TRANSITION when already applied.
+         * @description 409 APPROVAL_STALE when the document moved past the proposal's source version or the selection text is gone. 409 INVALID_TRANSITION when already applied or the document is archived.
          */
         post: operations["postDocumentsByIdRevisionsByRevisionIdApply"];
         delete?: never;
@@ -1525,7 +1537,7 @@ export interface paths {
         put?: never;
         /**
          * Save a new document version
-         * @description content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT.
+         * @description content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION.
          */
         post: operations["postDocumentsByIdVersions"];
         delete?: never;
@@ -1578,7 +1590,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get or create the caller's experiment assignment */
+        /**
+         * Get or create the caller's experiment assignment
+         * @description An ended experiment returns variants[0] with enrolled true and createdAt equal to the request time, and stores no row. Exclusion returns the same shape with enrolled false, also unsaved. Otherwise this gets or creates the stored assignment.
+         */
         get: operations["getExperimentsByKeyAssignment"];
         put?: never;
         post?: never;
@@ -1649,7 +1664,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Liveness check (rate limited per IP) */
+        /**
+         * Liveness check (rate limited per IP)
+         * @description 429 RATE_LIMITED when the public per-IP bucket is full (default 60 per minute).
+         */
         get: operations["getHealthz"];
         put?: never;
         post?: never;
@@ -1689,7 +1707,7 @@ export interface paths {
         };
         /**
          * Google OAuth callback
-         * @description Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds).
+         * @description Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds). 503 NOT_CONFIGURED when Google is not configured. Token exchange failure is 502 PROVIDER_ERROR.
          */
         get: operations["getIntegrationsGoogleCallback"];
         put?: never;
@@ -1711,7 +1729,7 @@ export interface paths {
         put?: never;
         /**
          * Complete Google connection
-         * @description Exchanges the one-time integration code with the PKCE verifier and stores the tokens.
+         * @description Exchanges the one-time integration code with the PKCE verifier and stores the tokens. 503 NOT_CONFIGURED when Google is not configured.
          */
         post: operations["postIntegrationsGoogleComplete"];
         delete?: never;
@@ -1731,7 +1749,7 @@ export interface paths {
         put?: never;
         /**
          * Start Google OAuth connection
-         * @description Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes.
+         * @description Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes. 503 NOT_CONFIGURED when the client credentials or the token cipher are missing.
          */
         post: operations["postIntegrationsGoogleConnect"];
         delete?: never;
@@ -1747,7 +1765,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List synced Google Calendar events */
+        /**
+         * List synced Google Calendar events
+         * @description 503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.
+         */
         get: operations["getIntegrationsGoogleEvents"];
         put?: never;
         post?: never;
@@ -1766,7 +1787,7 @@ export interface paths {
         };
         /**
          * List synced Gmail messages
-         * @description 403 FEATURE_DISABLED unless Gmail beta is enabled.
+         * @description 503 NOT_CONFIGURED when Google is not configured, then 403 FEATURE_DISABLED unless Gmail beta is enabled, then 409 INTEGRATION_REQUIRED when not connected.
          */
         get: operations["getIntegrationsGoogleMessages"];
         put?: never;
@@ -1786,7 +1807,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Link a Gmail message to an application */
+        /**
+         * Link a Gmail message to an application
+         * @description 503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.
+         */
         post: operations["postIntegrationsGoogleMessagesByIdLink"];
         delete?: never;
         options?: never;
@@ -1805,7 +1829,7 @@ export interface paths {
         put?: never;
         /**
          * Sync Gmail and Google Calendar
-         * @description Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. 409 INTEGRATION_REQUIRED when not connected; 502 PROVIDER_ERROR on Google failures.
+         * @description Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. messages and events are integer counts. 503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected. 502 PROVIDER_ERROR on Google failures.
          */
         post: operations["postIntegrationsGoogleSync"];
         delete?: never;
@@ -1882,7 +1906,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate interview preparation */
+        /**
+         * Generate interview preparation
+         * @description When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.
+         */
         post: operations["postInterviewsByIdPrepare"];
         delete?: never;
         options?: never;
@@ -1957,7 +1984,7 @@ export interface paths {
         put?: never;
         /**
          * Analyze a job against career evidence
-         * @description Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS.
+         * @description Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS. 409 APPROVAL_REQUIRED when evidence lacks an approved EVIDENCE_USE. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.
          */
         post: operations["postJobsByIdAnalyze"];
         delete?: never;
@@ -2051,7 +2078,7 @@ export interface paths {
         get?: never;
         /**
          * Store signup terms
-         * @description Required flags age14, serviceTerms, and privacy are accepted only as true and cannot be cleared. Send all three together. marketing can change on its own. termsVersion is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.
+         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.
          */
         put: operations["putMeConsentsTerms"];
         post?: never;
@@ -2144,7 +2171,7 @@ export interface paths {
         put?: never;
         /**
          * Add a link
-         * @description kind is inferred from the URL host when omitted.
+         * @description kind is inferred from the URL host when omitted. url must be http or https with no username or password.
          */
         post: operations["postMeLinks"];
         delete?: never;
@@ -2167,7 +2194,10 @@ export interface paths {
         delete: operations["deleteMeLinksById"];
         options?: never;
         head?: never;
-        /** Update a link */
+        /**
+         * Update a link
+         * @description url, when sent, must be http or https with no username or password.
+         */
         patch: operations["patchMeLinksById"];
         trace?: never;
     };
@@ -2273,7 +2303,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an offer
-         * @description Recipient only. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.
+         * @description Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.
          */
         post: operations["postMeOffersByIdAccept"];
         delete?: never;
@@ -2293,7 +2323,7 @@ export interface paths {
         put?: never;
         /**
          * Decline an offer
-         * @description Recipient only. 409 when the offer is not SENT or READ.
+         * @description Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.
          */
         post: operations["postMeOffersByIdDecline"];
         delete?: never;
@@ -2526,7 +2556,7 @@ export interface paths {
         };
         /**
          * Get a posting
-         * @description Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). Member fields are present only for company members. Records a view for signed-in users.
+         * @description Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). status is also sent to non-members when the column is present. newApplicantCount and createdBy are member-only, and on this route they are 0 and null because the query does not load them. Records a view for signed-in users.
          */
         get: operations["getPostingsById"];
         put?: never;
@@ -2536,7 +2566,7 @@ export interface paths {
         head?: never;
         /**
          * Update a posting
-         * @description Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN.
+         * @description Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.
          */
         patch: operations["patchPostingsById"];
         trace?: never;
@@ -2570,7 +2600,7 @@ export interface paths {
         };
         /**
          * List applicants of a posting
-         * @description Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total.
+         * @description Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total. An unknown stage is an empty page, not an error.
          */
         get: operations["getPostingsByIdApplicants"];
         put?: never;
@@ -2600,7 +2630,7 @@ export interface paths {
         head?: never;
         /**
          * Change an applicant's stage
-         * @description Company members of the posting only. Same stage returns the application unchanged. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.
+         * @description Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.
          */
         patch: operations["patchPostingsByIdApplicantsByApplicationId"];
         trace?: never;
@@ -2636,7 +2666,7 @@ export interface paths {
         put?: never;
         /**
          * Apply to a posting
-         * @description Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise).
+         * @description Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.
          */
         post: operations["postPostingsByIdApply"];
         delete?: never;
@@ -2677,7 +2707,7 @@ export interface paths {
         put?: never;
         /**
          * Close a posting
-         * @description Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale.
+         * @description Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.
          */
         post: operations["postPostingsByIdClose"];
         delete?: never;
@@ -2697,7 +2727,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a posting fit analysis
-         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
+         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
          */
         post: operations["postPostingsByIdFit"];
         delete?: never;
@@ -2816,7 +2846,7 @@ export interface paths {
         put?: never;
         /**
          * Send an offer to a profile
-         * @description 403 when the profile is not open to offers, 409 when an offer was already sent. postingId must be an open posting of the sender's company.
+         * @description 403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.
          */
         post: operations["postProfilesByIdOffer"];
         delete?: never;
@@ -2851,7 +2881,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate project blueprints from a gap analysis */
+        /**
+         * Generate project blueprints from a gap analysis
+         * @description 403 PLAN_REQUIRED over the cap (ULTRA unlimited, PRO 20, otherwise 5). When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.
+         */
         post: operations["postProjectsBlueprints"];
         delete?: never;
         options?: never;
@@ -2888,7 +2921,7 @@ export interface paths {
         put?: never;
         /**
          * Submit project evidence for a run
-         * @description The run must be VERIFYING or VERIFIED. Evidence starts PENDING.
+         * @description The run must be VERIFYING or VERIFIED. Any other state is 409 INVALID_TRANSITION. Evidence starts PENDING.
          */
         post: operations["postProjectsByIdEvidence"];
         delete?: never;
@@ -2908,7 +2941,7 @@ export interface paths {
         put?: never;
         /**
          * Verify project evidence
-         * @description Marks PENDING evidence VERIFIED when its recorded tests passed, and advances the run and blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.
+         * @description Marks PENDING evidence VERIFIED when its recorded tests passed. 409 INVALID_TRANSITION when already verified or exitCode is not 0. Advances a VERIFYING run to VERIFIED, and an IN_PROGRESS blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.
          */
         post: operations["postProjectsByIdEvidenceByEvidenceIdVerify"];
         delete?: never;
@@ -2929,7 +2962,7 @@ export interface paths {
         put?: never;
         /**
          * Create a CLI run
-         * @description Blueprint must be SELECTED or IN_PROGRESS; a SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.
+         * @description Blueprint must be SELECTED or IN_PROGRESS; any other state is 409 INVALID_TRANSITION. A SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.
          */
         post: operations["postProjectsByIdRuns"];
         delete?: never;
@@ -2949,7 +2982,7 @@ export interface paths {
         put?: never;
         /**
          * Report CLI run launch status
-         * @description Called by the bound device. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.
+         * @description Called by the bound device. 409 INVALID_TRANSITION when the run is not RUNNING, the device differs, or the launch status move is not allowed. 409 APPROVAL_STALE when payloadHash differs. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.
          */
         post: operations["postProjectsByIdRunsByRunIdLaunch"];
         delete?: never;
@@ -2969,7 +3002,7 @@ export interface paths {
         put?: never;
         /**
          * Recover a CLI run with unknown launch status
-         * @description REATTACH needs process (launch becomes STARTED); MARK_FAILED needs failureReason (run becomes FAILED).
+         * @description 409 INVALID_TRANSITION unless launchStatus is UNKNOWN and the device matches. REATTACH needs process with pid greater than 0 (launch becomes STARTED). MARK_FAILED needs failureReason (run becomes FAILED).
          */
         post: operations["postProjectsByIdRunsByRunIdRecover"];
         delete?: never;
@@ -3009,7 +3042,7 @@ export interface paths {
         put?: never;
         /**
          * Start a CLI run
-         * @description Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING.
+         * @description Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING. Any other state is 409 INVALID_TRANSITION. A payload hash or target revision mismatch is 409 APPROVAL_STALE. A missing or unapproved approval is 409 APPROVAL_REQUIRED.
          */
         post: operations["postProjectsByIdRunsByRunIdStart"];
         delete?: never;
@@ -3029,7 +3062,7 @@ export interface paths {
         put?: never;
         /**
          * Select a project blueprint
-         * @description Allowed from DRAFT or SELECTED. Returns the blueprint and a starter file manifest.
+         * @description Allowed from DRAFT or SELECTED. Any other state is 409 INVALID_TRANSITION. Returns the blueprint and a starter file manifest.
          */
         post: operations["postProjectsByIdSelect"];
         delete?: never;
@@ -3065,7 +3098,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Result counts per search type */
+        /**
+         * Result counts per search type
+         * @description Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.
+         */
         get: operations["getSearchCounts"];
         put?: never;
         post?: never;
@@ -3104,7 +3140,7 @@ export interface paths {
         };
         /**
          * List the file library
-         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0.
+         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file.
          */
         get: operations["getSources"];
         put?: never;
@@ -3188,7 +3224,7 @@ export interface paths {
         put?: never;
         /**
          * Upload an image
-         * @description multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes (JPEG, PNG, WebP or HEIC). 413 PAYLOAD_TOO_LARGE.
+         * @description multipart/form-data with a `file` part, max 10 MiB. The part content type must match the sniffed bytes. image/jpg and image/pjpeg count as JPEG. image/heif counts as HEIC. 413 PAYLOAD_TOO_LARGE.
          */
         post: operations["postUploadsImages"];
         delete?: never;
@@ -3290,7 +3326,10 @@ export interface components {
             available: boolean;
             label: string;
             model: string;
-            /** @enum {string} */
+            /**
+             * @description Model family routed through OpenRouter. The only key is OPENROUTER_API_KEY.
+             * @enum {string}
+             */
             provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
             supportedEfforts: ("LOW" | "MEDIUM" | "HIGH" | "MAX")[];
         };
@@ -3334,8 +3373,8 @@ export interface components {
             company: string;
             /** Format: date-time */
             createdAt: string;
-            /** @description Latest gap analysis fit score; omitted when none */
-            fitScore?: number;
+            /** @description Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null. */
+            fitScore?: number | null;
             /** Format: uuid */
             id: string;
             imported: boolean;
@@ -3431,7 +3470,10 @@ export interface components {
         };
         /** @description Client provider and model are ignored; the plan selects the managed model. */
         CareerAiOptions: {
-            /** @enum {string} */
+            /**
+             * @description Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever.
+             * @enum {string}
+             */
             effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
             model: string;
             models?: {
@@ -3847,8 +3889,13 @@ export interface components {
             number: number;
             quality: components["schemas"]["DocumentsQuality"];
         };
+        /** @description Client provider and model are ignored. The plan selects the managed model. */
         DocumentsAiOptions: {
-            effort: string;
+            /**
+             * @description Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever.
+             * @enum {string}
+             */
+            effort: "LOW" | "MEDIUM" | "HIGH" | "MAX";
             model: string;
             /** @default {} */
             models: {
@@ -3937,7 +3984,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -4199,7 +4246,7 @@ export interface components {
             status?: "DRAFT" | "OPEN" | "CLOSED";
             title: string;
         };
-        /** @description status, newApplicantCount and createdBy are present only for members of the owning company (always present on create, update and close responses). */
+        /** @description status is present for members, and also for non-members when the status column was selected. newApplicantCount and createdBy are member-only. Create and the company list load them. Get, update, and close return newApplicantCount 0 and createdBy null. */
         PostingDetail: components["schemas"]["Posting"] & {
             applicantCount: number;
             createdBy?: {
@@ -4419,7 +4466,7 @@ export interface components {
             locale: string;
             /** @enum {string} */
             plan: "FREE" | "PRO" | "ULTRA";
-            /** @description google, github, email, or empty */
+            /** @description google, github, apple, email, phone, or empty */
             provider: string;
         };
         UserSettings: {
@@ -4454,7 +4501,7 @@ export interface components {
         };
     };
     parameters: {
-        /** @description UUID. A retry with the same key and body replays the first response. */
+        /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
         IdempotencyKey: string;
     };
     requestBodies: never;
@@ -4467,7 +4514,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -4559,12 +4606,13 @@ export interface operations {
     getAiUsage: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
-                /** @description Inclusive lower bound on createdAt (RFC3339) */
+                /** @description Inclusive lower bound on createdAt. Any timestamp Date.parse accepts, including a date with no time. */
                 from?: string;
-                /** @description Inclusive upper bound on createdAt (RFC3339) */
+                /** @description Inclusive upper bound on createdAt. Any timestamp Date.parse accepts, including a date with no time. */
                 to?: string;
             };
             header?: never;
@@ -4591,6 +4639,7 @@ export interface operations {
     getApplications: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -4623,7 +4672,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -4657,7 +4706,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -4781,7 +4830,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -4815,7 +4864,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -4853,6 +4902,7 @@ export interface operations {
     getApplicationsByIdSubmissions: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -4884,7 +4934,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -4921,6 +4971,7 @@ export interface operations {
     getApplicationsByIdTimeline: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -4951,6 +5002,7 @@ export interface operations {
     getApprovals: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -4982,7 +5034,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5047,7 +5099,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -5243,6 +5295,7 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     accountType: "EMPLOYER";
+                    /** @description Trimmed. Blank after trim is rejected. Max 80 code points after trim. */
                     displayName: string;
                     /** Format: email */
                     email: string;
@@ -5585,7 +5638,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5621,7 +5674,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5659,6 +5712,7 @@ export interface operations {
     getBillingLedger: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -5688,7 +5742,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5716,7 +5770,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5753,6 +5807,7 @@ export interface operations {
                 from: string;
                 to: string;
                 applicationId?: string;
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -5782,7 +5837,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5893,6 +5948,7 @@ export interface operations {
     getCareerEvidence: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -5925,7 +5981,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -5963,7 +6019,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -6027,7 +6083,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6094,7 +6150,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6197,7 +6253,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -6303,6 +6359,7 @@ export interface operations {
     getCompaniesMePostings: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -6333,7 +6390,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -6371,6 +6428,7 @@ export interface operations {
     getConversations: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -6406,7 +6464,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -6530,7 +6588,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6577,7 +6635,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6664,7 +6722,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6704,6 +6762,7 @@ export interface operations {
     getConversationsByIdMessages: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -6735,7 +6794,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6761,7 +6820,10 @@ export interface operations {
                         models?: {
                             [key: string]: unknown;
                         };
-                        /** @enum {string} */
+                        /**
+                         * @description Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.
+                         * @enum {string}
+                         */
                         provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
                         /** @description Requires the ULTRA plan */
                         ultraResume?: boolean;
@@ -6770,6 +6832,7 @@ export interface operations {
                     applicationId?: string | null;
                     context?: {
                         documentId?: string | null;
+                        /** @description Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external. */
                         evidenceIds?: string[];
                         versionId?: string | null;
                     };
@@ -6844,7 +6907,10 @@ export interface operations {
                         models?: {
                             [key: string]: unknown;
                         };
-                        /** @enum {string} */
+                        /**
+                         * @description Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.
+                         * @enum {string}
+                         */
                         provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
                         /** @description Requires the ULTRA plan */
                         ultraResume?: boolean;
@@ -6853,6 +6919,7 @@ export interface operations {
                     applicationId?: string | null;
                     context?: {
                         documentId?: string | null;
+                        /** @description Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external. */
                         evidenceIds?: string[];
                         versionId?: string | null;
                     };
@@ -6914,7 +6981,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6945,7 +7012,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -6978,7 +7045,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7011,6 +7078,7 @@ export interface operations {
     getDocuments: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -7042,7 +7110,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -7057,10 +7125,10 @@ export interface operations {
                     kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
                     language: string;
                     /**
-                     * @description Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.
+                     * @description CLASSIC is stored as SIMPLE, COMPACT as ATS.
                      * @enum {string}
                      */
-                    template?: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT";
+                    template: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT";
                     title: string;
                 };
             };
@@ -7143,7 +7211,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7177,7 +7245,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7213,6 +7281,7 @@ export interface operations {
     getDocumentsByIdExports: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -7244,7 +7313,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7282,7 +7351,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7327,7 +7396,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7365,7 +7434,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7406,7 +7475,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7452,7 +7521,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7490,7 +7559,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7535,7 +7604,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7572,6 +7641,7 @@ export interface operations {
     getDocumentsByIdVersions: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -7603,7 +7673,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7684,8 +7754,8 @@ export interface operations {
                 format?: "PDF" | "DOCX";
                 /** @description PDF only; defaults to the document template */
                 template?: "SIMPLE" | "MODERN" | "CREATIVE" | "ATS" | "CLASSIC" | "COMPACT";
-                /** @description PDF only; 1 embeds the profile avatar */
-                photo?: "1";
+                /** @description PDF only. 1 embeds the profile avatar. Any other value is ignored. */
+                photo?: string;
             };
             header?: never;
             path: {
@@ -7744,7 +7814,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -7940,7 +8010,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -7973,7 +8043,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8013,6 +8083,7 @@ export interface operations {
     getIntegrationsGoogleEvents: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8045,6 +8116,7 @@ export interface operations {
     getIntegrationsGoogleMessages: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8075,7 +8147,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -8110,7 +8182,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8165,6 +8237,7 @@ export interface operations {
     getInterviews: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8199,7 +8272,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8211,10 +8284,10 @@ export interface operations {
                     /** Format: uuid */
                     applicationId: string;
                     companySources?: {
-                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        /** @description RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future. */
                         accessedAt: string;
                         sourceText: string;
-                        /** Format: uri */
+                        /** @description http or https URL with a hostname and no username or password */
                         sourceUrl: string;
                     }[];
                     durationMinutes?: number | null;
@@ -8281,10 +8354,10 @@ export interface operations {
             content: {
                 "application/json": {
                     companySources?: {
-                        /** @description RFC3339 timestamp; naive values are treated as UTC */
+                        /** @description RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future. */
                         accessedAt: string;
                         sourceText: string;
-                        /** Format: uri */
+                        /** @description http or https URL with a hostname and no username or password */
                         sourceUrl: string;
                     }[] | null;
                     expectedRevision: number;
@@ -8314,7 +8387,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -8348,6 +8421,7 @@ export interface operations {
     getJobs: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8381,7 +8455,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8482,6 +8556,7 @@ export interface operations {
     getJobsByIdAnalyses: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8513,7 +8588,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -8569,6 +8644,7 @@ export interface operations {
     getMeBookmarks: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8597,6 +8673,7 @@ export interface operations {
     getMeCommentedPosts: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8711,7 +8788,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8765,6 +8842,7 @@ export interface operations {
     getMeFollowers: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8793,6 +8871,7 @@ export interface operations {
     getMeFollows: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8821,6 +8900,7 @@ export interface operations {
     getMeLinks: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8851,7 +8931,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -8864,7 +8944,10 @@ export interface operations {
                     /** @enum {string} */
                     kind?: "job" | "github" | "portfolio" | "blog" | "other";
                     title?: string | null;
-                    /** Format: uri */
+                    /**
+                     * Format: uri
+                     * @description http or https URL with no username or password
+                     */
                     url: string;
                 };
             };
@@ -8921,7 +9004,10 @@ export interface operations {
                     /** @enum {string} */
                     kind?: "job" | "github" | "portfolio" | "blog" | "other";
                     title?: string | null;
-                    /** Format: uri */
+                    /**
+                     * Format: uri
+                     * @description http or https URL with no username or password
+                     */
                     url?: string;
                 };
             };
@@ -8944,6 +9030,7 @@ export interface operations {
     getMeNotifications: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -8973,7 +9060,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -9027,6 +9114,7 @@ export interface operations {
         parameters: {
             query: {
                 box: "received" | "sent";
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -9081,7 +9169,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9115,7 +9203,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9142,6 +9230,7 @@ export interface operations {
     getMeOffersByIdMessages: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -9173,7 +9262,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9206,6 +9295,7 @@ export interface operations {
     getMePosts: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -9264,6 +9354,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Null or an empty string clears it. A key must not contain .. */
                     avatarKey?: string | null;
                     careerStatus?: ("satisfied" | "seeking" | "feedback" | "") | null;
                     careers?: components["schemas"]["SocialProfileCareerInput"][];
@@ -9273,6 +9364,7 @@ export interface operations {
                     intro?: string | null;
                     jobCategory?: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops" | "") | null;
                     openToOffers?: boolean;
+                    /** @description UUID of a source the caller owns. Null or empty clears it. A missing source is 404. */
                     resumeSourceId?: string | null;
                     skills?: string[] | null;
                     tenureYears?: number | null;
@@ -9392,7 +9484,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9443,7 +9535,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9480,6 +9572,7 @@ export interface operations {
     getPostings: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -9519,7 +9612,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -9537,7 +9630,7 @@ export interface operations {
                     description: string;
                     /** @enum {string} */
                     employmentType: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
-                    /** @description Key returned by the image upload endpoint; null or empty clears it */
+                    /** @description Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .. */
                     imageKey?: string | null;
                     /** @enum {string} */
                     jobCategory: "dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops";
@@ -9702,7 +9795,7 @@ export interface operations {
                     /** @enum {string} */
                     employmentType?: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
                     expectedRevision: number;
-                    /** @description Key returned by the image upload endpoint; null or empty clears it */
+                    /** @description Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .. */
                     imageKey?: string | null;
                     /** @enum {string} */
                     jobCategory?: "dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops";
@@ -9774,6 +9867,7 @@ export interface operations {
     getPostingsByIdApplicants: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -9891,7 +9985,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9926,7 +10020,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -9971,7 +10065,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10005,7 +10099,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10042,6 +10136,7 @@ export interface operations {
     getPosts: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10075,7 +10170,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -10135,6 +10230,7 @@ export interface operations {
     getPostsByIdComments: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10166,7 +10262,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10200,6 +10296,7 @@ export interface operations {
     getProfiles: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10260,7 +10357,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10294,6 +10391,7 @@ export interface operations {
     getProjects: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10324,7 +10422,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -10384,6 +10482,7 @@ export interface operations {
     getProjectsByIdEvidence: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10415,7 +10514,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10464,7 +10563,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10498,6 +10597,7 @@ export interface operations {
     getProjectsByIdRuns: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10529,7 +10629,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10567,7 +10667,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10611,7 +10711,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10655,7 +10755,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10694,7 +10794,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10733,7 +10833,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -10769,9 +10869,10 @@ export interface operations {
     getSearch: {
         parameters: {
             query: {
-                /** @description Search term (must not be blank) */
+                /** @description Search term. Whitespace-only is 400. No max length on this route. */
                 q: string;
                 type?: "postings" | "people" | "posts";
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10805,7 +10906,7 @@ export interface operations {
     getSearchCounts: {
         parameters: {
             query: {
-                /** @description Search term (must not be blank) */
+                /** @description Search term. Whitespace-only is 400. Max 200 code points. */
                 q: string;
             };
             header?: never;
@@ -10867,6 +10968,7 @@ export interface operations {
     getSources: {
         parameters: {
             query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
@@ -10897,7 +10999,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -11025,7 +11127,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -11072,7 +11174,10 @@ export interface operations {
                 };
                 content: {
                     "image/heic": string;
+                    "image/heif": string;
                     "image/jpeg": string;
+                    "image/jpg": string;
+                    "image/pjpeg": string;
                     "image/png": string;
                     "image/webp": string;
                 };
@@ -11084,7 +11189,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description UUID. A retry with the same key and body replays the first response. */
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
