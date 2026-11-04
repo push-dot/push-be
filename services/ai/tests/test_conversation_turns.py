@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -20,7 +20,7 @@ CONV_ID = UUID("00000000-0000-4000-8000-0000000000c1")
 JOB_A = UUID("00000000-0000-4000-8000-00000000a001")
 JOB_B = UUID("00000000-0000-4000-8000-00000000a002")
 CARD = "00000000-0000-4000-8000-00000000c0de"
-T0 = datetime(2026, 11, 5, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 5, tzinfo=UTC)
 
 
 def _row(id_, type_, payload, job=JOB_A):
@@ -45,10 +45,15 @@ def test_turn_events_merge_tokens_and_drop_progress_rows():
 def test_turn_events_read_text_payload_and_attach_card_resolution():
     rows = [_row(7, "choice", json.dumps({"id": CARD, "options": []}))]
     resolved = {CARD: {"status": "APPROVED", "optionId": "ready"}}
-    assert turn_events(rows, resolved) == [{
-        "type": "choice", "id": CARD, "options": [], "seq": 7,
-        "resolution": {"status": "APPROVED", "optionId": "ready"},
-    }]
+    assert turn_events(rows, resolved) == [
+        {
+            "type": "choice",
+            "id": CARD,
+            "options": [],
+            "seq": 7,
+            "resolution": {"status": "APPROVED", "optionId": "ready"},
+        }
+    ]
 
 
 class _Mem:
@@ -65,9 +70,16 @@ class _Mem:
     async def fetchrow(self, sql, *args):
         if "from conversations" in sql.lower() and args[1] == USER_ID and args[0] == CONV_ID:
             return {
-                "id": CONV_ID, "user_id": USER_ID, "revision": 1, "application_id": None,
-                "title": "t", "pinned": False, "archived": False, "created_at": T0,
-                "updated_at": T0, "company_id": None,
+                "id": CONV_ID,
+                "user_id": USER_ID,
+                "revision": 1,
+                "application_id": None,
+                "title": "t",
+                "pinned": False,
+                "archived": False,
+                "created_at": T0,
+                "updated_at": T0,
+                "company_id": None,
             }
         return None
 
@@ -98,7 +110,8 @@ def _client(db: _Mem, user_id: UUID) -> TestClient:
         async def __call__(self, scope, receive, send):
             if scope["type"] == "http":
                 scope.setdefault("state", {})["user"] = ent.User(
-                    id=user_id, display_name="Ada", created_at=T0)
+                    id=user_id, display_name="Ada", created_at=T0
+                )
             await self.inner(scope, receive, send)
 
     app.add_middleware(_AsUser)
@@ -110,16 +123,21 @@ def _db() -> _Mem:
     db = _Mem()
     db.jobs = [
         {"id": JOB_A, "status": "DONE", "created_at": T0, "resume": None},
-        {"id": JOB_B, "status": "DONE", "created_at": T0 + timedelta(minutes=1),
-         "resume": json.dumps({"approvalId": CARD, "optionId": "ready"})},
+        {
+            "id": JOB_B,
+            "status": "DONE",
+            "created_at": T0 + timedelta(minutes=1),
+            "resume": json.dumps({"approvalId": CARD, "optionId": "ready"}),
+        },
     ]
     db.events = [
         _row(1, "choice", {"id": CARD, "options": [{"id": "ready", "label": "네"}]}),
         _row(2, "token", {"text": "고를게요"}),
         _row(3, "todo", {"id": "analyze", "items": []}, job=JOB_B),
     ]
-    db.approvals = [{"id": UUID(CARD), "status": "APPROVED", "option_id": "ready",
-                     "option_ids": None}]
+    db.approvals = [
+        {"id": UUID(CARD), "status": "APPROVED", "option_id": "ready", "option_ids": None}
+    ]
     db.messages = {user_message_id(JOB_A), assistant_message_id(JOB_B)}
     return db
 
@@ -131,8 +149,11 @@ def test_turns_lists_newest_first_with_cards_and_answers():
     assert body["page"] == {"nextCursor": None, "hasMore": False}
     newest, oldest = body["data"]
     assert newest == {
-        "jobId": str(JOB_B), "status": "DONE", "createdAt": "2026-11-05T00:01:00Z",
-        "userMessageId": None, "assistantMessageId": str(assistant_message_id(JOB_B)),
+        "jobId": str(JOB_B),
+        "status": "DONE",
+        "createdAt": "2026-11-05T00:01:00Z",
+        "userMessageId": None,
+        "assistantMessageId": str(assistant_message_id(JOB_B)),
         "answer": {"approvalId": CARD, "optionId": "ready"},
         "events": [{"type": "todo", "id": "analyze", "items": [], "seq": 3}],
     }
@@ -152,12 +173,20 @@ def test_turns_page_has_cursor_when_more_jobs_exist():
 
 def test_turns_multi_select_answer_keeps_every_option():
     db = _db()
-    db.approvals = [{"id": UUID(CARD), "status": "APPROVED", "option_id": "resume",
-                     "option_ids": json.dumps(["resume", "cover_letter"])}]
+    db.approvals = [
+        {
+            "id": UUID(CARD),
+            "status": "APPROVED",
+            "option_id": "resume",
+            "option_ids": json.dumps(["resume", "cover_letter"]),
+        }
+    ]
     res = _client(db, USER_ID).get(f"/api/v1/conversations/{CONV_ID}/turns")
     card = res.json()["data"][1]["events"][0]
     assert card["resolution"] == {
-        "status": "APPROVED", "optionId": "resume", "optionIds": ["resume", "cover_letter"],
+        "status": "APPROVED",
+        "optionId": "resume",
+        "optionIds": ["resume", "cover_letter"],
     }
 
 

@@ -17,7 +17,14 @@ from app.domain.access_mode import AccessMode
 from app.framework.models import _content
 from app.harness.approval import create_tool_approval
 from app.harness.policy import Tier, decide
-from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
+from app.harness.tools import (
+    RETRY_WARNING,
+    ToolContext,
+    call_retrying,
+    call_structured,
+    emit,
+    to_structured_tool,
+)
 
 _CAP = 8
 _CAP_NOTE = "도구 호출 한도"
@@ -272,10 +279,13 @@ def _open_calls(state: HarnessState) -> list:
     return [call for call in last_ai.tool_calls if call["id"] not in answered]
 
 
-def _tool_event(name: str, state: str, summary: str, tier: str, result: dict | None = None) -> dict:
+def _tool_event(name: str, state: str, summary: str, tier: str, result: dict | None = None,
+                retried: bool = False) -> dict:
     event = {"type": "tool", "name": name, "state": state, "summary": summary, "tier": tier}
     if result is not None:
         event["result"] = result
+    if retried:
+        event["warning"] = RETRY_WARNING
     return event
 
 
@@ -410,7 +420,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
         )
-        result, ok = await call_structured(tool, args, ctx)
+        result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):
             entered = {"entered": result.goto}
             emit(_tool_event(tool.name, "ok", summary, tier, entered))
@@ -422,7 +432,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             update["tool_calls_used"] = used + 1
             return Command(update=update, goto=result.goto)
         tool_state = "ok" if ok else "err"
-        emit(_tool_event(tool.name, tool_state, summary, tier, result))
+        emit(_tool_event(tool.name, tool_state, summary, tier, result, retried))
         return _tool_command(
             state,
             [ToolMessage(content=json.dumps(result), tool_call_id=call_id)],

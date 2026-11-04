@@ -10,11 +10,12 @@ _JOBS = (
     "SELECT j.id, j.status, j.created_at, j.payload->'resume' AS resume FROM chat_jobs j "
     "WHERE j.conversation_id = $1 AND ($2::boolean OR j.user_id = $3) "
     "AND ($4::timestamptz IS NULL OR (j.created_at, j.id) < ($4::timestamptz, $5::uuid)) "
-    "ORDER BY j.created_at DESC, j.id DESC LIMIT $6")
+    "ORDER BY j.created_at DESC, j.id DESC LIMIT $6"
+)
 
 _EVENTS = (
-    "SELECT id, job_id, type, payload FROM chat_events "
-    "WHERE job_id = ANY($1::uuid[]) ORDER BY id")
+    "SELECT id, job_id, type, payload FROM chat_events WHERE job_id = ANY($1::uuid[]) ORDER BY id"
+)
 
 _CARDS = (
     "SELECT a.id, a.option_id, "
@@ -23,7 +24,8 @@ _CARDS = (
     "(SELECT j.payload->'resume'->'optionIds' FROM chat_jobs j "
     "WHERE j.conversation_id = $1 AND j.payload->'resume'->>'approvalId' = a.id::text "
     "ORDER BY j.created_at DESC LIMIT 1) AS option_ids "
-    "FROM approvals a WHERE a.conversation_id = $1 AND a.id = ANY($2::uuid[])")
+    "FROM approvals a WHERE a.conversation_id = $1 AND a.id = ANY($2::uuid[])"
+)
 
 _MESSAGES = "SELECT id FROM messages WHERE conversation_id = $1 AND id = ANY($2::uuid[])"
 
@@ -39,13 +41,19 @@ class TurnStore:
     def __init__(self, db: DB):
         self.db = db
 
-    async def jobs(self, conversation_id: UUID, user_id: UUID, shared: bool,
-                   page: PageRequest) -> list[dict]:
+    async def jobs(
+        self, conversation_id: UUID, user_id: UUID, shared: bool, page: PageRequest
+    ) -> list[dict]:
         cursor = page.cursor
         rows = await self.db.q().fetch(
-            _JOBS, conversation_id, shared, user_id,
-            cursor.created_at if cursor else None, cursor.id if cursor else None,
-            page.effective_limit() + 1)
+            _JOBS,
+            conversation_id,
+            shared,
+            user_id,
+            cursor.created_at if cursor else None,
+            cursor.id if cursor else None,
+            page.effective_limit() + 1,
+        )
         return [dict(row) for row in rows]
 
     async def events(self, job_ids: list[UUID]) -> list[dict]:

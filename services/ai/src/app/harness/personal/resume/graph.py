@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 from dataclasses import replace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -23,11 +24,30 @@ from app.harness.personal.resume.profile_document import (
     save_edited_file,
     save_profile_document,
 )
+from app.harness.personal.resume.progress import (
+    analyze_steps,
+    boost_fit,
+    boost_line,
+    done_summary,
+    fit_card,
+    fit_failed_line,
+    fit_line,
+    github_line,
+    posting_line,
+    resume_line,
+    todo_event,
+)
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
 from app.harness.policy import Tier
-from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
+from app.harness.tools import (
+    RETRY_WARNING,
+    ToolContext,
+    call_retrying,
+    emit,
+    to_structured_tool,
+)
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
@@ -215,6 +235,8 @@ class ResumeGraphState(TypedDict, total=False):
     source_saved: bool | None
     intake_asks: int
     gate_epoch: int
+    fit_from: float | None
+    fit_to: float | None
 
 
 _VALIDATE_CAP = 3
@@ -585,6 +607,16 @@ def _profile_result(document_id: str, name: str, headline: str, state: dict) -> 
     }
 
 
+def _done(state: dict, source: str) -> dict:
+    drafts = state.get("drafts") if isinstance(state.get("drafts"), dict) else {}
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    changes = drafts.get("changes")
+    bullets = changes if isinstance(changes, list) and changes else analysis.get("improvements")
+    if not isinstance(bullets, list):
+        bullets = []
+    return done_summary(source, state.get("fit_from"), state.get("fit_to"), bullets)
+
+
 def _cancelled(answer: dict) -> bool:
     if answer.get("option_id") == "cancel":
         return True
@@ -808,9 +840,12 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
         args = tool.args_model.model_validate(call.get("args") or {})
     except ValidationError:
         return {"error": "INVALID_ARGS"}
-    result, _ok = await call_structured(tool, args, replace(ctx, tool_call_id=call["id"]))
-    emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
-           "summary": tool.summarize(args), "tier": tool.tier.value})
+    result, _ok, retried = await call_retrying(tool, args, replace(ctx, tool_call_id=call["id"]))
+    line = {"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
+            "summary": tool.summarize(args), "tier": tool.tier.value}
+    if retried:
+        line["warning"] = RETRY_WARNING
+    emit(line)
     return result
 
 
@@ -850,6 +885,7 @@ def _reply(phase: str, output: dict) -> str:
     return _PHASE_DONE[phase]
 
 
+_IMPROVEMENTS_NOTE = "공고에 맞추려면 고칠 점을 짧은 문장 3개로 improvements 배열에 넣는다."
 _BOTTLENECK_STEPS = (
     "이번에는 content-strategy Step 1–3만 수행한다"
     "(기술 스택 매칭, 적합도 산정, 프로젝트 경험 재평가). "
@@ -863,6 +899,8 @@ def phase_instructions(phase: str, state: dict) -> str:
         text = f"{text}\n{_BOTTLENECK_STEPS}"
     if phase in {"publish", "present"} and resume_source(state) == "external":
         text = f"{text}\n{_EXTERNAL_NOTE}"
+    if phase == "analyze":
+        text = f"{text}\n{_IMPROVEMENTS_NOTE}"
     return text
 
 
@@ -958,6 +996,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 stamped = await resolve_uploaded_source(db, current)
                 if stamped:
                     current = {**current, **stamped}
+            if phase == "analyze":
+                emit(todo_event("analyze", analyze_steps(current.get("inputs") or {})[0], 0))
             output = await _output(turn_model.get() or model, phase, current, _context(db, current))
             stored = await _store_output(db, current, phase, output)
             if phase == "present":
@@ -969,7 +1009,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                         stored["profile_document_id"] = saved["documentId"]
                     stored["source_saved"] = bool(saved.get("stored"))
                     emit(_todo(_file_steps(view)))
-                    emit(_file_result(saved, view))
+                    emit({**_file_result(saved, view), **_done(view, "external")})
                 else:
                     emit({"token": "Push 프로필에 저장하는 중…"})
                     doc_id = await save_profile_document(view)
@@ -977,7 +1017,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                         stored["profile_document_id"] = doc_id
                     name, headline = await profile_card_names(db, view)
                     emit(_todo(_PROFILE_STEPS))
-                    emit(_profile_result(doc_id, name, headline, view))
+                    card = _profile_result(doc_id, name, headline, view)
+                    emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
@@ -1071,7 +1112,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return await accepted(current, gate_id, answer)
         return node
 
-    async def score_draft(state: dict) -> dict:
+    async def score_text(state: dict, text: str) -> dict:
         from app.framework.fit_judge import judge_fit
         from app.harness.personal.tools import current_ai_gate
         from app.infrastructure.posting_fit_cache import read_plan
@@ -1084,12 +1125,59 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             terms,
             terms,
             description,
-            draft_text(state.get("drafts")),
+            text,
             plan,
             gate=current_ai_gate(),
             job_id=state.get("job_id") or None,
             user_id=user_id,
         )
+
+    async def score_draft(state: dict) -> dict:
+        return await score_text(state, draft_text(state.get("drafts")))
+
+    async def resume_text(state: dict) -> str:
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        return (
+            chosen_document_text(state.get("inputs"))
+            or await load_document_markdown(db, state)
+            or json.dumps(analysis.get("resume") or {}, ensure_ascii=False)
+        )
+
+    async def analyze_fit(state: dict) -> float | None:
+        from app.harness.personal.tools import current_ai_gate
+
+        if current_ai_gate() is None:
+            return None
+        text = await resume_text(state)
+        try:
+            view = await score_text(state, text)
+        except Exception:
+            logging.getLogger(__name__).warning("analyze fit failed", exc_info=True)
+            emit(fit_failed_line())
+            return None
+        score = float(view["fitScore"])
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        emit(fit_line(score))
+        emit(fit_card(view, _job_terms(analysis), text, analysis.get("improvements") or []))
+        return score
+
+    async def report_analysis(state: dict) -> float | None:
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+        steps, added = analyze_steps(inputs, analysis)
+        lines = {
+            "resume": lambda: resume_line(inputs, analysis),
+            "github": lambda: github_line(analysis),
+            "posting": lambda: posting_line(analysis),
+        }
+        fit_from = None
+        for index, (key, _text) in enumerate(steps):
+            if key == "fit":
+                fit_from = await analyze_fit(state)
+            else:
+                emit(lines[key]())
+            emit(todo_event("analyze", steps, index + 1, added))
+        return fit_from
 
     async def boost(state: ResumeGraphState) -> dict:
         drafts = dict(state.get("drafts") or {})
@@ -1108,6 +1196,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         stored = await _store_output(db, current, "craft", output)
         view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
+        emit(boost_line(len(scores) - 1, scores[-2], scores[-1]))
+        emit(boost_fit(scores[0], scores[-1]))
         return {**stored, "scores": scores}
 
     async def _finish_boost(state: ResumeGraphState, outcome: dict, stopped: str) -> dict:
@@ -1115,7 +1205,13 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         artifacts["05_boost_history.json"] = await save_named(
             state, "05_boost_history.json", {"history": outcome["history"]},
         )
+        fit = {}
+        if outcome["history"]:
+            fit["fit_to"] = outcome["score"]
+            if state.get("fit_from") is None:
+                fit["fit_from"] = outcome["history"][0]["before"]
         return {
+            **fit,
             "phase": "review",
             "scores": [],
             "boost_acked": 0,
@@ -1207,7 +1303,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         fit_body = json.dumps({"fit": analysis.get("fit")}, ensure_ascii=False)
         artifacts["02_fit_score.json"] = await save_artifact(
             _context(db, state), "02_fit_score.json", fit_body)
-        return {"scenario": str(scenario), "artifacts": artifacts}
+        update = {"scenario": str(scenario), "artifacts": artifacts}
+        fit_from = await report_analysis(state)
+        if fit_from is not None:
+            update["fit_from"] = fit_from
+        return update
 
     async def feedback_node(state: ResumeGraphState) -> dict:
         current = current_of(state)
