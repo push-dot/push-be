@@ -122,7 +122,8 @@ async def _source_file(db, source_id: UUID, user_id: UUID):
     try:
         return await db.q().fetchrow(_UPLOADED_FILE_SQL, source_id, user_id)
     except Exception:
-        return None
+        logging.getLogger(__name__).warning("source lookup failed", exc_info=True)
+        raise
 
 
 async def resolve_uploaded_source(db, state: dict) -> dict:
@@ -135,13 +136,16 @@ async def resolve_uploaded_source(db, state: dict) -> dict:
     ids = _uploaded_ids(inputs)
     if not ids:
         return {}
-    nxt = dict(inputs)
-    nxt["sourceLookup"] = "done"
     user_id = _uuid(state.get("user_id"))
+    nxt = dict(inputs)
     if db is None or user_id is None:
+        nxt["sourceLookup"] = "done"
         return {"inputs": nxt}
     for source_id in ids:
-        row = await _source_file(db, source_id, user_id)
+        try:
+            row = await _source_file(db, source_id, user_id)
+        except Exception:
+            return {}
         if not row:
             continue
         name = _row_text(row, "file_name")
@@ -151,6 +155,7 @@ async def resolve_uploaded_source(db, state: dict) -> dict:
         if name:
             nxt["fileName"] = name
         break
+    nxt["sourceLookup"] = "done"
     return {"inputs": nxt}
 
 

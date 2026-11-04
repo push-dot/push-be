@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
+from app.harness.personal.resume.profile_document import resolve_uploaded_source
 from app.harness.personal.tools import bound_services
 from tests.test_harness_resume import _Approvals, _base, _config, _graph, _PhaseModel
 
@@ -347,6 +349,18 @@ class _OwnedSources(_DB):
         return await super().fetchrow(sql, *args)
 
 
+class _RetrySources(_OwnedSources):
+    def __init__(self, owner, source_id, file_name, mime):
+        super().__init__(owner, source_id, file_name, mime)
+        self.failures = 1
+
+    async def fetchrow(self, sql, *args):
+        if "FROM sources" in sql and "file_name" in sql and self.failures:
+            self.failures -= 1
+            raise RuntimeError("db down")
+        return await super().fetchrow(sql, *args)
+
+
 async def _uploaded(db, user_id, **inputs):
     events, _saved = await _present(
         db, None,
@@ -422,6 +436,28 @@ async def test_document_id_of_uploaded_pdf_is_external():
     assert result["source"] == "external"
     assert result["fileName"] == file_name
     assert db.lookups[0][1] == (str(source_id), str(owner))
+
+
+async def test_failed_source_lookup_retries_on_the_next_phase(caplog):
+    owner = uuid4()
+    source_id = uuid4()
+    file_name = "김서준_이력서.pdf"
+    db = _RetrySources(owner, source_id, file_name, "application/pdf")
+    state = {"user_id": str(owner), "inputs": {"attachments": [str(source_id)]}}
+    with caplog.at_level(logging.WARNING, logger="app.harness.personal.resume.profile_document"):
+        first = await resolve_uploaded_source(db, state)
+    assert first.get("inputs", state["inputs"]).get("sourceLookup") != "done"
+    nxt = {**state, "inputs": {**state["inputs"], **first.get("inputs", {})}}
+    second = await resolve_uploaded_source(db, nxt)
+    assert second["inputs"]["source"] == "external"
+    assert second["inputs"]["fileName"] == file_name
+    assert second["inputs"]["sourceLookup"] == "done"
+    failed = [record for record in caplog.records if record.message == "source lookup failed"]
+    assert len(failed) == 1
+    assert failed[0].exc_info
+    assert str(source_id) not in failed[0].message
+    assert str(owner) not in failed[0].message
+    assert file_name not in failed[0].message
 
 
 async def test_failed_insert_choice_does_not_claim_the_save():
