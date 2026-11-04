@@ -512,31 +512,7 @@ const clip = (value: string, max: number): string => {
   return points.length <= max ? value : points.slice(0, max).join("");
 };
 
-export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
-  const id = requireUuid(idRaw, "id");
-  const { values, present } = await strictBody(ctx.request, {
-    target: { kind: "str", required: true },
-    applicationId: { kind: "uuid" },
-    expectedRevision: { kind: "int" },
-  });
-  const target = String(values.target);
-  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
-  const doc = await loadDocument(ctx, id);
-  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
-  if (target === "application") {
-    if (!present.has("applicationId")) throw fieldError("applicationId", "must be a UUID");
-    if (!present.has("expectedRevision")) throw fieldError("expectedRevision", "required");
-    const expected = Number(values.expectedRevision);
-    if (Number(doc.revision) !== expected) throw conflict(doc.revision);
-    const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
-    if (!app) throw notFound();
-    const now = ts(ctx.now);
-    const updated = await one(ctx.deps.query,
-      "UPDATE documents SET application_id = $3, revision = revision + 1, updated_at = $4 WHERE id = $1 AND user_id = $2 AND revision = $5 RETURNING id",
-      [id, ctx.user.id, values.applicationId, now, expected]);
-    if (!updated) await failedUpdate(ctx, "documents", id);
-    return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
-  }
+const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string): Promise<{ documentId: string; profileUserId: string }> => {
   const nowIso = ctx.now.toISOString();
   await query(ctx.deps.query,
     "INSERT INTO profiles (user_id, created_at, updated_at) VALUES ($1,$2,$2) ON CONFLICT (user_id) DO NOTHING",
@@ -557,7 +533,44 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
   await query(ctx.deps.query,
     "UPDATE profiles SET headline = $2, intro = $3, search_text = $4, search_choseong = $5, search_jamo = $6, updated_at = $7 WHERE user_id = $1",
     [ctx.user.id, headline, intro, fields.text, fields.choseong, fields.jamo, nowIso]);
-  return data(200, { target, documentId: id, profileUserId: ctx.user.id }, ctx.rid);
+  return { documentId: id, profileUserId: ctx.user.id };
+};
+
+export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values, present } = await strictBody(ctx.request, {
+    target: { kind: "str" },
+    applicationId: { kind: "uuid" },
+    expectedRevision: { kind: "int" },
+  });
+  const target = present.has("target") ? String(values.target) : "application";
+  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
+  const doc = await loadDocument(ctx, id);
+  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
+  if (target === "application") {
+    if (!present.has("applicationId")) return data(200, { target, documentId: id, applicationId: null }, ctx.rid);
+    if (!present.has("expectedRevision")) throw fieldError("expectedRevision", "required");
+    const expected = Number(values.expectedRevision);
+    if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+    const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
+    if (!app) throw notFound();
+    const now = ts(ctx.now);
+    const updated = await one(ctx.deps.query,
+      "UPDATE documents SET application_id = $3, revision = revision + 1, updated_at = $4 WHERE id = $1 AND user_id = $2 AND revision = $5 RETURNING id",
+      [id, ctx.user.id, values.applicationId, now, expected]);
+    if (!updated) await failedUpdate(ctx, "documents", id);
+    return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
+  }
+  const copied = await copyOntoBaseProfile(ctx, doc, id);
+  return data(200, { target, ...copied }, ctx.rid);
+};
+
+export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  await strictBody(ctx.request, {});
+  const doc = await loadDocument(ctx, id);
+  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be the base profile");
+  return data(200, await copyOntoBaseProfile(ctx, doc, id), ctx.rid);
 };
 
 export const isDocumentEdit = (method: string, path: string): boolean =>
@@ -581,6 +594,8 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (apply && method === "POST") return applyRevision(ctx, apply[1], apply[2]);
   const result = path.match(/^\/api\/v1\/documents\/([^/]+)\/exports\/([^/]+)\/result$/);
   if (result && method === "POST") return recordExportResult(ctx, result[1], result[2]);
+  const baseProfile = path.match(/^\/api\/v1\/documents\/([^/]+)\/base-profile$/);
+  if (baseProfile && method === "POST") return setBaseProfile(ctx, baseProfile[1]);
   const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);
   if (profile && method === "POST") return convertProfile(ctx, profile[1]);
   const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|exports))?$/);

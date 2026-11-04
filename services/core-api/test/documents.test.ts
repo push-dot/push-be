@@ -105,6 +105,92 @@ test("a hub profile converts to the default profile or an application profile", 
   assert.equal(wrote?.sql.includes("kind"), false);
 });
 
+test("omitted profile target is an application profile and does not write the hub profile", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000030";
+  const VER = "d0000000-0000-4000-8000-000000000031";
+  const APP = "a0000000-0000-4000-8000-000000000031";
+  const doc = {
+    id: DOC, revision: 4, application_id: null, title: "올린 이력서", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {}, "00000000-0000-4000-8000-000000000030"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { target: string; documentId: string; applicationId: string | null } };
+  assert.equal(body.data.target, "application");
+  assert.equal(body.data.documentId, DOC);
+  assert.equal(body.data.applicationId, null);
+  assert.equal(calls.some((call) => call.sql.includes("UPDATE profiles") || call.sql.startsWith("UPDATE documents")), false);
+
+  const { calls: linkedCalls, query: linkedQuery } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM applications")) return [{ id: APP }];
+    if (sql.startsWith("UPDATE documents")) return [{ id: DOC }];
+    return null;
+  });
+  const linked = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {
+    applicationId: APP, expectedRevision: 4,
+  }, "00000000-0000-4000-8000-000000000031"), ENV, { query: linkedQuery, now: () => NOW });
+  assert.equal(linked.status, 200);
+  const linkedBody = await linked.json() as { data: { target: string; applicationId: string } };
+  assert.equal(linkedBody.data.target, "application");
+  assert.equal(linkedBody.data.applicationId, APP);
+  assert.equal(linkedCalls.some((call) => call.sql.startsWith("UPDATE documents")), true);
+  assert.equal(linkedCalls.some((call) => call.sql.includes("UPDATE profiles")), false);
+});
+
+test("setting the base profile copies the document onto the hub profile and repeats cleanly", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-000000000040";
+  const VER = "d0000000-0000-4000-8000-000000000041";
+  const doc = {
+    id: DOC, revision: 3, application_id: "a0000000-0000-4000-8000-000000000041", title: "지원용 프로필", kind: "HUB_PROFILE",
+    template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+    finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const answer = (sql: string) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM document_versions")) return [{
+      id: VER, document_id: DOC, number: 1, content: {}, blocks: [{ id: "b1", text: "소개 본문" }],
+      created_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Go"] }];
+    return null;
+  };
+  const first = recorder(answer);
+  const once = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000040"), ENV, { query: first.query, now: () => NOW });
+  assert.equal(once.status, 200);
+  const onceBody = await once.json() as { data: { documentId: string; profileUserId: string } };
+  assert.equal(onceBody.data.documentId, DOC);
+  assert.equal(typeof onceBody.data.profileUserId, "string");
+  const update = first.calls.find((call) => call.sql.includes("UPDATE profiles SET headline"));
+  assert.equal(update?.params[1], "지원용 프로필");
+  assert.equal(update?.params[2], "소개 본문");
+  assert.equal(update?.sql.includes("careers"), false);
+  assert.equal(first.calls.some((call) => call.sql.startsWith("UPDATE documents")), false);
+
+  const second = recorder(answer);
+  const again = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000041"), ENV, { query: second.query, now: () => NOW });
+  assert.equal(again.status, 200);
+  const againBody = await again.json() as { data: { documentId: string; profileUserId: string } };
+  assert.equal(againBody.data.profileUserId, onceBody.data.profileUserId);
+  const againUpdate = second.calls.find((call) => call.sql.includes("UPDATE profiles SET headline"));
+  assert.deepEqual(againUpdate?.params.slice(1, 3), ["지원용 프로필", "소개 본문"]);
+
+  const missing = recorder(() => null);
+  const hidden = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000042"), ENV, { query: missing.query, now: () => NOW });
+  assert.equal(hidden.status, 404);
+
+  const resume = recorder((sql) => sql.includes("FROM documents WHERE id") ? [{ ...doc, kind: "RESUME" }] : null);
+  const rejected = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000043"), ENV, { query: resume.query, now: () => NOW });
+  assert.equal(rejected.status, 400);
+});
+
 test("create accepts CAREER_STATEMENT and rejects an unknown kind", async () => {
   const { handle } = await import("../src/handler.ts");
   const APP = "a0000000-0000-4000-8000-000000000001";

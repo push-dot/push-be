@@ -1335,6 +1335,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{id}/base-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set a hub profile document as the user's base profile
+         * @description Owner only. Copies the document title into profiles.headline and the latest version text into profiles.intro. Careers and skills already on the profile stay. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
+         */
+        post: operations["postDocumentsByIdBaseProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{id}/exports": {
         parameters: {
             query?: never;
@@ -1426,8 +1446,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Save a hub profile document as the default profile or an application profile
-         * @description target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.
+         * Save a hub profile document as an application profile
+         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub copies the document title and body into the user's hub profile. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;
@@ -7153,6 +7173,43 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postDocumentsByIdBaseProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: uuid */
+                            documentId: string;
+                            /** Format: uuid */
+                            profileUserId: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getDocumentsByIdExports: {
         parameters: {
             query?: {
@@ -7364,7 +7421,7 @@ export interface operations {
                     applicationId?: string;
                     expectedRevision?: number;
                     /** @enum {string} */
-                    target: "hub" | "application";
+                    target?: "hub" | "application";
                 };
             };
         };

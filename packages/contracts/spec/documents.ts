@@ -88,14 +88,14 @@ export const routes: Route[] = [
   }),
   post("core", "/api/v1/documents/{id}/profile", {
     tag: "documents",
-    summary: "Save a hub profile document as the default profile or an application profile",
-    description: "target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.",
+    summary: "Save a hub profile document as an application profile",
+    description: "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId links that document to an application the user owns. target hub copies the document title and body into the user's hub profile. The document kind stays HUB_PROFILE.",
     params: [id],
     body: body(obj({
       target: enumOf("hub", "application"),
       applicationId: uuid,
       expectedRevision: int,
-    }, ["target"])),
+    }, [])),
     responses: {
       200: ok(obj({
         target: enumOf("hub", "application"),
@@ -103,6 +103,16 @@ export const routes: Route[] = [
         profileUserId: uuid,
         applicationId: nullable(uuid),
       }, ["target", "documentId"])),
+    },
+  }),
+  post("core", "/api/v1/documents/{id}/base-profile", {
+    tag: "documents",
+    summary: "Set a hub profile document as the user's base profile",
+    description: "Owner only. Copies the document title into profiles.headline and the latest version text into profiles.intro. Careers and skills already on the profile stay. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+    params: [id],
+    body: body(obj({}, [])),
+    responses: {
+      200: ok(obj({ documentId: uuid, profileUserId: uuid }, ["documentId", "profileUserId"])),
     },
   }),
   post("core", "/api/v1/documents/{id}/exports/{exportId}/result", {
