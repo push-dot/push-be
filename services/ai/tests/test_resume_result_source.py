@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
+from app.harness.personal.resume.profile_document import resolve_uploaded_source
 from app.harness.personal.tools import bound_services
 from tests.test_harness_resume import _Approvals, _base, _config, _graph, _PhaseModel
 
@@ -327,6 +329,135 @@ async def test_external_present_title_is_the_saved_file():
         {"id": "done", "label": "확인했어요"},
         {"id": "cancel", "label": "그만하기"},
     ]
+
+
+class _OwnedSources(_DB):
+    def __init__(self, owner, source_id, file_name, mime):
+        super().__init__()
+        self.owner = str(owner)
+        self.source_id = str(source_id)
+        self.file_name = file_name
+        self.mime = mime
+        self.lookups = []
+
+    async def fetchrow(self, sql, *args):
+        if "FROM sources" in sql and "file_name" in sql:
+            self.lookups.append((sql, tuple(str(arg) for arg in args)))
+            if len(args) >= 2 and str(args[0]) == self.source_id and str(args[1]) == self.owner:
+                return {"file_name": self.file_name, "mime_type": self.mime}
+            return None
+        return await super().fetchrow(sql, *args)
+
+
+class _RetrySources(_OwnedSources):
+    def __init__(self, owner, source_id, file_name, mime):
+        super().__init__(owner, source_id, file_name, mime)
+        self.failures = 1
+
+    async def fetchrow(self, sql, *args):
+        if "FROM sources" in sql and "file_name" in sql and self.failures:
+            self.failures -= 1
+            raise RuntimeError("db down")
+        return await super().fetchrow(sql, *args)
+
+
+async def _uploaded(db, user_id, **inputs):
+    events, _saved = await _present(
+        db, None,
+        phase="present",
+        user_id=str(user_id),
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs=inputs,
+    )
+    return events
+
+
+async def test_uuid_pdf_source_is_external_with_its_file_name():
+    owner = uuid4()
+    source_id = uuid4()
+    file_name = "김서준_이력서.pdf"
+    db = _OwnedSources(owner, source_id, file_name, "application/pdf")
+    events = await _uploaded(db, owner, attachments=[str(source_id)])
+    result = _one(events, "result")
+    assert result["source"] == "external"
+    assert result["fileName"] == file_name
+    assert len(db.lookups) == 1
+    assert "user_id" in db.lookups[0][0]
+    assert db.lookups[0][1] == (str(source_id), str(owner))
+
+
+async def test_uuid_docx_source_is_saved_as_stem_pdf():
+    owner = uuid4()
+    source_id = uuid4()
+    db = _OwnedSources(
+        owner, source_id, "경력기술서.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    events = await _uploaded(db, owner, attachments=[str(source_id)])
+    result = _one(events, "result")
+    assert result["source"] == "external"
+    assert result["fileName"] == "경력기술서.pdf"
+
+
+async def test_uuid_image_source_stays_profile():
+    owner = uuid4()
+    source_id = uuid4()
+    db = _OwnedSources(owner, source_id, "명함.png", "image/png")
+    events = await _uploaded(db, owner, attachments=[str(source_id)])
+    result = _one(events, "result")
+    assert result["source"] == "profile"
+    assert "fileName" not in result
+    assert "명함.png" not in json.dumps(events, ensure_ascii=False)
+
+
+async def test_other_users_source_stays_profile():
+    owner = uuid4()
+    stranger = uuid4()
+    source_id = uuid4()
+    file_name = "다른사람_이력서.pdf"
+    db = _OwnedSources(owner, source_id, file_name, "application/pdf")
+    events = await _uploaded(db, stranger, attachments=[str(source_id)])
+    result = _one(events, "result")
+    assert result["source"] == "profile"
+    assert file_name not in json.dumps(events, ensure_ascii=False)
+    assert db.lookups
+    assert "user_id" in db.lookups[0][0]
+    assert db.lookups[0][1][1] == str(stranger)
+    assert db.lookups[0][1][1] != str(owner)
+
+
+async def test_document_id_of_uploaded_pdf_is_external():
+    owner = uuid4()
+    source_id = uuid4()
+    file_name = "올린이력서.pdf"
+    db = _OwnedSources(owner, source_id, file_name, "application/pdf")
+    events = await _uploaded(db, owner, documentId=str(source_id))
+    result = _one(events, "result")
+    assert result["source"] == "external"
+    assert result["fileName"] == file_name
+    assert db.lookups[0][1] == (str(source_id), str(owner))
+
+
+async def test_failed_source_lookup_retries_on_the_next_phase(caplog):
+    owner = uuid4()
+    source_id = uuid4()
+    file_name = "김서준_이력서.pdf"
+    db = _RetrySources(owner, source_id, file_name, "application/pdf")
+    state = {"user_id": str(owner), "inputs": {"attachments": [str(source_id)]}}
+    with caplog.at_level(logging.WARNING, logger="app.harness.personal.resume.profile_document"):
+        first = await resolve_uploaded_source(db, state)
+    assert first.get("inputs", state["inputs"]).get("sourceLookup") != "done"
+    nxt = {**state, "inputs": {**state["inputs"], **first.get("inputs", {})}}
+    second = await resolve_uploaded_source(db, nxt)
+    assert second["inputs"]["source"] == "external"
+    assert second["inputs"]["fileName"] == file_name
+    assert second["inputs"]["sourceLookup"] == "done"
+    failed = [record for record in caplog.records if record.message == "source lookup failed"]
+    assert len(failed) == 1
+    assert failed[0].exc_info
+    assert str(source_id) not in failed[0].message
+    assert str(owner) not in failed[0].message
+    assert file_name not in failed[0].message
 
 
 async def test_failed_insert_choice_does_not_claim_the_save():

@@ -19,6 +19,7 @@ from app.harness.personal.resume.drafts import chosen_document_text, draft_text,
 from app.harness.personal.resume.profile_document import (
     load_document_markdown,
     profile_card_names,
+    resolve_uploaded_source,
     save_edited_file,
     save_profile_document,
 )
@@ -872,6 +873,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     def work_node(phase: str):
         async def node(state: ResumeGraphState) -> dict:
             current = {**current_of(state), "phase": phase}
+            stamped: dict = {}
+            if phase in {"publish", "present"}:
+                stamped = await resolve_uploaded_source(db, current)
+                if stamped:
+                    current = {**current, **stamped}
             output = await _output(turn_model.get() or model, phase, current, _context(db, current))
             stored = await _store_output(db, current, phase, output)
             if phase == "present":
@@ -894,6 +900,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
+            if stamped.get("inputs"):
+                stored["inputs"] = stamped["inputs"]
             retries = int((current.get("strategy") or {}).get("retries") or 0)
             if phase == "strategy" and output.get("valid") is False and retries < 2:
                 stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
