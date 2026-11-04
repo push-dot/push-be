@@ -213,6 +213,7 @@ class ResumeGraphState(TypedDict, total=False):
     profile_document_id: str
     source_saved: bool | None
     intake_asks: int
+    gate_epoch: int
 
 
 _VALIDATE_CAP = 3
@@ -528,6 +529,9 @@ def _choice(
 ) -> dict:
     gate = _GATES[phase]
     seed = f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}"
+    epoch = int(state.get("gate_epoch") or 0)
+    if epoch:
+        seed = f"{seed}:e{epoch}"
     if cycle is not None:
         seed = f"{seed}:{cycle}"
     options = [*gate["options"]]
@@ -974,6 +978,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 stayed["phase"] = "strategy" if text.startswith("피드백만") else current["phase"]
                 stayed["status"] = "active"
                 stayed["goto"] = "end"
+                if stayed["phase"] == current["phase"]:
+                    stayed["gate_epoch"] = int(current.get("gate_epoch") or 0) + 1
                 return stayed
             if not answer.get("option_id") and not _option_ids(answer):
                 answer = {**answer, **_auto_answer(gate_id)}
