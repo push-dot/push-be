@@ -1459,17 +1459,33 @@ test("posting facets run their four counts in parallel", async () => {
   const { handle } = await import("../src/handler.ts");
   let inFlight = 0;
   let peak = 0;
+  let started = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fallback = setTimeout(release, 200);
   const query: Deps["query"] = async (sql) => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     inFlight += 1;
+    started += 1;
     peak = Math.max(peak, inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (started === 4) {
+      clearTimeout(fallback);
+      release();
+    }
+    await gate;
     inFlight -= 1;
     return { rows: [], rowCount: 0 };
   };
-  const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
-  assert.equal(res.status, 200);
-  assert.equal(peak, 4);
+  try {
+    const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.equal(peak, 4);
+  } finally {
+    clearTimeout(fallback);
+    release();
+  }
 });
 }
 
