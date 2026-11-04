@@ -96,6 +96,7 @@ const ENV = { APP_ENV: "production" };
 const E1 = "e0000000-0000-4000-8000-000000000001";
 const E2 = "e0000000-0000-4000-8000-000000000002";
 const E3 = "e0000000-0000-4000-8000-000000000003";
+const E4 = "e0000000-0000-4000-8000-000000000004";
 
 const path = "/api/v1/sources";
 const limit = 20 << 20;
@@ -148,6 +149,7 @@ test("the source library hides markdown files", async () => {
     if (sql.includes("FROM sources")) return [
       { id: E1, file_name: "05_final_resume.md", mime_type: "text/markdown", size: 1, created_at: "2026-10-05T00:00:00Z" },
       { id: E2, file_name: "김서준_모아페이_백엔드.pdf", mime_type: "application/pdf", size: 2, created_at: "2026-10-04T00:00:00Z" },
+      { id: E4, file_name: "notes.txt", mime_type: "text/markdown", size: 4, created_at: "2026-10-02T00:00:00Z" },
     ];
     if (sql.includes("FROM documents")) return [
       { id: E3, title: "notes.md", created_at: "2026-10-06T00:00:00Z" },
@@ -156,7 +158,26 @@ test("the source library hides markdown files", async () => {
   });
   const res = await handle(new Request("https://core.example/api/v1/sources?limit=10", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
   const body = await res.json() as { data: { fileName: string }[] };
-  assert.deepEqual(body.data.map((item) => item.fileName), ["김서준_모아페이_백엔드.pdf"]);
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.data.map((item) => item.fileName), ["notes.md", "김서준_모아페이_백엔드.pdf"]);
+});
+
+test("the source library keeps a Push document with no mime type and drops a markdown source", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("FROM sources")) return [
+      { id: E1, file_name: "05_final_resume.md", mime_type: "text/plain", size: 1, created_at: "2026-10-05T00:00:00Z" },
+      { id: E2, file_name: null, mime_type: null, size: 2, created_at: "2026-10-04T00:00:00Z" },
+    ];
+    if (sql.includes("FROM documents")) return [
+      { id: E3, title: "Push 이력서", created_at: "2026-10-06T00:00:00Z" },
+    ];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/sources?limit=10", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { data: { id: string }[] };
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.data.map((item) => item.id), [E3, E2]);
 });
 }
 
