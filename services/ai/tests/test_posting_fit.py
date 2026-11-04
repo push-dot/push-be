@@ -48,6 +48,7 @@ def test_five_weighted_dimensions():
         "parts": SCORES,
         "topGap": "도메인",
         "plan": "PRO",
+        "reachable": 8.2,
     }
     assert tuple(view["parts"]) == _PARTS
 
@@ -88,6 +89,7 @@ def test_cached_view_keeps_five_decimal_scores():
     assert tuple(view["parts"]) == _PARTS
     assert view["parts"]["domain"] == 2.5
     assert view["fitScore"] == 7.4
+    assert view["reachable"] == 8.2
 
 
 class _Db:

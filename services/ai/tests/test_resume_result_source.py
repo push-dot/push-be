@@ -25,6 +25,12 @@ _FILE_STEPS = (
     "경력 섹션 고치기",
     "PDF로 만들기",
 )
+_FILE_STEPS_OPEN = (
+    "이력서 읽기",
+    "고칠 점 찾기",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
 _PROFILE_STEPS = (
     "프로필 읽기",
     "공고 요건 정리",
@@ -153,8 +159,8 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     todo = _one(events, "todo")
     assert result["source"] == "external"
     assert result["taskLine"] == _TASK_FILE
-    assert result["checklist"] == list(_FILE_STEPS)
-    assert [item["text"] for item in todo["items"]] == list(_FILE_STEPS)
+    assert result["checklist"] == list(_FILE_STEPS_OPEN)
+    assert [item["text"] for item in todo["items"]] == list(_FILE_STEPS_OPEN)
     assert result["fileName"] == f"{_STEM}_수정본.pdf"
     assert result["pageLine"].startswith("A4 ")
     assert result["pageLine"].endswith("KB") or result["pageLine"].endswith("MB")
@@ -240,7 +246,10 @@ async def test_apply_label_uses_the_posting_company():
         },
     )
     result = _one(events, "result")
+    todo = _one(events, "todo")
     assert result["company"] == _COMPANY
+    assert result["checklist"] == list(_FILE_STEPS)
+    assert [item["text"] for item in todo["items"]] == list(_FILE_STEPS)
     assert result["actions"][0] == {"id": "apply", "label": _APPLY}
 
 

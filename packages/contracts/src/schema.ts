@@ -1458,8 +1458,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Save a hub profile document as an application profile
-         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.
+         * Save a hub profile document or an uploaded file as an application profile
+         * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;
@@ -2727,7 +2727,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a posting fit analysis
-         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
+         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
          */
         post: operations["postPostingsByIdFit"];
         delete?: never;
@@ -4143,7 +4143,10 @@ export interface components {
             } | null;
             readAt: string | null;
             recipient: {
+                avatarUrl: string | null;
+                companyName: string | null;
                 displayName: string;
+                headline: string;
                 id: string;
             };
             sender: {
@@ -7514,6 +7517,25 @@ export interface operations {
                     };
                 };
             };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            applicationId?: string | null;
+                            /** Format: uuid */
+                            documentId: string;
+                            /** Format: uuid */
+                            jobId: string;
+                            /** @enum {string} */
+                            target: "hub" | "application";
+                        };
+                    };
+                };
+            };
             default: components["responses"]["Error"];
         };
     };
@@ -10304,8 +10326,8 @@ export interface operations {
                 category?: string;
                 tenure?: string;
                 status?: string;
-                /** @description recommended: same jobCategory as the caller; offers: profiles the caller sent offers to */
-                explore?: "recommended" | "offers";
+                /** @description recommended: same jobCategory as the caller; offers: profiles the caller sent offers to; received: profiles that sent the caller an offer */
+                explore?: "recommended" | "offers" | "received";
             };
             header?: never;
             path?: never;

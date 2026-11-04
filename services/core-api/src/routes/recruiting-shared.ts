@@ -211,8 +211,10 @@ export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: 
     const fallback = countSql
       .replaceAll(" LEFT JOIN company_members cm ON cm.user_id = u.id", "")
       .replaceAll(" LEFT JOIN company_members sm ON sm.user_id = o.sender_id", "")
+      .replaceAll(" LEFT JOIN company_members rm ON rm.user_id = o.profile_user_id", "")
       .replaceAll(" LEFT JOIN companies co ON co.id = cm.company_id", "")
-      .replaceAll(" LEFT JOIN companies sc ON sc.id = sm.company_id", "");
+      .replaceAll(" LEFT JOIN companies sc ON sc.id = sm.company_id", "")
+      .replaceAll(" LEFT JOIN companies rc ON rc.id = rm.company_id", "");
     return read(fallback);
   }
 };
@@ -243,7 +245,12 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
       headline: row.sender_headline == null ? "" : String(row.sender_headline),
       avatarUrl: imageUrl(row.sender_avatar),
     },
-    recipient: person(row, "profile_user_id", "recipient_name"),
+    recipient: {
+      ...person(row, "profile_user_id", "recipient_name"),
+      companyName: row.recipient_company == null || row.recipient_company === "" ? null : String(row.recipient_company),
+      headline: row.recipient_headline == null ? "" : String(row.recipient_headline),
+      avatarUrl: imageUrl(row.recipient_avatar),
+    },
     message: String(row.message ?? ""),
     posting: row.posting_id == null ? null : {
       id: String(row.posting_id),
@@ -259,13 +266,17 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
 
 export const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
   o.message, o.posting_id, jp.title AS posting_title, jp.company AS posting_company, jp.image_key AS posting_image,
-  o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company
+  o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company,
+  rp.headline AS recipient_headline, rp.avatar_key AS recipient_avatar, rc.name AS recipient_company
   FROM offers o
   JOIN users su ON su.id = o.sender_id
   JOIN users ru ON ru.id = o.profile_user_id
   LEFT JOIN profiles sp ON sp.user_id = o.sender_id
   LEFT JOIN company_members sm ON sm.user_id = o.sender_id
   LEFT JOIN companies sc ON sc.id = sm.company_id
+  LEFT JOIN profiles rp ON rp.user_id = o.profile_user_id
+  LEFT JOIN company_members rm ON rm.user_id = o.profile_user_id
+  LEFT JOIN companies rc ON rc.id = rm.company_id
   LEFT JOIN job_postings jp ON jp.id = o.posting_id`;
 
 export async function notify(ctx: Ctx, userId: string, type: string, title: string, body: string, target: Record<string, unknown>): Promise<void> {

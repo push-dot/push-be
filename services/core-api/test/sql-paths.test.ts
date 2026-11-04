@@ -81,10 +81,14 @@ test("follower and following lists build both joins with and without a cursor", 
 });
 
 test("profile explore filters add the recommended and offers clauses", async () => {
-  for (const explore of ["recommended", "offers"]) {
+  const clauseOf = (explore: string): string => {
+    if (explore === "recommended") return "p.job_category = (SELECT job_category";
+    if (explore === "received") return "o.profile_user_id = $1 AND o.sender_id = p.user_id";
+    return "o.sender_id = $1 AND o.profile_user_id = p.user_id";
+  };
+  for (const explore of ["recommended", "offers", "received"]) {
     const { res, calls } = await run(get("/api/v1/profiles?explore=" + explore));
     assert.equal(res.status, 200, explore);
-    const clause = explore === "recommended" ? "p.job_category = (SELECT job_category" : "EXISTS (SELECT 1 FROM offers o";
-    assert.ok(calls.some((c) => c.sql.includes(clause)), explore);
+    assert.ok(calls.some((c) => c.sql.includes(clauseOf(explore))), explore);
   }
 });

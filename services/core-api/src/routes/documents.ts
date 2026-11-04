@@ -665,16 +665,80 @@ const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string): Promise<{ do
   return { documentId: id, profileUserId: ctx.user.id };
 };
 
-export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
-  const id = requireUuid(idRaw, "id");
-  const { values, present } = await strictBody(ctx.request, {
-    target: { kind: "str" },
-    applicationId: { kind: "uuid" },
-    expectedRevision: { kind: "int" },
-  });
-  const target = present.has("target") ? String(values.target) : "application";
-  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
-  const doc = await loadDocument(ctx, id);
+const TEXT_SOURCE = new Set(["text/plain", "text/markdown"]);
+
+const sourceText = (value: unknown): string => {
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  if (typeof value !== "string" || value === "") return "";
+  return Buffer.from(value, "base64").toString("utf8");
+};
+
+const mdToDoc = (md: string): { content: { type: "doc"; content: unknown[] }; blocks: Block[] } => {
+  const nodes: unknown[] = [];
+  const blocks: Block[] = [];
+  const add = (kind: string, extra: Record<string, unknown>, text: string): void => {
+    const bid = "block-" + (blocks.length + 1);
+    nodes.push({ type: kind, attrs: { blockId: bid, ...extra }, content: [{ type: "text", text }] });
+    blocks.push({ id: bid, text, evidenceRefs: [], claimStatus: "UNSUPPORTED" });
+  };
+  for (const raw of md.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line) continue;
+    const heading = /^(#{1,4})\s+(.*)/.exec(line);
+    const item = /^\s*[-*]\s+(.*)/.exec(line);
+    if (heading) add("heading", { level: heading[1].length }, heading[2]);
+    else if (item) add("paragraph", {}, "• " + item[1]);
+    else add("paragraph", {}, line);
+  }
+  if (!nodes.length) add("paragraph", {}, "");
+  return { content: { type: "doc", content: nodes }, blocks };
+};
+
+const insertProfileDocument = async (
+  ctx: Ctx, title: string, version: { id: string; content: unknown; blocks: Block[] } | null,
+): Promise<string> => {
+  const now = ts(ctx.now);
+  const docId = crypto.randomUUID();
+  const versionId = version?.id ?? null;
+  if (!version) {
+    await query(ctx.deps.query,
+      `INSERT INTO documents (${DOC_COLS}) VALUES ($1,$2,1,NULL,$3,$4,'SIMPLE','ko','DRAFT',NULL,NULL,$5,$5)`,
+      [docId, ctx.user.id, title, "HUB_PROFILE", now]);
+    return docId;
+  }
+  const quality = computeQuality(version.blocks);
+  await query(ctx.deps.query,
+    `WITH doc AS (
+       INSERT INTO documents (${DOC_COLS}) VALUES ($1,$2,1,NULL,$3,$4,'SIMPLE','ko','DRAFT',$5,NULL,$6,$6)
+       RETURNING id
+     )
+     INSERT INTO document_versions (${VERSION_COLS})
+     SELECT $5, $2, doc.id, NULL, 1, $7::jsonb, $8::jsonb, 'source', $9::jsonb, $6 FROM doc`,
+    [docId, ctx.user.id, title, "HUB_PROFILE", versionId, now, JSON.stringify(version.content), JSON.stringify(version.blocks), JSON.stringify(quality)]);
+  return docId;
+};
+
+const convertOwnedSource = async (ctx: Ctx, id: string): Promise<Response> => {
+  const source = await one(ctx.deps.query,
+    "SELECT id, file_name, mime_type, content FROM sources WHERE id = $1 AND user_id = $2",
+    [id, ctx.user.id]);
+  if (!source) throw notFound();
+  const title = clip(String(source.file_name || "프로필"), 300);
+  const mime = String(source.mime_type || "");
+  if (TEXT_SOURCE.has(mime)) {
+    const built = mdToDoc(sourceText(source.content));
+    const documentId = await insertProfileDocument(ctx, title, { id: crypto.randomUUID(), ...built });
+    return data(200, { target: "application", documentId, applicationId: null }, ctx.rid);
+  }
+  const documentId = await insertProfileDocument(ctx, title, null);
+  // shortcut: pdf/docx shell has no version until the ingest job finishes, fill inline when the worker is in this process
+  const { jobId } = await enqueueIngest(ctx, { sourceId: id, profileDocumentId: documentId });
+  return data(202, { target: "application", documentId, jobId, applicationId: null }, ctx.rid);
+};
+
+const convertHubDocument = async (
+  ctx: Ctx, id: string, doc: Row, target: string, values: Record<string, unknown>, present: Set<string>,
+): Promise<Response> => {
   if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
   if (target === "application") {
     if (!present.has("applicationId")) return data(200, { target, documentId: id, applicationId: null }, ctx.rid);
@@ -692,6 +756,20 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
   }
   const copied = await copyOntoBaseProfile(ctx, doc, id);
   return data(200, { target, ...copied }, ctx.rid);
+};
+
+export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values, present } = await strictBody(ctx.request, {
+    target: { kind: "str" },
+    applicationId: { kind: "uuid" },
+    expectedRevision: { kind: "int" },
+  });
+  const target = present.has("target") ? String(values.target) : "application";
+  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
+  const doc = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
+  if (doc) return convertHubDocument(ctx, id, doc, target, values, present);
+  return convertOwnedSource(ctx, id);
 };
 
 export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {

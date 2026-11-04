@@ -126,7 +126,9 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     if (!CAREER_STATUS.has(token)) throw unprocessable("status", "unsupported status");
   }
   const explore = ctx.url.searchParams.get("explore");
-  if (explore && explore !== "recommended" && explore !== "offers") throw unprocessable("explore", "unsupported explore");
+  if (explore && explore !== "recommended" && explore !== "offers" && explore !== "received") {
+    throw unprocessable("explore", "unsupported explore");
+  }
   const viewer = await viewerCompanyOf(ctx);
   const params: unknown[] = [ctx.user.id, viewer.domain, viewer.freeMail];
   let sql = profileSelect(`, (
@@ -168,6 +170,9 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
   }
   if (explore === "offers") {
     sql += " AND EXISTS (SELECT 1 FROM offers o WHERE o.sender_id = $1 AND o.profile_user_id = p.user_id)";
+  }
+  if (explore === "received") {
+    sql += " AND EXISTS (SELECT 1 FROM offers o WHERE o.profile_user_id = $1 AND o.sender_id = p.user_id)";
   }
   const q = ctx.url.searchParams.get("q") || "";
   let rank = "";

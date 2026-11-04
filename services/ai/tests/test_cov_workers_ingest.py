@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -85,6 +86,39 @@ def ctx(payload, user_id=USER, company_id=None):
 def handler(query=None, ingestor=None, store=None, client=None):
     ingestor = ingestor or Ingestor()
     return make_ingest(lambda: query or Query(), store, ingestor, client), ingestor
+
+
+class _ProfileQuery(Query):
+    def __init__(self, sources):
+        super().__init__(sources=sources)
+        self.writes = []
+
+    async def execute(self, sql, *args):
+        self.writes.append((sql, args))
+
+
+async def test_profile_document_payload_writes_a_hub_version_from_the_source_text():
+    query = _ProfileQuery({SOURCE: (USER, "# 경력\n백엔드")})
+    ingest, ingestor = handler(query)
+    document_id = UUID("88888888-8888-4888-8888-888888888888")
+    out = await ingest(ctx({"sourceId": str(SOURCE), "profileDocumentId": str(document_id)}))
+    assert out["documentId"] == str(document_id)
+    assert ingestor.calls == []
+    assert query.writes
+    sql, args = query.writes[0]
+    assert "document_versions" in sql
+    assert document_id in args
+    assert "백엔드" in json.dumps(args, ensure_ascii=False, default=str)
+
+
+async def test_profile_document_payload_hides_another_users_source():
+    ingest, _ingestor = handler(Query(sources={SOURCE: (OTHER, "secret")}))
+    with pytest.raises(JobFailed) as err:
+        await ingest(ctx({
+            "sourceId": str(SOURCE),
+            "profileDocumentId": "88888888-8888-4888-8888-888888888888",
+        }))
+    assert err.value.error["code"] == "NOT_FOUND"
 
 
 async def test_source_payload_indexes_owned_source_under_user_and_company():
