@@ -82,6 +82,78 @@ def _row_text(row, key: str) -> str:
         return ""
 
 
+_UPLOADED_FILE_SQL = "SELECT file_name, mime_type FROM sources WHERE id = $1 AND user_id = $2"
+_RESUME_MIME = ("pdf", "word", "officedocument")
+_RESUME_SUFFIX = (".pdf", ".docx", ".doc")
+
+
+def _uuid(value):
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _uploaded_resume(name: str, mime: str) -> bool:
+    lowered = mime.lower()
+    if any(token in lowered for token in _RESUME_MIME):
+        return True
+    return name.lower().endswith(_RESUME_SUFFIX)
+
+
+def _uploaded_ids(inputs: dict) -> list[UUID]:
+    found: list[UUID] = []
+    seen: set[UUID] = set()
+    for item in inputs.get("attachments") or []:
+        if not isinstance(item, str):
+            continue
+        parsed = _uuid(item)
+        if parsed is None or parsed in seen:
+            continue
+        seen.add(parsed)
+        found.append(parsed)
+    parsed = _uuid(inputs.get("documentId"))
+    if parsed is not None and parsed not in seen:
+        found.append(parsed)
+    return found
+
+
+async def _source_file(db, source_id: UUID, user_id: UUID):
+    try:
+        return await db.q().fetchrow(_UPLOADED_FILE_SQL, source_id, user_id)
+    except Exception:
+        return None
+
+
+async def resolve_uploaded_source(db, state: dict) -> dict:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    if inputs.get("sourceLookup") == "done":
+        return {}
+    label = _clean(inputs.get("fileName") or inputs.get("file_name"))
+    if inputs.get("source") == "external" and label:
+        return {}
+    ids = _uploaded_ids(inputs)
+    if not ids:
+        return {}
+    nxt = dict(inputs)
+    nxt["sourceLookup"] = "done"
+    user_id = _uuid(state.get("user_id"))
+    if db is None or user_id is None:
+        return {"inputs": nxt}
+    for source_id in ids:
+        row = await _source_file(db, source_id, user_id)
+        if not row:
+            continue
+        name = _row_text(row, "file_name")
+        if not _uploaded_resume(name, _row_text(row, "mime_type")):
+            continue
+        nxt["source"] = "external"
+        if name:
+            nxt["fileName"] = name
+        break
+    return {"inputs": nxt}
+
+
 async def profile_card_names(db, state: dict) -> tuple[str, str]:
     inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
     name = _clean(inputs.get("name") or inputs.get("displayName"))
