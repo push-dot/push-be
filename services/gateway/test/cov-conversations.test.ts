@@ -601,7 +601,7 @@ test("a finished job is delivered on the first poll and the stream stops", async
   assert.equal(reads, 1);
 });
 
-test("the poll cap ends with an error frame instead of a silent close", async () => {
+test("the poll cap closes with no error frame", async () => {
   resetLimits();
   const e = env({ SSE_MAX_POLLS: "2" });
   await warm(USER_A, e);
@@ -611,10 +611,7 @@ test("the poll cap ends with an error frame instead of a silent close", async ()
   }), async () => {}));
   const text = await res.text();
   assert.match(text, /: ping\n\n/);
-  assert.deepEqual(framesOf(text), [{
-    type: "error",
-    error: { code: "INTERNAL", message: "internal error", details: null },
-  }]);
+  assert.deepEqual(framesOf(text), []);
 });
 
 test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async () => {
@@ -632,11 +629,7 @@ test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async (
   }), async (ms) => { sleeps.push(ms); }));
   const text = await res.text();
   assert.ok(text.startsWith("retry: 400\n\n"));
-  assert.deepEqual(framesOf(text), [
-    { type: "token", text: "", seq: 4 },
-    { type: "custom", a: 1, seq: 5 },
-    { type: "error", error: { code: "INTERNAL", message: "internal error", details: null } },
-  ]);
+  assert.deepEqual(framesOf(text), [{ type: "token", text: "", seq: 4 }, { type: "custom", a: 1, seq: 5 }]);
   assert.deepEqual(reads, [[JOB, 0], [JOB, 5], [JOB, 5]]);
   assert.deepEqual(sleeps, [250, 250]);
 });

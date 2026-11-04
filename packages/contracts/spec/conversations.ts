@@ -185,7 +185,7 @@ const chatEvents: Record<string, Schema> = {
 };
 
 const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. "
-  + "The stream starts with `retry: 400` and closes after done, error, or cancelled. Reaching SSE_MAX_POLLS (default 20) without one is a stream-level failure; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
+  + "The stream starts with `retry: 400` and closes after done, error, or cancelled, or after SSE_MAX_POLLS polls (default 20) without a terminal event; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
   + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq.";
 
 const postMessageBody = body(obj({
