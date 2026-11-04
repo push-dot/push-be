@@ -99,7 +99,7 @@ def not_configured(msg: str) -> DomainError:
 
 def missing_provider_key(err: BaseException) -> bool:
     text = str(err)
-    return "Missing credentials" in text and "OPENAI_API_KEY" in text
+    return "Missing credentials" in text and "`api_key`" in text
 
 
 def internal() -> DomainError:
