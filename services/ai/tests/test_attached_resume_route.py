@@ -182,6 +182,19 @@ async def test_list_documents_hides_markdown():
     assert [item["title"] for item in markdown["items"]] == ["Push 이력서"]
     mime = await listed(_Sources(USER, uuid4(), "notes.txt", "text/markdown"), Docs([]))
     assert mime["items"] == []
+    doc_id = str(uuid4())
+    bare = await listed(
+        _Sources(USER, uuid4(), "05_final_resume.md", None),
+        Docs([{"id": doc_id, "title": "Push 이력서"}]),
+    )
+    assert [item["id"] for item in bare["items"]] == [doc_id]
+    source_id = uuid4()
+    missing = await listed(
+        _Sources(USER, source_id, None, None),
+        Docs([{"id": str(uuid4())}]),
+    )
+    assert str(source_id) in [item["id"] for item in missing["items"]]
+    assert all(item.get("fileName") != "05_final_resume.md" for item in missing["items"])
 
 
 async def test_list_documents_hides_another_users_source():
