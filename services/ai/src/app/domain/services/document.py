@@ -42,7 +42,7 @@ def validate_document_input(title: str, kind: str, template: str) -> None:
     if not 1 <= len(title) <= MAX_DOCUMENT_TITLE:
         raise validation_field("title", f"title must be 1-{MAX_DOCUMENT_TITLE} characters")
     if not ent.valid_document_kind(kind):
-        raise validation_field("kind", "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT")
+        raise validation_field("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE")
     if not ent.valid_document_template(template):
         raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
 

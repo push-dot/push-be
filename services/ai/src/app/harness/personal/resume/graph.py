@@ -15,7 +15,8 @@ from app.framework.models import _content
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.personal.resume.booster import boost_cycle
-from app.harness.personal.resume.drafts import draft_text
+from app.harness.personal.resume.drafts import chosen_document_text, draft_text, drafts_from_chosen
+from app.harness.personal.resume.profile_document import load_document_markdown, save_profile_document
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
@@ -73,8 +74,8 @@ _GATES = {
         "title": "입력한 자료를 확인했어요. 분석을 시작할까요?",
         "recommended": "ready",
         "options": [
-            {"id": "ready", "label": "이 자료로 진행할게요"},
-            {"id": "C", "label": "시나리오 C로 갈게요"},
+            {"id": "ready", "label": "네, 시작해 주세요"},
+            {"id": "change", "label": "자료를 바꿀래요"},
         ],
     },
     "analyze": {
@@ -110,13 +111,8 @@ _GATES = {
             {"id": "ATS", "label": "ATS"},
         ],
     },
-    "publish": {
-        "title": "디자인을 적용했어요. PDF로 만들까요?",
-        "recommended": "confirm",
-        "options": [{"id": "confirm", "label": "이대로 마무리할게요"}],
-    },
     "present": {
-        "title": "PDF를 만들었어요. 결과를 확인할까요?",
+        "title": "Push 프로필에 저장했어요. 결과를 확인할까요?",
         "recommended": "done",
         "options": [{"id": "done", "label": "확인했어요"}],
     },
@@ -205,6 +201,8 @@ class ResumeGraphState(TypedDict, total=False):
     scores: list
     boost_acked: int
     boost_stopped: str
+    profile_document_id: str
+    intake_asks: int
 
 
 _VALIDATE_CAP = 3
@@ -303,7 +301,7 @@ def _after_analyze(state: dict) -> str:
         "B": "feedback",
         "C": "review",
         "D": "craft",
-        "E": "present",
+        "E": "craft",
         "F": "craft",
     }.get(_scenario_letter(state), "strategy")
 
@@ -354,8 +352,15 @@ def _choice(
         "title": gate["title"],
         "gate": phase,
         "recommended": gate["recommended"],
-        "options": [*gate["options"], {"id": "cancel", "label": "그만하기"}],
+        "options": [*gate["options"], {
+            "id": "cancel",
+            "label": "그만할게요" if phase == "intake" else "그만하기",
+        }],
     }
+    if phase == "present":
+        event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
+        if state.get("profile_document_id"):
+            event["documentId"] = state["profile_document_id"]
     if detail:
         event["detail"] = detail
     if gate.get("multiple"):
@@ -461,8 +466,6 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
     option_id = answer.get("option_id")
     if phase == "mode_select" and option_id in {"resume_based", "experience_blueprint"}:
         update["work_mode"] = option_id
-    if phase == "intake" and option_id == "C":
-        update["scenario"] = "C"
     if phase == "review" and option_id in _TEMPLATES:
         update["template"] = option_id
     if phase == "output_targets":
@@ -502,6 +505,9 @@ def merge_inputs(inputs: dict, extra: dict) -> dict:
         if item not in attachments:
             attachments.append(item)
     merged["attachments"] = attachments
+    document_id = extra.get("documentId")
+    if document_id:
+        merged["documentId"] = str(document_id)
     return merged
 
 
@@ -640,6 +646,14 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
         }
     if gate_id == "projects":
         return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
+    if gate_id == "analyze" and _scenario_letter(merged) == "E":
+        return {
+            **update,
+            "drafts": drafts_from_chosen(merged.get("drafts"), merged.get("inputs")),
+            "status": "active",
+            "phase": "craft",
+            "goto": "end",
+        }
     if gate_id == "strategy" and (merged.get("strategy") or {}).get("focus") == "bottleneck":
         return {**update, "status": "done", "phase": "strategy", "goto": "end"}
     phase = _GATE_PHASE.get(gate_id, gate_id)
@@ -661,6 +675,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             current = {**current_of(state), "phase": phase}
             output = await _output(turn_model.get() or model, phase, current, _context(db, current))
             stored = await _store_output(db, current, phase, output)
+            if phase == "present":
+                emit({"token": "Push 프로필에 저장하는 중…"})
+                doc_id = await save_profile_document({**current, **stored})
+                if doc_id:
+                    stored["profile_document_id"] = doc_id
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
@@ -709,7 +728,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 if gate_id not in _INTAKE_NEXT:
                     emit(_choice(current, gate_id, auto=True))
                 return await accepted(current, gate_id, _auto_answer(gate_id))
-            event = _choice(current, gate_id, auto=False)
+            asks = int(current.get("intake_asks") or 0)
+            event = _choice(
+                current, gate_id, auto=False, cycle=asks if gate_id == "intake" and asks else None,
+            )
             if await _save_choice(db, current, event):
                 emit(event)
             answer = interrupt({
@@ -720,6 +742,15 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             }) or {}
             if _cancelled(answer):
                 return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if gate_id == "intake" and answer.get("option_id") == "change":
+                stayed = _apply_answer(current, gate_id, answer)
+                return {
+                    **stayed,
+                    "phase": "intake",
+                    "status": "active",
+                    "goto": "end",
+                    "intake_asks": int(current.get("intake_asks") or 0) + 1,
+                }
             if answer.get("text") and not answer.get("option_id") and not _option_ids(answer):
                 stayed = _apply_answer(current, gate_id, answer)
                 text = str(answer["text"])
@@ -753,15 +784,21 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         )
 
     async def boost(state: ResumeGraphState) -> dict:
-        scores = [float(item) for item in (state.get("scores") or [])]
+        drafts = dict(state.get("drafts") or {})
+        if not draft_text(drafts):
+            body = chosen_document_text(state.get("inputs")) or await load_document_markdown(db, state)
+            if body:
+                drafts = {"markdown": body}
+        view_state = {**state, "drafts": drafts}
+        scores = [float(item) for item in (view_state.get("scores") or [])]
         if not scores:
-            base = await score_draft(state)
+            base = await score_draft(view_state)
             scores.append(float(base["fitScore"]))
-        current = {**state, "phase": "craft"}
-        ctx = _context(db, state)
+        current = {**view_state, "phase": "craft"}
+        ctx = _context(db, view_state)
         output = await _output(turn_model.get() or model, "craft", current, ctx)
         stored = await _store_output(db, current, "craft", output)
-        view = await score_draft({**state, **stored})
+        view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
         return {**stored, "scores": scores}
 
@@ -965,6 +1002,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         phase = state.get("phase") or "mode_select"
         if state.get("goto") == "p3c_boost":
             return "p3c_boost"
+        if phase == "craft" and _scenario_letter(state) == "E":
+            return "p3c_boost"
+        if phase == "intake" and int(state.get("intake_asks") or 0) > 0:
+            return "g_intake"
         if phase == "review" and _scenario_letter(state) == "C":
             return "p4b_design"
         return {
@@ -1012,7 +1053,6 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p4a_review", work_node("review"))
     graph.add_node("g4a", gate_node("review"))
     graph.add_node("p5_publish", work_node("publish"))
-    graph.add_node("g5", gate_node("publish"))
     graph.add_node("p6_present", work_node("present"))
     graph.add_node("g6", gate_node("present"))
     graph.add_node("p2x_approach", approach_node)
@@ -1025,7 +1065,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("g_validate_cap", gate_node("validate_cap"))
     graph.add_node("g2x", gate_node("projects"))
     graph.add_conditional_edges(START, route_phase, {name: name for name in (
-        "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
+        "p0_mode", "p0i_intake", "g_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
         "p4a_review", "p4b_design", "p5_publish", "p6_present", "p3c_boost",
         "p2x_approach", "p2x_blueprints",
     )})
@@ -1052,14 +1092,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
     graph.add_edge("p3_craft", "g3")
     graph.add_edge("p4a_review", "g4a")
-    graph.add_edge("p5_publish", "g5")
+    graph.add_edge("p5_publish", "p6_present")
     graph.add_edge("p6_present", "g6")
     graph.add_edge("p3c_boost", "p3c_cycle")
     graph.add_conditional_edges(
         "p3c_cycle", route_goto, {"end": END, "p3c_boost": "p3c_boost"})
     for name in (
         "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
-        "g2", "g3", "g4a", "g5", "g6",
+        "g2", "g3", "g4a", "g6",
         "g_approach", "g_level", "g_prevention", "g_validate_cap", "g2x",
     ):
         graph.add_conditional_edges(name, route_goto, _EXITS)

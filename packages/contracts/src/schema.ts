@@ -1346,8 +1346,8 @@ export interface paths {
         get: operations["getDocumentsByIdExports"];
         put?: never;
         /**
-         * Create an export record for the finalized version
-         * @description Snapshots the finalized version for client-side rendering (status READY_TO_RENDER). 422 DOCUMENT_NOT_FINALIZED when versionId is not the finalized version.
+         * Create an export record for a profile or finalized version
+         * @description Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise.
          */
         post: operations["postDocumentsByIdExports"];
         delete?: never;
@@ -1410,6 +1410,26 @@ export interface paths {
          * @description Enqueues a document generation job; poll the job for the result. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated.
          */
         post: operations["postDocumentsByIdGenerate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{id}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save a hub profile document as the default profile or an application profile
+         * @description target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.
+         */
+        post: operations["postDocumentsByIdProfile"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1519,8 +1539,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download the finalized version as PDF or DOCX
-         * @description Only the finalized version can be exported (422 DOCUMENT_NOT_FINALIZED).
+         * Download a profile or finalized version as PDF or DOCX
+         * @description A finalized version can be exported. A HUB_PROFILE document can also export its latest version before finalize (422 DOCUMENT_NOT_FINALIZED otherwise).
          */
         get: operations["getDocumentsByIdVersionsByVersionIdExport"];
         put?: never;
@@ -3752,7 +3772,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
+            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
             language: string;
             latestVersionId: string | null;
             revision: number;
@@ -6975,7 +6995,7 @@ export interface operations {
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
                 applicationId?: string;
-                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
+                kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
             };
             header?: never;
             path?: never;
@@ -7014,7 +7034,7 @@ export interface operations {
                     /** Format: uuid */
                     applicationId: string;
                     /** @enum {string} */
-                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT";
+                    kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
                     language: string;
                     /**
                      * @description Required in practice: missing or empty fails validation. CLASSIC is stored as SIMPLE, COMPACT as ATS.
@@ -7318,6 +7338,52 @@ export interface operations {
                         data: {
                             /** Format: uuid */
                             jobId: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. A retry with the same key and body replays the first response. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    applicationId?: string;
+                    expectedRevision?: number;
+                    /** @enum {string} */
+                    target: "hub" | "application";
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            applicationId?: string | null;
+                            /** Format: uuid */
+                            documentId: string;
+                            /** Format: uuid */
+                            profileUserId?: string;
+                            /** @enum {string} */
+                            target: "hub" | "application";
                         };
                     };
                 };

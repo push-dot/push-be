@@ -143,7 +143,7 @@ def test_phase_nodes_cover_p0_through_p6():
     assert {
         "p0_mode", "g0", "p0i_intake", "g_output_targets", "g_tone", "g_intake",
         "p1_analyze", "g1", "p2_strategy", "g2", "p3_craft", "g3", "p3c_boost", "p3c_cycle",
-        "p4a_review", "g4a", "p5_publish", "g5", "p6_present", "g6",
+        "p4a_review", "g4a", "p5_publish", "p6_present", "g6",
     } <= names
 
 
@@ -187,7 +187,7 @@ async def test_stops_at_every_gate_in_auto():
     assert gates == [
         "mode_select", "output_targets", "tone", "intake",
         "analyze", "strategy", "craft", "boost",
-        "review", "publish", "present",
+        "review", "present",
     ]
     assert seen[-1][1].values["status"] == "done"
 
@@ -372,8 +372,8 @@ async def test_scenario_c_skips_strategy():
 
     graph = _graph(_Approvals(), poster)
     config = _config()
-    answers = {"intake": "C"}
-    payload = _base()
+    answers = {}
+    payload = _base(scenario="C")
     gates = []
     for _ in range(16):
         events = []
@@ -461,8 +461,7 @@ _GATE_QUESTIONS = {
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
     "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
-    "publish": "디자인을 적용했어요. PDF로 만들까요?",
-    "present": "PDF를 만들었어요. 결과를 확인할까요?",
+    "present": "Push 프로필에 저장했어요. 결과를 확인할까요?",
 }
 
 
@@ -503,12 +502,15 @@ async def _until_done(graph, config, payload):
     return gates, titles, snap
 
 
-async def test_scenario_e_ends_after_fit_report():
+async def test_scenario_e_continues_into_boost_after_the_fit_report():
     db = _Approvals()
     graph = _graph(db, model=_PhaseModel({"analyze": {"scenario": "E", "fit": {"score": 3}}}))
     config = _config()
-    gates, _titles, snap = await _until_done(graph, config, _base(phase="analyze"))
-    assert gates == ["analyze", "present"]
+    gates, titles, snap = await _until_done(graph, config, _base(phase="analyze"))
+    assert gates[0] == "analyze"
+    assert gates[1] == "boost"
+    assert titles["boost"] == "점수를 한 번 더 올릴까요?"
+    assert "publish" not in gates
     assert snap.values["status"] == "done"
     assert snap.values["scenario"] == "E"
     assert "02_fit_score.json" in snap.values["artifacts"]

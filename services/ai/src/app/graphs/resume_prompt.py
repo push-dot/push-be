@@ -12,7 +12,7 @@ _PHASE_SKILLS = {
         "bottleneck-validator"),
     3: ("content-craft", "score-booster"),
     4: ("quality-review", "resume-designer"),
-    5: ("pdf-publisher", "resume-designer"),
+    5: ("resume-designer",),
     6: ("result-presenter",),
 }
 
@@ -22,8 +22,8 @@ _PHASE_LABELS = {
     2: "Phase 2: 적합도 분석과 콘텐츠 전략",
     3: "Phase 3: 콘텐츠 초안 작성",
     4: "Phase 4: 품질 검증과 디자인 선택",
-    5: "Phase 5: PDF 출력",
-    6: "Phase 6: 최종 결과 제공",
+    5: "Phase 5: Push 프로필 저장",
+    6: "Phase 6: 저장한 Push 프로필 안내",
 }
 
 _HARNESS_PHASE_INDEX = {
@@ -78,4 +78,8 @@ def phase_prompt_for_harness(phase: str) -> str:
     parts.append(
         "[현재 단계] 지금 실행할 단계는 " + label + "이다. "
         "이 단계의 산출물만 만들고, 다음 단계는 사용자 응답 후에 진행한다.")
+    if phase in {"publish", "present"}:
+        parts.append(
+            "PDF로 만들지 묻지 않는다. 산출물은 Push 프로필(허브형 서류)이다. "
+            "PDF는 Push 프로필에서 내보낼 수 있어요.")
     return "\n\n---\n\n".join(parts)

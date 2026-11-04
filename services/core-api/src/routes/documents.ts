@@ -1,5 +1,6 @@
 import { strictBody, strictObject } from "../body.ts";
 import { one, query } from "../db.ts";
+import { searchFields } from "../hangul.ts";
 import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
@@ -13,7 +14,7 @@ const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, 
 const VERSION_COLS = "id, user_id, document_id, application_id, number, content, blocks, change_note, quality, created_at";
 const PROPOSAL_COLS = "id, user_id, document_id, source_version_id, source_revision, selection, replacement, evidence_refs, claim_status, applied_at, created_at";
 const EXPORT_COLS = "id, user_id, document_id, version_id, format, template, language, content, blocks, content_hash, status, renderer_version, result, created_at, updated_at";
-const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT"]);
+const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT", "HUB_PROFILE"]);
 const TEMPLATE_ALIASES: Record<string, string> = { CLASSIC: "SIMPLE", COMPACT: "ATS" };
 const TEMPLATES = new Set(["SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT"]);
 const TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT";
@@ -235,7 +236,7 @@ export const createDocument = async (ctx: Ctx): Promise<Response> => {
   const kind = String(values.kind);
   const template = String(values.template ?? "");
   if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
-  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT");
+  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE");
   if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
   const now = ts(ctx.now);
   const row: Row = {
@@ -445,7 +446,10 @@ export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> =
   if (!values.rendererVersion) throw fieldError("rendererVersion", "required");
   const doc = await loadDocument(ctx, id);
   const version = await loadVersion(ctx, id, String(values.versionId));
-  if (doc.finalized_version_id == null || String(doc.finalized_version_id) !== String(version.id)) {
+  const hubLatest = String(doc.kind) === "HUB_PROFILE"
+    && doc.latest_version_id != null
+    && String(doc.latest_version_id) === String(version.id);
+  if (!hubLatest && (doc.finalized_version_id == null || String(doc.finalized_version_id) !== String(version.id))) {
     throw new HttpError(422, "DOCUMENT_NOT_FINALIZED", "only the finalized version can be exported");
   }
   const now = ts(ctx.now);
@@ -503,6 +507,59 @@ export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: str
   return data(200, exportDto({ ...row, status, result, updated_at: now }), ctx.rid);
 };
 
+const clip = (value: string, max: number): string => {
+  const points = Array.from(value);
+  return points.length <= max ? value : points.slice(0, max).join("");
+};
+
+export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values, present } = await strictBody(ctx.request, {
+    target: { kind: "str", required: true },
+    applicationId: { kind: "uuid" },
+    expectedRevision: { kind: "int" },
+  });
+  const target = String(values.target);
+  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
+  const doc = await loadDocument(ctx, id);
+  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
+  if (target === "application") {
+    if (!present.has("applicationId")) throw fieldError("applicationId", "must be a UUID");
+    if (!present.has("expectedRevision")) throw fieldError("expectedRevision", "required");
+    const expected = Number(values.expectedRevision);
+    if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+    const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
+    if (!app) throw notFound();
+    const now = ts(ctx.now);
+    const updated = await one(ctx.deps.query,
+      "UPDATE documents SET application_id = $3, revision = revision + 1, updated_at = $4 WHERE id = $1 AND user_id = $2 AND revision = $5 RETURNING id",
+      [id, ctx.user.id, values.applicationId, now, expected]);
+    if (!updated) await failedUpdate(ctx, "documents", id);
+    return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
+  }
+  const nowIso = ctx.now.toISOString();
+  await query(ctx.deps.query,
+    "INSERT INTO profiles (user_id, created_at, updated_at) VALUES ($1,$2,$2) ON CONFLICT (user_id) DO NOTHING",
+    [ctx.user.id, nowIso]);
+  let intro = "";
+  if (doc.latest_version_id != null) {
+    const version = await loadVersion(ctx, id, String(doc.latest_version_id));
+    intro = blocksOf(version.blocks).map((block) => block.text).filter(Boolean).join("\n");
+  }
+  intro = clip(intro, 2000);
+  const headline = clip(String(doc.title), 120);
+  const current = await one(ctx.deps.query,
+    "SELECT u.display_name, p.skills FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = $1",
+    [ctx.user.id]);
+  if (!current) throw notFound();
+  const skills = Array.isArray(current.skills) ? current.skills.map(String) : [];
+  const fields = searchFields([String(current.display_name ?? ""), headline, skills.join(" ")].join(" "));
+  await query(ctx.deps.query,
+    "UPDATE profiles SET headline = $2, intro = $3, search_text = $4, search_choseong = $5, search_jamo = $6, updated_at = $7 WHERE user_id = $1",
+    [ctx.user.id, headline, intro, fields.text, fields.choseong, fields.jamo, nowIso]);
+  return data(200, { target, documentId: id, profileUserId: ctx.user.id }, ctx.rid);
+};
+
 export const isDocumentEdit = (method: string, path: string): boolean =>
   method === "POST" && /^\/api\/v1\/documents\/[^/]+\/edits$/.test(path);
 
@@ -524,6 +581,8 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (apply && method === "POST") return applyRevision(ctx, apply[1], apply[2]);
   const result = path.match(/^\/api\/v1\/documents\/([^/]+)\/exports\/([^/]+)\/result$/);
   if (result && method === "POST") return recordExportResult(ctx, result[1], result[2]);
+  const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);
+  if (profile && method === "POST") return convertProfile(ctx, profile[1]);
   const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|exports))?$/);
   if (!m) return null;
   const [, id, sub] = m;

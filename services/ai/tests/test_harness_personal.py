@@ -374,7 +374,7 @@ async def test_start_document_marks_resume_active():
 
 
 _PHASES = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+    "mode_select", "intake", "analyze", "strategy", "craft", "review", "present",
 )
 _JOB = "job-1"
 

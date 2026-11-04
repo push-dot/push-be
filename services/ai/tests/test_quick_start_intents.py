@@ -120,14 +120,16 @@ async def test_fit_with_inputs_enters_analyze():
     _assert_kept(saved, source)
 
 
-async def test_fit_with_inputs_accepts_analyze_into_present():
+async def test_fit_with_inputs_accepts_analyze_into_boost(monkeypatch):
+    _flat_fit(monkeypatch)
     runtime, rows, items = await _open("fit", _bag())
     choice = _choice(items)
     assert choice["gate"] == "analyze"
     items = await _accept(runtime, "fit", choice, "continue")
     saved = _saved(rows)
-    assert _choice(items)["gate"] == "present"
-    assert saved["phase"] == "present"
+    assert _choice(items)["gate"] == "boost"
+    assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
+    assert saved["phase"] == "craft"
     assert saved["scenario"] == "E"
 
 

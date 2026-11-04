@@ -76,11 +76,16 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
             "work_mode": "resume_based", "scenario": "A",
         }
     elif intent == "fit":
+        from app.harness.personal.resume.drafts import draft_text, drafts_from_chosen
+
+        drafts = drafts_from_chosen(current.get("drafts"), current.get("inputs"))
         seed = {
             "status": "active",
             "phase": "analyze" if _present(current.get("inputs")) else "intake",
             "work_mode": "resume_based", "scenario": "E",
         }
+        if draft_text(drafts):
+            seed["drafts"] = drafts
     elif intent == "gaps":
         seed = {
             "status": "active",
