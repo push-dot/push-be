@@ -6863,7 +6863,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6891,7 +6891,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;

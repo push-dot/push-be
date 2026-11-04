@@ -16,6 +16,13 @@ const sseError = obj({
   details: nullable({ type: "object", additionalProperties: true }),
 }, ["code", "message"]);
 
+const resultAction = obj({
+  id: enumOf("apply", "convert", "view"),
+  label: str,
+  method: str,
+  path: str,
+}, ["id", "label"]);
+
 const chatEvents: Record<string, Schema> = {
   status: obj({ type: enumOf("status"), text: str, seq }),
   token: obj({ type: enumOf("token"), text: str, seq }),
@@ -135,6 +142,38 @@ const chatEvents: Record<string, Schema> = {
     }, ["text", "verify"])),
     seq,
   }, ["type", "questions", "seq"]),
+  result: {
+    oneOf: [
+      obj({
+        type: enumOf("result"),
+        source: enumOf("external"),
+        taskLine: str,
+        checklist: arr(str),
+        documentId: str,
+        fileName: str,
+        pageLine: str,
+        savedLine: str,
+        cardMeta: str,
+        company: str,
+        actions: arr(resultAction),
+        seq,
+      }, ["type", "source", "taskLine", "checklist", "documentId", "fileName", "pageLine", "cardMeta", "actions", "seq"]),
+      obj({
+        type: enumOf("result"),
+        source: enumOf("profile"),
+        taskLine: str,
+        checklist: arr(str),
+        documentId: str,
+        name: str,
+        headline: str,
+        title: str,
+        subtitle: str,
+        company: str,
+        actions: arr(resultAction),
+        seq,
+      }, ["type", "source", "taskLine", "checklist", "documentId", "name", "headline", "title", "subtitle", "actions", "seq"]),
+    ],
+  },
   done: obj({
     type: enumOf("done"),
     operation: nullable(ref("Operation")),
