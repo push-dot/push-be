@@ -425,7 +425,7 @@
   "body": {
    "error": {
     "code": "VALIDATION_ERROR",
-    "message": "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT",
+    "message": "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE",
     "requestId": "parity",
     "details": {
      "field": "kind"

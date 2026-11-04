@@ -31,3 +31,5 @@ class ResumeState(BaseModel):
     conversation_id: str = ""
     user_id: str = ""
     job_id: str = ""
+    profile_document_id: str = ""
+    intake_asks: int = 0

@@ -89,6 +89,8 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
         "conversation_id": str(payload.get("conversation_id") or ""),
         "user_id": str(payload.get("user_id") or ""),
         "job_id": str(payload.get("job_id") or ""),
+        "profile_document_id": saved.get("profile_document_id") or "",
+        "intake_asks": int(saved.get("intake_asks") or 0),
     }
 
 
@@ -122,6 +124,7 @@ _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
     "drafts", "review", "template", "artifacts", "output_targets", "tone", "warnings",
     "approach", "bottleneck_level", "prevention_categories", "blueprints",
+    "profile_document_id", "intake_asks",
 )
 
 
@@ -143,7 +146,11 @@ async def _turn_inputs(payload: dict) -> dict:
         elif body:
             pages[url] = body
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    return {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
+    incoming = {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
+    document_id = context.get("documentId")
+    if document_id:
+        incoming["documentId"] = str(document_id)
+    return incoming
 
 
 def _pending(snapshot) -> dict | None:
@@ -340,8 +347,12 @@ class HarnessRuntime:
                     state["resume"] = seeded
                 elif quick_start_resume(payload.get("intent"), saved) is not None:
                     state["intent"] = payload.get("intent")
-                    if saved:
-                        state["resume"] = saved
+                    incoming = await _turn_inputs(payload)
+                    base = dict(saved) if saved else {}
+                    if any(incoming.get(key) for key in ("pages", "attachments", "documentId")):
+                        base["inputs"] = merge_inputs(base.get("inputs") or {}, incoming)
+                    if base:
+                        state["resume"] = base
                 elif quick_start_seed(payload.get("intent"), text, context) is not None:
                     state["intent"] = payload.get("intent")
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}

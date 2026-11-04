@@ -2436,7 +2436,8 @@
               "RESUME",
               "PORTFOLIO",
               "COVER_LETTER",
-              "CAREER_STATEMENT"
+              "CAREER_STATEMENT",
+              "HUB_PROFILE"
             ],
             "type": "string"
           },
@@ -12918,7 +12919,8 @@
                 "RESUME",
                 "PORTFOLIO",
                 "COVER_LETTER",
-                "CAREER_STATEMENT"
+                "CAREER_STATEMENT",
+                "HUB_PROFILE"
               ],
               "type": "string"
             }
@@ -12981,7 +12983,8 @@
                       "RESUME",
                       "PORTFOLIO",
                       "COVER_LETTER",
-                      "CAREER_STATEMENT"
+                      "CAREER_STATEMENT",
+                      "HUB_PROFILE"
                     ],
                     "type": "string"
                   },
@@ -13330,7 +13333,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "Snapshots the finalized version for client-side rendering (status READY_TO_RENDER). 422 DOCUMENT_NOT_FINALIZED when versionId is not the finalized version.",
+        "description": "Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise.",
         "operationId": "postDocumentsByIdExports",
         "parameters": [
           {
@@ -13401,7 +13404,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Create an export record for the finalized version",
+        "summary": "Create an export record for a profile or finalized version",
         "tags": [
           "documents"
         ],
@@ -13715,6 +13718,115 @@
           }
         },
         "summary": "Queue AI generation of a document",
+        "tags": [
+          "documents"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/documents/{id}/profile": {
+      "post": {
+        "description": "target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.",
+        "operationId": "postDocumentsByIdProfile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "applicationId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedRevision": {
+                    "type": "integer"
+                  },
+                  "target": {
+                    "enum": [
+                      "hub",
+                      "application"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "target"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "applicationId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "documentId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "profileUserId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "target": {
+                          "enum": [
+                            "hub",
+                            "application"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "target",
+                        "documentId"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Save a hub profile document as the default profile or an application profile",
         "tags": [
           "documents"
         ],
@@ -14258,7 +14370,7 @@
     },
     "/api/v1/documents/{id}/versions/{versionId}/export": {
       "get": {
-        "description": "Only the finalized version can be exported (422 DOCUMENT_NOT_FINALIZED).",
+        "description": "A finalized version can be exported. A HUB_PROFILE document can also export its latest version before finalize (422 DOCUMENT_NOT_FINALIZED otherwise).",
         "operationId": "getDocumentsByIdVersionsByVersionIdExport",
         "parameters": [
           {
@@ -14345,7 +14457,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Download the finalized version as PDF or DOCX",
+        "summary": "Download a profile or finalized version as PDF or DOCX",
         "tags": [
           "documents"
         ],

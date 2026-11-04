@@ -4,7 +4,7 @@ import {
   body, ok, okPage, noContent, pathParam, query, pageParams,
 } from "./shared.ts";
 
-const documentKind = enumOf("RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT");
+const documentKind = enumOf("RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT", "HUB_PROFILE");
 const templateInput = enumOf("SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT");
 const evidenceKind = enumOf("RESUME", "GITHUB", "CAREER", "EDUCATION", "SKILL", "PROJECT");
 const calendarType = enumOf("INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT");
@@ -80,11 +80,30 @@ export const routes: Route[] = [
   }),
   post("core", "/api/v1/documents/{id}/exports", {
     tag: "documents",
-    summary: "Create an export record for the finalized version",
-    description: "Snapshots the finalized version for client-side rendering (status READY_TO_RENDER). 422 DOCUMENT_NOT_FINALIZED when versionId is not the finalized version.",
+    summary: "Create an export record for a profile or finalized version",
+    description: "Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise.",
     params: [id],
     body: body(obj({ versionId: uuid, format: enumOf("PDF", "DOCX"), rendererVersion: { type: "string", minLength: 1 } })),
     responses: { 201: ok(ref("DocumentExport"), "Created") },
+  }),
+  post("core", "/api/v1/documents/{id}/profile", {
+    tag: "documents",
+    summary: "Save a hub profile document as the default profile or an application profile",
+    description: "target hub copies the document title and body into the user's hub profile. target application links the same hub document to an application the user owns. The document kind stays HUB_PROFILE.",
+    params: [id],
+    body: body(obj({
+      target: enumOf("hub", "application"),
+      applicationId: uuid,
+      expectedRevision: int,
+    }, ["target"])),
+    responses: {
+      200: ok(obj({
+        target: enumOf("hub", "application"),
+        documentId: uuid,
+        profileUserId: uuid,
+        applicationId: nullable(uuid),
+      }, ["target", "documentId"])),
+    },
   }),
   post("core", "/api/v1/documents/{id}/exports/{exportId}/result", {
     tag: "documents",
@@ -184,8 +203,8 @@ export const routes: Route[] = [
   }),
   get("ai", "/api/v1/documents/{id}/versions/{versionId}/export", {
     tag: "documents",
-    summary: "Download the finalized version as PDF or DOCX",
-    description: "Only the finalized version can be exported (422 DOCUMENT_NOT_FINALIZED).",
+    summary: "Download a profile or finalized version as PDF or DOCX",
+    description: "A finalized version can be exported. A HUB_PROFILE document can also export its latest version before finalize (422 DOCUMENT_NOT_FINALIZED otherwise).",
     params: [
       id,
       versionId,
