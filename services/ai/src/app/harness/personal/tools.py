@@ -193,6 +193,16 @@ def _library_item(row) -> dict:
     }
 
 
+def _markdown_library_item(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    name = item.get("fileName") if isinstance(item.get("fileName"), str) else item.get("title")
+    mime = item.get("mimeType") if isinstance(item.get("mimeType"), str) else ""
+    if not isinstance(name, str):
+        name = ""
+    return name.lower().endswith(".md") or mime.lower() == "text/markdown"
+
+
 async def _library_sources(ctx: ToolContext) -> list:
     if ctx.db is None:
         return []
@@ -212,7 +222,7 @@ async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
         page = await document_svc.list(UUID(ctx.user_id), None, None, PageRequest())
         items.extend(to_jsonable(page.items))
     items.extend(await _library_sources(ctx))
-    return {"items": items}
+    return {"items": [item for item in items if not _markdown_library_item(item)]}
 
 
 async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:

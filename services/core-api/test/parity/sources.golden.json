@@ -39,15 +39,6 @@
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
      "origin": "AI"
-    },
-    {
-     "id": "f1000000-0000-4000-8000-000000000003",
-     "fileName": "old.md",
-     "mimeType": "text/markdown",
-     "size": 3,
-     "pageCount": null,
-     "createdAt": "2026-09-30T00:00:00Z",
-     "origin": "AI"
     }
    ],
    "page": {
@@ -78,15 +69,6 @@
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
      "origin": "UPLOAD"
-    },
-    {
-     "id": "f1000000-0000-4000-8000-000000000003",
-     "fileName": "old.md",
-     "mimeType": "text/markdown",
-     "size": 3,
-     "pageCount": null,
-     "createdAt": "2026-09-30T00:00:00Z",
-     "origin": "AI"
     }
    ],
    "page": {
@@ -194,8 +176,8 @@
     }
    ],
    "page": {
-    "nextCursor": "MjAyNi0xMC0wMlQwMDowMDowMFp8ZDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
-    "hasMore": true
+    "nextCursor": null,
+    "hasMore": false
    }
   }
  },

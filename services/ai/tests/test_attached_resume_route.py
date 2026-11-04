@@ -150,6 +150,40 @@ async def test_list_documents_returns_uploaded_sources_and_push_documents():
     assert bound[0] == str(USER)
 
 
+async def test_list_documents_hides_markdown():
+    ctx = ToolContext(
+        user_id=str(USER), company_id=None, conversation_id=str(uuid4()),
+        job_id="job-1", tool_call_id="call-1", db=None, core=None,
+    )
+    tool = _tool("list_documents")
+
+    class Docs:
+        def __init__(self, items):
+            self.items = items
+
+        async def list(self, user_id, application_id, kind, page):
+            return type("Page", (), {"items": self.items})()
+
+    async def listed(rows, docs):
+        token = bound_services.set(type("Svc", (), {"document_svc": docs})())
+        try:
+            ctx.db = rows
+            return await tool.run(ctx, tool.args_model.model_validate({}))
+        finally:
+            bound_services.reset(token)
+
+    markdown = await listed(
+        _Sources(USER, uuid4(), "05_final_resume.md", "text/plain", origin="AI"),
+        Docs([
+            {"id": str(uuid4()), "title": "notes.md"},
+            {"id": str(uuid4()), "title": "Push 이력서"},
+        ]),
+    )
+    assert [item["title"] for item in markdown["items"]] == ["Push 이력서"]
+    mime = await listed(_Sources(USER, uuid4(), "notes.txt", "text/markdown"), Docs([]))
+    assert mime["items"] == []
+
+
 async def test_list_documents_hides_another_users_source():
     source_id = uuid4()
     rows = _Sources(uuid4(), source_id, "다른사람_이력서.pdf", "application/pdf")

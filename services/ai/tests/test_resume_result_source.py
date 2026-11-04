@@ -155,7 +155,7 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert result["taskLine"] == _TASK_FILE
     assert result["checklist"] == list(_FILE_STEPS)
     assert [item["text"] for item in todo["items"]] == list(_FILE_STEPS)
-    assert result["fileName"] == _FILE
+    assert result["fileName"] == f"{_STEM}_수정본.pdf"
     assert result["pageLine"].startswith("A4 ")
     assert result["pageLine"].endswith("KB") or result["pageLine"].endswith("MB")
     assert " · " in result["pageLine"]
@@ -174,11 +174,11 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert "PDF로 만들까요" not in json.dumps(events, ensure_ascii=False)
     inserted = [call for call in db.calls if "INSERT INTO sources" in call[0]]
     assert inserted
-    assert _FILE in inserted[0][1]
+    assert f"{_STEM}_수정본.pdf" in inserted[0][1]
     assert "application/pdf" in inserted[0][1]
     doc = next(iter(saved.docs.values()))
     assert doc.kind == "HUB_PROFILE"
-    assert doc.title == _STEM
+    assert doc.title == f"{_STEM}_수정본"
     assert str(doc.id) == result["documentId"]
     assert saved.versions
 
@@ -220,6 +220,7 @@ async def test_profile_result_is_the_profile_card_without_a_pdf_step():
     choice = _one(events, "choice")
     assert choice["note"] == "PDF는 Push 프로필에서 내보낼 수 있어요."
     assert any(event.get("token") == "Push 프로필에 저장하는 중…" for event in events)
+    assert not [event for event in events if event.get("type") == "file"]
 
 
 def _posting(company: str) -> dict:
@@ -380,7 +381,7 @@ async def test_uuid_pdf_source_is_external_with_its_file_name():
     events = await _uploaded(db, owner, attachments=[str(source_id)])
     result = _one(events, "result")
     assert result["source"] == "external"
-    assert result["fileName"] == file_name
+    assert result["fileName"] == "김서준_이력서_수정본.pdf"
     assert len(db.lookups) == 1
     assert "user_id" in db.lookups[0][0]
     assert db.lookups[0][1] == (str(source_id), str(owner))
@@ -396,7 +397,7 @@ async def test_uuid_docx_source_is_saved_as_stem_pdf():
     events = await _uploaded(db, owner, attachments=[str(source_id)])
     result = _one(events, "result")
     assert result["source"] == "external"
-    assert result["fileName"] == "경력기술서.pdf"
+    assert result["fileName"] == "경력기술서_수정본.pdf"
 
 
 async def test_uuid_image_source_stays_profile():
@@ -434,7 +435,7 @@ async def test_document_id_of_uploaded_pdf_is_external():
     events = await _uploaded(db, owner, documentId=str(source_id))
     result = _one(events, "result")
     assert result["source"] == "external"
-    assert result["fileName"] == file_name
+    assert result["fileName"] == "올린이력서_수정본.pdf"
     assert db.lookups[0][1] == (str(source_id), str(owner))
 
 
@@ -469,6 +470,7 @@ async def test_failed_insert_choice_does_not_claim_the_save():
         drafts={"markdown": "# 이력서\n백엔드"},
         inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
     )
+    assert not [event for event in events if event.get("type") == "file"]
     choice = _one(events, "choice")
     assert choice["title"] == _FILE_GATE_FAILED
     assert "note" not in choice
@@ -476,3 +478,78 @@ async def test_failed_insert_choice_does_not_claim_the_save():
         {"id": "done", "label": "확인했어요"},
         {"id": "cancel", "label": "그만하기"},
     ]
+
+
+def _named(display_name):
+    class _Names(_DB):
+        async def fetchrow(self, sql, *args):
+            if "display_name" in sql:
+                return {"display_name": display_name, "headline": ""}
+            return await super().fetchrow(sql, *args)
+
+    return _Names()
+
+
+async def test_edited_pdf_name_uses_display_name_company_and_role():
+    user_id = str(uuid4())
+    db = _named("김서준")
+    events, saved = await _present(
+        db, None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={
+            "attachments": [{"fileName": "원본.pdf", "mimeType": "application/pdf"}],
+            "posting": {"company": "모아페이", "title": "백엔드 엔지니어"},
+        },
+    )
+    result = _one(events, "result")
+    assert result["fileName"] == "김서준_모아페이_백엔드.pdf"
+    assert not [event for event in events if event.get("type") == "file"]
+    inserted = [call for call in db.calls if "INSERT INTO sources" in call[0]]
+    assert "김서준_모아페이_백엔드.pdf" in inserted[0][1]
+    assert next(iter(saved.docs.values())).title == "김서준_모아페이_백엔드"
+
+
+def test_edited_pdf_name_drops_a_missing_role_and_uses_revision_without_a_company():
+    from app.harness.personal.resume.graph import edited_pdf_name
+
+    posted = {
+        "inputs": {
+            "fileName": "원본.pdf",
+            "posting": {"company": "모아페이", "title": "신규 채용"},
+        },
+    }
+    assert edited_pdf_name(posted, "김서준") == "김서준_모아페이.pdf"
+    bare = {"inputs": {"fileName": "원본 이력서.pdf"}}
+    assert edited_pdf_name(bare, "김서준") == "원본이력서_수정본.pdf"
+    from_jobs = {
+        "inputs": {"fileName": "a.pdf"},
+        "analysis": {"jobs": {"company": "도토리증권", "job_category": "dev", "title": "백엔드 개발자"}},
+    }
+    assert edited_pdf_name(from_jobs, "김서준") == "김서준_도토리증권_백엔드.pdf"
+
+
+def test_edited_pdf_name_sanitizes_and_skips_empty_parts():
+    from app.harness.personal.resume.graph import edited_pdf_name
+
+    messy = {
+        "inputs": {
+            "fileName": "a.pdf",
+            "posting": {"company": "모아/페이", "job_category": "백엔드\n개발"},
+        },
+    }
+    assert edited_pdf_name(messy, "김 서준\x00") == "김서준_모아페이_백엔드.pdf"
+    company_only = {
+        "inputs": {"fileName": "a.pdf", "posting": {"company": "모아페이", "title": "백엔드"}},
+    }
+    assert edited_pdf_name(company_only, "") == "모아페이_백엔드.pdf"
+    long_company = "회" * 90
+    capped = edited_pdf_name(
+        {"inputs": {"fileName": "a.pdf", "posting": {"company": long_company}}},
+        "",
+    )
+    assert capped.endswith(".pdf")
+    assert len(capped[:-4]) == 80
+    unsafe = {"inputs": {"fileName": "김:테스트/이력서?.pdf"}}
+    assert edited_pdf_name(unsafe, "") == "김테스트이력서_수정본.pdf"

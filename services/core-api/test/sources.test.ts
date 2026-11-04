@@ -141,5 +141,22 @@ test("the source library reads one bounded page from each side and merges them",
   assert.equal(body.page.hasMore, true);
   for (const c of calls.filter((x) => x.sql.includes("FROM sources") || x.sql.includes("FROM documents"))) assert.match(c.sql, /LIMIT \$2$/);
 });
+
+test("the source library hides markdown files", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("FROM sources")) return [
+      { id: E1, file_name: "05_final_resume.md", mime_type: "text/markdown", size: 1, created_at: "2026-10-05T00:00:00Z" },
+      { id: E2, file_name: "김서준_모아페이_백엔드.pdf", mime_type: "application/pdf", size: 2, created_at: "2026-10-04T00:00:00Z" },
+    ];
+    if (sql.includes("FROM documents")) return [
+      { id: E3, title: "notes.md", created_at: "2026-10-06T00:00:00Z" },
+    ];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/sources?limit=10", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { data: { fileName: string }[] };
+  assert.deepEqual(body.data.map((item) => item.fileName), ["김서준_모아페이_백엔드.pdf"]);
+});
 }
 
