@@ -10545,7 +10545,15 @@
                       "fit",
                       "gaps",
                       "experience",
-                      "boost"
+                      "boost",
+                      "find_postings",
+                      "deadline_postings",
+                      "applications",
+                      "calendar",
+                      "hub_profile",
+                      "offer_reply",
+                      "coffee_chat",
+                      "career_post"
                     ],
                     "type": "string"
                   },
@@ -10809,7 +10817,15 @@
                       "fit",
                       "gaps",
                       "experience",
-                      "boost"
+                      "boost",
+                      "find_postings",
+                      "deadline_postings",
+                      "applications",
+                      "calendar",
+                      "hub_profile",
+                      "offer_reply",
+                      "coffee_chat",
+                      "career_post"
                     ],
                     "type": "string"
                   },

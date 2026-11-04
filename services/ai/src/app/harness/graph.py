@@ -4,7 +4,7 @@ import contextvars
 import json
 from typing import Annotated, Any, Final
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.config import get_config, get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -16,7 +16,7 @@ from typing_extensions import TypedDict
 from app.domain.access_mode import AccessMode
 from app.framework.models import _content
 from app.harness.approval import create_tool_approval
-from app.harness.policy import decide
+from app.harness.policy import Tier, decide
 from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
 
 _CAP = 8
@@ -40,6 +40,9 @@ class HarnessState(TypedDict, total=False):
 class PersonalState(HarnessState, total=False):
     resume: dict | None
     intent: str | None
+    context: dict | None
+    quick_start: dict | None
+    quick_start_done: bool
 
 
 _FLOW_DONE = {
@@ -107,6 +110,21 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
     return {**_carried(current), **seed}
 
 
+def _tier_name(tier) -> str:
+    if isinstance(tier, Tier):
+        return tier.value
+    if hasattr(tier, "metadata"):
+        return tier.metadata["tier"].value
+    return str(tier)
+
+
+def write_needs_approval(mode, tier, quick_start) -> bool:
+    if isinstance(quick_start, dict) and _tier_name(tier) != Tier.READ:
+        return True
+    resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
+    return decide(mode, resolved).value == "ASK"
+
+
 def leave_flow(summary: str, **update) -> Command:
     return Command(
         update={"messages": [SystemMessage(content=summary)], **update},
@@ -124,7 +142,16 @@ def _resume_dict(state: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _human_text(state: dict) -> str:
+    for message in reversed(state.get("messages") or []):
+        if isinstance(message, HumanMessage):
+            return _content(message)
+    return ""
+
+
 def _route_resume(state: PersonalState) -> str:
+    if state.get("quick_start_done"):
+        return "end"
     if _resume_dict(state).get("status") == "active":
         return "resume_flow"
     return "agent"
@@ -255,6 +282,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 lines = []
             if lines:
                 content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
+            quick = state.get("quick_start")
+            if isinstance(quick, dict) and quick.get("instruction"):
+                sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
+                content = content.rstrip() + "\n\n" + quick["instruction"] + "\n시트 입력: " + sheet
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=content), *messages]
         chat = turn_model.get() or model
@@ -295,7 +326,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         meta = bound.metadata
         summary = meta["summary"](args)
         tier = meta["tier"].value
-        if decide(mode, bound).value == "ASK" and meta["approval_kind"] != "DOCUMENT_EDIT":
+        if (
+            write_needs_approval(mode, meta["tier"], state.get("quick_start"))
+            and meta["approval_kind"] != "DOCUMENT_EDIT"
+        ):
             event, created = await create_tool_approval(
                 db,
                 user_id=state.get("user_id"),
@@ -368,10 +402,39 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         async def route(state: PersonalState) -> dict | Command:
             if _resume_dict(state).get("status") == "active":
                 return {}
-            seed = quick_start_resume(state.get("intent"), _resume_dict(state))
-            if seed is None:
+            if state.get("quick_start_done"):
                 return {}
-            return enter_flow("resume_flow", resume=seed)
+            seed = quick_start_resume(state.get("intent"), _resume_dict(state))
+            if seed is not None:
+                return enter_flow("resume_flow", resume=seed)
+            from app.domain.quick_starts import quick_start_seed
+
+            started = quick_start_seed(
+                state.get("intent"), _human_text(state), state.get("context") or {})
+            if started is None:
+                return {}
+            if started["intent"] == "find_postings":
+                from app.domain.services import posting_match as matching
+
+                result = await matching.run_quick_match(
+                    db,
+                    state.get("user_id"),
+                    started["inputs"],
+                    job_id=state.get("job_id"),
+                ) or {}
+                text_out = result.get("text") or "조건에 맞는 공고가 없어요."
+                payload = {"items": result.get("items") or [], "text": text_out}
+                emit(_tool_event(
+                    "find_matching_postings", "ok", "공고를 찾아요", Tier.READ.value, payload))
+                emit({"token": text_out})
+                return Command(
+                    update={
+                        "messages": [AIMessage(content=text_out)],
+                        "quick_start_done": True,
+                    },
+                    goto=END,
+                )
+            return {"quick_start": started}
 
         async def resume_flow(state: PersonalState, config) -> dict | Command:
             parent_config = get_config()
@@ -403,7 +466,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         graph.add_node("resume_flow", resume_flow)
         graph.add_edge(START, "route")
         graph.add_conditional_edges(
-            "route", _route_resume, {"resume_flow": "resume_flow", "agent": "agent"})
+            "route", _route_resume,
+            {"resume_flow": "resume_flow", "agent": "agent", "end": END})
         graph.add_conditional_edges(
             "resume_flow", _after_resume, {"resume_flow": "resume_flow", "agent": "agent"})
     else:

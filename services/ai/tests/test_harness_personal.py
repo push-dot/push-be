@@ -19,6 +19,7 @@ from tests.stubs import FakeDB
 
 _TIERS = {
     "search_postings": Tier.READ,
+    "find_matching_postings": Tier.READ,
     "get_posting": Tier.READ,
     "list_bookmarks": Tier.READ,
     "list_applications": Tier.READ,
@@ -58,6 +59,7 @@ _PYTHON = {
     "prepare_interview",
     "search_career_context",
     "start_document",
+    "find_matching_postings",
 }
 
 P = "11111111-1111-4111-8111-111111111111"

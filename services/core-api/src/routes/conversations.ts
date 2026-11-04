@@ -28,8 +28,14 @@ const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 27_000_000, ULTR
 const INTENTS = new Set([
   "posting", "review", "interview", "general",
   "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
 ]);
-const PERSONAL_INTENTS = new Set(["match_posting", "fit", "gaps", "experience", "boost"]);
+const PERSONAL_INTENTS = new Set([
+  "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
+]);
 const CANONICAL_ACCESS: Record<string, string> = {
   ALWAYS_ASK: "ALWAYS_ASK",
   AUTO: "AUTO",

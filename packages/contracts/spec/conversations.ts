@@ -168,6 +168,8 @@ const postMessageBody = body(obj({
   intent: enumOf(
     "posting", "review", "interview", "general",
     "match_posting", "fit", "gaps", "experience", "boost",
+    "find_postings", "deadline_postings", "applications", "calendar",
+    "hub_profile", "offer_reply", "coffee_chat", "career_post",
   ),
   applicationId: nullable(uuid),
 }, ["text"]));
