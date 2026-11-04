@@ -236,7 +236,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/billing/iap/verify", {
     tag: "billing",
     summary: "Verify an App Store / Google Play purchase",
-    description: "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. Subscriptions activate the plan (409 ALREADY_SUBSCRIBED if already active); top-up products only add credits and return the current plan.",
+    description: "signedTransaction is required for APP_STORE, purchaseToken for GOOGLE_PLAY. A verified subscription sets the plan. 409 ALREADY_SUBSCRIBED when a Stripe subscription is already active. The same store transaction is idempotent. A purchase owned by another account is 409 CONFLICT. Top-up products only add credits.",
     body: body(obj({
       platform: enumOf("APP_STORE", "GOOGLE_PLAY"),
       productId: str,
