@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 from uuid import UUID, uuid4
 
 from app.harness.personal.resume.drafts import draft_text
@@ -126,6 +127,7 @@ async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int
             pages,
         )
     except Exception:
+        logging.getLogger(__name__).warning("source insert failed", exc_info=True)
         return False
     return True
 

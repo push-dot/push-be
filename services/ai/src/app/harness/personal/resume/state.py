@@ -32,4 +32,5 @@ class ResumeState(BaseModel):
     user_id: str = ""
     job_id: str = ""
     profile_document_id: str = ""
+    source_saved: bool | None = None
     intake_asks: int = 0

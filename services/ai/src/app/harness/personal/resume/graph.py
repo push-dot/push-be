@@ -211,6 +211,7 @@ class ResumeGraphState(TypedDict, total=False):
     boost_acked: int
     boost_stopped: str
     profile_document_id: str
+    source_saved: bool | None
     intake_asks: int
 
 
@@ -343,6 +344,7 @@ def _must_stop(state: dict, phase: str) -> bool:
 _RESUME_EXT = (".pdf", ".docx", ".doc")
 _SAVED_LINE = "내 서류에 자동 저장됨"
 _FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
+_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
 _FILE_TASK = "이력서 수정 · 올린 파일 · 경력"
 _PROFILE_TASK = "프로필 수정 · Push 프로필 · 경력"
 _PROFILE_SUB = "Push 프로필 · 방금 수정"
@@ -544,7 +546,7 @@ def _choice(
         "options": options,
     }
     if phase == "present" and resume_source(state) == "external":
-        event["title"] = _FILE_GATE
+        event["title"] = _FILE_GATE if state.get("source_saved") is not False else _FILE_GATE_FAILED
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
     elif phase == "present":
@@ -878,6 +880,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     saved = await save_edited_file(db, view, edited_file_name(view))
                     if saved.get("documentId"):
                         stored["profile_document_id"] = saved["documentId"]
+                    stored["source_saved"] = bool(saved.get("stored"))
                     emit(_todo(_FILE_STEPS))
                     emit(_file_result(saved, view))
                 else:

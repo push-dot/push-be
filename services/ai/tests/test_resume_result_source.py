@@ -13,6 +13,7 @@ _COMPANY = "도토리증권"
 _APPLY = f"{_COMPANY}에 바로 지원하기"
 _SAVED = "내 서류에 자동 저장됨"
 _FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
+_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
 _TASK_FILE = "이력서 수정 · 올린 파일 · 경력"
 _TASK_PROFILE = "프로필 수정 · Push 프로필 · 경력"
 _FILE_STEPS = (
@@ -321,6 +322,24 @@ async def test_external_present_title_is_the_saved_file():
     )
     choice = _one(events, "choice")
     assert choice["title"] == _FILE_GATE
+    assert "note" not in choice
+    assert choice["options"] == [
+        {"id": "done", "label": "확인했어요"},
+        {"id": "cancel", "label": "그만하기"},
+    ]
+
+
+async def test_failed_insert_choice_does_not_claim_the_save():
+    user_id = str(uuid4())
+    events, _saved = await _present(
+        _SourceFails(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    choice = _one(events, "choice")
+    assert choice["title"] == _FILE_GATE_FAILED
     assert "note" not in choice
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
