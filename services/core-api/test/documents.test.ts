@@ -443,3 +443,67 @@ test("a new document version verifies all cited evidence in one query", async ()
   assert.equal(res.status, 201);
   assert.equal(calls.filter((c) => c.sql.includes("FROM career_evidence")).length, 1);
 });
+
+const SOURCE = "50000000-0000-4000-8000-0000000000a1";
+const OTHER_SOURCE = "50000000-0000-4000-8000-0000000000a2";
+
+test("a source the caller owns becomes an application profile document", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const text = "# 경력\n백엔드";
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [];
+    if (sql.includes("FROM sources WHERE id")) return [{
+      id: SOURCE, file_name: "이력서.md", mime_type: "text/markdown",
+      content: Buffer.from(text, "utf8").toString("base64"),
+    }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a1"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { target: string; documentId: string; applicationId: string | null } };
+  assert.equal(body.data.target, "application");
+  assert.equal(body.data.applicationId, null);
+  assert.notEqual(body.data.documentId, SOURCE);
+  const insert = calls.find((call) => call.sql.includes("INSERT INTO documents"));
+  assert.equal(insert?.params.includes("HUB_PROFILE"), true);
+  assert.equal(insert?.sql.includes("INSERT INTO document_versions"), true);
+  assert.equal(calls.some((call) => call.sql.includes("UPDATE profiles") || call.sql.includes("INSERT INTO profiles")), false);
+  const version = calls.find((call) => call.sql.includes("document_versions"));
+  assert.match(JSON.stringify(version?.params), /백엔드/);
+});
+
+test("a pdf source returns 202 and a job the app can follow", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql, params) => {
+    if (sql.includes("FROM documents WHERE id")) return [];
+    if (sql.includes("FROM sources WHERE id")) return [{
+      id: SOURCE, file_name: "이력서.pdf", mime_type: "application/pdf", content: "",
+    }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a2"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 202);
+  const body = await res.json() as { data: { documentId: string; jobId: string } };
+  assert.ok(body.data.documentId);
+  assert.notEqual(body.data.documentId, SOURCE);
+  assert.ok(body.data.jobId);
+  const job = calls.find((call) => call.sql.includes("INSERT INTO ai_jobs"));
+  assert.match(String(job?.params[7]), /profileDocumentId/);
+  assert.match(String(job?.params[7]), new RegExp(SOURCE));
+  assert.equal(calls.some((call) => call.sql.includes("INSERT INTO document_versions")), false);
+});
+
+test("another user's source is 404", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [];
+    if (sql.includes("FROM sources WHERE id")) return [];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/documents/${OTHER_SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a3"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 404);
+  assert.equal(calls.some((call) => call.sql.includes("INSERT INTO documents")), false);
+  const lookup = calls.find((call) => call.sql.includes("FROM sources"));
+  assert.equal(lookup?.params[1], USER);
+});

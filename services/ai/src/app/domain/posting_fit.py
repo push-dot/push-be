@@ -24,18 +24,29 @@ def _point(value) -> float:
     return min(10.0, max(0.0, round(float(value), 1)))
 
 
-def fit_view(parts: dict, plan) -> dict:
+def _scored(parts: dict):
     scored = tuple(
         (_point(parts.get(key, 0)), index, label, weight)
         for index, (key, label, weight) in enumerate(_DIMS))
     total = sum(value * weight for value, _index, _label, weight in scored)
     score = min(10.0, max(0.0, round(total / 100, 1)))
     gap = min(scored, key=lambda item: (item[0], item[1]))
+    return scored, score, gap
+
+
+def _reachable(score, gap) -> float:
+    lifted = float(score) + (10.0 - gap[0]) * gap[3] / 100
+    return min(10.0, max(0.0, round(lifted, 1)))
+
+
+def fit_view(parts: dict, plan) -> dict:
+    scored, score, gap = _scored(parts)
     return {
         "fitScore": score,
         "parts": {key: scored[index][0] for index, (key, _label, _weight) in enumerate(_DIMS)},
         "topGap": gap[2],
         "plan": plan_name(plan),
+        "reachable": _reachable(score, gap),
     }
 
 
@@ -49,6 +60,7 @@ def cached_view(row) -> dict:
         "parts": viewed["parts"],
         "topGap": row["top_gap"],
         "plan": viewed["plan"],
+        "reachable": _reachable(row["fit_score"], _scored(parts)[2]),
     }
 
 

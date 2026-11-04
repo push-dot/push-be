@@ -357,6 +357,12 @@ _FILE_STEPS = (
     "경력 섹션 고치기",
     "PDF로 만들기",
 )
+_FILE_STEPS_OPEN = (
+    "이력서 읽기",
+    "고칠 점 찾기",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
 _PROFILE_STEPS = (
     "프로필 읽기",
     "공고 요건 정리",
@@ -516,6 +522,10 @@ def _apply_fields(state: dict, follow: dict | None) -> dict:
     return fields
 
 
+def _file_steps(state: dict) -> tuple[str, ...]:
+    return _FILE_STEPS if _target_posting(state) else _FILE_STEPS_OPEN
+
+
 def _todo(steps: tuple[str, ...]) -> dict:
     return {
         "type": "todo",
@@ -533,7 +543,7 @@ def _file_result(saved: dict, state: dict) -> dict:
         "type": "result",
         "source": "external",
         "taskLine": _FILE_TASK,
-        "checklist": list(_FILE_STEPS),
+        "checklist": list(_file_steps(state)),
         "fileName": saved["fileName"],
         "pageLine": page,
         "documentId": document_id,
@@ -958,7 +968,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     if saved.get("documentId"):
                         stored["profile_document_id"] = saved["documentId"]
                     stored["source_saved"] = bool(saved.get("stored"))
-                    emit(_todo(_FILE_STEPS))
+                    emit(_todo(_file_steps(view)))
                     emit(_file_result(saved, view))
                 else:
                     emit({"token": "Push 프로필에 저장하는 중…"})
