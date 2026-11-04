@@ -59,6 +59,25 @@ def _ctx(db):
         job_id="job-1", tool_call_id="call-1", db=db, core=None)
 
 
+async def test_judge_without_config_uses_openrouter_not_openai(monkeypatch):
+    from app.framework.fit_judge import judge_fit
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.delenv("AI_BASE_URL", raising=False)
+    built = {}
+
+    class _Capture(_Scripted):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            built.update(kwargs)
+
+    await judge_fit(
+        [], ["Python"], "python service", "I use Python", "FREE", cls=_Capture)
+    assert built["api_key"] == "router-key"
+    assert built["base_url"] == "https://openrouter.ai/api/v1"
+
+
 async def test_judge_weights_five_dimensions_from_structured_output():
     from app.framework.fit_judge import judge_fit
 

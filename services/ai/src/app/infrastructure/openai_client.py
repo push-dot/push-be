@@ -28,7 +28,7 @@ def stream_body(model: str, messages: list, reasoning: str,
 
 
 class OpenAIClient:
-    def __init__(self, base_url: str = "https://api.openai.com/v1", config=None):
+    def __init__(self, base_url: str = "https://openrouter.ai/api/v1", config=None):
         self._client = httpx.AsyncClient(timeout=60)
         self.base_url = base_url
         self.config = config

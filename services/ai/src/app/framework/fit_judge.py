@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.config import Config
+from app.config import load_config
 from app.domain import entities as ent
 from app.domain.plan_levers import levers_for
 from app.domain.posting_fit import fit_inputs, fit_view, plan_name
@@ -42,7 +42,7 @@ async def judge_fit(
 
     who = (audience or "PERSONAL").strip().upper()
     tier = _tier(who, plan)
-    app_config = config or Config()
+    app_config = config if config is not None else load_config()
     levers = levers_for(who, tier, app_config)
     model = chat_model_for(levers, streaming=False, config=app_config, cls=cls)
     posting, document = fit_inputs(requirements, keywords, description, content)

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from app.clock import utcnow
+from app.domain.errors import missing_provider_key
 from app.queue.backoff import backoff_seconds
 from app.queue.config import job_deadlines
 from app.queue.fairness import refresh_slot, release_slot, try_slot
@@ -198,6 +199,18 @@ class Worker:
                 await self.db.release_claim(job["id"], self.now())
             raise
         except Exception as err:
+            if missing_provider_key(err):
+                error = {
+                    "code": "NOT_CONFIGURED",
+                    "message": "managed AI is not configured",
+                    "details": None,
+                }
+                with contextlib.suppress(Exception):
+                    await self.db.emit(job["id"], "error", {"error": error})
+                await self.db.fail_final(job["id"], error, self.now())
+                await self.release(self.db, job["id"])
+                await self.queue.ack(msg.queue, self.group, msg.id)
+                return "failed"
             info = await self.db.fail(job["id"], {"message": str(err)}, self.now())
             if info is None:
                 # Not RUNNING any more (cancelled, finished or requeued elsewhere).
