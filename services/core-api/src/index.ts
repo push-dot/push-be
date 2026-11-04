@@ -13,9 +13,13 @@ const queryOf = (env: CoreEnv) => (env.DATABASE_URL
   });
 
 export default {
-  async fetch(request: Request, env: CoreEnv): Promise<Response> {
+  async fetch(request: Request, env: CoreEnv, ctx?: { waitUntil?: (promise: Promise<unknown>) => void }): Promise<Response> {
     try {
-      return await handle(request, env, { query: queryOf(env) });
+      const waitUntil = ctx?.waitUntil;
+      return await handle(request, env, {
+        query: queryOf(env),
+        ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : {}),
+      });
     } catch {
       return new Response(
         '{"error": {"code": "INTERNAL", "message": "internal error", "requestId": "", "details": null}}',

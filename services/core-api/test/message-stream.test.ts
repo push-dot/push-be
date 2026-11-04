@@ -51,6 +51,23 @@ const deps = (query: Deps["query"]): Deps => ({ query, now: () => NOW, fetch: as
 
 const errorCode = async (res: Response): Promise<string> => (await res.json() as { error: { code: string } }).error.code;
 
+test("a stuck dispatcher kick does not hold the chat response", async () => {
+  resetLimits();
+  let handedOff = false;
+  const res = await handle(stream(), env({
+    QUEUE_BACKEND: "redis",
+    DISPATCH_ORIGIN: "https://dispatch.test",
+    DISPATCH_SECRET: "d",
+  }), {
+    query: fake().query,
+    now: () => NOW,
+    fetch: () => new Promise(() => {}),
+    waitUntil: () => { handedOff = true; },
+  });
+  assert.equal(res.status, 202);
+  assert.equal(handedOff, true);
+});
+
 test("the stream route queues a job without an Idempotency-Key on both backends", async () => {
   for (const backend of ["postgres", "redis"]) {
     resetLimits();

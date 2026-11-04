@@ -73,6 +73,7 @@ export interface Deps {
   query: Query;
   now?: () => Date;
   fetch?: typeof fetch;
+  waitUntil?: (promise: Promise<unknown>) => void;
   mailer?: Mailer;
   sms?: SmsSender;
   stores?: StoreReceipts;
