@@ -27,7 +27,7 @@ def _now() -> datetime:
 
 
 _LIVE_EVENT_TYPES = frozenset({
-    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
+    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "result", "done"})
 
 
 def _live_event(chunk: dict):
