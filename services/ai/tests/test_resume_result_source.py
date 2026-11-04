@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from uuid import uuid4
+
+from app.harness.personal.tools import bound_services
+from tests.test_harness_resume import _Approvals, _base, _config, _graph, _PhaseModel
+
+_FILE = "김서준_모아페이_백엔드.pdf"
+_APPLY = "모아페이에 바로 지원하기"
+_SAVED = "내 서류에 자동 저장됨"
+_TASK_FILE = "이력서 수정 · 올린 파일 · 경력"
+_TASK_PROFILE = "프로필 수정 · Push 프로필 · 경력"
+_FILE_STEPS = (
+    "이력서 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
+_PROFILE_STEPS = (
+    "프로필 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "프로필에 저장",
+)
+
+
+class _DB(_Approvals):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        return await super().execute(sql, *args)
+
+
+class _Docs:
+    def __init__(self):
+        self.docs = {}
+        self.versions = []
+
+    async def create(self, doc):
+        self.docs[doc.id] = doc
+
+    async def get(self, user_id, id_):
+        doc = self.docs.get(id_)
+        if doc is None or doc.user_id != user_id:
+            raise KeyError(id_)
+        return doc
+
+    async def update(self, doc, expected):
+        self.docs[doc.id] = doc
+
+    async def next_version_number(self, document_id):
+        return 1 + sum(1 for version in self.versions if version.document_id == document_id)
+
+    async def create_version(self, version):
+        self.versions.append(version)
+
+
+def _services(store):
+    from app.db import NotFoundError
+    from app.domain.services.document import DocumentService
+    from tests.stubs import FakeDB
+
+    class Store(_Docs):
+        async def get(self, user_id, id_):
+            doc = self.docs.get(id_)
+            if doc is None or doc.user_id != user_id:
+                raise NotFoundError()
+            return doc
+
+    docs = DocumentService(FakeDB(), None, None)
+    kept = Store()
+    docs.documents = kept
+    return docs, kept
+
+
+async def _events(graph, payload, config):
+    found = []
+    async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
+        if mode == "custom" and isinstance(chunk, dict):
+            found.append(chunk)
+    return found
+
+
+def _one(events, kind):
+    found = [event for event in events if event.get("type") == kind]
+    assert len(found) == 1
+    return found[0]
+
+
+async def _present(db, store, **extra):
+    docs, kept = _services(store)
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        graph = _graph(db, model=_PhaseModel({"present": {"summary": "끝"}}))
+        events = await _events(graph, _base(**extra), graph and _config())
+    finally:
+        bound_services.reset(token)
+    return events, kept
+
+
+def test_external_publish_does_not_ask_for_a_pdf():
+    from app.harness.personal.resume.graph import phase_instructions
+
+    external = phase_instructions("publish", {"inputs": {
+        "attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}],
+    }})
+    profile = phase_instructions("publish", {"inputs": {"documentId": "doc-1"}})
+    assert "PDF로 만들지 묻지 않는다" in external
+    assert "올린 파일" in external
+    assert "올린 파일" not in profile
+    assert "산출물은 Push 프로필" in profile
+
+
+async def test_external_file_is_saved_and_the_card_names_the_file():
+    user_id = str(uuid4())
+    db = _DB()
+    events, saved = await _present(
+        db, None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    result = _one(events, "result")
+    todo = _one(events, "todo")
+    assert result["source"] == "external"
+    assert result["taskLine"] == _TASK_FILE
+    assert result["checklist"] == list(_FILE_STEPS)
+    assert [item["text"] for item in todo["items"]] == list(_FILE_STEPS)
+    assert result["fileName"] == _FILE
+    assert result["pageLine"].startswith("A4 ")
+    assert result["pageLine"].endswith("KB") or result["pageLine"].endswith("MB")
+    assert " · " in result["pageLine"]
+    assert result["savedLine"] == _SAVED
+    assert result["cardMeta"] == f"{result['pageLine']} · {_SAVED}"
+    assert result["documentId"]
+    assert result["actions"] == [
+        {"id": "apply", "label": _APPLY},
+        {
+            "id": "convert",
+            "label": "프로필로 전환",
+            "method": "POST",
+            "path": f"/api/v1/documents/{result['documentId']}/profile",
+        },
+    ]
+    assert "PDF로 만들까요" not in json.dumps(events, ensure_ascii=False)
+    inserted = [call for call in db.calls if "INSERT INTO sources" in call[0]]
+    assert inserted
+    assert _FILE in inserted[0][1]
+    assert "application/pdf" in inserted[0][1]
+    doc = next(iter(saved.docs.values()))
+    assert doc.kind == "HUB_PROFILE"
+    assert doc.title == _FILE
+    assert str(doc.id) == result["documentId"]
+    assert saved.versions
+
+
+async def test_profile_result_is_the_profile_card_without_a_pdf_step():
+    user_id = str(uuid4())
+    db = _DB()
+    events, saved = await _present(
+        db, None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 프로필\n백엔드"},
+        inputs={
+            "documentId": "11111111-1111-4111-8111-111111111111",
+            "name": "김서준",
+            "headline": "백엔드 엔지니어",
+        },
+    )
+    result = _one(events, "result")
+    todo = _one(events, "todo")
+    blob = json.dumps(events, ensure_ascii=False)
+    assert result["source"] == "profile"
+    assert result["taskLine"] == _TASK_PROFILE
+    assert result["checklist"] == list(_PROFILE_STEPS)
+    assert [item["text"] for item in todo["items"]] == list(_PROFILE_STEPS)
+    assert result["name"] == "김서준"
+    assert result["headline"] == "백엔드 엔지니어"
+    assert result["title"] == "김서준 · 백엔드 엔지니어"
+    assert result["subtitle"] == "Push 프로필 · 방금 수정"
+    assert result["actions"] == [
+        {"id": "apply", "label": _APPLY},
+        {"id": "view", "label": "프로필 보기"},
+    ]
+    assert "PDF로 만들기" not in blob
+    assert "PDF로 만들까요" not in blob
+    assert not any("INSERT INTO sources" in call[0] for call in db.calls)
+    doc = next(iter(saved.docs.values()))
+    assert doc.kind == "HUB_PROFILE"
+    assert doc.title == "Push 프로필"
+    assert result["documentId"] == str(doc.id)
+    choice = _one(events, "choice")
+    assert choice["note"] == "PDF는 Push 프로필에서 내보낼 수 있어요."
+    assert any(event.get("token") == "Push 프로필에 저장하는 중…" for event in events)

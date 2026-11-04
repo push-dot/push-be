@@ -16,7 +16,12 @@ from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.personal.resume.booster import boost_cycle
 from app.harness.personal.resume.drafts import chosen_document_text, draft_text, drafts_from_chosen
-from app.harness.personal.resume.profile_document import load_document_markdown, save_profile_document
+from app.harness.personal.resume.profile_document import (
+    load_document_markdown,
+    profile_card_names,
+    save_edited_file,
+    save_profile_document,
+)
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
@@ -335,6 +340,133 @@ def _must_stop(state: dict, phase: str) -> bool:
     return False
 
 
+_RESUME_EXT = (".pdf", ".docx", ".doc")
+_APPLY = "모아페이에 바로 지원하기"
+_SAVED_LINE = "내 서류에 자동 저장됨"
+_FILE_TASK = "이력서 수정 · 올린 파일 · 경력"
+_PROFILE_TASK = "프로필 수정 · Push 프로필 · 경력"
+_PROFILE_SUB = "Push 프로필 · 방금 수정"
+_FILE_STEPS = (
+    "이력서 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
+_PROFILE_STEPS = (
+    "프로필 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "프로필에 저장",
+)
+_EXTERNAL_NOTE = (
+    "올린 파일을 고친 결과다. PDF를 만들어 내 서류에 저장한다. "
+    "PDF로 만들지 묻지 않는다."
+)
+
+
+def _file_label(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _is_resume_file(name: str) -> bool:
+    return name.lower().endswith(_RESUME_EXT)
+
+
+def resume_source(state: dict) -> str:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    if inputs.get("source") == "external":
+        return "external"
+    for item in inputs.get("attachments") or []:
+        if isinstance(item, dict):
+            mime = str(item.get("mimeType") or item.get("mime_type") or item.get("mime") or "")
+            name = _file_label(item.get("fileName") or item.get("file_name") or item.get("name"))
+            lowered = mime.lower()
+            file_mime = "pdf" in lowered or "word" in lowered or "officedocument" in lowered
+            if file_mime or _is_resume_file(name):
+                return "external"
+        elif _is_resume_file(_file_label(item)):
+            return "external"
+    if _is_resume_file(_file_label(inputs.get("fileName") or inputs.get("file_name"))):
+        return "external"
+    return "profile"
+
+
+def edited_file_name(state: dict) -> str:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    raw = ""
+    for item in inputs.get("attachments") or []:
+        if isinstance(item, dict):
+            raw = _file_label(item.get("fileName") or item.get("file_name") or item.get("name"))
+        elif _is_resume_file(_file_label(item)):
+            raw = _file_label(item)
+        if raw:
+            break
+    if not raw:
+        raw = _file_label(inputs.get("fileName") or inputs.get("file_name")) or "이력서.pdf"
+    stem = raw.rsplit(".", 1)[0] if "." in raw else raw
+    return f"{stem}.pdf"
+
+
+def _todo(steps: tuple[str, ...]) -> dict:
+    return {
+        "type": "todo",
+        "items": [
+            {"id": str(index + 1), "text": text, "state": "done"}
+            for index, text in enumerate(steps)
+        ],
+    }
+
+
+def _file_result(saved: dict) -> dict:
+    page = saved["pageLine"]
+    document_id = saved.get("documentId") or ""
+    return {
+        "type": "result",
+        "source": "external",
+        "taskLine": _FILE_TASK,
+        "checklist": list(_FILE_STEPS),
+        "fileName": saved["fileName"],
+        "pageLine": page,
+        "savedLine": _SAVED_LINE,
+        "cardMeta": f"{page} · {_SAVED_LINE}",
+        "documentId": document_id,
+        "actions": [
+            {"id": "apply", "label": _APPLY},
+            {
+                "id": "convert",
+                "label": "프로필로 전환",
+                "method": "POST",
+                "path": f"/api/v1/documents/{document_id}/profile",
+            },
+        ],
+    }
+
+
+def _profile_title(name: str, headline: str) -> str:
+    parts = [part for part in (name, headline) if part]
+    return " · ".join(parts) if parts else "Push 프로필"
+
+
+def _profile_result(document_id: str, name: str, headline: str) -> dict:
+    return {
+        "type": "result",
+        "source": "profile",
+        "taskLine": _PROFILE_TASK,
+        "checklist": list(_PROFILE_STEPS),
+        "name": name,
+        "headline": headline,
+        "title": _profile_title(name, headline),
+        "subtitle": _PROFILE_SUB,
+        "documentId": document_id,
+        "actions": [
+            {"id": "apply", "label": _APPLY},
+            {"id": "view", "label": "프로필 보기"},
+        ],
+    }
+
+
 def _cancelled(answer: dict) -> bool:
     if answer.get("option_id") == "cancel":
         return True
@@ -373,10 +505,12 @@ def _choice(
         "recommended": gate["recommended"],
         "options": options,
     }
-    if phase == "present":
+    if phase == "present" and resume_source(state) != "external":
         event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
+    elif phase == "present" and state.get("profile_document_id"):
+        event["documentId"] = state["profile_document_id"]
     if detail:
         event["detail"] = detail
     if gate.get("multiple"):
@@ -563,9 +697,7 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     context = {key: state.get(key) for key in (
         "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review",
         "approach", "bottleneck_level", "prevention_categories")}
-    prompt = phase_prompt_for_harness(phase)
-    if phase == "strategy" and (state.get("strategy") or {}).get("focus") == "bottleneck":
-        prompt = f"{prompt}\n{_BOTTLENECK_STEPS}"
+    prompt = phase_instructions(phase, state)
     messages = [
         SystemMessage(content=prompt + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
@@ -600,6 +732,15 @@ _BOTTLENECK_STEPS = (
     "(기술 스택 매칭, 적합도 산정, 프로젝트 경험 재평가). "
     "Step 4 이후 섹션 수정 전략과 자기소개서 전략은 쓰지 않는다."
 )
+
+
+def phase_instructions(phase: str, state: dict) -> str:
+    text = phase_prompt_for_harness(phase)
+    if phase == "strategy" and (state.get("strategy") or {}).get("focus") == "bottleneck":
+        text = f"{text}\n{_BOTTLENECK_STEPS}"
+    if phase in {"publish", "present"} and resume_source(state) == "external":
+        text = f"{text}\n{_EXTERNAL_NOTE}"
+    return text
 
 
 _PHASE_DONE = {
@@ -692,10 +833,21 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             output = await _output(turn_model.get() or model, phase, current, _context(db, current))
             stored = await _store_output(db, current, phase, output)
             if phase == "present":
-                emit({"token": "Push 프로필에 저장하는 중…"})
-                doc_id = await save_profile_document({**current, **stored})
-                if doc_id:
-                    stored["profile_document_id"] = doc_id
+                view = {**current, **stored}
+                if resume_source(view) == "external":
+                    saved = await save_edited_file(db, view, edited_file_name(view))
+                    if saved.get("documentId"):
+                        stored["profile_document_id"] = saved["documentId"]
+                    emit(_todo(_FILE_STEPS))
+                    emit(_file_result(saved))
+                else:
+                    emit({"token": "Push 프로필에 저장하는 중…"})
+                    doc_id = await save_profile_document(view)
+                    if doc_id:
+                        stored["profile_document_id"] = doc_id
+                    name, headline = await profile_card_names(db, view)
+                    emit(_todo(_PROFILE_STEPS))
+                    emit(_profile_result(doc_id, name, headline))
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
