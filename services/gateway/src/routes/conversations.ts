@@ -384,6 +384,11 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
         catch { open = false; }
       };
       send("retry: 400\n\n");
+      let sawTerminal = false;
+      const internalError = "data: " + pyJson({
+        type: "error",
+        error: { code: "INTERNAL", message: "internal error", details: null },
+      }) + "\n\n";
       try {
         let idle = 0;
         for (let i = 0; i < polls; i++) {
@@ -392,26 +397,27 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
             `SELECT id, type, payload FROM chat_events WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`,
             [jobId, after],
           );
-          let terminal = false;
           for (const row of rows) {
             after = Number(row.id);
             send(sseFrame(row));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
-              terminal = true;
+              sawTerminal = true;
               break;
             }
           }
-          if (terminal) break;
+          if (sawTerminal || !open) break;
           if (rows.length >= EVENT_PAGE) continue;
           idle = rows.length ? 0 : idle + 1;
-          if (i + 1 < polls) await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          if (i + 1 < polls) {
+            if (rows.length === 0) send(": ping\n\n");
+            await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          }
         }
       } catch {
-        send("data: " + pyJson({
-          type: "error",
-          error: { code: "INTERNAL", message: "internal error", details: null },
-        }) + "\n\n");
+        sawTerminal = true;
+        send(internalError);
       }
+      if (open && !sawTerminal) send(internalError);
       try { controller.close(); }
       catch { /* the client already hung up */ }
     },

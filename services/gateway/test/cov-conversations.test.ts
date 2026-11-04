@@ -578,6 +578,45 @@ test("when the shared stream read fails it falls back to scoped lookups", async 
 
 // ---- event polling ----
 
+test("a finished job is delivered on the first poll and the stream stops", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "3" });
+  await warm(USER_A, e);
+  let reads = 0;
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: withJob(() => {
+      reads += 1;
+      return [
+        { id: 1, type: "status", payload: { text: "대기 중" } },
+        { id: 2, type: "token", payload: { text: "질문" } },
+        { id: 3, type: "choice", payload: { id: "c1", gate: "intake", options: [] } },
+        { id: 4, type: "done", payload: { awaiting: "choice" } },
+      ];
+    }),
+  }), async () => {}));
+  const frames = framesOf(await res.text());
+  assert.deepEqual(frames.map((frame) => frame.type), ["status", "token", "choice", "done"]);
+  assert.equal(frames[3]?.awaiting, "choice");
+  assert.equal(reads, 1);
+});
+
+test("the poll cap ends with an error frame instead of a silent close", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "2" });
+  await warm(USER_A, e);
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: withJob(() => []),
+  }), async () => {}));
+  const text = await res.text();
+  assert.match(text, /: ping\n\n/);
+  assert.deepEqual(framesOf(text), [{
+    type: "error",
+    error: { code: "INTERNAL", message: "internal error", details: null },
+  }]);
+});
+
 test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async () => {
   resetLimits();
   const e = env({ SSE_MAX_POLLS: "3" });
@@ -593,7 +632,11 @@ test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async (
   }), async (ms) => { sleeps.push(ms); }));
   const text = await res.text();
   assert.ok(text.startsWith("retry: 400\n\n"));
-  assert.deepEqual(framesOf(text), [{ type: "token", text: "", seq: 4 }, { type: "custom", a: 1, seq: 5 }]);
+  assert.deepEqual(framesOf(text), [
+    { type: "token", text: "", seq: 4 },
+    { type: "custom", a: 1, seq: 5 },
+    { type: "error", error: { code: "INTERNAL", message: "internal error", details: null } },
+  ]);
   assert.deepEqual(reads, [[JOB, 0], [JOB, 5], [JOB, 5]]);
   assert.deepEqual(sleeps, [250, 250]);
 });
