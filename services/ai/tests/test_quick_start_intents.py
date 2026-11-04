@@ -109,28 +109,32 @@ async def test_fit_without_inputs_enters_intake():
     _assert_kept(saved, source)
 
 
-async def test_fit_with_inputs_enters_analyze():
+async def test_fit_with_inputs_enters_analyze(monkeypatch):
+    _flat_fit(monkeypatch)
     source = _bag()
     _runtime, rows, items = await _open("fit", source)
     saved = _saved(rows)
-    assert _choice(items)["gate"] == "analyze"
-    assert saved["phase"] == "analyze"
+    assert _choice(items)["gate"] == "boost"
+    assert saved["phase"] == "craft"
     assert saved["scenario"] == "E"
     assert saved["work_mode"] == "resume_based"
     _assert_kept(saved, source)
 
 
-async def test_fit_with_inputs_accepts_analyze_into_boost(monkeypatch):
+async def test_fit_quick_start_skips_the_analyze_card(monkeypatch):
     _flat_fit(monkeypatch)
-    runtime, rows, items = await _open("fit", _bag())
-    choice = _choice(items)
-    assert choice["gate"] == "analyze"
-    items = await _accept(runtime, "fit", choice, "continue")
+    _runtime, rows, items = await _open("fit", _bag())
+    gates = [
+        chunk.get("gate")
+        for mode, chunk in items
+        if mode == "custom" and isinstance(chunk, dict) and chunk.get("type") == "choice"
+    ]
+    assert "analyze" not in gates
+    assert gates[0] == "boost"
     saved = _saved(rows)
-    assert _choice(items)["gate"] == "boost"
-    assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
-    assert saved["phase"] == "craft"
     assert saved["scenario"] == "E"
+    assert saved["phase"] == "craft"
+    assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
 
 
 async def test_gaps_without_analysis_enters_intake():

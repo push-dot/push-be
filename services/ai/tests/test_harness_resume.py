@@ -456,7 +456,7 @@ _GATE_QUESTIONS = {
     "output_targets": "어떤 산출물을 만들까요?",
     "tone": "어떤 말투로 쓸까요?",
     "intake": "입력한 자료를 확인했어요. 분석을 시작할까요?",
-    "analyze": "이 공고에 맞춰 고칠까요?",
+    "analyze": "이 공고에 맞춰 이력서를 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
     "boost": "점수를 한 번 더 올릴까요?",
@@ -507,8 +507,8 @@ async def test_scenario_e_continues_into_boost_after_the_fit_report():
     graph = _graph(db, model=_PhaseModel({"analyze": {"scenario": "E", "fit": {"score": 3}}}))
     config = _config()
     gates, titles, snap = await _until_done(graph, config, _base(phase="analyze"))
-    assert gates[0] == "analyze"
-    assert gates[1] == "boost"
+    assert "analyze" not in gates
+    assert gates[0] == "boost"
     assert titles["boost"] == "점수를 한 번 더 올릴까요?"
     assert "publish" not in gates
     assert snap.values["status"] == "done"

@@ -79,9 +79,13 @@ _GATES = {
         ],
     },
     "analyze": {
-        "title": "이 공고에 맞춰 고칠까요?",
+        "title": "이 공고에 맞춰 이력서를 고칠까요?",
         "recommended": "continue",
-        "options": [{"id": "continue", "label": "전략으로 갈게요"}],
+        "options": [
+            {"id": "continue", "label": "네, 맞춰서 고쳐 주세요"},
+            {"id": "feedback", "label": "피드백만 받을게요"},
+            {"id": "score", "label": "점수만 보고 끝낼게요"},
+        ],
     },
     "feedback": {
         "title": "피드백을 반영해서 수정할까요?",
@@ -338,6 +342,15 @@ def _cancelled(answer: dict) -> bool:
     return text.startswith(("그만", "취소", "중단"))
 
 
+def _feedback_text(state: dict) -> str:
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    for key in ("message", "summary", "feedback"):
+        value = analysis.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "피드백을 정리했어요."
+
+
 def _choice(
     state: dict, phase: str, *, auto: bool, cycle: int | None = None, detail: str | None = None,
 ) -> dict:
@@ -345,6 +358,12 @@ def _choice(
     seed = f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}"
     if cycle is not None:
         seed = f"{seed}:{cycle}"
+    options = [*gate["options"]]
+    if phase != "analyze":
+        options.append({
+            "id": "cancel",
+            "label": "그만할게요" if phase == "intake" else "그만하기",
+        })
     event = {
         "type": "choice",
         "id": str(uuid5(NAMESPACE_URL, seed)),
@@ -352,10 +371,7 @@ def _choice(
         "title": gate["title"],
         "gate": phase,
         "recommended": gate["recommended"],
-        "options": [*gate["options"], {
-            "id": "cancel",
-            "label": "그만할게요" if phase == "intake" else "그만하기",
-        }],
+        "options": options,
     }
     if phase == "present":
         event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
@@ -724,6 +740,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     def gate_node(gate_id: str):
         async def node(state: ResumeGraphState) -> dict:
             current = current_of(state)
+            if gate_id == "analyze" and _scenario_letter(current) == "E":
+                return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
                 if gate_id not in _INTAKE_NEXT:
                     emit(_choice(current, gate_id, auto=True))
@@ -742,6 +760,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             }) or {}
             if _cancelled(answer):
                 return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if gate_id == "analyze" and answer.get("option_id") == "score":
+                return {"status": "done", "phase": "analyze", "goto": "end"}
+            if gate_id == "analyze" and answer.get("option_id") == "feedback":
+                return {"status": "active", "phase": "feedback", "goto": "end"}
             if gate_id == "intake" and answer.get("option_id") == "change":
                 stayed = _apply_answer(current, gate_id, answer)
                 return {
@@ -903,7 +925,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     async def feedback_node(state: ResumeGraphState) -> dict:
         current = current_of(state)
-        reply = "피드백을 정리했어요."
+        reply = _feedback_text(current)
         emit({"token": reply})
         return {"reply": reply, "reply_job": current["job_id"], "phase": "feedback"}
 
