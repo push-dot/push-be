@@ -397,7 +397,61 @@ def resume_source(state: dict) -> str:
     return "profile"
 
 
-def edited_file_name(state: dict) -> str:
+_ROLE_ENUM = {"dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"}
+_ROLE_WORDS = (
+    "프론트엔드", "백엔드", "풀스택", "데이터", "디자인", "기획",
+    "마케팅", "머신러닝", "devops", "ios", "android", "qa",
+)
+_NAME_CAP = 80
+_UNSAFE = set('/\\:*?"<>|')
+
+
+def _file_part(value: str) -> str:
+    kept = [
+        ch for ch in value
+        if ch not in _UNSAFE and ord(ch) >= 32 and not ch.isspace()
+    ]
+    return "".join(kept).strip("._")
+
+
+def _cap_stem(stem: str) -> str:
+    stem = stem.strip("._")
+    if len(stem) > _NAME_CAP:
+        stem = stem[:_NAME_CAP].rstrip("._")
+    return stem or "이력서"
+
+
+def _role_word(text: str) -> str:
+    lowered = text.lower()
+    for word in _ROLE_WORDS:
+        if word.lower() in lowered:
+            return word
+    return ""
+
+
+def _target_role(state: dict) -> str:
+    posting = _target_posting(state)
+    if not posting:
+        return ""
+    labeled = []
+    for key in ("role", "job_category", "jobCategory", "category"):
+        value = posting.get(key)
+        if isinstance(value, str) and value.strip():
+            labeled.append(value.strip())
+    title = posting.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    for field in labeled:
+        if field.lower() in _ROLE_ENUM:
+            continue
+        hit = _role_word(field)
+        if hit:
+            return hit
+        if len(field) <= 20 and not any(ch.isspace() for ch in field):
+            return _file_part(field)
+    return _role_word(title)
+
+
+def _original_stem(state: dict) -> str:
     inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
     raw = ""
     for item in inputs.get("attachments") or []:
@@ -409,8 +463,20 @@ def edited_file_name(state: dict) -> str:
             break
     if not raw:
         raw = _file_label(inputs.get("fileName") or inputs.get("file_name")) or "이력서.pdf"
-    stem = raw.rsplit(".", 1)[0] if "." in raw else raw
-    return f"{stem}.pdf"
+    return raw.rsplit(".", 1)[0] if "." in raw else raw
+
+
+def edited_pdf_name(state: dict, display_name: str) -> str:
+    company = _file_part(_target_company(state))
+    if company:
+        parts = [_file_part(display_name), company, _file_part(_target_role(state))]
+        return _cap_stem("_".join(part for part in parts if part)) + ".pdf"
+    stem = _file_part(_original_stem(state)) or "이력서"
+    suffix = "_수정본"
+    room = _NAME_CAP - len(suffix)
+    if len(stem) > room:
+        stem = stem[:room].rstrip("._") or "이력서"
+    return _cap_stem(f"{stem}{suffix}") + ".pdf"
 
 
 def _target_posting(state: dict) -> dict | None:
@@ -887,7 +953,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             if phase == "present":
                 view = {**current, **stored}
                 if resume_source(view) == "external":
-                    saved = await save_edited_file(db, view, edited_file_name(view))
+                    display_name, _headline = await profile_card_names(db, view)
+                    saved = await save_edited_file(db, view, edited_pdf_name(view, display_name))
                     if saved.get("documentId"):
                         stored["profile_document_id"] = saved["documentId"]
                     stored["source_saved"] = bool(saved.get("stored"))

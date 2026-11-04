@@ -97,7 +97,7 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
       id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
       createdAt: ts(row.created_at), origin: "AI",
     })),
-  ].sort(newerFirst);
+  ].filter((item) => !item.fileName.toLowerCase().endsWith(".md") && item.mimeType.toLowerCase() !== "text/markdown").sort(newerFirst);
   const hasMore = items.length > page.limit;
   const slice = items.slice(0, page.limit);
   const last = slice[slice.length - 1];

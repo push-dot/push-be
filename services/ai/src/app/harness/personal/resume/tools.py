@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.framework.fit_judge import judge_fit
 from app.harness.policy import Tier
-from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
+from app.harness.tools import OptionalId, ToolContext, ToolSpec
 from app.infrastructure.posting_fit_cache import read_plan
 from app.ingest.pdf_text import extract_pdf_bytes
 from app.ingest.web_page import fetch_github_context, github_usernames
@@ -179,15 +179,7 @@ async def save_artifact(
     else:
         await asyncio.to_thread(md_to_pdf, body, buf)
     await _put_pdf(ctx, name[:-3] + ".pdf", buf.getvalue())
-    document_id = await _document_id(ctx, name, template)
-    emit({
-        "type": "file",
-        "name": name,
-        "mime": "text/markdown",
-        "fileId": file_id,
-        "documentId": document_id,
-        "downloadUrl": f"/conversations/{ctx.conversation_id}/artifacts/{name}",
-    })
+    await _document_id(ctx, name, template)
     return file_id
 
 

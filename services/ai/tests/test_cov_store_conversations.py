@@ -130,6 +130,17 @@ def test_artifact_item_filters():
     assert _artifact_item({"type": "X", "id": "v", "documentId": did, "title": "T"}) == {
         "type": "X", "id": "v", "title": "T"}
     assert _artifact_item({"type": "X", "id": "v", "document_id": did})["title"] == ""
+    assert _artifact_item({
+        "type": "DOCUMENT_VERSION", "id": "v", "title": "05_final_resume.md",
+    }) is None
+    assert _artifact_item({
+        "type": "DOCUMENT_VERSION", "id": "v", "title": "이력서",
+        "name": "05_final_resume.md",
+    }) is None
+    assert _artifact_item({
+        "type": "DOCUMENT_VERSION", "id": "v", "title": "이력서.pdf",
+        "mime": "text/markdown",
+    }) is None
 
 
 async def test_list_artifacts_skips_bad_rows():

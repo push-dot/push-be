@@ -246,7 +246,9 @@ function messageJson(row: Record<string, unknown>): Record<string, unknown> {
   if (typeof attachments === "string") {
     try { attachments = JSON.parse(attachments); } catch { attachments = []; }
   }
-  const cleaned = Array.isArray(attachments) ? attachments.map(attachmentJson) : [];
+  const cleaned = Array.isArray(attachments)
+    ? attachments.map(attachmentJson).filter((item): item is Record<string, unknown> => item !== null)
+    : [];
   return {
     id: String(row.id),
     conversationId: String(row.conversation_id),
@@ -258,8 +260,14 @@ function messageJson(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-function attachmentJson(raw: unknown): Record<string, unknown> {
+function attachmentJson(raw: unknown): Record<string, unknown> | null {
   const a = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
+  const title = a.title == null ? "" : String(a.title);
+  const name = String(a.name ?? a.fileName ?? "");
+  const mime = String(a.mime ?? a.mimeType ?? "");
+  if (title.toLowerCase().endsWith(".md") || name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown") {
+    return null;
+  }
   const out: Record<string, unknown> = { type: String(a.type ?? ""), id: String(a.id ?? "") };
   if (a.documentId != null) out.documentId = String(a.documentId);
   if (a.title != null) out.title = String(a.title);
@@ -395,6 +403,7 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
           let terminal = false;
           for (const row of rows) {
             after = Number(row.id);
+            if (hiddenMarkdownFile(row)) continue;
             send(sseFrame(row));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
@@ -430,6 +439,18 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
     },
   });
 };
+
+function hiddenMarkdownFile(row: Record<string, unknown>): boolean {
+  if (row.type !== "file") return false;
+  let payload = row.payload ?? {};
+  if (typeof payload === "string") {
+    try { payload = JSON.parse(payload); } catch { payload = {}; }
+  }
+  const p = (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+  const name = String(p.name ?? p.fileName ?? "");
+  const mime = String(p.mime ?? p.mimeType ?? "");
+  return name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown";
+}
 
 function sseFrame(row: Record<string, unknown>): string {
   const seq = Number(row.id);
