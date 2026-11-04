@@ -97,7 +97,7 @@ _GATES = {
         ],
     },
     "intake": {
-        "title": "입력한 자료를 확인했어요. 분석을 시작할까요?",
+        "title": "이대로 분석을 시작할까요?",
         "recommended": "ready",
         "options": [
             {"id": "ready", "label": "네, 시작해 주세요"},
@@ -133,9 +133,10 @@ _GATES = {
     },
     "review": {
         "title": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
+        "detail": "템플릿을 골라 주세요. 처음이라면 클래식을 추천해요.",
         "recommended": "CLASSIC",
         "options": [
-            {"id": "CLASSIC", "label": "클래식"},
+            {"id": "CLASSIC", "label": "클래식", "badge": "추천"},
             {"id": "MODERN", "label": "모던"},
             {"id": "COMPACT", "label": "컴팩트"},
             {"id": "ATS", "label": "ATS"},
@@ -666,6 +667,7 @@ def _choice(
         event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
+    detail = detail or gate.get("detail")
     if detail:
         event["detail"] = detail
     if gate.get("multiple"):

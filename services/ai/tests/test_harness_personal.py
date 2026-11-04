@@ -589,3 +589,13 @@ async def test_edit_document_id_cannot_rewrite_the_path():
     assert seen == []
     state = await graph.aget_state({"configurable": {"thread_id": "conv-1"}})
     assert '"INVALID_ARGS"' in state.values["messages"][-2].content
+
+
+async def test_edit_document_approval_previews_the_diff():
+    events = await _events(_edit_graph("ALWAYS_ASK", _Approvals()), "ALWAYS_ASK")
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["hunks"] == [
+        {"line": None, "sign": "-", "text": "이전"},
+        {"line": None, "sign": "+", "text": "이후"},
+    ]
+    assert not any(event.get("type") == "diff" for event in events)
