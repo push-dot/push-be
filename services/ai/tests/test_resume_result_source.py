@@ -8,8 +8,11 @@ from app.harness.personal.tools import bound_services
 from tests.test_harness_resume import _Approvals, _base, _config, _graph, _PhaseModel
 
 _FILE = "김서준_모아페이_백엔드.pdf"
-_APPLY = "모아페이에 바로 지원하기"
+_STEM = "김서준_모아페이_백엔드"
+_COMPANY = "도토리증권"
+_APPLY = f"{_COMPANY}에 바로 지원하기"
 _SAVED = "내 서류에 자동 저장됨"
+_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
 _TASK_FILE = "이력서 수정 · 올린 파일 · 경력"
 _TASK_PROFILE = "프로필 수정 · Push 프로필 · 경력"
 _FILE_STEPS = (
@@ -36,6 +39,21 @@ class _DB(_Approvals):
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
         return await super().execute(sql, *args)
+
+
+class _SourceFails(_DB):
+    async def execute(self, sql, *args):
+        if "INSERT INTO sources" in sql:
+            raise RuntimeError("sources down")
+        return await super().execute(sql, *args)
+
+
+class _NoDocs:
+    async def create(self, *_args, **_kwargs):
+        raise RuntimeError("documents down")
+
+    async def create_version(self, *_args, **_kwargs):
+        raise RuntimeError("documents down")
 
 
 class _Docs:
@@ -94,9 +112,9 @@ def _one(events, kind):
     return found[0]
 
 
-async def _present(db, store, **extra):
+async def _present(db, store, *, document_svc=None, **extra):
     docs, kept = _services(store)
-    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    token = bound_services.set(SimpleNamespace(document_svc=document_svc or docs))
     try:
         graph = _graph(db, model=_PhaseModel({"present": {"summary": "끝"}}))
         events = await _events(graph, _base(**extra), graph and _config())
@@ -140,9 +158,9 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert " · " in result["pageLine"]
     assert result["savedLine"] == _SAVED
     assert result["cardMeta"] == f"{result['pageLine']} · {_SAVED}"
+    assert "company" not in result
     assert result["documentId"]
     assert result["actions"] == [
-        {"id": "apply", "label": _APPLY},
         {
             "id": "convert",
             "label": "프로필로 전환",
@@ -157,7 +175,7 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert "application/pdf" in inserted[0][1]
     doc = next(iter(saved.docs.values()))
     assert doc.kind == "HUB_PROFILE"
-    assert doc.title == _FILE
+    assert doc.title == _STEM
     assert str(doc.id) == result["documentId"]
     assert saved.versions
 
@@ -187,10 +205,8 @@ async def test_profile_result_is_the_profile_card_without_a_pdf_step():
     assert result["headline"] == "백엔드 엔지니어"
     assert result["title"] == "김서준 · 백엔드 엔지니어"
     assert result["subtitle"] == "Push 프로필 · 방금 수정"
-    assert result["actions"] == [
-        {"id": "apply", "label": _APPLY},
-        {"id": "view", "label": "프로필 보기"},
-    ]
+    assert "company" not in result
+    assert result["actions"] == [{"id": "view", "label": "프로필 보기"}]
     assert "PDF로 만들기" not in blob
     assert "PDF로 만들까요" not in blob
     assert not any("INSERT INTO sources" in call[0] for call in db.calls)
@@ -201,3 +217,112 @@ async def test_profile_result_is_the_profile_card_without_a_pdf_step():
     choice = _one(events, "choice")
     assert choice["note"] == "PDF는 Push 프로필에서 내보낼 수 있어요."
     assert any(event.get("token") == "Push 프로필에 저장하는 중…" for event in events)
+
+
+def _posting(company: str) -> dict:
+    return {"posting": {"company": company}}
+
+
+async def test_apply_label_uses_the_posting_company():
+    user_id = str(uuid4())
+    events, _saved = await _present(
+        _DB(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={
+            "attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}],
+            **_posting(_COMPANY),
+        },
+    )
+    result = _one(events, "result")
+    assert result["company"] == _COMPANY
+    assert result["actions"][0] == {"id": "apply", "label": _APPLY}
+
+
+async def test_result_omits_apply_when_there_is_no_posting():
+    user_id = str(uuid4())
+    events, _saved = await _present(
+        _DB(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    result = _one(events, "result")
+    assert "company" not in result
+    assert [action["id"] for action in result["actions"]] == ["convert"]
+    blank, _kept = await _present(
+        _DB(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={
+            "attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}],
+            "posting": {"title": "백엔드"},
+        },
+    )
+    blank_result = _one(blank, "result")
+    assert "company" not in blank_result
+    assert "apply" not in [action["id"] for action in blank_result["actions"]]
+
+
+async def test_failed_source_insert_does_not_claim_a_save():
+    user_id = str(uuid4())
+    events, _saved = await _present(
+        _SourceFails(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    result = _one(events, "result")
+    blob = json.dumps(result, ensure_ascii=False)
+    assert "savedLine" not in result
+    assert _SAVED not in blob
+    assert "convert" not in [action["id"] for action in result["actions"]]
+    assert result["pageLine"].startswith("A4 ")
+
+
+async def test_empty_document_id_omits_convert_and_view():
+    user_id = str(uuid4())
+    external, _saved = await _present(
+        _DB(), None,
+        document_svc=_NoDocs(),
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    file_result = _one(external, "result")
+    assert not file_result["documentId"]
+    assert "convert" not in [action["id"] for action in file_result["actions"]]
+    profile, _kept = await _present(
+        _DB(), None,
+        document_svc=_NoDocs(),
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 프로필\n백엔드"},
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    profile_result = _one(profile, "result")
+    assert not profile_result["documentId"]
+    assert "view" not in [action["id"] for action in profile_result["actions"]]
+
+
+async def test_external_present_title_is_the_saved_file():
+    user_id = str(uuid4())
+    events, _saved = await _present(
+        _DB(), None,
+        phase="present",
+        user_id=user_id,
+        drafts={"markdown": "# 이력서\n백엔드"},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    choice = _one(events, "choice")
+    assert choice["title"] == _FILE_GATE
+    assert "note" not in choice
+    assert choice["options"] == [
+        {"id": "done", "label": "확인했어요"},
+        {"id": "cancel", "label": "그만하기"},
+    ]

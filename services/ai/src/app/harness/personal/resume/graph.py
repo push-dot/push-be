@@ -341,8 +341,8 @@ def _must_stop(state: dict, phase: str) -> bool:
 
 
 _RESUME_EXT = (".pdf", ".docx", ".doc")
-_APPLY = "모아페이에 바로 지원하기"
 _SAVED_LINE = "내 서류에 자동 저장됨"
+_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
 _FILE_TASK = "이력서 수정 · 올린 파일 · 경력"
 _PROFILE_TASK = "프로필 수정 · Push 프로필 · 경력"
 _PROFILE_SUB = "Push 프로필 · 방금 수정"
@@ -409,6 +409,43 @@ def edited_file_name(state: dict) -> str:
     return f"{stem}.pdf"
 
 
+def _target_posting(state: dict) -> dict | None:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    posting = inputs.get("posting")
+    if isinstance(posting, dict):
+        return posting
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    jobs = analysis.get("jobs")
+    if isinstance(jobs, dict):
+        return jobs
+    if isinstance(jobs, list):
+        for item in jobs:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
+def _target_company(state: dict) -> str:
+    posting = _target_posting(state)
+    if not posting:
+        return ""
+    company = posting.get("company")
+    return company.strip() if isinstance(company, str) else ""
+
+
+def _apply_fields(state: dict, follow: dict | None) -> dict:
+    actions = []
+    company = _target_company(state)
+    fields: dict = {}
+    if company:
+        fields["company"] = company
+        actions.append({"id": "apply", "label": f"{company}에 바로 지원하기"})
+    if follow:
+        actions.append(follow)
+    fields["actions"] = actions
+    return fields
+
+
 def _todo(steps: tuple[str, ...]) -> dict:
     return {
         "type": "todo",
@@ -419,29 +456,32 @@ def _todo(steps: tuple[str, ...]) -> dict:
     }
 
 
-def _file_result(saved: dict) -> dict:
+def _file_result(saved: dict, state: dict) -> dict:
     page = saved["pageLine"]
     document_id = saved.get("documentId") or ""
-    return {
+    event = {
         "type": "result",
         "source": "external",
         "taskLine": _FILE_TASK,
         "checklist": list(_FILE_STEPS),
         "fileName": saved["fileName"],
         "pageLine": page,
-        "savedLine": _SAVED_LINE,
-        "cardMeta": f"{page} · {_SAVED_LINE}",
         "documentId": document_id,
-        "actions": [
-            {"id": "apply", "label": _APPLY},
-            {
-                "id": "convert",
-                "label": "프로필로 전환",
-                "method": "POST",
-                "path": f"/api/v1/documents/{document_id}/profile",
-            },
-        ],
     }
+    follow = None
+    if saved.get("stored"):
+        event["savedLine"] = _SAVED_LINE
+        event["cardMeta"] = f"{page} · {_SAVED_LINE}"
+    else:
+        event["cardMeta"] = page
+    if saved.get("stored") and document_id:
+        follow = {
+            "id": "convert",
+            "label": "프로필로 전환",
+            "method": "POST",
+            "path": f"/api/v1/documents/{document_id}/profile",
+        }
+    return {**event, **_apply_fields(state, follow)}
 
 
 def _profile_title(name: str, headline: str) -> str:
@@ -449,7 +489,8 @@ def _profile_title(name: str, headline: str) -> str:
     return " · ".join(parts) if parts else "Push 프로필"
 
 
-def _profile_result(document_id: str, name: str, headline: str) -> dict:
+def _profile_result(document_id: str, name: str, headline: str, state: dict) -> dict:
+    follow = {"id": "view", "label": "프로필 보기"} if document_id else None
     return {
         "type": "result",
         "source": "profile",
@@ -460,10 +501,7 @@ def _profile_result(document_id: str, name: str, headline: str) -> dict:
         "title": _profile_title(name, headline),
         "subtitle": _PROFILE_SUB,
         "documentId": document_id,
-        "actions": [
-            {"id": "apply", "label": _APPLY},
-            {"id": "view", "label": "프로필 보기"},
-        ],
+        **_apply_fields(state, follow),
     }
 
 
@@ -505,12 +543,14 @@ def _choice(
         "recommended": gate["recommended"],
         "options": options,
     }
-    if phase == "present" and resume_source(state) != "external":
+    if phase == "present" and resume_source(state) == "external":
+        event["title"] = _FILE_GATE
+        if state.get("profile_document_id"):
+            event["documentId"] = state["profile_document_id"]
+    elif phase == "present":
         event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
-    elif phase == "present" and state.get("profile_document_id"):
-        event["documentId"] = state["profile_document_id"]
     if detail:
         event["detail"] = detail
     if gate.get("multiple"):
@@ -839,7 +879,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     if saved.get("documentId"):
                         stored["profile_document_id"] = saved["documentId"]
                     emit(_todo(_FILE_STEPS))
-                    emit(_file_result(saved))
+                    emit(_file_result(saved, view))
                 else:
                     emit({"token": "Push 프로필에 저장하는 중…"})
                     doc_id = await save_profile_document(view)
@@ -847,7 +887,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                         stored["profile_document_id"] = doc_id
                     name, headline = await profile_card_names(db, view)
                     emit(_todo(_PROFILE_STEPS))
-                    emit(_profile_result(doc_id, name, headline))
+                    emit(_profile_result(doc_id, name, headline, view))
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}

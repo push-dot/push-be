@@ -104,13 +104,13 @@ async def profile_card_names(db, state: dict) -> tuple[str, str]:
     return name or _row_text(row, "display_name"), headline or _row_text(row, "headline")
 
 
-async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int) -> None:
+async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int) -> bool:
     if db is None:
-        return
+        return False
     try:
         user_id = UUID(str(state.get("user_id") or ""))
     except (TypeError, ValueError):
-        return
+        return False
     source_id = uuid4()
     try:
         await db.q().execute(
@@ -126,19 +126,28 @@ async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int
             pages,
         )
     except Exception:
-        return
+        return False
+    return True
+
+
+def _document_title(file_name: str) -> str:
+    if file_name.lower().endswith(".pdf"):
+        stem = file_name[:-4].strip()
+        return stem or file_name
+    return file_name
 
 
 async def save_edited_file(db, state: dict, file_name: str) -> dict:
     text = draft_text(state.get("drafts")) or file_name
     pdf = _pdf_bytes(text, state.get("template"))
     pages = _page_count(pdf)
-    document_id = await save_profile_document(state, file_name)
-    await _insert_source(db, state, file_name, pdf, pages)
+    document_id = await save_profile_document(state, _document_title(file_name))
+    stored = await _insert_source(db, state, file_name, pdf, pages)
     return {
         "documentId": document_id,
         "fileName": file_name,
         "pageLine": f"A4 {pages}쪽 · {_size_label(len(pdf))}",
+        "stored": stored,
     }
 
 
