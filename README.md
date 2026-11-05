@@ -14,6 +14,8 @@
 
 채팅을 큐에 넣는 요청은 `202`와 작업 id를 바로 돌려준다. 개인 이력서 워크플로는 `app/harness/personal/resume`의 LangGraph가 `mode_select` → `intake` → `analyze` → `strategy` → `craft` → `review` → `publish` → `present` 순으로 가고, 게이트에서 사용자 입력을 기다린다. 기업 대화는 `app/harness/employer`다. 두 하네스 id는 `app/harness/registry.py`의 `personal`, `employer`다. 토큰과 상태 이벤트는 `chat_events`에 남고, 게이트웨이 SSE가 그 행을 다시 보낸다.
 
+스트림 이벤트는 v3다. 기존 이벤트에 `think`(단계에 걸린 초), `plan`, `paper`, 패널, 품질 게이트, 읽기 실패 이벤트를 더했고, 모두 선택 필드라 예전 클라이언트는 모르는 `type`을 버린다. 모델의 추론 토큰은 보내지 않고, 그래프가 이미 파싱한 단계 출력만 쓴다. 명세는 `docs/handoff/stream-v3-spec.md`다.
+
 ## 아키텍처
 
 ```
@@ -63,10 +65,10 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | --- | --- |
 | Node | CI와 로컬 권장은 22 |
 | TypeScript | gateway·core 7.0.2 |
-| Wrangler | 4.152.0 |
+| Wrangler | 4.156.0 |
 | Neon 드라이버 | `@neondatabase/serverless` 1.2.0 |
 | Python | `requires-python >= 3.12`. Docker 이미지는 3.15.0. CI 테스트 매트릭스는 3.12와 3.15 |
-| 패키지 | uv. 잠금 파일 `services/ai/uv.lock`. CI의 setup-uv는 10.3.2 |
+| 패키지 | uv. 잠금 파일 `services/ai/uv.lock`. CI의 setup-uv는 10.3.3 |
 | HTTP | FastAPI, pydantic, uvicorn(`local` extra) |
 | 그래프 | langgraph, langgraph-checkpoint-postgres (`local` extra) |
 | DB 드라이버 | asyncpg, psycopg (`local` extra). 마이그레이션 extra는 asyncpg와 websockets |
@@ -91,10 +93,12 @@ services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
-db/migrations/          0001_init.sql … 0034_drop_legacy_rag.sql
+db/migrations/          0001_init.sql … 0037_document_shares.sql
 db/tests/               schema_checks.sql
 infra/docker-compose.yml
 infra/vps/              운영 compose, Traefik, env.example, 배포 스크립트
+docs/handoff/           BE 태스크 스펙(데이터 API, 스트림 v3)
+docs/plans/             구현 계획
 ```
 
 Python이 `/api/v1`에 올리는 라우터는 `evidence`, `jobs`, `applications`, `documents`, `projects`, `interviews`, `conversations`, `approvals`, `operations`, `ai`다. `internal` 라우터는 접두사 없이 붙는다. `GET /healthz`와 `GET /api/v1/healthz`도 앱에 있다.
