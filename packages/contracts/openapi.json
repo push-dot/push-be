@@ -2004,6 +2004,1386 @@
         ],
         "type": "object"
       },
+      "ConversationTurn": {
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "properties": {
+                  "approvalId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "optionId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "optionIds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "approvalId",
+                  "optionId"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assistantMessageId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "token"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "extra": {
+                      "description": "Detail lines the client folds as +N줄",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "result": {},
+                    "resultLine": {
+                      "description": "One-line outcome shown under the tool line",
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "state": {
+                      "description": "Current turns emit wait, ok, or err. Replay can still send run.",
+                      "enum": [
+                        "run",
+                        "ok",
+                        "err",
+                        "wait"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "What the tool worked on, e.g. a file name or 회사 · 직무",
+                      "type": "string"
+                    },
+                    "tier": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "tool"
+                      ],
+                      "type": "string"
+                    },
+                    "warning": {
+                      "description": "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "state",
+                    "summary",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "description": "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze.",
+                      "type": "string"
+                    },
+                    "items": {
+                      "items": {
+                        "properties": {
+                          "added": {
+                            "description": "True for a step added after the list was first shown",
+                            "type": "boolean"
+                          },
+                          "id": {},
+                          "state": {
+                            "enum": [
+                              "todo",
+                              "now",
+                              "done"
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "text",
+                          "state"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "todo"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "items",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "documentId": {
+                      "type": "string"
+                    },
+                    "hunks": {
+                      "items": {
+                        "properties": {
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sign": {
+                            "enum": [
+                              "+",
+                              "-",
+                              ""
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "line",
+                          "sign",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "revisionId": {
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "diff"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "documentId",
+                    "revisionId",
+                    "hunks",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "args": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "documentId": {
+                      "type": "string"
+                    },
+                    "foot": {
+                      "description": "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting",
+                      "type": "string"
+                    },
+                    "hunks": {
+                      "description": "DOCUMENT_EDIT: the proposed change, sent before it is applied",
+                      "items": {
+                        "properties": {
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sign": {
+                            "enum": [
+                              "+",
+                              "-",
+                              ""
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "line",
+                          "sign",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "DOCUMENT_EDIT",
+                        "TOOL_ACTION"
+                      ],
+                      "type": "string"
+                    },
+                    "options": {
+                      "items": {
+                        "properties": {
+                          "badge": {
+                            "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                            "type": "string"
+                          },
+                          "desc": {
+                            "description": "Second line under the label",
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "resolution": {
+                      "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                      "properties": {
+                        "optionId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "optionIds": {
+                          "description": "Present when more than one option was picked",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "PENDING",
+                            "APPROVED",
+                            "REJECTED",
+                            "EXPIRED"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "optionId"
+                      ],
+                      "type": "object"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "toolName": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "approval"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "kind",
+                    "title",
+                    "options",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "auto": {
+                      "type": "boolean"
+                    },
+                    "detail": {
+                      "description": "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress",
+                      "type": "string"
+                    },
+                    "documentId": {
+                      "description": "Present gate: the saved profile document, when there is one",
+                      "type": "string"
+                    },
+                    "gate": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "RESUME_GATE",
+                        "EMPLOYER_GATE"
+                      ],
+                      "type": "string"
+                    },
+                    "multiple": {
+                      "description": "Present and true when more than one option may be selected",
+                      "type": "boolean"
+                    },
+                    "note": {
+                      "description": "Profile present gate: where the PDF can be exported",
+                      "type": "string"
+                    },
+                    "options": {
+                      "items": {
+                        "properties": {
+                          "badge": {
+                            "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                            "type": "string"
+                          },
+                          "desc": {
+                            "description": "Second line under the label",
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "recommended": {
+                      "type": "string"
+                    },
+                    "resolution": {
+                      "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                      "properties": {
+                        "optionId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "optionIds": {
+                          "description": "Present when more than one option was picked",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "PENDING",
+                            "APPROVED",
+                            "REJECTED",
+                            "EXPIRED"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "optionId"
+                      ],
+                      "type": "object"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "choice"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "options",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "band": {
+                      "description": "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)",
+                      "type": "string"
+                    },
+                    "delta": {
+                      "description": "Boost card: signed change from from, e.g. +1.4",
+                      "type": "string"
+                    },
+                    "from": {
+                      "description": "Boost card: the score before the first boost cycle",
+                      "type": "number"
+                    },
+                    "keywords": {
+                      "description": "Up to 5 posting terms; ok when the resume text contains the term",
+                      "items": {
+                        "properties": {
+                          "label": {
+                            "type": "string"
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "ok"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "note": {
+                      "description": "Boost card: 적합도 6.9 → 8.3 (+1.4)",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "description": "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
+                      "properties": {
+                        "careerLevel": {
+                          "type": "number"
+                        },
+                        "domain": {
+                          "type": "number"
+                        },
+                        "experienceLink": {
+                          "type": "number"
+                        },
+                        "keyword": {
+                          "type": "number"
+                        },
+                        "techStack": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "plan": {
+                      "enum": [
+                        "FREE",
+                        "PRO",
+                        "ULTRA"
+                      ],
+                      "type": "string"
+                    },
+                    "projected": {
+                      "description": "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+                      "properties": {
+                        "bullets": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "score": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "label",
+                        "bullets"
+                      ],
+                      "type": "object"
+                    },
+                    "score": {
+                      "type": "number"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "description": "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
+                      "type": "string"
+                    },
+                    "topGap": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "fit"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "score",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "documentId": {
+                      "description": "Empty string when the document was not synced",
+                      "type": "string"
+                    },
+                    "downloadUrl": {
+                      "description": "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}",
+                      "type": "string"
+                    },
+                    "fileId": {
+                      "type": "string"
+                    },
+                    "mime": {
+                      "description": "Never text/markdown.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event.",
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "file"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "mime",
+                    "fileId",
+                    "documentId",
+                    "downloadUrl",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "company": {
+                      "type": "string"
+                    },
+                    "facts": {
+                      "items": {
+                        "properties": {
+                          "sourceUrl": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "text",
+                          "sourceUrl"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "sourceCounts": {
+                      "properties": {
+                        "homepage": {
+                          "type": "integer"
+                        },
+                        "news": {
+                          "type": "integer"
+                        },
+                        "postings": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "homepage",
+                        "news",
+                        "postings"
+                      ],
+                      "type": "object"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "employer_research"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "company",
+                    "facts",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "draft": {
+                      "properties": {
+                        "careerMax": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "careerMin": {
+                          "type": "integer"
+                        },
+                        "description": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "employmentType": {
+                          "type": "string"
+                        },
+                        "jobCategory": {
+                          "type": "string"
+                        },
+                        "location": {
+                          "type": "string"
+                        },
+                        "preferred": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "requirements": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "salaryRange": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "skills": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "workStyle": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "description",
+                        "requirements",
+                        "preferred"
+                      ],
+                      "type": "object"
+                    },
+                    "notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "posting_draft"
+                      ],
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "version",
+                    "draft",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "applicationId": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "attachmentName": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "disclaimer": {
+                      "type": "string"
+                    },
+                    "flags": {
+                      "items": {
+                        "properties": {
+                          "level": {
+                            "enum": [
+                              "CHECK",
+                              "SUPPORTED",
+                              "UNKNOWN"
+                            ],
+                            "type": "string"
+                          },
+                          "quote": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "title",
+                          "level",
+                          "reason",
+                          "quote"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "matches": {
+                      "items": {
+                        "properties": {
+                          "evidence": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "requirement": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "enum": [
+                              "MET",
+                              "PARTIAL",
+                              "MISSING"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "requirement",
+                          "status",
+                          "evidence"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "review_report"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "summary",
+                    "flags",
+                    "disclaimer",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "applicationId": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "questions": {
+                      "items": {
+                        "properties": {
+                          "cautionSignals": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "fromFlag": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "goodSignals": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "verify": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "text",
+                          "verify"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "interview_kit"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "questions",
+                    "seq"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "properties": {
+                              "id": {
+                                "enum": [
+                                  "apply",
+                                  "convert",
+                                  "view"
+                                ],
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "method": {
+                                "type": "string"
+                              },
+                              "path": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "bullets": {
+                          "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cardMeta": {
+                          "type": "string"
+                        },
+                        "checklist": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "company": {
+                          "type": "string"
+                        },
+                        "documentId": {
+                          "type": "string"
+                        },
+                        "fileName": {
+                          "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
+                          "type": "string"
+                        },
+                        "fitFrom": {
+                          "description": "Fit before any edit; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "fitTo": {
+                          "description": "Fit after the last boost cycle; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "pageLine": {
+                          "type": "string"
+                        },
+                        "savedLine": {
+                          "type": "string"
+                        },
+                        "seq": {
+                          "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                          "type": "integer"
+                        },
+                        "source": {
+                          "enum": [
+                            "external"
+                          ],
+                          "type": "string"
+                        },
+                        "summary": {
+                          "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
+                          "type": "string"
+                        },
+                        "taskLine": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "result"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "source",
+                        "taskLine",
+                        "checklist",
+                        "documentId",
+                        "fileName",
+                        "pageLine",
+                        "cardMeta",
+                        "actions",
+                        "seq"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "properties": {
+                              "id": {
+                                "enum": [
+                                  "apply",
+                                  "convert",
+                                  "view"
+                                ],
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "method": {
+                                "type": "string"
+                              },
+                              "path": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "bullets": {
+                          "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "checklist": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "company": {
+                          "type": "string"
+                        },
+                        "documentId": {
+                          "type": "string"
+                        },
+                        "fitFrom": {
+                          "description": "Fit before any edit; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "fitTo": {
+                          "description": "Fit after the last boost cycle; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "headline": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "seq": {
+                          "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                          "type": "integer"
+                        },
+                        "source": {
+                          "enum": [
+                            "profile"
+                          ],
+                          "type": "string"
+                        },
+                        "subtitle": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
+                          "type": "string"
+                        },
+                        "taskLine": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "result"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "source",
+                        "taskLine",
+                        "checklist",
+                        "documentId",
+                        "name",
+                        "headline",
+                        "title",
+                        "subtitle",
+                        "actions",
+                        "seq"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "description": "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).",
+                          "enum": [
+                            "NOT_CONFIGURED",
+                            "PROVIDER_ERROR",
+                            "INTERNAL"
+                          ],
+                          "type": "string"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "error"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "cancelled"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "seq"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "jobId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RUNNING",
+              "DONE",
+              "FAILED",
+              "CANCELLED"
+            ],
+            "type": "string"
+          },
+          "userMessageId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "jobId",
+          "status",
+          "createdAt",
+          "userMessageId",
+          "assistantMessageId",
+          "answer",
+          "events"
+        ],
+        "type": "object"
+      },
       "ConversationsApprovalAnswer": {
         "properties": {
           "id": {
@@ -2207,6 +3587,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "lastLine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "NEEDS_APPROVAL: the waiting card's title. RUNNING: the newest status text or tool line (summary · target) of the queued or running job. Null otherwise."
+          },
           "lastMessagePreview": {
             "maxLength": 140,
             "type": "string"
@@ -2253,6 +3644,7 @@
           "createdAt",
           "updatedAt",
           "status",
+          "lastLine",
           "lastMessagePreview",
           "createdBy",
           "postingId"
@@ -10762,7 +12154,7 @@
     },
     "/api/v1/conversations/{id}/messages/stream": {
       "post": {
-        "description": "Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
+        "description": "Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
         "operationId": "postConversationsByIdMessagesStream",
         "parameters": [
           {
@@ -10950,6 +12342,45 @@
                   "documentId": {
                     "type": "string"
                   },
+                  "foot": {
+                    "description": "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting",
+                    "type": "string"
+                  },
+                  "hunks": {
+                    "description": "DOCUMENT_EDIT: the proposed change, sent before it is applied",
+                    "items": {
+                      "properties": {
+                        "line": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sign": {
+                          "enum": [
+                            "+",
+                            "-",
+                            ""
+                          ],
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "line",
+                        "sign",
+                        "text"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "id": {
                     "format": "uuid",
                     "type": "string"
@@ -10964,6 +12395,14 @@
                   "options": {
                     "items": {
                       "properties": {
+                        "badge": {
+                          "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                          "type": "string"
+                        },
+                        "desc": {
+                          "description": "Second line under the label",
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -10978,6 +12417,42 @@
                       "type": "object"
                     },
                     "type": "array"
+                  },
+                  "resolution": {
+                    "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                    "properties": {
+                      "optionId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "optionIds": {
+                        "description": "Present when more than one option was picked",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "APPROVED",
+                          "REJECTED",
+                          "EXPIRED"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "optionId"
+                    ],
+                    "type": "object"
                   },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
@@ -11034,7 +12509,7 @@
                     "type": "boolean"
                   },
                   "detail": {
-                    "description": "Boost gate only: the score change for this cycle",
+                    "description": "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress",
                     "type": "string"
                   },
                   "documentId": {
@@ -11065,6 +12540,14 @@
                   "options": {
                     "items": {
                       "properties": {
+                        "badge": {
+                          "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                          "type": "string"
+                        },
+                        "desc": {
+                          "description": "Second line under the label",
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -11082,6 +12565,42 @@
                   },
                   "recommended": {
                     "type": "string"
+                  },
+                  "resolution": {
+                    "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                    "properties": {
+                      "optionId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "optionIds": {
+                        "description": "Present when more than one option was picked",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "APPROVED",
+                          "REJECTED",
+                          "EXPIRED"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "optionId"
+                    ],
+                    "type": "object"
                   },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
@@ -11364,7 +12883,43 @@
               },
               "fit": {
                 "properties": {
+                  "band": {
+                    "description": "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)",
+                    "type": "string"
+                  },
+                  "delta": {
+                    "description": "Boost card: signed change from from, e.g. +1.4",
+                    "type": "string"
+                  },
+                  "from": {
+                    "description": "Boost card: the score before the first boost cycle",
+                    "type": "number"
+                  },
+                  "keywords": {
+                    "description": "Up to 5 posting terms; ok when the resume text contains the term",
+                    "items": {
+                      "properties": {
+                        "label": {
+                          "type": "string"
+                        },
+                        "ok": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "ok"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "note": {
+                    "description": "Boost card: 적합도 6.9 → 8.3 (+1.4)",
+                    "type": "string"
+                  },
                   "parts": {
+                    "description": "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
                     "properties": {
                       "careerLevel": {
                         "type": "number"
@@ -11382,12 +12937,37 @@
                         "type": "number"
                       }
                     },
+                    "required": [],
+                    "type": "object"
+                  },
+                  "plan": {
+                    "enum": [
+                      "FREE",
+                      "PRO",
+                      "ULTRA"
+                    ],
+                    "type": "string"
+                  },
+                  "projected": {
+                    "description": "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+                    "properties": {
+                      "bullets": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "score": {
+                        "type": "number"
+                      }
+                    },
                     "required": [
-                      "techStack",
-                      "experienceLink",
-                      "careerLevel",
-                      "keyword",
-                      "domain"
+                      "score",
+                      "label",
+                      "bullets"
                     ],
                     "type": "object"
                   },
@@ -11397,6 +12977,10 @@
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
+                  },
+                  "summary": {
+                    "description": "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
+                    "type": "string"
                   },
                   "topGap": {
                     "type": "string"
@@ -11411,8 +12995,6 @@
                 "required": [
                   "type",
                   "score",
-                  "parts",
-                  "topGap",
                   "seq"
                 ],
                 "type": "object"
@@ -11624,6 +13206,13 @@
                         },
                         "type": "array"
                       },
+                      "bullets": {
+                        "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
                       "cardMeta": {
                         "type": "string"
                       },
@@ -11643,6 +13232,14 @@
                         "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
                         "type": "string"
                       },
+                      "fitFrom": {
+                        "description": "Fit before any edit; present only when the fit rose",
+                        "type": "number"
+                      },
+                      "fitTo": {
+                        "description": "Fit after the last boost cycle; present only when the fit rose",
+                        "type": "number"
+                      },
                       "pageLine": {
                         "type": "string"
                       },
@@ -11657,6 +13254,10 @@
                         "enum": [
                           "external"
                         ],
+                        "type": "string"
+                      },
+                      "summary": {
+                        "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
                         "type": "string"
                       },
                       "taskLine": {
@@ -11714,6 +13315,13 @@
                         },
                         "type": "array"
                       },
+                      "bullets": {
+                        "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
                       "checklist": {
                         "items": {
                           "type": "string"
@@ -11725,6 +13333,14 @@
                       },
                       "documentId": {
                         "type": "string"
+                      },
+                      "fitFrom": {
+                        "description": "Fit before any edit; present only when the fit rose",
+                        "type": "number"
+                      },
+                      "fitTo": {
+                        "description": "Fit after the last boost cycle; present only when the fit rose",
+                        "type": "number"
                       },
                       "headline": {
                         "type": "string"
@@ -11743,6 +13359,10 @@
                         "type": "string"
                       },
                       "subtitle": {
+                        "type": "string"
+                      },
+                      "summary": {
+                        "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
                         "type": "string"
                       },
                       "taskLine": {
@@ -11921,9 +13541,17 @@
               },
               "todo": {
                 "properties": {
+                  "id": {
+                    "description": "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze.",
+                    "type": "string"
+                  },
                   "items": {
                     "items": {
                       "properties": {
+                        "added": {
+                          "description": "True for a step added after the list was first shown",
+                          "type": "boolean"
+                        },
                         "id": {},
                         "state": {
                           "enum": [
@@ -11989,10 +13617,21 @@
               },
               "tool": {
                 "properties": {
+                  "extra": {
+                    "description": "Detail lines the client folds as +N줄",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "name": {
                     "type": "string"
                   },
                   "result": {},
+                  "resultLine": {
+                    "description": "One-line outcome shown under the tool line",
+                    "type": "string"
+                  },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
@@ -12010,6 +13649,10 @@
                   "summary": {
                     "type": "string"
                   },
+                  "target": {
+                    "description": "What the tool worked on, e.g. a file name or 회사 · 직무",
+                    "type": "string"
+                  },
                   "tier": {
                     "type": "string"
                   },
@@ -12017,6 +13660,10 @@
                     "enum": [
                       "tool"
                     ],
+                    "type": "string"
+                  },
+                  "warning": {
+                    "description": "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)",
                     "type": "string"
                   }
                 },
@@ -12044,7 +13691,7 @@
     },
     "/api/v1/conversations/{id}/messages/stream/active": {
       "get": {
-        "description": "Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
+        "description": "Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.",
         "operationId": "getConversationsByIdMessagesStreamActive",
         "parameters": [
           {
@@ -12095,6 +13742,45 @@
                   "documentId": {
                     "type": "string"
                   },
+                  "foot": {
+                    "description": "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting",
+                    "type": "string"
+                  },
+                  "hunks": {
+                    "description": "DOCUMENT_EDIT: the proposed change, sent before it is applied",
+                    "items": {
+                      "properties": {
+                        "line": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sign": {
+                          "enum": [
+                            "+",
+                            "-",
+                            ""
+                          ],
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "line",
+                        "sign",
+                        "text"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "id": {
                     "format": "uuid",
                     "type": "string"
@@ -12109,6 +13795,14 @@
                   "options": {
                     "items": {
                       "properties": {
+                        "badge": {
+                          "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                          "type": "string"
+                        },
+                        "desc": {
+                          "description": "Second line under the label",
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -12123,6 +13817,42 @@
                       "type": "object"
                     },
                     "type": "array"
+                  },
+                  "resolution": {
+                    "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                    "properties": {
+                      "optionId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "optionIds": {
+                        "description": "Present when more than one option was picked",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "APPROVED",
+                          "REJECTED",
+                          "EXPIRED"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "optionId"
+                    ],
+                    "type": "object"
                   },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
@@ -12179,7 +13909,7 @@
                     "type": "boolean"
                   },
                   "detail": {
-                    "description": "Boost gate only: the score change for this cycle",
+                    "description": "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress",
                     "type": "string"
                   },
                   "documentId": {
@@ -12210,6 +13940,14 @@
                   "options": {
                     "items": {
                       "properties": {
+                        "badge": {
+                          "description": "Short tag such as 추천; only the review gate's CLASSIC option sends one",
+                          "type": "string"
+                        },
+                        "desc": {
+                          "description": "Second line under the label",
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -12227,6 +13965,42 @@
                   },
                   "recommended": {
                     "type": "string"
+                  },
+                  "resolution": {
+                    "description": "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+                    "properties": {
+                      "optionId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "optionIds": {
+                        "description": "Present when more than one option was picked",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "APPROVED",
+                          "REJECTED",
+                          "EXPIRED"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "optionId"
+                    ],
+                    "type": "object"
                   },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
@@ -12509,7 +14283,43 @@
               },
               "fit": {
                 "properties": {
+                  "band": {
+                    "description": "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)",
+                    "type": "string"
+                  },
+                  "delta": {
+                    "description": "Boost card: signed change from from, e.g. +1.4",
+                    "type": "string"
+                  },
+                  "from": {
+                    "description": "Boost card: the score before the first boost cycle",
+                    "type": "number"
+                  },
+                  "keywords": {
+                    "description": "Up to 5 posting terms; ok when the resume text contains the term",
+                    "items": {
+                      "properties": {
+                        "label": {
+                          "type": "string"
+                        },
+                        "ok": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "ok"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "note": {
+                    "description": "Boost card: 적합도 6.9 → 8.3 (+1.4)",
+                    "type": "string"
+                  },
                   "parts": {
+                    "description": "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
                     "properties": {
                       "careerLevel": {
                         "type": "number"
@@ -12527,12 +14337,37 @@
                         "type": "number"
                       }
                     },
+                    "required": [],
+                    "type": "object"
+                  },
+                  "plan": {
+                    "enum": [
+                      "FREE",
+                      "PRO",
+                      "ULTRA"
+                    ],
+                    "type": "string"
+                  },
+                  "projected": {
+                    "description": "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+                    "properties": {
+                      "bullets": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "score": {
+                        "type": "number"
+                      }
+                    },
                     "required": [
-                      "techStack",
-                      "experienceLink",
-                      "careerLevel",
-                      "keyword",
-                      "domain"
+                      "score",
+                      "label",
+                      "bullets"
                     ],
                     "type": "object"
                   },
@@ -12542,6 +14377,10 @@
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
+                  },
+                  "summary": {
+                    "description": "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
+                    "type": "string"
                   },
                   "topGap": {
                     "type": "string"
@@ -12556,8 +14395,6 @@
                 "required": [
                   "type",
                   "score",
-                  "parts",
-                  "topGap",
                   "seq"
                 ],
                 "type": "object"
@@ -12769,6 +14606,13 @@
                         },
                         "type": "array"
                       },
+                      "bullets": {
+                        "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
                       "cardMeta": {
                         "type": "string"
                       },
@@ -12788,6 +14632,14 @@
                         "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
                         "type": "string"
                       },
+                      "fitFrom": {
+                        "description": "Fit before any edit; present only when the fit rose",
+                        "type": "number"
+                      },
+                      "fitTo": {
+                        "description": "Fit after the last boost cycle; present only when the fit rose",
+                        "type": "number"
+                      },
                       "pageLine": {
                         "type": "string"
                       },
@@ -12802,6 +14654,10 @@
                         "enum": [
                           "external"
                         ],
+                        "type": "string"
+                      },
+                      "summary": {
+                        "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
                         "type": "string"
                       },
                       "taskLine": {
@@ -12859,6 +14715,13 @@
                         },
                         "type": "array"
                       },
+                      "bullets": {
+                        "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
                       "checklist": {
                         "items": {
                           "type": "string"
@@ -12870,6 +14733,14 @@
                       },
                       "documentId": {
                         "type": "string"
+                      },
+                      "fitFrom": {
+                        "description": "Fit before any edit; present only when the fit rose",
+                        "type": "number"
+                      },
+                      "fitTo": {
+                        "description": "Fit after the last boost cycle; present only when the fit rose",
+                        "type": "number"
                       },
                       "headline": {
                         "type": "string"
@@ -12888,6 +14759,10 @@
                         "type": "string"
                       },
                       "subtitle": {
+                        "type": "string"
+                      },
+                      "summary": {
+                        "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
                         "type": "string"
                       },
                       "taskLine": {
@@ -13066,9 +14941,17 @@
               },
               "todo": {
                 "properties": {
+                  "id": {
+                    "description": "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze.",
+                    "type": "string"
+                  },
                   "items": {
                     "items": {
                       "properties": {
+                        "added": {
+                          "description": "True for a step added after the list was first shown",
+                          "type": "boolean"
+                        },
                         "id": {},
                         "state": {
                           "enum": [
@@ -13134,10 +15017,21 @@
               },
               "tool": {
                 "properties": {
+                  "extra": {
+                    "description": "Detail lines the client folds as +N줄",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "name": {
                     "type": "string"
                   },
                   "result": {},
+                  "resultLine": {
+                    "description": "One-line outcome shown under the tool line",
+                    "type": "string"
+                  },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
@@ -13155,6 +15049,10 @@
                   "summary": {
                     "type": "string"
                   },
+                  "target": {
+                    "description": "What the tool worked on, e.g. a file name or 회사 · 직무",
+                    "type": "string"
+                  },
                   "tier": {
                     "type": "string"
                   },
@@ -13162,6 +15060,10 @@
                     "enum": [
                       "tool"
                     ],
+                    "type": "string"
+                  },
+                  "warning": {
+                    "description": "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)",
                     "type": "string"
                   }
                 },
@@ -13312,6 +15214,79 @@
           "conversations"
         ],
         "x-owner": "gateway"
+      }
+    },
+    "/api/v1/conversations/{id}/turns": {
+      "get": {
+        "description": "Newest first; one item per chat job, so a reopened conversation can draw its cards again. In a personal conversation only the caller's jobs are listed. events are the stored stream frames (same shapes as the stream, with seq) minus status and done; consecutive token frames are joined into one, and markdown file events are dropped. approval and choice events carry resolution. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). answer is set on a job started by answering a card. 404 when the conversation is not visible.",
+        "operationId": "getConversationsByIdTurns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/ConversationTurn"
+                      },
+                      "type": "array"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List chat turns with their cards",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "ai"
       }
     },
     "/api/v1/conversations/{id}/unarchive": {

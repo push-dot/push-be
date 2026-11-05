@@ -11,6 +11,7 @@ _DIMS = (
     ("keyword", "키워드", 10),
     ("domain", "도메인", 10),
 )
+FIT_DIMENSIONS = _DIMS
 
 
 def plan_name(plan) -> str:

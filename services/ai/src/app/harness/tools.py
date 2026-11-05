@@ -114,3 +114,16 @@ async def call_structured(spec: ToolSpec, args: BaseModel, ctx: ToolContext) -> 
     config = merge_configs(ensure_config(), {"configurable": {"tool_context": ctx}})
     done = await to_structured_tool(spec).ainvoke(args.model_dump(mode="json"), config)
     return done.result, done.ok
+
+
+RETRY_WARNING = "한 번 더 시도했어요"
+
+
+async def call_retrying(
+    spec: ToolSpec, args: BaseModel, ctx: ToolContext,
+) -> tuple[dict, bool, bool]:
+    result, ok = await call_structured(spec, args, ctx)
+    if ok or spec.tier is not Tier.READ or result.get("error") != "TOOL_FAILED":
+        return result, ok, False
+    result, ok = await call_structured(spec, args, ctx)
+    return result, ok, True

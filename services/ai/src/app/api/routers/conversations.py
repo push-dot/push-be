@@ -6,9 +6,13 @@ import secrets
 from fastapi import APIRouter, Request
 
 from app.db import NotFoundError
+from app.domain.chat_turns import card_ids, card_resolution, turn_events, turn_view
 from app.domain.errors import not_found
+from app.domain.pagination import Cursor, new_page
+from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
 from app.infrastructure.store_conversations import ConversationStore
-from app.api.deps import current_user, data, param_id
+from app.infrastructure.store_turns import TurnStore
+from app.api.deps import current_user, data, page_body, page_request, param_id
 
 router = APIRouter()
 
@@ -58,3 +62,34 @@ async def get_shared_conversation(token: str, request: Request):
 async def list_conversation_artifacts(id: str, request: Request):
     conversation = await _visible_conversation(request, id)
     return data(200, await _shares(request).list_artifacts(conversation.id))
+
+
+@router.get("/conversations/{id}/turns")
+async def list_conversation_turns(id: str, request: Request):
+    conversation = await _visible_conversation(request, id)
+    page = page_request(request)
+    turns = TurnStore(request.app.state.db)
+    jobs = await turns.jobs(
+        conversation.id, current_user(request).id, conversation.company_id is not None, page)
+    shown = jobs[:page.effective_limit()]
+    job_ids = [job["id"] for job in shown]
+    rows = await turns.events(job_ids)
+    cards = await turns.cards(conversation.id, card_ids(rows))
+    resolutions = {str(card["id"]): card_resolution(card) for card in cards}
+    stored = await turns.message_ids(conversation.id, job_ids)
+    views = [
+        turn_view(
+            job,
+            turn_events([row for row in rows if row["job_id"] == job["id"]], resolutions),
+            _present(user_message_id(job["id"]), stored),
+            _present(assistant_message_id(job["id"]), stored),
+        )
+        for job in jobs
+    ]
+    return page_body(new_page(
+        views, page.effective_limit(),
+        lambda view: Cursor(view["createdAt"], view["jobId"])))
+
+
+def _present(message_id, stored):
+    return message_id if message_id in stored else None

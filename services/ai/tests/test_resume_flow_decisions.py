@@ -69,7 +69,7 @@ async def _reach_intake():
 
 async def test_intake_options_are_the_three_sentences():
     _graph_obj, _config_obj, choice, mode = await _reach_intake()
-    assert choice["title"] == "입력한 자료를 확인했어요. 분석을 시작할까요?"
+    assert choice["title"] == "이대로 분석을 시작할까요?"
     assert choice["options"] == [
         {"id": "ready", "label": "네, 시작해 주세요"},
         {"id": "change", "label": "자료를 바꿀래요"},
