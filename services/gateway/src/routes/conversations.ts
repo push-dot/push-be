@@ -6,7 +6,7 @@ import {
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import { LAST_LINE, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -53,7 +53,7 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
     + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
     + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
     + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-    + "ELSE 'DONE' END AS status "
+    + "ELSE 'DONE' END AS status, " + LAST_LINE + " "
     + "FROM conversations c "
     + "LEFT JOIN users cu ON cu.id = c.user_id "
     + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
@@ -143,6 +143,7 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
     createdAt: formatJsonTimestamp(row.created_at),
     updatedAt: formatJsonTimestamp(row.updated_at),
     status: row.status == null || row.status === "" ? "DONE" : String(row.status),
+    lastLine: row.last_line == null || row.last_line === "" ? null : String(row.last_line),
     lastMessagePreview: String(row.last_message_preview ?? "").slice(0, 140),
     createdBy: { displayName: String(row.display_name ?? "") },
     postingId: row.posting_id == null || row.posting_id === "" ? null : String(row.posting_id),

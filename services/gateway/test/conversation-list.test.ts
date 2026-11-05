@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { LAST_LINE } from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -28,6 +29,7 @@ type Fixture = {
   display_name: string | null;
   preview: string;
   status: string;
+  last_line: string | null;
 };
 
 const FIXTURES: Fixture[] = [
@@ -43,6 +45,7 @@ const FIXTURES: Fixture[] = [
     display_name: "Ada",
     preview: "still going",
     status: "RUNNING",
+    last_line: "이력서 읽기 · 김서준_이력서.pdf",
   },
   {
     id: NEEDS_ID,
@@ -56,6 +59,7 @@ const FIXTURES: Fixture[] = [
     display_name: "Bea",
     preview: LONG_PREVIEW,
     status: "NEEDS_APPROVAL",
+    last_line: "이 공고에 지원해요",
   },
   {
     id: DONE_ID,
@@ -69,6 +73,7 @@ const FIXTURES: Fixture[] = [
     display_name: null,
     preview: "",
     status: "DONE",
+    last_line: null,
   },
 ];
 
@@ -108,6 +113,7 @@ const rowsFor = (sql: string): Record<string, unknown>[] => {
     display_name: row.display_name,
     last_message_preview: cut ? row.preview.slice(0, 140) : row.preview,
     status: row.status,
+    last_line: row.last_line,
   }));
 };
 
@@ -143,6 +149,7 @@ const assertStatusSql = (sql: string): void => {
   assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM approvals a WHERE a\.conversation_id = c\.id AND a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)\) THEN 'NEEDS_APPROVAL'/);
   assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status IN \('PENDING', 'RUNNING'\)\) THEN 'RUNNING'/);
   assert.match(sql, /ELSE 'DONE' END AS status/);
+  assert.ok(sql.includes(LAST_LINE), "last_line uses the shared fragment");
   assert.match(sql, /LEFT JOIN LATERAL \(SELECT m\.text FROM messages m WHERE m\.conversation_id = c\.id ORDER BY m\.created_at DESC, m\.id DESC LIMIT 1\) last_msg ON true/);
   assert.doesNotMatch(sql, /m\.text ILIKE/);
   assert.match(sql, /COALESCE\(last_msg\.text, ''\) ILIKE/);
@@ -200,6 +207,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-15T00:00:00Z",
       updatedAt: "2026-10-17T00:00:00Z",
       status: "NEEDS_APPROVAL",
+      lastLine: "이 공고에 지원해요",
       lastMessagePreview: "가".repeat(140),
       createdBy: { displayName: "Bea" },
       postingId: POSTING_ID,
@@ -213,6 +221,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-18T00:00:00Z",
       updatedAt: "2026-10-16T00:00:00Z",
       status: "RUNNING",
+      lastLine: "이력서 읽기 · 김서준_이력서.pdf",
       lastMessagePreview: "still going",
       createdBy: { displayName: "Ada" },
       postingId: null,
@@ -226,6 +235,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-14T00:00:00Z",
       updatedAt: "2026-10-14T00:00:00Z",
       status: "DONE",
+      lastLine: null,
       lastMessagePreview: "",
       createdBy: { displayName: "" },
       postingId: null,

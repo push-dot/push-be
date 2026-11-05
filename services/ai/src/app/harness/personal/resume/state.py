@@ -35,3 +35,5 @@ class ResumeState(BaseModel):
     source_saved: bool | None = None
     intake_asks: int = 0
     gate_epoch: int = 0
+    fit_from: float | None = None
+    fit_to: float | None = None

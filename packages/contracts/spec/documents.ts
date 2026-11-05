@@ -89,8 +89,8 @@ export const routes: Route[] = [
   }),
   post("core", "/api/v1/documents/{id}/profile", {
     tag: "documents",
-    summary: "Save a hub profile document as an application profile",
-    description: "target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.",
+    summary: "Save a hub profile document or an uploaded file as an application profile",
+    description: "target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.",
     params: [id],
     body: body(closed({
       target: enumOf("hub", "application"),
@@ -104,6 +104,12 @@ export const routes: Route[] = [
         profileUserId: uuid,
         applicationId: nullable(uuid),
       }, ["target", "documentId"])),
+      202: ok(obj({
+        target: enumOf("hub", "application"),
+        documentId: uuid,
+        jobId: uuid,
+        applicationId: nullable(uuid),
+      }, ["target", "documentId", "jobId"]), "Accepted"),
     },
   }),
   post("core", "/api/v1/documents/{id}/base-profile", {

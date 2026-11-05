@@ -8,7 +8,25 @@ const id = pathParam("id");
 
 const seq = { type: "integer", description: "chat_events id; send back as ?after= or Last-Event-ID to resume" };
 
-const option = obj({ id: str, label: str });
+const option = obj({
+  id: str,
+  label: str,
+  desc: { type: "string", description: "Second line under the label" },
+  badge: { type: "string", description: "Short tag such as 추천; only the review gate's CLASSIC option sends one" },
+}, ["id", "label"]);
+
+const hunk = obj({ line: nullable(int), sign: enumOf("+", "-", ""), text: str });
+
+const resolution = obj({
+  status: enumOf("PENDING", "APPROVED", "REJECTED", "EXPIRED"),
+  optionId: nullable(str),
+  optionIds: { ...arr(str), description: "Present when more than one option was picked" },
+}, ["status", "optionId"]);
+
+const resolutionField = {
+  ...resolution,
+  description: "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
+};
 
 const sseError = obj({
   code: {
@@ -36,18 +54,28 @@ const chatEvents: Record<string, Schema> = {
     summary: str,
     tier: str,
     result: any,
+    target: { type: "string", description: "What the tool worked on, e.g. a file name or 회사 · 직무" },
+    resultLine: { type: "string", description: "One-line outcome shown under the tool line" },
+    extra: { ...arr(str), description: "Detail lines the client folds as +N줄" },
+    warning: { type: "string", description: "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)" },
     seq,
   }, ["type", "name", "state", "summary", "seq"]),
   todo: obj({
     type: enumOf("todo"),
-    items: arr(obj({ id: any, text: str, state: enumOf("todo", "now", "done") })),
+    id: { type: "string", description: "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze." },
+    items: arr(obj({
+      id: any,
+      text: str,
+      state: enumOf("todo", "now", "done"),
+      added: { type: "boolean", description: "True for a step added after the list was first shown" },
+    }, ["id", "text", "state"])),
     seq,
-  }),
+  }, ["type", "items", "seq"]),
   diff: obj({
     type: enumOf("diff"),
     documentId: str,
     revisionId: str,
-    hunks: arr(obj({ line: nullable(int), sign: enumOf("+", "-", ""), text: str })),
+    hunks: arr(hunk),
     seq,
   }),
   approval: obj({
@@ -59,7 +87,10 @@ const chatEvents: Record<string, Schema> = {
     toolName: str,
     args: { type: "object", additionalProperties: true },
     documentId: str,
+    hunks: { ...arr(hunk), description: "DOCUMENT_EDIT: the proposed change, sent before it is applied" },
+    foot: { type: "string", description: "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting" },
     options: arr(option),
+    resolution: resolutionField,
     seq,
   }, ["type", "id", "kind", "title", "options", "seq"]),
   choice: obj({
@@ -71,25 +102,34 @@ const chatEvents: Record<string, Schema> = {
     recommended: str,
     auto: bool,
     multiple: { type: "boolean", description: "Present and true when more than one option may be selected" },
-    detail: { type: "string", description: "Boost gate only: the score change for this cycle" },
+    detail: { type: "string", description: "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress" },
     note: { type: "string", description: "Profile present gate: where the PDF can be exported" },
     documentId: { type: "string", description: "Present gate: the saved profile document, when there is one" },
     options: arr(option),
+    resolution: resolutionField,
     seq,
   }, ["type", "id", "options", "seq"]),
   fit: obj({
     type: enumOf("fit"),
     score: num,
-    parts: obj({
-      techStack: num,
-      experienceLink: num,
-      careerLevel: num,
-      keyword: num,
-      domain: num,
-    }),
+    parts: {
+      ...obj({ techStack: num, experienceLink: num, careerLevel: num, keyword: num, domain: num }, []),
+      description: "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
+    },
     topGap: str,
+    plan: enumOf("FREE", "PRO", "ULTRA"),
+    band: { type: "string", description: "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)" },
+    summary: { type: "string", description: "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요." },
+    keywords: { ...arr(obj({ label: str, ok: bool })), description: "Up to 5 posting terms; ok when the resume text contains the term" },
+    projected: {
+      ...obj({ score: num, label: str, bullets: arr(str) }),
+      description: "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+    },
+    from: { type: "number", description: "Boost card: the score before the first boost cycle" },
+    delta: { type: "string", description: "Boost card: signed change from from, e.g. +1.4" },
+    note: { type: "string", description: "Boost card: 적합도 6.9 → 8.3 (+1.4)" },
     seq,
-  }),
+  }, ["type", "score", "seq"]),
   file: obj({
     type: enumOf("file"),
     name: { type: "string", description: "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event." },
@@ -166,6 +206,10 @@ const chatEvents: Record<string, Schema> = {
         cardMeta: str,
         company: str,
         actions: arr(resultAction),
+        summary: { type: "string", description: "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)" },
+        fitFrom: { type: "number", description: "Fit before any edit; present only when the fit rose" },
+        fitTo: { type: "number", description: "Fit after the last boost cycle; present only when the fit rose" },
+        bullets: { ...arr(str), description: "Up to 3 changes: the draft's changes, else the analysis improvements" },
         seq,
       }, ["type", "source", "taskLine", "checklist", "documentId", "fileName", "pageLine", "cardMeta", "actions", "seq"]),
       obj({
@@ -180,6 +224,10 @@ const chatEvents: Record<string, Schema> = {
         subtitle: str,
         company: str,
         actions: arr(resultAction),
+        summary: { type: "string", description: "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)" },
+        fitFrom: { type: "number", description: "Fit before any edit; present only when the fit rose" },
+        fitTo: { type: "number", description: "Fit after the last boost cycle; present only when the fit rose" },
+        bullets: { ...arr(str), description: "Up to 3 changes: the draft's changes, else the analysis improvements" },
         seq,
       }, ["type", "source", "taskLine", "checklist", "documentId", "name", "headline", "title", "subtitle", "actions", "seq"]),
     ],
@@ -198,7 +246,10 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. "
   + "The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
   + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. "
-  + "The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. "
+  + "The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
+  + "The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). "
+  + "During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. "
+  + "Every field added after the first release is optional; a client that ignores it keeps working. "
   + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.";
 
 const postMessageBody = body(closed({
@@ -307,6 +358,16 @@ export const routes: Route[] = [
     description: "A personal conversation is deleted by its owner. A company conversation is deleted only by a company admin. Removes the conversation, its messages, chat jobs, and workspace files. Approvals, attachments, and shares cascade.",
     params: [id],
     responses: { 204: noContent },
+  }),
+  get("ai", "/api/v1/conversations/{id}/turns", {
+    tag: "conversations",
+    summary: "List chat turns with their cards",
+    description: "Newest first; one item per chat job, so a reopened conversation can draw its cards again. In a personal conversation only the caller's jobs are listed. "
+      + "events are the stored stream frames (same shapes as the stream, with seq) minus status and done; consecutive token frames are joined into one, and markdown file events are dropped. "
+      + "approval and choice events carry resolution. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). "
+      + "answer is set on a job started by answering a card. 404 when the conversation is not visible.",
+    params: [id, ...pageParams],
+    responses: { 200: okPage(ref("ConversationTurn")) },
   }),
   get("gateway", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
@@ -496,7 +557,18 @@ export const routes: Route[] = [
 
 const opEvent = (payload: Schema): Schema => obj({ operationId: uuid, sequence: int, payload });
 
+const { status: _status, done: _done, ...turnEvents } = chatEvents;
+
 export const schemas: Record<string, Schema> = {
+  ConversationTurn: obj({
+    jobId: uuid,
+    status: enumOf("PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED"),
+    createdAt: dateTime,
+    userMessageId: nullable(uuid),
+    assistantMessageId: nullable(uuid),
+    answer: nullable(obj({ approvalId: uuid, optionId: nullable(str), optionIds: arr(str) }, ["approvalId", "optionId"])),
+    events: arr({ oneOf: Object.values(turnEvents) }),
+  }),
   Conversation: obj({
     id: uuid,
     revision: int,
@@ -515,6 +587,10 @@ export const schemas: Record<string, Schema> = {
     createdAt: dateTime,
     updatedAt: dateTime,
     status: enumOf("NEEDS_APPROVAL", "RUNNING", "DONE"),
+    lastLine: {
+      ...nullable(str),
+      description: "NEEDS_APPROVAL: the waiting card's title. RUNNING: the newest status text or tool line (summary · target) of the queued or running job. Null otherwise.",
+    },
     lastMessagePreview: { type: "string", maxLength: 140 },
     createdBy: obj({ displayName: str }),
     postingId: nullable(uuid),

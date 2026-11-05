@@ -217,7 +217,7 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
   assert.equal(res.status, 201);
   assert.deepEqual(res.body.data, {
     id: OFFER, sender: { id: ME, displayName: "Ada", companyName: null, headline: "", avatarUrl: "/api/v1/uploads/images/me.png" },
-    recipient: { id: OTHER, displayName: "Bob" }, message: "join us",
+    recipient: { id: OTHER, displayName: "Bob", companyName: null, headline: "", avatarUrl: null }, message: "join us",
     posting: { id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png" },
     status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z",
   });

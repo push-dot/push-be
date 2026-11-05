@@ -40,6 +40,10 @@ def user_message_id(job_id: UUID) -> UUID:
     return uuid5(NAMESPACE_URL, "push:chat:" + str(job_id) + ":user")
 
 
+def assistant_message_id(job_id: UUID) -> UUID:
+    return uuid5(NAMESPACE_URL, "push:chat:" + str(job_id) + ":assistant")
+
+
 class ChatJobStore:
     def __init__(self, db: DB):
         self.db = db

@@ -1199,7 +1199,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message and stream the reply
-         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
+         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
          */
         post: operations["postConversationsByIdMessagesStream"];
         delete?: never;
@@ -1217,7 +1217,7 @@ export interface paths {
         };
         /**
          * Replay the active chat stream
-         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Current turns do not emit fit. Replay still forwards a stored row of any of those types. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
+         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.
          */
         get: operations["getConversationsByIdMessagesStreamActive"];
         put?: never;
@@ -1262,6 +1262,26 @@ export interface paths {
          * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event.
          */
         post: operations["postConversationsByIdStreamCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List chat turns with their cards
+         * @description Newest first; one item per chat job, so a reopened conversation can draw its cards again. In a personal conversation only the caller's jobs are listed. events are the stored stream frames (same shapes as the stream, with seq) minus status and done; consecutive token frames are joined into one, and markdown file events are dropped. approval and choice events carry resolution. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). answer is set on a job started by answering a card. 404 when the conversation is not visible.
+         */
+        get: operations["getConversationsByIdTurns"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1458,8 +1478,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Save a hub profile document as an application profile
-         * @description target defaults to application. application with no applicationId keeps the HUB_PROFILE document as an application profile and does not write the hub profile. application with applicationId requires expectedRevision and links that document to an application the user owns. A revision mismatch is 409 REVISION_CONFLICT. target hub uses the same write as POST /documents/{id}/base-profile. The document kind stays HUB_PROFILE.
+         * Save a hub profile document or an uploaded file as an application profile
+         * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;
@@ -2727,7 +2747,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a posting fit analysis
-         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
+         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
          */
         post: operations["postPostingsByIdFit"];
         delete?: never;
@@ -3728,6 +3748,362 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        ConversationTurn: {
+            answer: {
+                /** Format: uuid */
+                approvalId: string;
+                optionId: string | null;
+                optionIds?: string[];
+            } | null;
+            assistantMessageId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            events: ({
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                text: string;
+                /** @enum {string} */
+                type: "token";
+            } | {
+                /** @description Detail lines the client folds as +N줄 */
+                extra?: string[];
+                name: string;
+                result?: unknown;
+                /** @description One-line outcome shown under the tool line */
+                resultLine?: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /**
+                 * @description Current turns emit wait, ok, or err. Replay can still send run.
+                 * @enum {string}
+                 */
+                state: "run" | "ok" | "err" | "wait";
+                summary: string;
+                /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
+                target?: string;
+                tier?: string;
+                /** @enum {string} */
+                type: "tool";
+                /** @description Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry) */
+                warning?: string;
+            } | {
+                /** @description List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze. */
+                id?: string;
+                items: {
+                    /** @description True for a step added after the list was first shown */
+                    added?: boolean;
+                    id: unknown;
+                    /** @enum {string} */
+                    state: "todo" | "now" | "done";
+                    text: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "todo";
+            } | {
+                documentId: string;
+                hunks: {
+                    line: number | null;
+                    /** @enum {string} */
+                    sign: "+" | "-" | "";
+                    text: string;
+                }[];
+                revisionId: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "diff";
+            } | {
+                args?: {
+                    [key: string]: unknown;
+                };
+                documentId?: string;
+                /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
+                foot?: string;
+                /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
+                hunks?: {
+                    line: number | null;
+                    /** @enum {string} */
+                    sign: "+" | "-" | "";
+                    text: string;
+                }[];
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "DOCUMENT_EDIT" | "TOOL_ACTION";
+                options: {
+                    /** @description Short tag such as 추천; only the review gate's CLASSIC option sends one */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                }[];
+                /** @description GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null. */
+                resolution?: {
+                    optionId: string | null;
+                    /** @description Present when more than one option was picked */
+                    optionIds?: string[];
+                    /** @enum {string} */
+                    status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+                };
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                summary?: string;
+                title: string;
+                toolName?: string;
+                /** @enum {string} */
+                type: "approval";
+            } | {
+                auto?: boolean;
+                /** @description Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress */
+                detail?: string;
+                /** @description Present gate: the saved profile document, when there is one */
+                documentId?: string;
+                gate?: string;
+                id: string;
+                /** @enum {string} */
+                kind?: "RESUME_GATE" | "EMPLOYER_GATE";
+                /** @description Present and true when more than one option may be selected */
+                multiple?: boolean;
+                /** @description Profile present gate: where the PDF can be exported */
+                note?: string;
+                options: {
+                    /** @description Short tag such as 추천; only the review gate's CLASSIC option sends one */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                }[];
+                recommended?: string;
+                /** @description GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null. */
+                resolution?: {
+                    optionId: string | null;
+                    /** @description Present when more than one option was picked */
+                    optionIds?: string[];
+                    /** @enum {string} */
+                    status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+                };
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                title?: string;
+                /** @enum {string} */
+                type: "choice";
+            } | {
+                /** @description e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음) */
+                band?: string;
+                /** @description Boost card: signed change from from, e.g. +1.4 */
+                delta?: string;
+                /** @description Boost card: the score before the first boost cycle */
+                from?: number;
+                /** @description Up to 5 posting terms; ok when the resume text contains the term */
+                keywords?: {
+                    label: string;
+                    ok: boolean;
+                }[];
+                /** @description Boost card: 적합도 6.9 → 8.3 (+1.4) */
+                note?: string;
+                /** @description Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars). */
+                parts?: {
+                    careerLevel?: number;
+                    domain?: number;
+                    experienceLink?: number;
+                    keyword?: number;
+                    techStack?: number;
+                };
+                /** @enum {string} */
+                plan?: "FREE" | "PRO" | "ULTRA";
+                /** @description ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes */
+                projected?: {
+                    bullets: string[];
+                    label: string;
+                    score: number;
+                };
+                score: number;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요. */
+                summary?: string;
+                topGap?: string;
+                /** @enum {string} */
+                type: "fit";
+            } | {
+                /** @description Empty string when the document was not synced */
+                documentId: string;
+                /** @description Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name} */
+                downloadUrl: string;
+                fileId: string;
+                /** @description Never text/markdown. */
+                mime: string;
+                /** @description Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event. */
+                name: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "file";
+            } | {
+                company: string;
+                facts: {
+                    sourceUrl: string;
+                    text: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                sourceCounts?: {
+                    homepage: number;
+                    news: number;
+                    postings: number;
+                };
+                summary?: string;
+                /** @enum {string} */
+                type: "employer_research";
+            } | {
+                draft: {
+                    careerMax?: number | null;
+                    careerMin?: number;
+                    description: string[];
+                    employmentType?: string;
+                    jobCategory?: string;
+                    location?: string;
+                    preferred: string[];
+                    requirements: string[];
+                    salaryRange?: string | null;
+                    skills?: string[];
+                    title: string;
+                    workStyle?: string;
+                };
+                notes?: string[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "posting_draft";
+                version: number;
+            } | {
+                applicationId?: string | null;
+                attachmentName?: string | null;
+                disclaimer: string;
+                flags: {
+                    /** @enum {string} */
+                    level: "CHECK" | "SUPPORTED" | "UNKNOWN";
+                    quote: string | null;
+                    reason: string;
+                    title: string;
+                }[];
+                matches?: {
+                    evidence: string | null;
+                    requirement: string;
+                    /** @enum {string} */
+                    status: "MET" | "PARTIAL" | "MISSING";
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                summary: string;
+                /** @enum {string} */
+                type: "review_report";
+            } | {
+                applicationId?: string | null;
+                questions: {
+                    cautionSignals?: string[];
+                    fromFlag?: string | null;
+                    goodSignals?: string[];
+                    text: string;
+                    verify: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "interview_kit";
+            } | ({
+                actions: {
+                    /** @enum {string} */
+                    id: "apply" | "convert" | "view";
+                    label: string;
+                    method?: string;
+                    path?: string;
+                }[];
+                /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+                bullets?: string[];
+                cardMeta: string;
+                checklist: string[];
+                company?: string;
+                documentId: string;
+                /** @description Edited PDF. Each part drops /\:*?"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서. */
+                fileName: string;
+                /** @description Fit before any edit; present only when the fit rose */
+                fitFrom?: number;
+                /** @description Fit after the last boost cycle; present only when the fit rose */
+                fitTo?: number;
+                pageLine: string;
+                savedLine?: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                source: "external";
+                /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+                summary?: string;
+                taskLine: string;
+                /** @enum {string} */
+                type: "result";
+            } | {
+                actions: {
+                    /** @enum {string} */
+                    id: "apply" | "convert" | "view";
+                    label: string;
+                    method?: string;
+                    path?: string;
+                }[];
+                /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+                bullets?: string[];
+                checklist: string[];
+                company?: string;
+                documentId: string;
+                /** @description Fit before any edit; present only when the fit rose */
+                fitFrom?: number;
+                /** @description Fit after the last boost cycle; present only when the fit rose */
+                fitTo?: number;
+                headline: string;
+                name: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                source: "profile";
+                subtitle: string;
+                /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+                summary?: string;
+                taskLine: string;
+                title: string;
+                /** @enum {string} */
+                type: "result";
+            }) | {
+                error: {
+                    /**
+                     * @description NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is "managed AI is not configured"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).
+                     * @enum {string}
+                     */
+                    code: "NOT_CONFIGURED" | "PROVIDER_ERROR" | "INTERNAL";
+                    details?: {
+                        [key: string]: unknown;
+                    } | null;
+                    message: string;
+                };
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq?: number;
+                /** @enum {string} */
+                type: "error";
+            } | {
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "cancelled";
+            })[];
+            /** Format: uuid */
+            jobId: string;
+            /** @enum {string} */
+            status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED";
+            userMessageId: string | null;
+        };
         ConversationsApprovalAnswer: {
             /** Format: uuid */
             id: string;
@@ -3781,6 +4157,8 @@ export interface components {
             };
             /** Format: uuid */
             id: string;
+            /** @description NEEDS_APPROVAL: the waiting card's title. RUNNING: the newest status text or tool line (summary · target) of the queued or running job. Null otherwise. */
+            lastLine: string | null;
             lastMessagePreview: string;
             pinned: boolean;
             postingId: string | null;
@@ -4150,7 +4528,10 @@ export interface components {
             } | null;
             readAt: string | null;
             recipient: {
+                avatarUrl: string | null;
+                companyName: string | null;
                 displayName: string;
+                headline: string;
                 id: string;
             };
             sender: {
@@ -7050,6 +7431,37 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getConversationsByIdTurns: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ConversationTurn"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postConversationsByIdUnarchive: {
         parameters: {
             query?: never;
@@ -7517,6 +7929,25 @@ export interface operations {
                             documentId: string;
                             /** Format: uuid */
                             profileUserId?: string;
+                            /** @enum {string} */
+                            target: "hub" | "application";
+                        };
+                    };
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            applicationId?: string | null;
+                            /** Format: uuid */
+                            documentId: string;
+                            /** Format: uuid */
+                            jobId: string;
                             /** @enum {string} */
                             target: "hub" | "application";
                         };
@@ -10313,8 +10744,8 @@ export interface operations {
                 category?: string;
                 tenure?: string;
                 status?: string;
-                /** @description recommended: same jobCategory as the caller; offers: profiles the caller sent offers to */
-                explore?: "recommended" | "offers";
+                /** @description recommended: same jobCategory as the caller; offers: profiles the caller sent offers to; received: profiles that sent the caller an offer */
+                explore?: "recommended" | "offers" | "received";
             };
             header?: never;
             path?: never;

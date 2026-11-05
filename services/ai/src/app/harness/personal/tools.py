@@ -247,7 +247,7 @@ def _diff(args: EditDocumentArgs) -> dict:
     }
 
 
-def _document_event(job_id: str, tool_call_id: str, document_id: str) -> dict:
+def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: list) -> dict:
     # tool_call_id keeps a second edit in the same job from reusing a resolved approval.
     approval_id = str(uuid5(NAMESPACE_URL, f"push:chat-approval:{job_id}:{tool_call_id}"))
     return {
@@ -260,12 +260,14 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str) -> dict:
             {"id": "apply", "label": "적용"},
             {"id": "skip", "label": "그대로 두기"},
         ],
+        "hunks": hunks,
     }
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
-        event = _document_event(ctx.job_id, ctx.tool_call_id, str(args.document_id))
+        event = _document_event(
+            ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
@@ -303,25 +305,32 @@ def start_document_choice_id(conversation_id: str, job_id: str) -> str:
     return str(uuid5(NAMESPACE_URL, "push:start-document:" + conversation_id + ":" + job_id))
 
 
-def _resume_status(row) -> str:
+def _resume_saved(row) -> dict:
     if not row:
-        return ""
+        return {}
     try:
         raw = row["resume_state"]  # dict from pgproto, Record from asyncpg
     except (KeyError, TypeError):
-        return ""
+        return {}
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except json.JSONDecodeError:
-            return ""
-    if isinstance(raw, dict):
-        return str(raw.get("status") or "")
-    return ""
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _draft_detail(saved: dict) -> str:
+    from app.harness.personal.resume.drafts import draft_text
+
+    if not draft_text(saved.get("drafts")):
+        return ""
+    return f"작성 중인 이력서 초안(v{int(saved.get('draft_version') or 1)})이 있어요."
 
 
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
-    if _resume_status(await _resume_row(ctx)) == "active":
+    saved = _resume_saved(await _resume_row(ctx))
+    if saved.get("status") == "active":
         choice = {
             "type": "choice",
             "id": start_document_choice_id(ctx.conversation_id, ctx.job_id),
@@ -333,6 +342,8 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
                 {"id": "cancel", "label": "그만하기"},
             ],
         }
+        if detail := _draft_detail(saved):
+            choice["detail"] = detail
         await insert_chat_approval(ctx.db, ctx.user_id, ctx.conversation_id, choice, None)
         await ctx.db.q().execute(
             "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",

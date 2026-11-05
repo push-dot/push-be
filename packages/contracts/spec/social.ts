@@ -12,6 +12,13 @@ const IMAGE_KEY: Schema = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]
 const text = (minLength: number, maxLength: number): Schema => ({ type: "string", minLength, maxLength });
 const csv = (description: string): Schema => ({ type: "string", description });
 const person = obj({ id: str, displayName: str });
+const offerParty = obj({
+  id: str,
+  displayName: str,
+  companyName: nullable(str),
+  headline: str,
+  avatarUrl: nullable(str),
+});
 
 const profileProps: Record<string, Schema> = {
   userId: uuid,
@@ -47,7 +54,7 @@ export const routes: Route[] = [
       query("category", csv("Comma-separated: dev, data, design, plan, marketing, sales, hr, ops")),
       query("tenure", csv("Comma-separated: 0-2, 3-5, 6-9, 10+")),
       query("status", csv("Comma-separated: satisfied, seeking, feedback")),
-      query("explore", enumOf("recommended", "offers"), "recommended: same jobCategory as the caller; offers: profiles the caller sent offers to"),
+      query("explore", enumOf("recommended", "offers", "received"), "recommended: same jobCategory as the caller; offers: profiles the caller sent offers to; received: profiles that sent the caller an offer"),
     ],
     responses: { 200: okPage(ref("Profile")) },
   }),
@@ -334,8 +341,8 @@ export const schemas: Record<string, Schema> = {
   ProfileDetail: obj({ ...profileProps, following: bool, offered: bool }),
   Offer: obj({
     id: uuid,
-    sender: obj({ id: str, displayName: str, companyName: nullable(str), headline: str, avatarUrl: nullable(str) }),
-    recipient: person,
+    sender: offerParty,
+    recipient: offerParty,
     message: str,
     posting: nullable(obj({ id: uuid, title: str, company: str, imageUrl: nullable(str) })),
     status: enumOf("SENT", "READ", "ACCEPTED", "DECLINED"),

@@ -13,12 +13,15 @@ _OPTIONS = (
 )
 
 
+_FOOTS = {"apply_to_posting": "지원하면 취소할 수 없어요"}
+
+
 def approval_id_for(job_id: str, tool_call_id: str) -> str:
     return str(uuid5(NAMESPACE_URL, "push:tool-approval:" + job_id + ":" + tool_call_id))
 
 
 def tool_action_event(approval_id: str, summary: str, tool_name: str, args: dict) -> dict:
-    return {
+    event = {
         "type": "approval",
         "id": approval_id,
         "kind": "TOOL_ACTION",
@@ -28,6 +31,9 @@ def tool_action_event(approval_id: str, summary: str, tool_name: str, args: dict
         "args": args,
         "options": [dict(option) for option in _OPTIONS],
     }
+    if tool_name in _FOOTS:
+        event["foot"] = _FOOTS[tool_name]
+    return event
 
 
 async def create_tool_approval(db, *, user_id, conversation_id, job_id, tool, args, tool_call_id) -> tuple[dict, bool]:
