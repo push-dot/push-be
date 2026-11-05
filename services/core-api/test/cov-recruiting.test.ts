@@ -198,7 +198,9 @@ test("notifications: mark all, mark ids, and reject non-array ids", async () => 
 
 const offerRow = (extra: Row = {}): Row => ({
   id: OFFER, sender_id: ME, sender_name: "Ada", profile_user_id: OTHER, recipient_name: "Bob", message: "join us",
-  posting_id: POSTING, posting_title: "Backend", posting_company: "Acme", posting_image: "logo.png", status: "SENT", read_at: null,
+  posting_id: POSTING, posting_title: "Backend", posting_company: "Acme", posting_image: "logo.png",
+  posting_location: "서울 강남구", posting_career_min: 5, posting_career_max: null, posting_deadline: "2026-11-20T00:00:00.000Z",
+  status: "SENT", read_at: null,
   created_at: "2026-10-22T00:00:00Z", sender_headline: null, sender_avatar: "me.png", sender_company: "", ...extra,
 });
 
@@ -216,15 +218,26 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
   const res = await w.call("POST", `/api/v1/profiles/${OTHER}/offer`, { message: "join us", postingId: POSTING });
   assert.equal(res.status, 201);
   assert.deepEqual(res.body.data, {
-    id: OFFER, sender: { id: ME, displayName: "Ada", companyName: null, headline: "", avatarUrl: "/api/v1/uploads/images/me.png" },
-    recipient: { id: OTHER, displayName: "Bob", companyName: null, headline: "", avatarUrl: null }, message: "join us",
-    posting: { id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png" },
+    id: OFFER, sender: { id: ME, displayName: "Ada", kind: "PERSON", companyName: null, headline: "", avatarUrl: "/api/v1/uploads/images/me.png" },
+    recipient: { id: OTHER, displayName: "Bob", kind: "PERSON", companyName: null, headline: "", avatarUrl: null }, message: "join us",
+    posting: {
+      id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png",
+      location: "서울 강남구", careerMin: 5, careerMax: null, deadline: "2026-11-20",
+    },
     status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z",
   });
   const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO offers"))!;
   assert.deepEqual(insert.params.slice(1, 5), [ME, OTHER, "join us", POSTING]);
   const note = w.seen.find((c) => c.sql.startsWith("INSERT INTO notifications"))!;
   assert.deepEqual(note.params.slice(1, 5), [OTHER, "OFFER", "새 제안", "join us"]);
+});
+
+test("offers: a sender that belongs to a company is a COMPANY party", async () => {
+  const w = world((sql) => (sql.startsWith("SELECT o.id") ? [offerRow({ sender_company: "그린티켓" })] : undefined));
+  const res = await w.call("GET", `/api/v1/me/offers/${OFFER}`);
+  assert.equal(res.status, 200);
+  const offer = res.body.data as unknown as { sender: { kind: string; companyName: string }; recipient: { kind: string } };
+  assert.deepEqual([offer.sender.kind, offer.sender.companyName, offer.recipient.kind], ["COMPANY", "그린티켓", "PERSON"]);
 });
 
 test("offers: a recipient who muted offer notifications gets no notification row", async () => {
