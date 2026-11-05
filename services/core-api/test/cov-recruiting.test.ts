@@ -56,11 +56,11 @@ test("links: list is scoped to the caller, filters by kind and paginates", async
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, [{ id: rows[0].id, kind: "github", url: "https://github.com/a", title: "", status: "READ", fitCount: 0, aiRead: true, createdAt: "2026-10-02T00:00:00Z" }]);
   assert.equal(res.body.page?.hasMore, true);
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT \$3$/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT \$3$/);
   assert.deepEqual(w.seen.at(-1)!.params, [ME, "github", 2]);
 
   await w.call("GET", `/api/v1/me/links?cursor=${res.body.page!.nextCursor}`);
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND \(created_at, id\) < \(\$2, \$3\)/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND \(created_at, id\) < \(\$2, \$3\)/);
 
   const bad = await w.call("GET", "/api/v1/me/links?kind=video");
   assert.equal(bad.status, 422);
@@ -104,7 +104,7 @@ test("links: create validates url, kind, managed fields and aiRead", async () =>
 
 test("links: patch and delete only touch the caller's link", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("UPDATE user_links") || sql.startsWith("DELETE FROM user_links")) {
+    if (sql.startsWith("UPDATE user_links")) {
       return params[1] === ME && params[0] === LINK ? [{ id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fit_count: 2, ai_read: false, created_at: "2026-10-01T00:00:00Z" }] : [];
     }
     return undefined;
@@ -112,7 +112,7 @@ test("links: patch and delete only touch the caller's link", async () => {
   const patched = await w.call("PATCH", `/api/v1/me/links/${LINK}`, { kind: "blog", title: "t", url: "https://b.example", aiRead: false });
   assert.equal(patched.status, 200);
   assert.equal(patched.body.data.fitCount, 2);
-  assert.match(w.seen.at(-1)!.sql, /WHERE id = \$1 AND user_id = \$2 RETURNING/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE id = \$1 AND user_id = \$2 AND deleted_at IS NULL RETURNING/);
   assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME, "t", "blog", "https://b.example", false]);
 
   const missing = await w.call("PATCH", `/api/v1/me/links/${OTHER}`, { title: "x" });
@@ -126,9 +126,46 @@ test("links: patch and delete only touch the caller's link", async () => {
 
   const removed = await w.call("DELETE", `/api/v1/me/links/${LINK}`);
   assert.equal(removed.status, 204);
-  assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME]);
+  assert.match(w.seen.at(-1)!.sql, /^UPDATE user_links SET deleted_at = \$3 WHERE id = \$1 AND user_id = \$2 AND deleted_at IS NULL/);
+  assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME, NOW.toISOString()]);
+  assert.equal(w.seen.some((c) => c.sql.startsWith("DELETE FROM user_links")), false);
   const notMine = await w.call("DELETE", `/api/v1/me/links/${OTHER}`);
   assert.equal(notMine.status, 404);
+});
+
+test("links: restore undoes a delete, repeats safely and stays scoped to the caller", async () => {
+  const links = new Map<string, { owner: string; deletedAt: unknown }>([[LINK, { owner: ME, deletedAt: null }]]);
+  const w = world((sql, params) => {
+    const link = links.get(String(params[0]));
+    const mine = link != null && link.owner === params[1];
+    if (sql.startsWith("UPDATE user_links SET deleted_at = $3")) {
+      if (!mine || link.deletedAt != null) return [];
+      link.deletedAt = params[2];
+      return [{ id: LINK }];
+    }
+    if (sql.startsWith("UPDATE user_links SET deleted_at = NULL")) {
+      if (!mine) return [];
+      link.deletedAt = null;
+      return [{ id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fit_count: 1, ai_read: true, created_at: "2026-10-01T00:00:00Z" }];
+    }
+    if (sql.startsWith("UPDATE user_links SET title")) return mine && link.deletedAt == null ? [{ id: LINK }] : [];
+    return undefined;
+  });
+  assert.equal((await w.call("DELETE", `/api/v1/me/links/${LINK}`)).status, 204);
+  assert.equal((await w.call("DELETE", `/api/v1/me/links/${LINK}`)).status, 404);
+  assert.equal((await w.call("PATCH", `/api/v1/me/links/${LINK}`, { title: "x" })).status, 404);
+
+  const restored = await w.call("POST", `/api/v1/me/links/${LINK}/restore`);
+  assert.equal(restored.status, 200);
+  assert.deepEqual(restored.body.data, { id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fitCount: 1, aiRead: true, createdAt: "2026-10-01T00:00:00Z" });
+  assert.equal(links.get(LINK)!.deletedAt, null);
+  assert.equal((await w.call("POST", `/api/v1/me/links/${LINK}/restore`)).status, 200);
+  assert.equal((await w.call("PATCH", `/api/v1/me/links/${LINK}`, { title: "x" })).status, 200);
+
+  links.set(OTHER, { owner: OTHER, deletedAt: "2026-10-01T00:00:00Z" });
+  assert.equal((await w.call("POST", `/api/v1/me/links/${OTHER}/restore`)).status, 404);
+  assert.equal(links.get(OTHER)!.deletedAt, "2026-10-01T00:00:00Z");
+  assert.equal((await w.call("POST", "/api/v1/me/links/not-a-uuid/restore")).status, 400);
 });
 
 // --- devices & notifications --------------------------------------------

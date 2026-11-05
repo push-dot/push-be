@@ -187,8 +187,16 @@ export const routes: Route[] = [
   del("core", "/api/v1/me/links/{id}", {
     tag,
     summary: "Delete a link",
+    description: "Soft delete: the link leaves the list, PATCH and the AI readers, and POST .../restore brings it back. 404 when it is already deleted. Adding the same URL again creates a new link.",
     params: [id],
     responses: { 204: noContent },
+  }),
+  post("core", "/api/v1/me/links/{id}/restore", {
+    tag,
+    summary: "Restore a deleted link",
+    description: "Undo for DELETE. Idempotent: a link that is not deleted is returned as is. 404 for another user's link.",
+    params: [id],
+    responses: { 200: ok(ref("ProfileLink")) },
   }),
   post("core", "/api/v1/me/devices", {
     tag,

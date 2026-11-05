@@ -2274,7 +2274,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete a link */
+        /**
+         * Delete a link
+         * @description Soft delete: the link leaves the list, PATCH and the AI readers, and POST .../restore brings it back. 404 when it is already deleted. Adding the same URL again creates a new link.
+         */
         delete: operations["deleteMeLinksById"];
         options?: never;
         head?: never;
@@ -2283,6 +2286,26 @@ export interface paths {
          * @description url, when sent, must be http or https with no username or password.
          */
         patch: operations["patchMeLinksById"];
+        trace?: never;
+    };
+    "/api/v1/me/links/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a deleted link
+         * @description Undo for DELETE. Idempotent: a link that is not deleted is returned as is. 404 for another user's link.
+         */
+        post: operations["postMeLinksByIdRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/me/match-chips": {
@@ -4083,6 +4106,7 @@ export interface components {
                 /** @enum {string} */
                 type: "approval";
             } | {
+                /** @description Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections. */
                 auto?: boolean;
                 /** @description Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress */
                 detail?: string;
@@ -9938,6 +9962,34 @@ export interface operations {
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileLink"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeLinksByIdRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {
