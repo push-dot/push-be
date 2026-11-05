@@ -265,6 +265,28 @@ export const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: stri
     .map((row) => ({ id: String(row.id ?? ""), count: Number(row.count ?? 0) }));
 };
 
+const SKILL_LIMIT = { fallback: 20, max: 50 };
+
+const skillLimit = (url: URL): number => {
+  const raw = url.searchParams.get("limit");
+  if (raw === null) return SKILL_LIMIT.fallback;
+  const limit = Number(raw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > SKILL_LIMIT.max) throw fieldError("limit", `must be an integer from 1 to ${SKILL_LIMIT.max}`);
+  return limit;
+};
+
+const listSkills = async (ctx: Ctx): Promise<Response> => {
+  const needle = (ctx.url.searchParams.get("q") ?? "").trim();
+  if (codePoints(needle) > 40) throw fieldError("q", "must be at most 40 characters");
+  const limit = skillLimit(ctx.url);
+  const rows = await withPublicStatus((withStatus) => query(ctx.deps.query,
+    `SELECT sk AS name, count(*)::int AS posting_count FROM job_postings p, jsonb_array_elements_text(COALESCE(p.skills, '[]'::jsonb)) sk
+     WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND ($2::text = '' OR strpos(lower(sk), lower($2::text)) > 0)
+     GROUP BY sk ORDER BY (strpos(lower(sk), lower($2::text)) = 1) DESC, posting_count DESC, sk ASC LIMIT $3::int`,
+    [ctx.user.id, needle, limit]));
+  return data(200, rows.rows.map((row) => ({ name: String(row.name ?? ""), postingCount: Number(row.posting_count ?? 0) })), ctx.rid);
+};
+
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
   const [career, category, location, skills] = await Promise.all([
     careerFacet(ctx), categoryFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
@@ -971,6 +993,7 @@ export const dispatchPostings = async (ctx: Ctx, path: string): Promise<Response
   if (method === "GET" && path === "/api/v1/postings") return listPostings(ctx);
   if (method === "POST" && path === "/api/v1/postings") return createPosting(ctx);
   if (method === "GET" && path === "/api/v1/postings/facets") return listPostingFacets(ctx);
+  if (method === "GET" && path === "/api/v1/skills") return listSkills(ctx);
   if (method === "GET" && path === "/api/v1/postings/locations") return listPostingLocations(ctx);
   const bookmark = path.match(/^\/api\/v1\/postings\/([^/]+)\/bookmark$/);
   if (bookmark && method === "POST") return bookmarkPosting(ctx, bookmark[1]);

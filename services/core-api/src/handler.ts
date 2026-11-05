@@ -61,6 +61,7 @@ const isGuestRead = (method: string, path: string): boolean => {
   return path === "/api/v1/postings"
     || path === "/api/v1/postings/locations"
     || path === "/api/v1/postings/facets"
+    || path === "/api/v1/skills"
     || path === "/api/v1/search"
     || path === "/api/v1/search/counts"
     || path === "/api/v1/search/trending"

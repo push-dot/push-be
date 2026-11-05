@@ -74,6 +74,17 @@ export const routes: Route[] = [
     params: filterParams(true),
     responses: { 200: ok(obj({ career: arr(facetItem), category: arr(facetItem), location: arr(facetItem), skills: arr(facetItem) })) },
   }),
+  get("core", "/api/v1/skills", {
+    tag: "postings",
+    summary: "Search skills used by open postings",
+    auth: "optional",
+    description: "Skill names from open postings, matched case-insensitively as a substring of q. Names that start with q come first, then by postingCount. An empty q lists the most common skills.",
+    params: [
+      query("q", { type: "string", maxLength: 40 }, "Substring to match"),
+      query("limit", { type: "integer", minimum: 1, maximum: 50, default: 20 }, "Maximum skills to return"),
+    ],
+    responses: { 200: okList(obj({ name: str, postingCount: int })) },
+  }),
   get("core", "/api/v1/postings/locations", {
     tag: "postings",
     summary: "Open posting counts by location",
