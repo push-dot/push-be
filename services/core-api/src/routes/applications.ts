@@ -205,7 +205,7 @@ export const importApplication = async (ctx: Ctx): Promise<Response> => {
     created_at: now, updated_at: now, stage_entered_at: { [stage]: now },
   };
   await queryLoose(ctx,
-    `WITH app AS (INSERT INTO applications (${APP_COLS}, stage_entered_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,NULL,true,$9,$9, jsonb_build_object($6, $9::timestamptz)) RETURNING id)
+    `WITH app AS (INSERT INTO applications (${APP_COLS}, stage_entered_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,NULL,true,$9,$9, jsonb_build_object($6::text, $9::timestamptz)) RETURNING id)
      INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, app.id, 'IMPORTED', $11::jsonb, $9 FROM app`,
     `WITH app AS (INSERT INTO applications (${APP_COLS}) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,NULL,true,$9,$9) RETURNING id)
      INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, app.id, 'IMPORTED', $11::jsonb, $9 FROM app`,
@@ -241,7 +241,7 @@ export const patchApplication = async (ctx: Ctx, idRaw: string): Promise<Respons
     if (!canPatchStage(from, to)) throw transition(`cannot move from ${from} to ${to}`);
     if (to !== from) {
       const times = stageEnteredAt(app);
-      if (!times[to]) times[to] = now;
+      if (now && !times[to]) times[to] = now;
       app.stage_entered_at = times;
       app.stage = to;
       if (to === "APPLIED") app.applied_at = now;

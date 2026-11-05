@@ -397,6 +397,32 @@ test("a stage jump to OFFER notifies the applicant", async () => {
   assert.equal(update.params.includes("OFFER"), true);
 });
 
+test("employer stage update falls back when stage_entered_at is missing", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
+  const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
+    const member = await memberPosting(sql);
+    if (member) return member;
+    if (sql.includes("UPDATE") && sql.includes("stage_entered_at")) throw missing;
+    if (sql.includes("UPDATE") && sql.includes("applications")) {
+      return { rows: [{ ...applicationRow("OFFER"), revision: 2 }], rowCount: 1 };
+    }
+    if (sql.includes("applications")) return { rows: [applicationRow("APPLIED")], rowCount: 1 };
+    if (sql.includes("user_settings")) return empty;
+    return empty;
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { stage: string; revision: number } };
+  assert.equal(body.data.stage, "OFFER");
+  assert.equal(body.data.revision, 2);
+  const updates = seen.filter((call) => call.sql.includes("UPDATE") && call.sql.includes("applications"));
+  assert.equal(updates.length, 2);
+  assert.match(updates[0].sql, /stage_entered_at/);
+  assert.match(updates[1].sql, /^UPDATE/);
+  assert.equal(updates[1].sql.includes("stage_entered_at"), false);
+});
+
 test("application stage notifications respect the settings switch", async () => {
   resetLimits();
   const seen: Call[] = [];
