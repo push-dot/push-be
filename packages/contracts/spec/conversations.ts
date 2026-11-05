@@ -173,7 +173,7 @@ const chatEvents: Record<string, Schema> = {
     title: str,
     gate: str,
     recommended: str,
-    auto: bool,
+    auto: { type: "boolean", description: "Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections." },
     multiple: { type: "boolean", description: "Present and true when more than one option may be selected" },
     detail: { type: "string", description: "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress" },
     note: { type: "string", description: "Profile present gate: where the PDF can be exported" },

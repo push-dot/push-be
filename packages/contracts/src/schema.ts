@@ -4106,6 +4106,7 @@ export interface components {
                 /** @enum {string} */
                 type: "approval";
             } | {
+                /** @description Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections. */
                 auto?: boolean;
                 /** @description Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress */
                 detail?: string;
