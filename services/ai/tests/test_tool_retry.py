@@ -40,14 +40,14 @@ async def test_a_read_that_fails_once_is_retried_and_flagged():
     line = _line(await _events(graph, _input("BYPASS")))
     assert len(calls) == 2
     assert line["state"] == "ok"
-    assert line["warning"] == "한 번 더 시도했어요"
+    assert line["warning"] == "시간이 오래 걸려서 한 번 더 시도했어요"
 
 
 async def test_a_read_that_fails_twice_stays_an_error_with_the_warning():
     graph, calls = _graph(Tier.READ, [ValueError("a"), ValueError("b")])
     line = _line(await _events(graph, _input("BYPASS")))
     assert len(calls) == 2
-    assert (line["state"], line["warning"]) == ("err", "한 번 더 시도했어요")
+    assert (line["state"], line["warning"]) == ("err", "시간이 오래 걸려서 한 번 더 시도했어요")
 
 
 async def test_a_known_error_or_a_write_is_not_retried():

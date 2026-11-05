@@ -7,6 +7,57 @@ from app.harness.registry import REGISTRY
 from app.harness.tools import ToolContext
 
 
+def test_review_choice_has_template_and_photo_sections():
+    choice = _choice({"conversation_id": "c", "job_id": "j"}, "review", auto=False)
+    assert choice["sections"][0]["kind"] == "thumbnails"
+    assert [item["id"] for item in choice["sections"][0]["options"]] == [
+        "CLASSIC",
+        "MODERN",
+        "COMPACT",
+        "ATS",
+    ]
+    assert choice["sections"][1] == {
+        "id": "photo",
+        "kind": "toggle",
+        "options": [
+            {
+                "id": "photo",
+                "label": "프로필 사진 넣기",
+                "desc": "마이 › 프로필 사진을 써요 · 모든 템플릿",  # noqa: RUF001
+            }
+        ],
+        "selected": ["photo"],
+    }
+    assert choice["submit"]["optionLabels"]["ATS"] == "ATS로 만들기"
+    assert choice["submit"]["label"] == "만들기"
+    assert choice["options"][0]["id"] == "CLASSIC"
+    assert choice["options"][-1]["id"] == "cancel"
+
+
+def test_quality_copy():
+    from app.harness.personal.resume.graph import _GATES
+    from app.harness.personal.resume.progress import quality_choice
+
+    assert _GATES["quality"]["title"] == "추천 수정도 반영할까요?"
+    event = quality_choice([{"label": "숫자로", "priority": "P1"}])
+    assert event["title"] == "추천 수정도 반영할까요?"
+    assert event["submit"]["label"] == "{n}개 반영하고 디자인으로"
+
+
+def test_read_failed_copy():
+    from app.harness.personal.resume.graph import _GATES
+
+    gate = _GATES["read_failed"]
+    assert gate["title"] == "어떻게 할까요?"
+    assert gate["recommended"] == "paste"
+    assert gate["options"] == [
+        {"id": "paste", "label": "공고 내용을 붙여넣을게요"},
+        {"id": "proceed", "label": "이대로 진행해 주세요"},
+        {"id": "pick", "label": "Push 공고에서 고를게요"},
+    ]
+    assert all(item["id"] != "cancel" for item in gate["options"])
+
+
 def test_review_gate_explains_the_pick_and_badges_the_recommended_template():
     choice = _choice({"conversation_id": "c", "job_id": "j"}, "review", auto=False)
     assert choice["detail"] == "템플릿을 골라 주세요. 처음이라면 클래식을 추천해요."
