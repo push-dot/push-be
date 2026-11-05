@@ -15,6 +15,9 @@ import {
   relevance,
   NOT_DELETING,
   notify,
+  searchSortMode,
+  assertSearchCursor,
+  stampSearchCursor,
 } from "./recruiting-shared.ts";
 
 const POST_CATEGORIES = new Set(["work", "dev", "daily", "career", "talk", "coffeechat", "marketing"]);
@@ -119,7 +122,9 @@ async function listPosts(ctx: Ctx): Promise<Response> {
 }
 
 export async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
+  const sort = searchSortMode(ctx.url);
   const page = pageOf(ctx.url);
+  assertSearchCursor(ctx.url, sort);
   const forms = queryForms(q);
   const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
   let sql = `SELECT ${POST_SQL} WHERE (
@@ -134,11 +139,14 @@ export async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
     sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY ${relevance("p.title", "p.body", "$1", "$2", "$4")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+  const order = sort === "latest"
+    ? "p.created_at DESC, p.id DESC"
+    : `${relevance("p.title", "p.body", "$1", "$2", "$4")}, p.created_at DESC, p.id DESC`;
+  sql += ` ORDER BY ${order} LIMIT $${params.length}`;
   const rows = await queryPosts(ctx, sql, params);
   const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+  return pageBody(paged.items.map((row) => row.item), stampSearchCursor(paged.nextCursor, sort), paged.hasMore, ctx.rid, total);
 }
 
 async function createPost(ctx: Ctx): Promise<Response> {

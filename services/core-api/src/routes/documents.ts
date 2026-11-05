@@ -1,14 +1,14 @@
 import { strictBody, strictObject } from "../body.ts";
-import { one, query } from "../db.ts";
+import { isMissingRelation, one, query } from "../db.ts";
 import { searchFields } from "../hangul.ts";
 import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
 } from "../document-content.ts";
-import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
+import { HttpError, data, fieldError, hashJson, parseUuid, randomToken, requireUuid, sha256Hex } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { listPage, pageOf, ts } from "../page.ts";
-import { httpsUrl } from "./recruiting-shared.ts";
+import { httpsUrl, unprocessable } from "./recruiting-shared.ts";
 import type { Ctx } from "../types.ts";
 
 const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, language, status, latest_version_id, finalized_version_id, created_at, updated_at";
@@ -624,7 +624,7 @@ const REPLACE_PROFILE = `WITH replaced AS (
   INSERT INTO profiles (user_id, headline, intro, careers, skills, search_text, search_choseong, search_jamo, created_at, updated_at)
   VALUES ($1::uuid, $2::text, $3::text, $4::jsonb, $5::jsonb, $6::text, $7::text, $8::text, $9::timestamptz, $9::timestamptz)
   ON CONFLICT (user_id) DO UPDATE SET
-    headline = EXCLUDED.headline,
+    headline = CASE WHEN $15::boolean THEN EXCLUDED.headline ELSE profiles.headline END,
     intro = CASE WHEN $14::boolean THEN EXCLUDED.intro ELSE profiles.intro END,
     careers = CASE WHEN $12::boolean THEN EXCLUDED.careers ELSE profiles.careers END,
     skills = CASE WHEN $13::boolean THEN EXCLUDED.skills ELSE profiles.skills END,
@@ -648,21 +648,47 @@ const profileSkills = async (ctx: Ctx): Promise<string[]> => {
   return Array.isArray(current?.skills) ? current.skills.map(String) : [];
 };
 
-const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string): Promise<{ documentId: string; profileUserId: string }> => {
+const PROFILE_SECTIONS = ["headline", "intro", "careers", "skills", "links"];
+
+const sectionsOf = (value: unknown): string[] => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw unprocessable("sections", "unsupported section");
+  const out: string[] = [];
+  for (const item of value) {
+    if (!PROFILE_SECTIONS.includes(item)) throw unprocessable("sections", "unsupported section");
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+};
+
+const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: string[] | null): Promise<{ documentId: string; profileUserId: string; applied: string[] }> => {
   const nowIso = ctx.now.toISOString();
   const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false, replaceCareers: false, replaceSkills: false, replaceIntro: false };
   const version = doc.latest_version_id == null ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
   const parsed = version == null ? empty : sectionsFrom(version.content, version.blocks);
+  const allow = (key: string): boolean => sections == null || sections.includes(key);
+  const replaceLinks = parsed.replaceLinks && allow("links");
+  const replaceCareers = parsed.replaceCareers && allow("careers");
+  const replaceSkills = parsed.replaceSkills && allow("skills");
+  const replaceIntro = parsed.replaceIntro && allow("intro");
+  const replaceHeadline = allow("headline");
+  const applied = PROFILE_SECTIONS.filter((key) => (
+    key === "headline" ? replaceHeadline
+      : key === "intro" ? replaceIntro
+        : key === "careers" ? replaceCareers
+          : key === "skills" ? replaceSkills
+            : replaceLinks
+  ));
+  if (!applied.length) return { documentId: id, profileUserId: ctx.user.id, applied };
   const headline = clip(parsed.headline || String(doc.title), 120);
   const intro = clip(parsed.intro, 2000);
-  const currentSkills = parsed.replaceSkills ? parsed.skills : await profileSkills(ctx);
+  const currentSkills = replaceSkills ? parsed.skills : await profileSkills(ctx);
   const fields = searchFields([ctx.user.displayName, headline, currentSkills.join(" ")].join(" "));
   await query(ctx.deps.query, REPLACE_PROFILE, [
     ctx.user.id, headline, intro, JSON.stringify(parsed.careers), JSON.stringify(parsed.skills),
-    fields.text, fields.choseong, fields.jamo, nowIso, parsed.replaceLinks, JSON.stringify(parsed.links),
-    parsed.replaceCareers, parsed.replaceSkills, parsed.replaceIntro,
+    fields.text, fields.choseong, fields.jamo, nowIso, replaceLinks, JSON.stringify(parsed.links),
+    replaceCareers, replaceSkills, replaceIntro, replaceHeadline,
   ]);
-  return { documentId: id, profileUserId: ctx.user.id };
+  return { documentId: id, profileUserId: ctx.user.id, applied };
 };
 
 const TEXT_SOURCE = new Set(["text/plain", "text/markdown"]);
@@ -754,7 +780,7 @@ const convertHubDocument = async (
     if (!updated) await failedUpdate(ctx, "documents", id);
     return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
   }
-  const copied = await copyOntoBaseProfile(ctx, doc, id);
+  const copied = await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null);
   return data(200, { target, ...copied }, ctx.rid);
 };
 
@@ -764,9 +790,11 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
     target: { kind: "str" },
     applicationId: { kind: "uuid" },
     expectedRevision: { kind: "int" },
+    sections: { kind: "any" },
   });
   const target = present.has("target") ? String(values.target) : "application";
   if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
+  if (present.has("sections") && target !== "hub") throw unprocessable("sections", "unsupported section");
   const doc = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
   if (doc) return convertHubDocument(ctx, id, doc, target, values, present);
   return convertOwnedSource(ctx, id);
@@ -774,10 +802,89 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
 
 export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
-  await strictBody(ctx.request, {});
+  const { values, present } = await strictBody(ctx.request, { sections: { kind: "any" } });
   const doc = await loadDocument(ctx, id);
   if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be the base profile");
-  return data(200, await copyOntoBaseProfile(ctx, doc, id), ctx.rid);
+  return data(200, await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null), ctx.rid);
+};
+
+const sharingUnavailable = (): HttpError => new HttpError(404, "SHARING_UNAVAILABLE", "sharing unavailable");
+
+const jsonValue = (value: unknown): unknown => {
+  if (typeof value !== "string" || value === "") return value ?? null;
+  try { return JSON.parse(value); } catch { return value; }
+};
+
+const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const raw = await ctx.request.text();
+  let versionId = "";
+  if (raw.trim()) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
+    const body = strictObject(parsed, { versionId: { kind: "uuid" } });
+    if (body.present.has("versionId")) versionId = String(body.values.versionId);
+  }
+  const doc = await loadDocument(ctx, id);
+  const pinned = versionId || (doc.latest_version_id == null ? "" : String(doc.latest_version_id));
+  if (!pinned) throw notFound();
+  await loadVersion(ctx, id, pinned);
+  const token = randomToken();
+  const now = ts(ctx.now);
+  try {
+    await query(ctx.deps.query,
+      `WITH revoked AS (
+         UPDATE document_shares SET revoked_at = $6::timestamptz
+         WHERE document_id = $2::uuid AND revoked_at IS NULL
+         RETURNING id
+       )
+       INSERT INTO document_shares (id, document_id, version_id, token_hash, created_by, created_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::timestamptz)`,
+      [crypto.randomUUID(), id, pinned, await sha256Hex(token), ctx.user.id, now]);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+  return data(200, { token, path: `/api/v1/documents/shared/${token}`, versionId: pinned, createdAt: now }, ctx.rid);
+};
+
+const revokeShare = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  await loadDocument(ctx, id);
+  try {
+    const row = await one(ctx.deps.query,
+      `UPDATE document_shares SET revoked_at = $3::timestamptz
+       WHERE document_id = $1::uuid AND created_by = $2::uuid AND revoked_at IS NULL
+       RETURNING id`,
+      [id, ctx.user.id, ts(ctx.now)]);
+    return data(200, { revoked: Boolean(row) }, ctx.rid);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+};
+
+const readShare = async (ctx: Ctx, token: string): Promise<Response> => {
+  let row: Row | null;
+  try {
+    row = await one(ctx.deps.query,
+      `SELECT d.title, d.kind, v.content, v.blocks
+       FROM document_shares s
+       JOIN document_versions v ON v.id = s.version_id
+       JOIN documents d ON d.id = s.document_id
+       WHERE s.token_hash = $1::text AND s.revoked_at IS NULL`,
+      [await sha256Hex(token)]);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+  if (!row) throw notFound();
+  return data(200, {
+    title: String(row.title ?? ""),
+    kind: String(row.kind),
+    content: jsonValue(row.content),
+    blocks: blocksOf(jsonValue(row.blocks)),
+  }, ctx.rid);
 };
 
 export const isDocumentEdit = (method: string, path: string): boolean =>
@@ -801,6 +908,11 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (apply && method === "POST") return applyRevision(ctx, apply[1], apply[2]);
   const result = path.match(/^\/api\/v1\/documents\/([^/]+)\/exports\/([^/]+)\/result$/);
   if (result && method === "POST") return recordExportResult(ctx, result[1], result[2]);
+  const shared = path.match(/^\/api\/v1\/documents\/shared\/([^/]+)$/);
+  if (shared && method === "GET") return readShare(ctx, shared[1]);
+  const share = path.match(/^\/api\/v1\/documents\/([^/]+)\/share$/);
+  if (share && method === "POST") return shareDocument(ctx, share[1]);
+  if (share && method === "DELETE") return revokeShare(ctx, share[1]);
   const baseProfile = path.match(/^\/api\/v1\/documents\/([^/]+)\/base-profile$/);
   if (baseProfile && method === "POST") return setBaseProfile(ctx, baseProfile[1]);
   const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);

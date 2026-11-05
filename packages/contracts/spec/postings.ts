@@ -174,10 +174,11 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Search postings, people or posts",
     auth: "optional",
-    description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending.",
+    description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending. sort is optional. Omitted and relevance keep that order. latest orders postings and posts by createdAt and people by updatedAt, with no relevance term. The cursor encodes sort; an omitted sort is stored as relevance, so a cursor minted before sort still continues the default page. sort=latest rejects a cursor with no sort or with relevance. sort=relevance and an omitted sort reject a cursor marked latest. latest does not continue a relevance page.",
     params: [
       requiredQuery("q", { type: "string", minLength: 1, pattern: "\\S" }, "Search term. Whitespace-only is 400. No max length on this route."),
       query("type", { type: "string", enum: ["postings", "people", "posts"], default: "postings" }),
+      query("sort", { type: "string", enum: ["relevance", "latest"] }, "Omitted matches relevance. Any other value, including an empty string, is 422."),
       ...pageParams,
       query("category", csv("type=people only: comma-separated job categories")),
       query("tenure", csv("type=people only: comma-separated tenure buckets: 0-2, 3-5, 6-9, 10+")),

@@ -1,6 +1,7 @@
 import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, fieldError, jsonList } from "../http.ts";
 import { ts } from "../page.ts";
+import { decodeCursor, encodeCursor } from "../time.ts";
 import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
 
@@ -217,6 +218,29 @@ export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: 
       .replaceAll(" LEFT JOIN companies rc ON rc.id = rm.company_id", "");
     return read(fallback);
   }
+};
+
+export type SearchSort = "relevance" | "latest";
+
+export const searchSortMode = (url: URL): SearchSort => {
+  const raw = url.searchParams.get("sort");
+  if (raw == null || raw === "relevance") return "relevance";
+  if (raw === "latest") return "latest";
+  throw unprocessable("sort", "unsupported sort");
+};
+
+export const assertSearchCursor = (url: URL, sort: SearchSort): void => {
+  const encoded = url.searchParams.get("cursor");
+  if (!encoded) return;
+  const marked = decodeCursor(encoded).sort ?? "relevance";
+  if (sort === "latest" && marked !== "latest") throw fieldError("cursor", "cursor does not match sort");
+  if (sort === "relevance" && marked === "latest") throw fieldError("cursor", "cursor does not match sort");
+};
+
+export const stampSearchCursor = (cursor: string | null, sort: SearchSort): string | null => {
+  if (!cursor) return null;
+  const decoded = decodeCursor(cursor);
+  return encodeCursor(decoded.createdAt, decoded.id, sort);
 };
 
 export function relevance(title: string, extra: string, raw = "$2", cho = "$3", hangul = "$5"): string {

@@ -33,6 +33,9 @@ import {
   countWhere,
   relevance,
   notify,
+  searchSortMode,
+  assertSearchCursor,
+  stampSearchCursor,
 } from "./recruiting-shared.ts";
 
 const EMPLOYMENT = new Set(["full_time", "contract", "intern", "freelance", "dispatch"]);
@@ -932,8 +935,10 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
 };
 
 export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
+  const sort = searchSortMode(ctx.url);
   const loaded = await withPublicStatus(async (withStatus) => {
     const page = pageOf(ctx.url);
+    assertSearchCursor(ctx.url, sort);
     const forms = queryForms(q);
     const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
@@ -949,13 +954,16 @@ export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
     }
     params.push(page.limit + 1);
-    sql += ` ORDER BY ${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const order = sort === "latest"
+      ? "p.created_at DESC, p.id DESC"
+      : `${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC`;
+    sql += ` ORDER BY ${order} LIMIT $${params.length}`;
     const rows = await query(ctx.deps.query, sql, params);
     return { rows, page, total };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
+  return pageBody(paged.items.map((row) => row.item), stampSearchCursor(paged.nextCursor, sort), paged.hasMore, ctx.rid, loaded.total);
 }
 
 export const dispatchPostings = async (ctx: Ctx, path: string): Promise<Response | null> => {

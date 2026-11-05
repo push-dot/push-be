@@ -422,6 +422,18 @@ export const schemas: Record<string, Schema> = {
     nextActionAt: nullable(dateTime),
     imported: bool,
     fitScore: { ...nullable(num), description: "Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null." },
+    fit: {
+      ...obj({
+        fitScore: num,
+        parts: obj({ techStack: num, experienceLink: num, careerLevel: num, keyword: num, domain: num }),
+        topGap: str,
+        plan: str,
+        reachable: num,
+        documentId: uuid,
+        documentTitle: nullable(str),
+      }),
+      description: "Stored posting fit for GET /api/v1/applications/{id} only. Omitted when no cache row. fitScore here is the cached decimal. The integer fitScore beside it stays the gap score. reachable is the stored score if the weakest part were 10. Employer applicant payloads do not include fit.",
+    },
     createdAt: dateTime,
     updatedAt: dateTime,
     stageEnteredAt: {

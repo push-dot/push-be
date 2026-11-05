@@ -507,3 +507,385 @@ test("another user's source is 404", async () => {
   const lookup = calls.find((call) => call.sql.includes("FROM sources"));
   assert.equal(lookup?.params[1], USER);
 });
+
+const heading = (id: string, text: string) => ({ type: "heading", attrs: { blockId: id }, content: [{ type: "text", text }] });
+const paragraph = (id: string, text: string) => ({ type: "paragraph", attrs: { blockId: id }, content: [{ type: "text", text }] });
+
+const profileContent = {
+  type: "doc",
+  content: [
+    heading("h1", "헤드라인"),
+    paragraph("p1", "한 줄"),
+    heading("h2", "소개"),
+    paragraph("p2", "소개 본문"),
+    heading("h3", "경력"),
+    paragraph("p3", "Acme | Backend | 2020-01-01 | 2021-01-01 | api"),
+    heading("h4", "기술"),
+    paragraph("p4", "Kotlin"),
+    heading("h5", "링크"),
+    paragraph("p5", "https://example.com"),
+  ],
+};
+
+const profileDoc = (kind = "HUB_PROFILE") => ({
+  id: "d0000000-0000-4000-8000-000000000090",
+  revision: 2,
+  application_id: null,
+  title: "문서 제목",
+  kind,
+  template: "SIMPLE",
+  language: "ko",
+  status: "DRAFT",
+  latest_version_id: "d0000000-0000-4000-8000-000000000091",
+  finalized_version_id: null,
+  created_at: "2026-10-01T00:00:00Z",
+  updated_at: "2026-10-01T00:00:00Z",
+});
+
+const profileQuery = (kind = "HUB_PROFILE") => (sql: string) => {
+  if (sql.includes("FROM documents WHERE id")) return [profileDoc(kind)];
+  if (sql.includes("FROM document_versions")) return [{
+    id: "d0000000-0000-4000-8000-000000000091",
+    content: profileContent,
+    blocks: [],
+    created_at: "2026-10-01T00:00:00Z",
+  }];
+  if (sql.includes("FROM profiles")) return [{ skills: ["Go"] }];
+  return null;
+};
+
+test("omitted sections on target hub still copies every present heading", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", { target: "hub" }, "00000000-0000-4000-8000-000000000090"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { applied: string[] } };
+  assert.deepEqual(body.data.applied, ["headline", "intro", "careers", "skills", "links"]);
+  const update = profileWrite(calls);
+  assert.equal(update?.params[1], "한 줄");
+  assert.equal(update?.params[9], true);
+  assert.equal(update?.params[11], true);
+  assert.equal(update?.params[12], true);
+  assert.equal(update?.params[13], true);
+  assert.equal(update?.params[14], true);
+  assert.equal(update?.sql.includes("ELSE profiles.careers"), true);
+  assert.equal(update?.sql.includes("ELSE profiles.skills"), true);
+  assert.equal(update?.sql.includes("ELSE profiles.intro"), true);
+});
+
+test("sections skills replaces skills only", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", {
+    target: "hub", sections: ["skills"],
+  }, "00000000-0000-4000-8000-000000000091"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { applied: string[] } };
+  assert.deepEqual(body.data.applied, ["skills"]);
+  const update = profileWrite(calls);
+  assert.equal(update?.params[9], false);
+  assert.equal(update?.params[11], false);
+  assert.equal(update?.params[12], true);
+  assert.equal(update?.params[13], false);
+  assert.equal(update?.params[14], false);
+  assert.match(update?.sql ?? "", /ELSE profiles\.headline/);
+  assert.match(update?.sql ?? "", /ELSE profiles\.intro/);
+  assert.match(update?.sql ?? "", /ELSE profiles\.careers/);
+  assert.match(update?.sql ?? "", /ELSE profiles\.skills/);
+});
+
+test("empty sections leaves the profile unchanged", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", {
+    target: "hub", sections: [],
+  }, "00000000-0000-4000-8000-000000000092"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { applied: string[] } };
+  assert.deepEqual(body.data.applied, []);
+  assert.equal(calls.some((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles")), false);
+});
+
+test("unknown section is 422 field sections", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", {
+    target: "hub", sections: ["projects"],
+  }, "00000000-0000-4000-8000-000000000093"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 422);
+  const body = await res.json() as { error: { details: { field: string } } };
+  assert.equal(body.error.details.field, "sections");
+});
+
+test("sections without target hub is 422 field sections", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", {
+    sections: ["skills"],
+  }, "00000000-0000-4000-8000-000000000094"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 422);
+  const body = await res.json() as { error: { details: { field: string } } };
+  assert.equal(body.error.details.field, "sections");
+});
+
+test("non hub profile kind still errors on kind", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder(profileQuery("RESUME"));
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", {
+    target: "hub", sections: ["skills"],
+  }, "00000000-0000-4000-8000-000000000095"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 400);
+  const body = await res.json() as { error: { details: { field: string } } };
+  assert.equal(body.error.details.field, "kind");
+});
+
+test("base-profile sections intro does not overwrite headline", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder(profileQuery());
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/base-profile", {
+    sections: ["intro"],
+  }, "00000000-0000-4000-8000-000000000096"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { applied: string[] } };
+  assert.deepEqual(body.data.applied, ["intro"]);
+  const update = profileWrite(calls);
+  assert.equal(update?.params[13], true);
+  assert.equal(update?.params[14], false);
+  assert.match(update?.sql ?? "", /ELSE profiles\.headline/);
+});
+
+test("empty base-profile body still sets headline from the title", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [profileDoc()];
+    if (sql.includes("FROM document_versions")) return [{
+      id: "d0000000-0000-4000-8000-000000000091",
+      content: { type: "doc", content: [heading("h2", "소개"), paragraph("p2", "소개 본문")] },
+      blocks: [],
+      created_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM profiles")) return [{ skills: ["Go"] }];
+    return null;
+  });
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/base-profile", {}, "00000000-0000-4000-8000-000000000097"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { applied: string[] } };
+  assert.equal(body.data.applied.includes("headline"), true);
+  const update = profileWrite(calls);
+  assert.equal(update?.params[1], "문서 제목");
+  assert.equal(update?.params[14], true);
+});
+
+test("a version post that changes the intro keeps the career nodes", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-0000000000b0";
+  let revision = 3;
+  const { query } = recorder((sql, params) => {
+    if (sql.includes("FROM documents WHERE id")) return [{
+      id: DOC, revision, application_id: null, title: "서류", kind: "RESUME", template: "SIMPLE", language: "ko",
+      status: "DRAFT", latest_version_id: null, finalized_version_id: null,
+      created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.startsWith("WITH upd AS")) {
+      revision += 1;
+      return [{ number: 2 }];
+    }
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    return null;
+  });
+  const kept = "기존 경력";
+  const content = {
+    type: "doc",
+    content: [
+      heading("h-intro", "소개"),
+      paragraph("p-intro", "새 소개"),
+      heading("h-career", "경력"),
+      paragraph("p-career", kept),
+    ],
+  };
+  const blocks = [
+    { id: "h-intro", text: "소개", evidenceRefs: [] },
+    { id: "p-intro", text: "새 소개", evidenceRefs: [] },
+    { id: "h-career", text: "경력", evidenceRefs: [] },
+    { id: "p-career", text: kept, evidenceRefs: [] },
+  ];
+  const res = await handle(postJson(`/api/v1/documents/${DOC}/versions`, {
+    expectedRevision: 3, content, blocks, changeNote: "intro",
+  }, "00000000-0000-4000-8000-0000000000b0"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const body = await res.json() as { data: { document: { revision: number }; version: { content: { content: { content: { text: string }[] }[] } } } };
+  const texts = body.data.version.content.content.map((node) => node.content[0].text);
+  assert.equal(texts[1], "새 소개");
+  assert.equal(texts[3], kept);
+  assert.equal(body.data.document.revision, 4);
+  const again = await handle(postJson(`/api/v1/documents/${DOC}/versions`, {
+    expectedRevision: 3, content, blocks, changeNote: "intro",
+  }, "00000000-0000-4000-8000-0000000000b1"), ENV, { query, now: () => NOW });
+  assert.equal(again.status, 409);
+  const err = await again.json() as { error: { code: string; details: { currentRevision: number } } };
+  assert.equal(err.error.code, "REVISION_CONFLICT");
+  assert.equal(err.error.details.currentRevision, 4);
+});
+
+test("share returns the raw token once and a later GET returns the pinned version", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-0000000000c0";
+  const VER = "d0000000-0000-4000-8000-0000000000c1";
+  const pinned = { type: "doc", content: [{ type: "paragraph", text: "pinned" }] };
+  const shares: { hash: string; versionId: string; revoked: boolean }[] = [];
+  const query = recorder((sql, params) => {
+    if (sql.includes("FROM documents WHERE id")) return [{
+      id: DOC, user_id: USER, revision: 1, application_id: "a0000000-0000-4000-8000-0000000000c0", title: "이력서",
+      kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
+      finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM document_versions")) return [{ id: VER, content: pinned, blocks: [], created_at: "2026-10-01T00:00:00Z" }];
+    if (sql.includes("INSERT INTO document_shares")) {
+      for (const share of shares) share.revoked = true;
+      shares.push({ hash: String(params[3]), versionId: String(params[2]), revoked: false });
+      return [{ id: params[0] }];
+    }
+    if (sql.includes("token_hash")) {
+      const hit = shares.find((share) => share.hash === String(params[0]) && !share.revoked);
+      if (!hit) return [];
+      return [{ title: "현재 제목", kind: "RESUME", content: pinned, blocks: [], userId: USER, applicationId: "a0000000-0000-4000-8000-0000000000c0" }];
+    }
+    return null;
+  }).query;
+  const created = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000c0"), ENV, { query, now: () => NOW });
+  assert.equal(created.status, 200);
+  const share = await created.json() as { data: { token: string; path: string; versionId: string } };
+  assert.equal(share.data.path, `/api/v1/documents/shared/${share.data.token}`);
+  assert.equal(share.data.versionId, VER);
+  assert.notEqual(share.data.token, shares[0]?.hash);
+  const read = await handle(new Request("https://core.example" + share.data.path), ENV, { query, now: () => NOW });
+  assert.equal(read.status, 200);
+  const body = await read.json() as { data: Record<string, unknown> };
+  assert.deepEqual(body.data.content, pinned);
+  assert.equal(body.data.title, "현재 제목");
+  assert.equal("userId" in body.data, false);
+  assert.equal("applicationId" in body.data, false);
+});
+
+test("a second share revokes the first token", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-0000000000d0";
+  const VER = "d0000000-0000-4000-8000-0000000000d1";
+  const shares: { hash: string; revoked: boolean }[] = [];
+  const query = recorder((sql, params) => {
+    if (sql.includes("FROM documents WHERE id")) return [{
+      id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
+      latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM document_versions")) return [{ id: VER, content: { type: "doc", content: [] }, blocks: [] }];
+    if (sql.includes("INSERT INTO document_shares")) {
+      for (const share of shares) share.revoked = true;
+      shares.push({ hash: String(params[3]), revoked: false });
+      return [{ id: params[0] }];
+    }
+    if (sql.includes("token_hash")) {
+      const hit = shares.find((share) => share.hash === String(params[0]) && !share.revoked);
+      return hit ? [{ title: "이력서", kind: "RESUME", content: { type: "doc", content: [] }, blocks: [] }] : [];
+    }
+    return null;
+  }).query;
+  const first = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000d0"), ENV, { query, now: () => NOW });
+  const firstBody = await first.json() as { data: { token: string } };
+  const second = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000d1"), ENV, { query, now: () => NOW });
+  const secondBody = await second.json() as { data: { token: string } };
+  const oldRead = await handle(new Request(`https://core.example/api/v1/documents/shared/${firstBody.data.token}`), ENV, { query, now: () => NOW });
+  assert.equal(oldRead.status, 404);
+  assert.equal((await oldRead.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  const newRead = await handle(new Request(`https://core.example/api/v1/documents/shared/${secondBody.data.token}`), ENV, { query, now: () => NOW });
+  assert.equal(newRead.status, 200);
+});
+
+test("DELETE revokes and a second DELETE returns revoked false", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-0000000000e0";
+  const VER = "d0000000-0000-4000-8000-0000000000e1";
+  let active = false;
+  const query = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [{
+      id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
+      latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM document_versions")) return [{ id: VER, content: {}, blocks: [] }];
+    if (sql.includes("INSERT INTO document_shares")) {
+      active = true;
+      return [{ id: DOC }];
+    }
+    if (sql.includes("UPDATE document_shares")) {
+      if (!active) return [];
+      active = false;
+      return [{ id: DOC }];
+    }
+    return null;
+  }).query;
+  const created = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000e0"), ENV, { query, now: () => NOW });
+  assert.equal(created.status, 200);
+  const once = await handle(new Request(`https://core.example/api/v1/documents/${DOC}/share`, {
+    method: "DELETE", headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(once.status, 200);
+  assert.equal((await once.json() as { data: { revoked: boolean } }).data.revoked, true);
+  const twice = await handle(new Request(`https://core.example/api/v1/documents/${DOC}/share`, {
+    method: "DELETE", headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(twice.status, 200);
+  assert.equal((await twice.json() as { data: { revoked: boolean } }).data.revoked, false);
+});
+
+test("non-owner POST is 404", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder(() => null);
+  const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-0000000000f0/share", {}, "00000000-0000-4000-8000-0000000000f0"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 404);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal(calls.some((call) => call.sql.includes("document_shares")), false);
+});
+
+test("public GET does not include userId or applicationId", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("token_hash")) return [{
+      title: "이력서", kind: "COVER_LETTER", content: { type: "doc", content: [] }, blocks: [],
+      userId: USER, applicationId: "a0000000-0000-4000-8000-0000000000f1", documentId: "d0",
+    }];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/documents/shared/tok"), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: Record<string, unknown> };
+  assert.deepEqual(Object.keys(body.data).sort(), ["blocks", "content", "kind", "title"]);
+  assert.equal(body.data.kind, "COVER_LETTER");
+});
+
+test("missing document_shares returns SHARING_UNAVAILABLE", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const DOC = "d0000000-0000-4000-8000-0000000000f2";
+  const VER = "d0000000-0000-4000-8000-0000000000f3";
+  const missing = Object.assign(new Error('relation "document_shares" does not exist'), { code: "42P01" });
+  const query = recorder((sql) => {
+    if (sql.includes("document_shares")) throw missing;
+    if (sql.includes("FROM documents WHERE id")) return [{
+      id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
+      latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+    }];
+    if (sql.includes("FROM document_versions")) return [{ id: VER, content: {}, blocks: [] }];
+    return null;
+  }).query;
+  const post = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000f2"), ENV, { query, now: () => NOW });
+  assert.equal(post.status, 404);
+  assert.equal((await post.json() as { error: { code: string; details: unknown } }).error.code, "SHARING_UNAVAILABLE");
+  const del = await handle(new Request(`https://core.example/api/v1/documents/${DOC}/share`, {
+    method: "DELETE", headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(del.status, 404);
+  assert.equal((await del.json() as { error: { code: string } }).error.code, "SHARING_UNAVAILABLE");
+  const get = await handle(new Request("https://core.example/api/v1/documents/shared/tok"), ENV, { query, now: () => NOW });
+  assert.equal(get.status, 404);
+  const got = await get.json() as { error: { code: string; details: unknown } };
+  assert.equal(got.error.code, "SHARING_UNAVAILABLE");
+  assert.equal(got.error.details, null);
+});

@@ -1,5 +1,5 @@
 import { parseTimeField, strictBody } from "../body.ts";
-import { isUndefinedColumn, one, query } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
 import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -162,9 +162,78 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
   return listPage(ctx.deps.query, ctx.rid, APP_SELECT, "applications", where, params, page, appDto);
 };
 
+const FIT_PARTS = ["techStack", "experienceLink", "careerLevel", "keyword", "domain"] as const;
+const FIT_WEIGHTS = [35, 30, 15, 10, 10];
+
+const fitPoint = (value: unknown): number => {
+  const n = typeof value === "number" ? value : Number(value);
+  const clamped = Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : 0;
+  return Math.round(clamped * 10) / 10;
+};
+
+const parsedParts = (value: unknown): unknown => {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return {}; }
+};
+
+const fitParts = (value: unknown): Record<string, number> => {
+  const parsed = parsedParts(value);
+  const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  return Object.fromEntries(FIT_PARTS.map((key) => [key, fitPoint(raw[key] ?? 0)]));
+};
+
+const fitOf = (row: Row): Row => {
+  const parts = fitParts(row.parts);
+  const scored = FIT_PARTS.map((key, index) => ({ point: parts[key], index, weight: FIT_WEIGHTS[index] }));
+  const gap = scored.reduce((best, item) => item.point < best.point || (item.point === best.point && item.index < best.index) ? item : best);
+  const stored = fitPoint(row.fit_score);
+  const reachable = Math.min(10, Math.max(0, Math.round((stored + (10 - gap.point) * gap.weight / 100) * 10) / 10));
+  const plan = String(row.plan ?? "").trim();
+  return {
+    fitScore: stored,
+    parts,
+    topGap: row.top_gap == null ? "" : String(row.top_gap),
+    plan: plan || "FREE",
+    reachable,
+    documentId: String(row.document_id),
+    documentTitle: row.document_title == null || row.document_title === "" ? null : String(row.document_title),
+  };
+};
+
+const loadFit = async (ctx: Ctx, id: string): Promise<Row | null> => {
+  const linked = `SELECT c.fit_score, c.parts, c.top_gap, c.plan, c.document_id, d.title AS document_title
+    FROM applications a
+    JOIN jobs j ON j.id = a.job_id
+    JOIN posting_fit_cache c ON c.posting_id = j.source_posting_id AND c.user_id = $2::uuid
+    JOIN documents d ON d.id = c.document_id AND d.application_id = a.id
+    WHERE a.id = $1::uuid AND a.user_id = $2::uuid
+    ORDER BY c.created_at DESC
+    LIMIT 1`;
+  const fallback = `SELECT c.fit_score, c.parts, c.top_gap, c.plan, c.document_id, d.title AS document_title
+    FROM applications a
+    JOIN jobs j ON j.id = a.job_id
+    JOIN posting_fit_cache c ON c.posting_id = j.source_posting_id AND c.user_id = $2::uuid
+    LEFT JOIN documents d ON d.id = c.document_id
+    WHERE a.id = $1::uuid AND a.user_id = $2::uuid AND j.source_posting_id IS NOT NULL
+    ORDER BY c.created_at DESC
+    LIMIT 1`;
+  try {
+    const row = await one(ctx.deps.query, linked, [id, ctx.user.id])
+      ?? await one(ctx.deps.query, fallback, [id, ctx.user.id]);
+    return row ? fitOf(row) : null;
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+    return null;
+  }
+};
+
 export const getApplication = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
-  return data(200, appDto(await loadApp(ctx, id)), ctx.rid);
+  const row = await loadApp(ctx, id);
+  const dto = appDto(row);
+  const fit = await loadFit(ctx, id);
+  if (fit) dto.fit = fit;
+  return data(200, dto, ctx.rid);
 };
 
 export const createApplication = async (ctx: Ctx): Promise<Response> => {

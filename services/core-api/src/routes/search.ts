@@ -2,7 +2,7 @@ import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { queryForms } from "../hangul.ts";
 import { HttpError, codePoints, data, fieldError } from "../http.ts";
 import type { Ctx } from "../types.ts";
-import { GUEST_ID, unprocessable, openClause, withPublicStatus, NOT_DELETING } from "./recruiting-shared.ts";
+import { GUEST_ID, unprocessable, openClause, withPublicStatus, NOT_DELETING, searchSortMode } from "./recruiting-shared.ts";
 import { skillRows, searchPostings } from "./postings.ts";
 import { searchPeople } from "./profiles.ts";
 import { searchPosts } from "./posts.ts";
@@ -27,6 +27,7 @@ async function search(ctx: Ctx): Promise<Response> {
   if (ctx.user.id === GUEST_ID && (type === "people" || type === "posts")) {
     throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
   }
+  searchSortMode(ctx.url);
   await recordSearch(ctx, q);
   if (type === "people") return searchPeople(ctx, q);
   if (type === "posts") return searchPosts(ctx, q);
