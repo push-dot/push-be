@@ -424,7 +424,12 @@ export const schemas: Record<string, Schema> = {
     fitScore: { ...nullable(num), description: "Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null." },
     createdAt: dateTime,
     updatedAt: dateTime,
-  }, ["id", "revision", "jobId", "company", "title", "stage", "notes", "appliedAt", "nextActionAt", "imported", "createdAt", "updatedAt"]),
+    stageEnteredAt: {
+      type: "object",
+      additionalProperties: dateTime,
+      description: "When each stage was first entered. A missing history uses the current stage at createdAt.",
+    },
+  }, ["id", "revision", "jobId", "company", "title", "stage", "notes", "appliedAt", "nextActionAt", "imported", "createdAt", "updatedAt", "stageEnteredAt"]),
   CareerApplicationEvent: obj({
     id: uuid,
     applicationId: uuid,

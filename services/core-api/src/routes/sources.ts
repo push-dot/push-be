@@ -1,4 +1,4 @@
-import { one, query } from "../db.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { pageOf, ts } from "../page.ts";
@@ -40,9 +40,18 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
   if (!ALLOWED_SOURCE_MIME.has(mime)) throw fieldError("file", "unsupported file type " + mime);
   const sha = hex(await crypto.subtle.digest("SHA-256", bytes));
   const id = crypto.randomUUID();
-  await query(ctx.deps.query,
-    "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'))",
-    [id, ctx.user.id, file.name, mime, bytes.length, sha, `db://sources/${id}`, "STORED", ctx.now.toISOString(), base64(bytes)]);
+  const docKind = kind.trim().slice(0, 40) || null;
+  const stored = [id, ctx.user.id, file.name, mime, bytes.length, sha, `db://sources/${id}`, "STORED", ctx.now.toISOString(), base64(bytes)];
+  try {
+    await query(ctx.deps.query,
+      "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content, doc_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'),$11)",
+      [...stored, docKind]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query,
+      "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'))",
+      stored);
+  }
   const { jobId } = await enqueueJob(ctx.deps.query, {
     type: "ingest",
     userId: ctx.user.id,
@@ -57,7 +66,9 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string };
+type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string; kind: string | null };
+
+const kindOf = (value: unknown): string | null => value == null || value === "" ? null : String(value);
 
 const rank = (createdAt: unknown): string => {
   const p = parseUtc(createdAt);
@@ -84,8 +95,8 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
   const tail = `${after} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
   const [uploads, documents] = await Promise.all([
     kind === "AI" ? null : query(ctx.deps.query,
-      "SELECT id, file_name, mime_type, size, page_count, origin, created_at FROM sources WHERE user_id = $1" + tail, params),
-    kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at FROM documents WHERE user_id = $1" + tail, params),
+      "SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind FROM sources WHERE user_id = $1" + tail, params),
+    kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at, to_jsonb(documents)->>'kind' AS kind FROM documents WHERE user_id = $1" + tail, params),
   ]);
   const sourceRows = (uploads?.rows ?? []).filter((row) => {
     const name = String(row.file_name ?? "");
@@ -96,11 +107,11 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
     ...sourceRows.map((row) => ({
       id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
       pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
-      origin: row.origin ? String(row.origin) : "UPLOAD",
+      origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind),
     })),
     ...(documents?.rows ?? []).map((row) => ({
       id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
-      createdAt: ts(row.created_at), origin: "AI",
+      createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
     })),
   ].sort(newerFirst);
   const hasMore = items.length > page.limit;

@@ -3160,7 +3160,7 @@ export interface paths {
         };
         /**
          * List the file library
-         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file.
+         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.
          */
         get: operations["getSources"];
         put?: never;
@@ -3405,6 +3405,10 @@ export interface components {
             revision: number;
             /** @enum {string} */
             stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
+            /** @description When each stage was first entered. A missing history uses the current stage at createdAt. */
+            stageEnteredAt: {
+                [key: string]: string;
+            };
             title: string;
             /** Format: date-time */
             updatedAt: string;
@@ -3474,6 +3478,7 @@ export interface components {
             externalId: string | null;
             /** Format: uuid */
             id: string;
+            location: string | null;
             notes: string;
             remindAt: string | null;
             revision: number;
@@ -4315,6 +4320,8 @@ export interface components {
             fileName: string;
             /** Format: uuid */
             id: string;
+            /** @description Document kind given at upload, or the document kind for an AI row. Null when that kind was not stored. */
+            kind: string | null;
             mimeType: string;
             /** @description UPLOAD, AI, or the stored source origin */
             origin: string;
@@ -6233,6 +6240,7 @@ export interface operations {
                      * @description Must be after startsAt
                      */
                     endsAt: string;
+                    location?: string | null;
                     notes?: string;
                     remindAt?: string | null;
                     /** Format: date-time */
@@ -6304,6 +6312,7 @@ export interface operations {
                 "application/json": {
                     endsAt?: string | null;
                     expectedRevision: number;
+                    location?: string | null;
                     notes?: string | null;
                     startsAt?: string | null;
                     timeZone?: string | null;

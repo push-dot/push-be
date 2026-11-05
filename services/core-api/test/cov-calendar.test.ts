@@ -20,7 +20,7 @@ type Call = { sql: string; params: unknown[] };
 type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; message: string; details: unknown } };
 
 // In-memory calendar_events/applications that honour the user_id predicate.
-function world(opts: { insertError?: Error & { code?: string } } = {}) {
+function world(opts: { insertError?: Error & { code?: string }; locationError?: Error & { code?: string } } = {}) {
   const seen: Call[] = [];
   const events = new Map<string, Row>();
   const applications = new Map<string, string>([[APP, ALICE]]);
@@ -40,11 +40,15 @@ function world(opts: { insertError?: Error & { code?: string } } = {}) {
     if (sql.startsWith("SELECT id FROM applications")) return out(applications.get(String(params[0])) === params[1] ? [{ id: params[0] }] : []);
     if (sql.startsWith("INSERT INTO calendar_events")) {
       const withRemind = sql.includes("remind_at");
+      const withLocation = sql.includes(", location,");
+      if (withLocation && opts.locationError) throw opts.locationError;
       if (withRemind && opts.insertError) throw opts.insertError;
       const [id, user_id, application_id, type, title, starts_at, ends_at, time_zone, notes] = params;
-      const remind_at = withRemind ? params[9] : null;
-      const now = params[withRemind ? 10 : 9];
-      events.set(String(id), { id, user_id, revision: 1, application_id, type, title, starts_at, ends_at, time_zone, source: "LOCAL", external_id: null, notes, remind_at, created_at: now, updated_at: now });
+      let at = 9;
+      const remind_at = withRemind ? params[at++] : null;
+      const location = withLocation ? params[at++] : null;
+      const now = params[at];
+      events.set(String(id), { id, user_id, revision: 1, application_id, type, title, starts_at, ends_at, time_zone, source: "LOCAL", external_id: null, notes, remind_at, location, created_at: now, updated_at: now });
       return out([]);
     }
     if (sql.includes("FROM calendar_events WHERE user_id = $1")) {
@@ -56,9 +60,16 @@ function world(opts: { insertError?: Error & { code?: string } } = {}) {
       return out(event ? [{ ...event }] : []);
     }
     if (sql.startsWith("UPDATE calendar_events")) {
+      const located = sql.includes("location =");
+      if (located && opts.locationError) throw opts.locationError;
       const event = owned(params[0], params[1]);
-      if (!event || event.revision !== params[8]) return out([]);
-      Object.assign(event, { revision: Number(event.revision) + 1, title: params[2], starts_at: params[3], ends_at: params[4], time_zone: params[5], notes: params[6], updated_at: params[7] });
+      const revision = params[located ? 9 : 8];
+      if (!event || event.revision !== revision) return out([]);
+      Object.assign(event, {
+        revision: Number(event.revision) + 1, title: params[2], starts_at: params[3], ends_at: params[4], time_zone: params[5], notes: params[6],
+        updated_at: params[located ? 8 : 7],
+      });
+      if (located) event.location = params[7];
       return out([{ ...event }]);
     }
     if (sql.startsWith("DELETE FROM calendar_events")) {
@@ -110,7 +121,7 @@ test("calendar: create normalises times and is listed back for the owner only", 
   assert.deepEqual({ ...event, id: "x" }, {
     id: "x", revision: 1, applicationId: APP, type: "INTERVIEW", title: "Onsite", startsAt: "2026-11-01T01:00:00Z",
     endsAt: "2026-11-01T02:00:00Z", timeZone: "Asia/Seoul", source: "LOCAL", externalId: null, notes: "bring laptop",
-    remindAt: "2026-11-01T00:00:00Z", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z",
+    remindAt: "2026-11-01T00:00:00Z", location: null, createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z",
   });
   assert.equal(w.seen.find((c) => c.sql.startsWith("INSERT INTO calendar_events"))?.params[1], ALICE);
 
@@ -133,6 +144,7 @@ test("calendar: create defaults time zone to UTC and leaves optional fields empt
   assert.equal(res.body.data.timeZone, "UTC");
   assert.equal(res.body.data.notes, "");
   assert.equal(res.body.data.remindAt, null);
+  assert.equal(res.body.data.location, null);
   assert.equal(res.body.data.applicationId, null);
 });
 
@@ -143,6 +155,38 @@ test("calendar: create cannot attach another user's application", async () => {
   assert.equal(res.body.error?.code, "NOT_FOUND");
   assert.deepEqual(w.seen.find((c) => c.sql.startsWith("SELECT id FROM applications"))?.params, [APP, BOB]);
   assert.equal(w.events.size, 0);
+});
+
+test("calendar: create falls back when location is missing and remind_at exists", async () => {
+  const missing = Object.assign(new Error('column "location" of relation "calendar_events" does not exist'), { code: "42703" });
+  const w = world({ locationError: missing });
+  const res = await w.call("POST", "/api/v1/calendar/events", { body: { ...valid, location: "Gangnam" } });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.data.location, "Gangnam");
+  assert.equal(res.body.data.remindAt, "2026-11-01T00:00:00Z");
+  const inserts = w.seen.filter((c) => c.sql.startsWith("INSERT INTO calendar_events"));
+  assert.equal(inserts.length, 2);
+  assert.match(inserts[0].sql, /, location,/);
+  assert.match(inserts[1].sql, /remind_at/);
+  assert.equal(inserts[1].sql.includes(", location,"), false);
+});
+
+test("calendar: patch falls back when location is missing", async () => {
+  const missing = Object.assign(new Error('column "location" of relation "calendar_events" does not exist'), { code: "42703" });
+  const w = world({ locationError: missing });
+  const created = await w.call("POST", "/api/v1/calendar/events", { body: valid });
+  assert.equal(created.status, 201);
+  const id = created.body.data.id;
+  const res = await w.call("PATCH", `/api/v1/calendar/events/${id}`, {
+    body: { expectedRevision: 1, location: "  Gangnam  " },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.location, "Gangnam");
+  const updates = w.seen.filter((c) => c.sql.startsWith("UPDATE calendar_events"));
+  assert.equal(updates.length, 2);
+  assert.match(updates[0].sql, /location =/);
+  assert.equal(updates[1].sql.includes("location ="), false);
+  assert.match(updates[1].sql, /revision = \$9/);
 });
 
 test("calendar: create falls back to the pre-remind_at insert when the column is missing", async () => {
@@ -174,6 +218,8 @@ test("calendar: create rejects invalid bodies with 400", async () => {
     [{ ...valid, endsAt: valid.startsAt }, "must be after startsAt", { field: "endsAt" }],
     [{ ...valid, timeZone: "Nowhere/City" }, "invalid IANA time zone", { field: "timeZone" }],
     [{ ...valid, remindAt: "later" }, "must be RFC3339", { field: "remindAt" }],
+    [{ ...valid, location: 4 }, "must be a string", { field: "location" }],
+    [{ ...valid, location: "x".repeat(201) }, "must be at most 200 characters", { field: "location" }],
     [{ ...valid, applicationId: "x" }, "must be a UUID", { field: "applicationId" }],
   ];
   for (const [body, message, details] of cases) {
@@ -236,7 +282,7 @@ test("calendar: patch updates the event and bumps the revision", async () => {
   const w = world();
   const id = (await w.call("POST", "/api/v1/calendar/events", { body: valid })).body.data.id;
   const res = await w.call("PATCH", `/api/v1/calendar/events/${id}`, {
-    body: { expectedRevision: 1, title: "Final round", startsAt: "2026-11-02T00:00:00Z", endsAt: "2026-11-02T02:00:00Z", timeZone: "UTC", notes: 42 },
+    body: { expectedRevision: 1, title: "Final round", startsAt: "2026-11-02T00:00:00Z", endsAt: "2026-11-02T02:00:00Z", timeZone: "UTC", notes: 42, location: "  Gangnam  " },
   });
   assert.equal(res.status, 200);
   assert.equal(res.body.data.revision, 2);
@@ -245,8 +291,9 @@ test("calendar: patch updates the event and bumps the revision", async () => {
   assert.equal(res.body.data.endsAt, "2026-11-02T02:00:00Z");
   assert.equal(res.body.data.timeZone, "UTC");
   assert.equal(res.body.data.notes, "42");
+  assert.equal(res.body.data.location, "Gangnam");
   const update = w.seen.find((c) => c.sql.startsWith("UPDATE calendar_events"))!;
-  assert.match(update.sql, /WHERE id = \$1 AND user_id = \$2 AND revision = \$9/);
+  assert.match(update.sql, /WHERE id = \$1 AND user_id = \$2 AND revision = \$10/);
   assert.equal(update.params[1], ALICE);
 });
 

@@ -16,7 +16,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-03T00:00:00Z",
-     "updatedAt": "2026-10-03T00:00:00Z"
+     "updatedAt": "2026-10-03T00:00:00Z",
+     "stageEnteredAt": {
+      "APPLIED": "2026-10-03T00:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000001",
@@ -31,7 +34,10 @@
      "imported": false,
      "fitScore": 72,
      "createdAt": "2026-10-02T00:00:00Z",
-     "updatedAt": "2026-10-05T00:00:00.123456Z"
+     "updatedAt": "2026-10-05T00:00:00.123456Z",
+     "stageEnteredAt": {
+      "PREPARING": "2026-10-02T00:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000004",
@@ -45,7 +51,10 @@
      "nextActionAt": null,
      "imported": true,
      "createdAt": "2026-09-01T00:00:00Z",
-     "updatedAt": "2026-09-01T00:00:00Z"
+     "updatedAt": "2026-09-01T00:00:00Z",
+     "stageEnteredAt": {
+      "REJECTED": "2026-09-01T00:00:00Z"
+     }
     }
    ],
    "page": {
@@ -72,7 +81,10 @@
      "imported": false,
      "fitScore": 72,
      "createdAt": "2026-10-02T00:00:00Z",
-     "updatedAt": "2026-10-05T00:00:00.123456Z"
+     "updatedAt": "2026-10-05T00:00:00.123456Z",
+     "stageEnteredAt": {
+      "PREPARING": "2026-10-02T00:00:00Z"
+     }
     }
    ],
    "page": {
@@ -112,7 +124,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-03T00:00:00Z",
-     "updatedAt": "2026-10-03T00:00:00Z"
+     "updatedAt": "2026-10-03T00:00:00Z",
+     "stageEnteredAt": {
+      "APPLIED": "2026-10-03T00:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000001",
@@ -127,7 +142,10 @@
      "imported": false,
      "fitScore": 72,
      "createdAt": "2026-10-02T00:00:00Z",
-     "updatedAt": "2026-10-05T00:00:00.123456Z"
+     "updatedAt": "2026-10-05T00:00:00.123456Z",
+     "stageEnteredAt": {
+      "PREPARING": "2026-10-02T00:00:00Z"
+     }
     }
    ],
    "page": {
@@ -153,7 +171,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-03T00:00:00Z",
-     "updatedAt": "2026-10-03T00:00:00Z"
+     "updatedAt": "2026-10-03T00:00:00Z",
+     "stageEnteredAt": {
+      "APPLIED": "2026-10-03T00:00:00Z"
+     }
     }
    ],
    "page": {
@@ -207,7 +228,10 @@
     "imported": false,
     "fitScore": 72,
     "createdAt": "2026-10-02T00:00:00Z",
-    "updatedAt": "2026-10-05T00:00:00.123456Z"
+    "updatedAt": "2026-10-05T00:00:00.123456Z",
+    "stageEnteredAt": {
+     "PREPARING": "2026-10-02T00:00:00Z"
+    }
    }
   }
  },
@@ -416,7 +440,10 @@
     "nextActionAt": null,
     "imported": false,
     "createdAt": "2026-10-22T12:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "DISCOVERED": "2026-10-22T12:00:00Z"
+    }
    }
   }
  },
@@ -436,7 +463,10 @@
     "nextActionAt": null,
     "imported": false,
     "createdAt": "2026-10-22T12:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "DISCOVERED": "2026-10-22T12:00:00Z"
+    }
    }
   }
  },
@@ -504,7 +534,10 @@
     "nextActionAt": null,
     "imported": true,
     "createdAt": "2026-10-22T12:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "INTERVIEW": "2026-10-22T12:00:00Z"
+    }
    }
   }
  },
@@ -779,7 +812,10 @@
     "imported": false,
     "fitScore": 72,
     "createdAt": "2026-10-02T00:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "APPLIED": "2026-10-02T00:00:00Z"
+    }
    }
   }
  },
@@ -905,7 +941,10 @@
     "nextActionAt": null,
     "imported": false,
     "createdAt": "2026-10-03T00:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "APPLIED": "2026-10-03T00:00:00Z"
+    }
    }
   }
  },
@@ -963,7 +1002,11 @@
     "nextActionAt": "2026-11-01T00:30:00Z",
     "imported": false,
     "createdAt": "2026-10-03T00:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "APPLIED": "2026-10-03T00:00:00Z",
+     "SCREENING": "2026-10-22T12:00:00Z"
+    }
    }
   }
  },
@@ -983,7 +1026,10 @@
     "nextActionAt": null,
     "imported": false,
     "createdAt": "2026-10-03T00:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "SCREENING": "2026-10-03T00:00:00Z"
+    }
    }
   }
  },
@@ -1029,7 +1075,11 @@
     "nextActionAt": null,
     "imported": false,
     "createdAt": "2026-10-03T00:00:00Z",
-    "updatedAt": "2026-10-22T12:00:00Z"
+    "updatedAt": "2026-10-22T12:00:00Z",
+    "stageEnteredAt": {
+     "SCREENING": "2026-10-03T00:00:00Z",
+     "WITHDRAWN": "2026-10-22T12:00:00Z"
+    }
    }
   }
  },
@@ -1082,7 +1132,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-22T12:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
+     "updatedAt": "2026-10-22T12:00:00Z",
+     "stageEnteredAt": {
+      "DISCOVERED": "2026-10-22T12:00:00Z"
+     }
     },
     {
      "id": "51c89ddd-8bf1-42ac-8aec-97fe2513d1ad",
@@ -1096,7 +1149,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-22T12:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
+     "updatedAt": "2026-10-22T12:00:00Z",
+     "stageEnteredAt": {
+      "DISCOVERED": "2026-10-22T12:00:00Z"
+     }
     },
     {
      "id": "0bf02975-d5d0-4ee5-a9c9-39211354d7ee",
@@ -1110,7 +1166,10 @@
      "nextActionAt": null,
      "imported": true,
      "createdAt": "2026-10-22T12:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
+     "updatedAt": "2026-10-22T12:00:00Z",
+     "stageEnteredAt": {
+      "INTERVIEW": "2026-10-22T12:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000002",
@@ -1124,7 +1183,10 @@
      "nextActionAt": null,
      "imported": false,
      "createdAt": "2026-10-03T00:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
+     "updatedAt": "2026-10-22T12:00:00Z",
+     "stageEnteredAt": {
+      "WITHDRAWN": "2026-10-03T00:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000001",
@@ -1139,7 +1201,10 @@
      "imported": false,
      "fitScore": 72,
      "createdAt": "2026-10-02T00:00:00Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
+     "updatedAt": "2026-10-22T12:00:00Z",
+     "stageEnteredAt": {
+      "APPLIED": "2026-10-02T00:00:00Z"
+     }
     },
     {
      "id": "c0000000-0000-4000-8000-000000000004",
@@ -1153,7 +1218,10 @@
      "nextActionAt": null,
      "imported": true,
      "createdAt": "2026-09-01T00:00:00Z",
-     "updatedAt": "2026-09-01T00:00:00Z"
+     "updatedAt": "2026-09-01T00:00:00Z",
+     "stageEnteredAt": {
+      "REJECTED": "2026-09-01T00:00:00Z"
+     }
     }
    ],
    "page": {

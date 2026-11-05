@@ -62,6 +62,8 @@ test("source upload stores the bytes in postgres and enqueues an ingest job", as
   assert.equal(insert.params[0], body.data.id);
   assert.equal(insert.params[6], `db://sources/${body.data.id}`);
   assert.equal(insert.params[9], Buffer.from(bytes).toString("base64"));
+  assert.equal(insert.params[10], "RESUME");
+  assert.match(insert.sql, /doc_kind/);
   const job = seen.find((call) => call.sql.includes("INSERT INTO ai_jobs"));
   assert.ok(job);
   assert.equal(job.params[0], body.data.jobId);
@@ -69,6 +71,30 @@ test("source upload stores the bytes in postgres and enqueues an ingest job", as
   assert.equal(job.params[2], "q:ingest");
   assert.deepEqual(JSON.parse(String(job.params[7])), { sourceId: body.data.id });
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO credit_reservations")), false);
+});
+
+test("source upload retries without doc_kind when the column is missing", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const missing = Object.assign(new Error('column "doc_kind" of relation "sources" does not exist'), { code: "42703" });
+  const res = await handle(upload(new File(["hello"], "cv.txt", { type: "text/plain" }), "PORTFOLIO"), env, {
+    now: () => NOW,
+    query: async (sql, params = []) => {
+      seen.push({ sql, params });
+      if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
+      if (sql.includes("INSERT INTO sources") && sql.includes("doc_kind")) throw missing;
+      if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    },
+  });
+  assert.equal(res.status, 201);
+  const inserts = seen.filter((call) => call.sql.includes("INSERT INTO sources"));
+  assert.equal(inserts.length, 2);
+  assert.equal(inserts[0].params[10], "PORTFOLIO");
+  assert.equal(inserts[1].sql.includes("doc_kind"), false);
+  assert.equal(inserts[1].params.length, 10);
 });
 
 test("source upload keeps the python validation errors", async () => {
@@ -132,13 +158,14 @@ test("the source library reads one bounded page from each side and merges them",
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql, params) => {
     const limit = Number(params.at(-1));
-    if (sql.includes("FROM sources")) return [{ id: E1, file_name: "a", mime_type: "text/plain", size: 1, created_at: "2026-10-03T00:00:00Z" }].slice(0, limit);
-    if (sql.includes("FROM documents")) return [{ id: E2, title: "d", created_at: "2026-10-04T00:00:00Z" }, { id: E3, title: "e", created_at: "2026-10-01T00:00:00Z" }].slice(0, limit);
+    if (sql.includes("FROM sources")) return [{ id: E1, file_name: "a", mime_type: "text/plain", size: 1, created_at: "2026-10-03T00:00:00Z", doc_kind: "PORTFOLIO" }].slice(0, limit);
+    if (sql.includes("FROM documents")) return [{ id: E2, title: "d", created_at: "2026-10-04T00:00:00Z", kind: "HUB_PROFILE" }, { id: E3, title: "e", created_at: "2026-10-01T00:00:00Z" }].slice(0, limit);
     return null;
   });
   const res = await handle(new Request("https://core.example/api/v1/sources?limit=2", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
-  const body = await res.json() as { data: { id: string }[]; page: { hasMore: boolean } };
+  const body = await res.json() as { data: { id: string; kind: string | null }[]; page: { hasMore: boolean } };
   assert.deepEqual(body.data.map((item) => item.id), [E2, E1]);
+  assert.deepEqual(body.data.map((item) => item.kind), ["HUB_PROFILE", "PORTFOLIO"]);
   assert.equal(body.page.hasMore, true);
   for (const c of calls.filter((x) => x.sql.includes("FROM sources") || x.sql.includes("FROM documents"))) assert.match(c.sql, /LIMIT \$2$/);
 });
