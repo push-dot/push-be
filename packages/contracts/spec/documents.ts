@@ -90,12 +90,13 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/profile", {
     tag: "documents",
     summary: "Save a hub profile document or an uploaded file as an application profile",
-    description: "target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.",
+    description: "target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.",
     params: [id],
     body: body(closed({
       target: enumOf("hub", "application"),
       applicationId: uuid,
       expectedRevision: int,
+      sections: arr(enumOf("headline", "intro", "careers", "skills", "links")),
     }, [])),
     responses: {
       200: ok(obj({
@@ -103,6 +104,7 @@ export const routes: Route[] = [
         documentId: uuid,
         profileUserId: uuid,
         applicationId: nullable(uuid),
+        applied: arr(enumOf("headline", "intro", "careers", "skills", "links")),
       }, ["target", "documentId"])),
       202: ok(obj({
         target: enumOf("hub", "application"),
@@ -115,11 +117,49 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/base-profile", {
     tag: "documents",
     summary: "Set a hub profile document as the user's base profile",
-    description: "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+    description: "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. sections limits that write to headline, intro, careers, skills, and links. Omitted sections keeps today's write. An empty list writes nothing. applied lists the keys that were written. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
     params: [id],
-    body: body(closed({}, [])),
+    body: body(closed({
+      sections: arr(enumOf("headline", "intro", "careers", "skills", "links")),
+    }, [])),
     responses: {
-      200: ok(obj({ documentId: uuid, profileUserId: uuid }, ["documentId", "profileUserId"])),
+      200: ok(obj({
+        documentId: uuid,
+        profileUserId: uuid,
+        applied: arr(enumOf("headline", "intro", "careers", "skills", "links")),
+      }, ["documentId", "profileUserId"])),
+    },
+  }),
+  post("core", "/api/v1/documents/{id}/share", {
+    tag: "documents",
+    summary: "Create a document share link",
+    description: "Owner only. Pins versionId or the latest version, including a draft. The raw token is returned once. A second share revokes the previous token. 404 NOT_FOUND for a non-owner, a missing version, or a version on another document. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
+    params: [id],
+    body: body(closed({ versionId: uuid }, []), false),
+    responses: {
+      200: ok(obj({ token: str, path: str, versionId: uuid, createdAt: dateTime })),
+    },
+  }),
+  del("core", "/api/v1/documents/{id}/share", {
+    tag: "documents",
+    summary: "Revoke the active document share",
+    description: "Owner only. Sets revoked_at and does not delete the row. revoked is false when no share is active. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
+    params: [id],
+    responses: { 200: ok(obj({ revoked: bool })) },
+  }),
+  get("core", "/api/v1/documents/shared/{token}", {
+    tag: "documents",
+    auth: "public",
+    summary: "Read a shared document snapshot",
+    description: "No auth. Unknown and revoked tokens are both 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
+    params: [pathParam("token", str)],
+    responses: {
+      200: ok(obj({
+        title: str,
+        kind: documentKind,
+        content: tiptap,
+        blocks: arr(obj({ id: str, text: str }, ["id", "text"])),
+      })),
     },
   }),
   post("core", "/api/v1/documents/{id}/exports/{exportId}/result", {
@@ -198,18 +238,39 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/versions", {
     tag: "documents",
     summary: "Save a new document version",
-    description: "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION.",
+    description: "content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION. A one-section edit sends the whole document.",
     params: [id],
-    body: body(closed({
-      expectedRevision: int,
-      content: tiptap,
-      blocks: arr(obj({
-        id: str,
-        text: str,
-        evidenceRefs: arr(obj({ evidenceId: uuid, start: int, end: int })),
-      }, ["id", "text"])),
-      changeNote: str,
-    }, ["expectedRevision", "content"])),
+    body: body({
+      ...closed({
+        expectedRevision: int,
+        content: tiptap,
+        blocks: arr(obj({
+          id: str,
+          text: str,
+          evidenceRefs: arr(obj({ evidenceId: uuid, start: int, end: int })),
+        }, ["id", "text"])),
+        changeNote: str,
+      }, ["expectedRevision", "content"]),
+      example: {
+        expectedRevision: 3,
+        content: {
+          type: "doc",
+          content: [
+            { type: "heading", attrs: { blockId: "h-intro" }, content: [{ type: "text", text: "소개" }] },
+            { type: "paragraph", attrs: { blockId: "p-intro" }, content: [{ type: "text", text: "새 소개" }] },
+            { type: "heading", attrs: { blockId: "h-career" }, content: [{ type: "text", text: "경력" }] },
+            { type: "paragraph", attrs: { blockId: "p-career" }, content: [{ type: "text", text: "기존 경력" }] },
+          ],
+        },
+        blocks: [
+          { id: "h-intro", text: "소개", evidenceRefs: [], claimStatus: "UNSUPPORTED" },
+          { id: "p-intro", text: "새 소개", evidenceRefs: [], claimStatus: "UNSUPPORTED" },
+          { id: "h-career", text: "경력", evidenceRefs: [], claimStatus: "UNSUPPORTED" },
+          { id: "p-career", text: "기존 경력", evidenceRefs: [], claimStatus: "UNSUPPORTED" },
+        ],
+        changeNote: "intro",
+      },
+    }),
     responses: { 201: { ...versionSaved, description: "Created" } },
   }),
   get("core", "/api/v1/documents/{id}/versions/{versionId}", {
@@ -368,7 +429,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/calendar/events", {
     tag: "calendar",
     summary: "List calendar events in a time range",
-    description: "Filters by startsAt within [from, to]; range at most 366 days. Ordered by createdAt desc.",
+    description: "Filters by startsAt within [from, to]; range at most 366 days. Ordered by createdAt desc. A week is this range with from and to set to that week. Server order stays createdAt. The client sorts by startsAt. Badge text is client-only: DEADLINE 마감, INTERVIEW 면접, COFFEE_CHAT 커피챗, FOLLOW_UP 후속, CUSTOM 직접 추가. The subline is the client-formatted time plus location.",
     params: [
       { name: "from", in: "query", required: true, schema: dateTime },
       { name: "to", in: "query", required: true, schema: dateTime },

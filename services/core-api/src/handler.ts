@@ -142,6 +142,7 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
   if (isGoogleCallback(method, path)) return true;
+  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
   return authorization === "" && isGuestRead(method, path);
 }
 

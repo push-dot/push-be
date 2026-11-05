@@ -47,7 +47,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/profiles", {
     tag,
     summary: "List public profiles",
-    description: "Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings.",
+    description: "Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings. 빠른 시작 커피챗 허브 추천 is explore=recommended and is empty when the caller has no job_category. 팔로잉 is GET /api/v1/me/follows. The sheet reads userId, displayName, headline, and avatarUrl. Counts are client-side.",
     params: [
       ...pageParams,
       query("q", { type: "string", maxLength: 200 }),
@@ -250,6 +250,66 @@ export const routes: Route[] = [
     summary: "List bookmarked open postings",
     params: [...pageParams],
     responses: { 200: okPage(ref("Posting")) },
+  }),
+  get("core", "/api/v1/me/posting-views", {
+    tag,
+    summary: "List recently viewed open postings",
+    description: "One card per posting, newest viewed day first. Does not increment view counts. A missing posting_views table is an empty page.",
+    params: [...pageParams],
+    responses: { 200: okPage(ref("Posting")) },
+  }),
+  get("core", "/api/v1/me/posting-document-status", {
+    tag,
+    summary: "Document status for postings",
+    description: "postingIds is one comma-separated list of at most 50 uuids. Every requested id is returned. NONE 서류 없음, DRAFT 초안 있음, READY 서류 준비됨.",
+    params: [query("postingIds", { type: "string" }, "Comma-separated posting uuids")],
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          postingId: uuid,
+          status: enumOf("NONE", "DRAFT", "READY"),
+          label: str,
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/suggested-experiences", {
+    tag,
+    summary: "Suggested experiences from gap analyses",
+    description: "Up to 5 strings from the caller's gap analyses, preferred_missing then missing, newest analysis first. No model call.",
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          id: str,
+          title: str,
+          sub: str,
+          meta: str,
+          postingId: nullable(uuid),
+          applicationId: uuid,
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/career-topics", {
+    tag,
+    summary: "Topic chips for a career post",
+    description: "At most three items, in order career, application, gap. Empty slots are omitted. No model call.",
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          id: enumOf("career", "application", "gap"),
+          title: str,
+          sub: str,
+          source: enumOf("career", "application", "gap"),
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/match-chips", {
+    tag,
+    summary: "Chips for matching postings",
+    description: "Up to 8 strings: category and role, tenure, then skills. No location chip.",
+    responses: { 200: ok(obj({ chips: arr(str) })) },
   }),
   get("core", "/api/v1/me/follows", {
     tag,

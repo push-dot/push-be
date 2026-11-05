@@ -57,3 +57,117 @@ test("application stage update falls back when stage_entered_at is missing", asy
     PREPARING: "2026-10-21T00:00:00Z",
   });
 });
+
+const FIT_APP = "22222222-2222-4222-8222-222222222223";
+const FIT_DOC = "22222222-2222-4222-8222-222222222224";
+const FIT_POSTING = "22222222-2222-4222-8222-222222222225";
+
+const applicationRow = {
+  id: FIT_APP, revision: 3, job_id: "22222222-2222-4222-8222-222222222226", company: "Acme", title: "Backend",
+  stage: "APPLIED", notes: "", applied_at: "2026-10-01T00:00:00Z", next_action_at: null, imported: false,
+  created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-02T00:00:00Z", fit_score: 80, user_id: "12345678-1234-4678-9234-567812345678",
+};
+
+const linkedFit = {
+  fit_score: 6.9,
+  parts: { techStack: 7, experienceLink: 6, careerLevel: 8, keyword: 5.5, domain: 7 },
+  top_gap: "기술 스택",
+  plan: "FREE",
+  document_id: FIT_DOC,
+  document_title: "이력서",
+};
+
+const getApp = (path: string): Request => new Request("https://core.example" + path, { headers: { authorization: "Bearer t" } });
+
+test("returns fit from the document linked to the application", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("posting_fit_cache") && sql.includes("d.application_id = a.id")) return [linkedFit];
+    if (sql.includes("FROM applications")) return [applicationRow];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/applications/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { fitScore: number; fit: { fitScore: number; parts: Record<string, number>; topGap: string; plan: string; reachable: number; documentId: string; documentTitle: string } } };
+  assert.equal(body.data.fitScore, 80);
+  assert.equal(body.data.fit.fitScore, 6.9);
+  assert.deepEqual(body.data.fit.parts, { techStack: 7, experienceLink: 6, careerLevel: 8, keyword: 5.5, domain: 7 });
+  assert.equal(body.data.fit.topGap, "기술 스택");
+  assert.equal(body.data.fit.plan, "FREE");
+  assert.equal(body.data.fit.reachable, 7.4);
+  assert.equal(body.data.fit.documentId, FIT_DOC);
+  assert.equal(body.data.fit.documentTitle, "이력서");
+  assert.equal(calls.some((call) => call.sql.includes("INSERT INTO chat_jobs") || call.sql.includes("INSERT INTO posting_fit_cache")), false);
+});
+
+test("falls back to the latest user posting cache row when no document is linked", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("posting_fit_cache") && sql.includes("d.application_id = a.id")) return [];
+    if (sql.includes("posting_fit_cache")) return [{ ...linkedFit, document_title: null, top_gap: "" }];
+    if (sql.includes("FROM applications")) return [applicationRow];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/applications/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { fit: { documentTitle: string | null; topGap: string; reachable: number } } };
+  assert.equal(body.data.fit.documentTitle, null);
+  assert.equal(body.data.fit.topGap, "");
+  assert.equal(body.data.fit.reachable, 7.4);
+});
+
+test("omits fit when no cache row and keeps integer fitScore", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { query } = recorder((sql) => {
+    if (sql.includes("posting_fit_cache")) return [];
+    if (sql.includes("FROM applications")) return [applicationRow];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/applications/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { fitScore: number; fit?: unknown } };
+  assert.equal(body.data.fitScore, 80);
+  assert.equal("fit" in body.data, false);
+});
+
+test("missing posting_fit_cache still returns the application", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const missing = Object.assign(new Error('relation "posting_fit_cache" does not exist'), { code: "42P01" });
+  const { query } = recorder((sql) => {
+    if (sql.includes("posting_fit_cache")) throw missing;
+    if (sql.includes("FROM applications")) return [applicationRow];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/applications/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { id: string; fit?: unknown } };
+  assert.equal(body.data.id, FIT_APP);
+  assert.equal("fit" in body.data, false);
+});
+
+test("employer applicant payload has no fit", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const posting = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("company_members")) return [{ id: posting }];
+    if (sql.includes("FROM applications") || sql.includes("applications a")) return [{ ...applicationRow, fit_score: 80 }];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/postings/${posting}/applicants/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { application: Record<string, unknown> } };
+  assert.equal("fit" in body.data.application, false);
+  assert.equal(calls.some((call) => call.sql.includes("posting_fit_cache")), false);
+});
+
+test("GET does not insert an ai job", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("posting_fit_cache")) return [linkedFit];
+    if (sql.includes("FROM applications")) return [applicationRow];
+    return null;
+  });
+  const res = await handle(getApp(`/api/v1/applications/${FIT_APP}`), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.equal(calls.some((call) => call.sql.includes("INSERT INTO chat_jobs") || call.sql.includes("INSERT INTO ai_jobs") || call.sql.includes("INSERT INTO posting_fit_cache")), false);
+});

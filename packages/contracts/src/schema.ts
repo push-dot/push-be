@@ -719,7 +719,7 @@ export interface paths {
         };
         /**
          * List calendar events in a time range
-         * @description Filters by startsAt within [from, to]; range at most 366 days. Ordered by createdAt desc.
+         * @description Filters by startsAt within [from, to]; range at most 366 days. Ordered by createdAt desc. A week is this range with from and to set to that week. Server order stays createdAt. The client sorts by startsAt. Badge text is client-only: DEADLINE 마감, INTERVIEW 면접, COFFEE_CHAT 커피챗, FOLLOW_UP 후속, CUSTOM 직접 추가. The subline is the client-formatted time plus location.
          */
         get: operations["getCalendarEvents"];
         put?: never;
@@ -1326,6 +1326,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/shared/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a shared document snapshot
+         * @description No auth. Unknown and revoked tokens are both 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.
+         */
+        get: operations["getDocumentsSharedByToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{id}": {
         parameters: {
             query?: never;
@@ -1378,7 +1398,7 @@ export interface paths {
         put?: never;
         /**
          * Set a hub profile document as the user's base profile
-         * @description Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
+         * @description Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. sections limits that write to headline, intro, careers, skills, and links. Omitted sections keeps today's write. An empty list writes nothing. applied lists the keys that were written. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.
          */
         post: operations["postDocumentsByIdBaseProfile"];
         delete?: never;
@@ -1479,7 +1499,7 @@ export interface paths {
         put?: never;
         /**
          * Save a hub profile document or an uploaded file as an application profile
-         * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.
+         * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.
          */
         post: operations["postDocumentsByIdProfile"];
         delete?: never;
@@ -1545,6 +1565,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a document share link
+         * @description Owner only. Pins versionId or the latest version, including a draft. The raw token is returned once. A second share revokes the previous token. 404 NOT_FOUND for a non-owner, a missing version, or a version on another document. 404 SHARING_UNAVAILABLE when document_shares is not migrated.
+         */
+        post: operations["postDocumentsByIdShare"];
+        /**
+         * Revoke the active document share
+         * @description Owner only. Sets revoked_at and does not delete the row. revoked is false when no share is active. 404 SHARING_UNAVAILABLE when document_shares is not migrated.
+         */
+        delete: operations["deleteDocumentsByIdShare"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{id}/versions": {
         parameters: {
             query?: never;
@@ -1557,7 +1601,7 @@ export interface paths {
         put?: never;
         /**
          * Save a new document version
-         * @description content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION.
+         * @description content and blocks must match one-to-one by blockId and text. Saving clears the finalized version and moves a FINALIZED document back to DRAFT. An archived document is 409 INVALID_TRANSITION. A one-section edit sends the whole document.
          */
         post: operations["postDocumentsByIdVersions"];
         delete?: never;
@@ -2050,6 +2094,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/career-topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Topic chips for a career post
+         * @description At most three items, in order career, application, gap. Empty slots are omitted. No model call.
+         */
+        get: operations["getMeCareerTopics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/commented-posts": {
         parameters: {
             query?: never;
@@ -2221,6 +2285,26 @@ export interface paths {
         patch: operations["patchMeLinksById"];
         trace?: never;
     };
+    "/api/v1/me/match-chips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chips for matching postings
+         * @description Up to 8 strings: category and role, tenure, then skills. No location chip.
+         */
+        get: operations["getMeMatchChips"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/notifications": {
         parameters: {
             query?: never;
@@ -2376,6 +2460,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/posting-document-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Document status for postings
+         * @description postingIds is one comma-separated list of at most 50 uuids. Every requested id is returned. NONE 서류 없음, DRAFT 초안 있음, READY 서류 준비됨.
+         */
+        get: operations["getMePostingDocumentStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/posting-views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List recently viewed open postings
+         * @description One card per posting, newest viewed day first. Does not increment view counts. A missing posting_views table is an empty page.
+         */
+        get: operations["getMePostingViews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/posts": {
         parameters: {
             query?: never;
@@ -2430,6 +2554,26 @@ export interface paths {
         head?: never;
         /** Update my settings */
         patch: operations["patchMeSettings"];
+        trace?: never;
+    };
+    "/api/v1/me/suggested-experiences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Suggested experiences from gap analyses
+         * @description Up to 5 strings from the caller's gap analyses, preferred_missing then missing, newest analysis first. No model call.
+         */
+        get: operations["getMeSuggestedExperiences"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/operations/{id}": {
@@ -2827,7 +2971,7 @@ export interface paths {
         };
         /**
          * List public profiles
-         * @description Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings.
+         * @description Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings. 빠른 시작 커피챗 허브 추천 is explore=recommended and is empty when the caller has no job_category. 팔로잉 is GET /api/v1/me/follows. The sheet reads userId, displayName, headline, and avatarUrl. Counts are client-side.
          */
         get: operations["getProfiles"];
         put?: never;
@@ -3100,7 +3244,7 @@ export interface paths {
         };
         /**
          * Search postings, people or posts
-         * @description type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending.
+         * @description type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending. sort is optional. Omitted and relevance keep that order. latest orders postings and posts by createdAt and people by updatedAt, with no relevance term. The cursor encodes sort; an omitted sort is stored as relevance, so a cursor minted before sort still continues the default page. sort=latest rejects a cursor with no sort or with relevance. sort=relevance and an omitted sort reject a cursor marked latest. latest does not continue a relevance page.
          */
         get: operations["getSearch"];
         put?: never;
@@ -3393,6 +3537,23 @@ export interface components {
             company: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Stored posting fit for GET /api/v1/applications/{id} only. Omitted when no cache row. fitScore here is the cached decimal. The integer fitScore beside it stays the gap score. reachable is the stored score if the weakest part were 10. Employer applicant payloads do not include fit. */
+            fit?: {
+                /** Format: uuid */
+                documentId: string;
+                documentTitle: string | null;
+                fitScore: number;
+                parts: {
+                    careerLevel: number;
+                    domain: number;
+                    experienceLink: number;
+                    keyword: number;
+                    techStack: number;
+                };
+                plan: string;
+                reachable: number;
+                topGap: string;
+            };
             /** @description Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null. */
             fitScore?: number | null;
             /** Format: uuid */
@@ -7569,6 +7730,43 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getDocumentsSharedByToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            blocks: {
+                                id: string;
+                                text: string;
+                            }[];
+                            /** @description TipTap JSON (root type doc; nodes doc, paragraph, heading, bulletList, orderedList, listItem, text; only link marks; paragraph, heading and listItem need attrs.blockId) */
+                            content: {
+                                [key: string]: unknown;
+                            };
+                            /** @enum {string} */
+                            kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
+                            title: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getDocumentsById: {
         parameters: {
             query?: never;
@@ -7676,7 +7874,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    sections?: ("headline" | "intro" | "careers" | "skills" | "links")[];
+                };
             };
         };
         responses: {
@@ -7688,6 +7888,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: {
+                            applied?: ("headline" | "intro" | "careers" | "skills" | "links")[];
                             /** Format: uuid */
                             documentId: string;
                             /** Format: uuid */
@@ -7910,6 +8111,7 @@ export interface operations {
                     /** Format: uuid */
                     applicationId?: string;
                     expectedRevision?: number;
+                    sections?: ("headline" | "intro" | "careers" | "skills" | "links")[];
                     /** @enum {string} */
                     target?: "hub" | "application";
                 };
@@ -7925,6 +8127,7 @@ export interface operations {
                     "application/json": {
                         data: {
                             applicationId?: string | null;
+                            applied?: ("headline" | "intro" | "careers" | "skills" | "links")[];
                             /** Format: uuid */
                             documentId: string;
                             /** Format: uuid */
@@ -8071,6 +8274,75 @@ export interface operations {
                         data: {
                             document: components["schemas"]["Document"];
                             version: components["schemas"]["DocumentVersion"];
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdShare: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    versionId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: date-time */
+                            createdAt: string;
+                            path: string;
+                            token: string;
+                            /** Format: uuid */
+                            versionId: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteDocumentsByIdShare: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            revoked: boolean;
                         };
                     };
                 };
@@ -9110,6 +9382,38 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getMeCareerTopics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: {
+                                /** @enum {string} */
+                                id: "career" | "application" | "gap";
+                                /** @enum {string} */
+                                source: "career" | "application" | "gap";
+                                sub: string;
+                                title: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getMeCommentedPosts: {
         parameters: {
             query?: {
@@ -9467,6 +9771,31 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getMeMatchChips: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            chips: string[];
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getMeNotifications: {
         parameters: {
             query?: {
@@ -9732,6 +10061,69 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getMePostingDocumentStatus: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated posting uuids */
+                postingIds?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: {
+                                label: string;
+                                /** Format: uuid */
+                                postingId: string;
+                                /** @enum {string} */
+                                status: "NONE" | "DRAFT" | "READY";
+                            }[];
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMePostingViews: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Posting"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getMePosts: {
         parameters: {
             query?: {
@@ -9889,6 +10281,39 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["UserSettings"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeSuggestedExperiences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: {
+                                /** Format: uuid */
+                                applicationId: string;
+                                id: string;
+                                meta: string;
+                                postingId: string | null;
+                                sub: string;
+                                title: string;
+                            }[];
+                        };
                     };
                 };
             };
@@ -11312,6 +11737,8 @@ export interface operations {
                 /** @description Search term. Whitespace-only is 400. No max length on this route. */
                 q: string;
                 type?: "postings" | "people" | "posts";
+                /** @description Omitted matches relevance. Any other value, including an empty string, is 422. */
+                sort?: "relevance" | "latest";
                 /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */

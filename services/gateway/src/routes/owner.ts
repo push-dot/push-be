@@ -91,6 +91,8 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/documents\/[^/]+\/(versions|exports)$/.test(path)) return method === "GET" || method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/profile$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/base-profile$/.test(path)) return method === "POST";
+  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
+  if (/^\/api\/v1\/documents\/[^/]+\/share$/.test(path)) return method === "POST" || method === "DELETE";
   if (/^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+$/.test(path)) return method === "GET";
   if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive)$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";

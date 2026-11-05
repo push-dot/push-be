@@ -25,6 +25,8 @@ import {
   countWhere,
   relevance,
   NOT_DELETING,
+  assertSearchCursor,
+  stampSearchCursor,
   offerDto,
   OFFER_SQL,
   notify,
@@ -116,6 +118,9 @@ const sameCompanyHidden = (row: Record<string, unknown>, viewerId: string, viewe
 
 async function listProfiles(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
+  const onSearch = ctx.url.pathname === "/api/v1/search";
+  const sort = onSearch && ctx.url.searchParams.get("sort") === "latest" ? "latest" : "relevance";
+  if (onSearch) assertSearchCursor(ctx.url, sort);
   const categories = enumList(ctx.url, "category", JOB_CATEGORIES, "category");
   const tenures = splitList(ctx.url, "tenure");
   for (const token of tenures) {
@@ -193,6 +198,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     )`;
     rank = relevance("u.display_name", "p.headline", "$" + raw, "$" + cho, "$" + hangul) + ", ";
   }
+  if (sort === "latest") rank = "";
   const total = await countWhere(ctx, sql, " FROM profiles p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -207,7 +213,8 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     id: String(row.user_id),
   }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+  const next = onSearch ? stampSearchCursor(paged.nextCursor, sort) : paged.nextCursor;
+  return pageBody(paged.items.map((row) => row.item), next, paged.hasMore, ctx.rid, total);
 }
 
 export async function searchPeople(ctx: Ctx, q: string): Promise<Response> {

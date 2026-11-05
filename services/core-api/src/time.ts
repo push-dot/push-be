@@ -67,22 +67,22 @@ export function formatJsonTimestamp(value: unknown): string {
   return base(p) + "." + pad(p.micros, 6) + "Z";
 }
 
-export function encodeCursor(createdAt: unknown, id: string): string {
-  const raw = `${formatJsonTimestamp(createdAt)}|${id}`;
+export function encodeCursor(createdAt: unknown, id: string, sort?: string): string {
+  const raw = sort ? `${formatJsonTimestamp(createdAt)}|${id}|${sort}` : `${formatJsonTimestamp(createdAt)}|${id}`;
   return btoa(raw).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-export function decodeCursor(s: string): { createdAt: string; id: string } {
+export function decodeCursor(s: string): { createdAt: string; id: string; sort?: string } {
   try {
     const padLen = (4 - (s.length % 4)) % 4;
     const raw = atob(s.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat(padLen));
-    const split = raw.indexOf("|");
-    if (split <= 0) throw new Error("bad cursor");
-    const createdAt = raw.slice(0, split);
-    const id = raw.slice(split + 1);
+    const parts = raw.split("|");
+    if (parts.length < 2 || parts.length > 3) throw new Error("bad cursor");
+    const [createdAt, id, sort] = parts;
     if (!createdAt || !id) throw new Error("bad cursor");
+    if (sort != null && sort !== "relevance" && sort !== "latest") throw new Error("bad cursor");
     parseUtc(createdAt);
-    return { createdAt, id };
+    return sort ? { createdAt, id, sort } : { createdAt, id };
   } catch {
     throw new Error("bad cursor");
   }
