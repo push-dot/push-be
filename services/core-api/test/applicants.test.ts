@@ -1441,6 +1441,27 @@ test("apply checks every document and source in one query each and writes in one
   assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT INTO ai_jobs")).length, 1);
 });
 
+test("apply falls back when stage_entered_at is missing", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS") && sql.includes("stage_entered_at")) throw missing;
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000a"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const writes = calls.filter((c) => c.sql.startsWith("WITH job AS"));
+  assert.equal(writes.length, 2);
+  assert.match(writes[0].sql, /stage_entered_at/);
+  assert.equal(writes[1].sql.includes("stage_entered_at"), false);
+  const body = await res.json() as { data: { stageEnteredAt: Record<string, string> } };
+  assert.equal(body.data.stageEnteredAt.APPLIED, "2026-10-21T00:00:00Z");
+});
+
 test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {
   const { handle } = await import("../src/handler.ts");
   let lookups = 0;

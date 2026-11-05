@@ -20,7 +20,7 @@ type Call = { sql: string; params: unknown[] };
 type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; message: string; details: unknown } };
 
 // In-memory calendar_events/applications that honour the user_id predicate.
-function world(opts: { insertError?: Error & { code?: string } } = {}) {
+function world(opts: { insertError?: Error & { code?: string }; locationError?: Error & { code?: string } } = {}) {
   const seen: Call[] = [];
   const events = new Map<string, Row>();
   const applications = new Map<string, string>([[APP, ALICE]]);
@@ -41,6 +41,7 @@ function world(opts: { insertError?: Error & { code?: string } } = {}) {
     if (sql.startsWith("INSERT INTO calendar_events")) {
       const withRemind = sql.includes("remind_at");
       const withLocation = sql.includes(", location,");
+      if (withLocation && opts.locationError) throw opts.locationError;
       if (withRemind && opts.insertError) throw opts.insertError;
       const [id, user_id, application_id, type, title, starts_at, ends_at, time_zone, notes] = params;
       let at = 9;
@@ -59,8 +60,9 @@ function world(opts: { insertError?: Error & { code?: string } } = {}) {
       return out(event ? [{ ...event }] : []);
     }
     if (sql.startsWith("UPDATE calendar_events")) {
-      const event = owned(params[0], params[1]);
       const located = sql.includes("location =");
+      if (located && opts.locationError) throw opts.locationError;
+      const event = owned(params[0], params[1]);
       const revision = params[located ? 9 : 8];
       if (!event || event.revision !== revision) return out([]);
       Object.assign(event, {
@@ -153,6 +155,38 @@ test("calendar: create cannot attach another user's application", async () => {
   assert.equal(res.body.error?.code, "NOT_FOUND");
   assert.deepEqual(w.seen.find((c) => c.sql.startsWith("SELECT id FROM applications"))?.params, [APP, BOB]);
   assert.equal(w.events.size, 0);
+});
+
+test("calendar: create falls back when location is missing and remind_at exists", async () => {
+  const missing = Object.assign(new Error('column "location" of relation "calendar_events" does not exist'), { code: "42703" });
+  const w = world({ locationError: missing });
+  const res = await w.call("POST", "/api/v1/calendar/events", { body: { ...valid, location: "Gangnam" } });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.data.location, "Gangnam");
+  assert.equal(res.body.data.remindAt, "2026-11-01T00:00:00Z");
+  const inserts = w.seen.filter((c) => c.sql.startsWith("INSERT INTO calendar_events"));
+  assert.equal(inserts.length, 2);
+  assert.match(inserts[0].sql, /, location,/);
+  assert.match(inserts[1].sql, /remind_at/);
+  assert.equal(inserts[1].sql.includes(", location,"), false);
+});
+
+test("calendar: patch falls back when location is missing", async () => {
+  const missing = Object.assign(new Error('column "location" of relation "calendar_events" does not exist'), { code: "42703" });
+  const w = world({ locationError: missing });
+  const created = await w.call("POST", "/api/v1/calendar/events", { body: valid });
+  assert.equal(created.status, 201);
+  const id = created.body.data.id;
+  const res = await w.call("PATCH", `/api/v1/calendar/events/${id}`, {
+    body: { expectedRevision: 1, location: "  Gangnam  " },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.location, "Gangnam");
+  const updates = w.seen.filter((c) => c.sql.startsWith("UPDATE calendar_events"));
+  assert.equal(updates.length, 2);
+  assert.match(updates[0].sql, /location =/);
+  assert.equal(updates[1].sql.includes("location ="), false);
+  assert.match(updates[1].sql, /revision = \$9/);
 });
 
 test("calendar: create falls back to the pre-remind_at insert when the column is missing", async () => {
