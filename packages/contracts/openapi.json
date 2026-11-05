@@ -21624,6 +21624,7 @@
     },
     "/api/v1/me/links/{id}": {
       "delete": {
+        "description": "Soft delete: the link leaves the list, PATCH and the AI readers, and POST .../restore brings it back. 404 when it is already deleted. Adding the same URL again creates a new link.",
         "operationId": "deleteMeLinksById",
         "parameters": [
           {
@@ -21733,6 +21734,54 @@
           }
         },
         "summary": "Update a link",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/links/{id}/restore": {
+      "post": {
+        "description": "Undo for DELETE. Idempotent: a link that is not deleted is returned as is. 404 for another user's link.",
+        "operationId": "postMeLinksByIdRestore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProfileLink"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Restore a deleted link",
         "tags": [
           "social"
         ],

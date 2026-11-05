@@ -31,7 +31,7 @@ _OLDER = (
 )
 _LINKS = (
     "SELECT id, kind, url, title, status, fit_count, ai_read "
-    "FROM user_links WHERE user_id = $1"
+    "FROM user_links WHERE user_id = $1 AND deleted_at IS NULL"
 )
 
 

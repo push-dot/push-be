@@ -78,7 +78,8 @@ async def _fetch_url(ctx: ToolContext, args: UrlArgs) -> dict:
 
 async def _explore_github(ctx: ToolContext, args: GithubArgs) -> dict:
     rows = await ctx.db.q().fetch(
-        "SELECT url FROM user_links WHERE user_id = $1 AND kind = 'github' AND ai_read",
+        "SELECT url FROM user_links WHERE user_id = $1 AND kind = 'github' AND ai_read "
+        "AND deleted_at IS NULL",
         UUID(ctx.user_id))
     linked = [name for row in rows for name in github_usernames(row["url"])]
     if not linked:

@@ -55,7 +55,7 @@ async function listLinks(ctx: Ctx): Promise<Response> {
   const kind = ctx.url.searchParams.get("kind");
   if (kind && !LINK_KINDS.has(kind)) throw unprocessable("kind", "unsupported kind");
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT id, kind, url, title, status, fit_count, ai_read, created_at FROM user_links WHERE user_id = $1";
+  let sql = "SELECT id, kind, url, title, status, fit_count, ai_read, created_at FROM user_links WHERE user_id = $1 AND deleted_at IS NULL";
   if (kind) {
     params.push(kind);
     sql += ` AND kind = $${params.length}`;
@@ -92,9 +92,16 @@ async function createLink(ctx: Ctx): Promise<Response> {
 
 async function deleteLink(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "DELETE FROM user_links WHERE id = $1 AND user_id = $2 RETURNING id", [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = $3 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id", [id, ctx.user.id, ctx.now.toISOString()]);
   if (!row) throw notFound();
   return noContent(ctx.rid);
+}
+
+async function restoreLink(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
+  if (!row) throw notFound();
+  return data(200, linkDto(row), ctx.rid);
 }
 
 const updateLink = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -108,7 +115,7 @@ const updateLink = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const title = "title" in body ? textOf(body.title ?? "", "title", 0, 300) : null;
   const aiRead = "aiRead" in body ? boolOf(body.aiRead, "aiRead") : null;
   const row = await one(ctx.deps.query,
-    `UPDATE user_links SET title = COALESCE($3, title), kind = COALESCE($4, kind), url = COALESCE($5, url), ai_read = COALESCE($6, ai_read) WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at`,
+    `UPDATE user_links SET title = COALESCE($3, title), kind = COALESCE($4, kind), url = COALESCE($5, url), ai_read = COALESCE($6, ai_read) WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id, kind, url, title, status, fit_count, ai_read, created_at`,
     [id, ctx.user.id, title, kind, url, aiRead]);
   if (!row) throw notFound();
   return data(200, linkDto(row), ctx.rid);
@@ -580,6 +587,8 @@ export const dispatchMe = async (ctx: Ctx, path: string): Promise<Response | nul
   const link = path.match(/^\/api\/v1\/me\/links\/([^/]+)$/);
   if (link && method === "PATCH") return updateLink(ctx, link[1]);
   if (link && method === "DELETE") return deleteLink(ctx, link[1]);
+  const restore = path.match(/^\/api\/v1\/me\/links\/([^/]+)\/restore$/);
+  if (restore && method === "POST") return restoreLink(ctx, restore[1]);
   if (path === "/api/v1/me/devices" && method === "POST") return registerDevice(ctx);
   const device = path.match(/^\/api\/v1\/me\/devices\/([^/]+)$/);
   if (device && method === "DELETE") return deleteDevice(ctx, device[1]);
