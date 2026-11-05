@@ -307,3 +307,30 @@ test("with QUEUE_BACKEND=redis a new message still rejects waiting tool cards", 
   const message = db.sqls.find((sql) => sql.startsWith("WITH conv")) || "";
   assert.match(message, /UPDATE approvals SET status = 'REJECTED'/);
 });
+
+test("accepts submit with section ids stored in options", async () => {
+  resetLimits();
+  const options = JSON.stringify([
+    { id: "submit", label: "다음" },
+    { id: "resume", label: "이력서" },
+    { id: "portfolio", label: "포트폴리오" },
+    { id: "concise", label: "짧게" },
+    { id: "preserve", label: "원래 말투로" },
+  ]);
+  const db = fakeDb(pending({ kind: "RESUME_GATE", job_id: null, options }));
+  const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    body: JSON.stringify({ optionId: "submit", optionIds: ["submit", "resume", "concise"] }),
+  }), env(), deps(db.query));
+  assert.equal(res.status, 202);
+  const body = await res.json() as { data: { status: string; optionId: string; optionIds: string[]; jobId: string } };
+  assert.equal(body.data.status, "APPROVED");
+  assert.equal(body.data.optionId, "submit");
+  assert.deepEqual(body.data.optionIds, ["submit", "resume", "concise"]);
+  assert.deepEqual(db.state.payloads[0].resume, {
+    approvalId: APPROVAL,
+    optionId: "submit",
+    optionIds: ["submit", "resume", "concise"],
+  });
+});

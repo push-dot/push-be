@@ -8,8 +8,17 @@ from pydantic import BaseModel, Field
 class ResumeState(BaseModel):
     status: Literal["active", "done", "cancelled"] = "active"
     phase: Literal[
-        "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
-        "feedback", "approach", "blueprints",
+        "mode_select",
+        "intake",
+        "analyze",
+        "strategy",
+        "craft",
+        "review",
+        "publish",
+        "present",
+        "feedback",
+        "approach",
+        "blueprints",
     ] = "mode_select"
     work_mode: Literal["resume_based", "experience_blueprint"] | None = None
     scenario: str | None = None
@@ -19,6 +28,8 @@ class ResumeState(BaseModel):
     drafts: dict = Field(default_factory=dict)
     review: dict = Field(default_factory=dict)
     template: str | None = None
+    profile_photo: bool = True
+    draft_version: int = 1
     artifacts: dict[str, str] = Field(default_factory=dict)
     output_targets: list[str] = Field(default_factory=list)
     tone: str | None = None

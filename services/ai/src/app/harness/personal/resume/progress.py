@@ -128,7 +128,7 @@ def _posting(analysis: dict) -> dict:
     return _dict(jobs)
 
 
-def posting_line(analysis: dict) -> dict:
+def posting_line(analysis: dict, *, failed: bool = False) -> dict:
     job = _posting(analysis)
     required = (
         job.get("required") if isinstance(job.get("required"), list) else job.get("requirements")
@@ -136,6 +136,18 @@ def posting_line(analysis: dict) -> dict:
     preferred = job.get("preferred")
     title = job.get("title") or job.get("position") or job.get("role")
     target = " · ".join(str(part).strip() for part in (job.get("company"), title) if part)
+    if failed:
+        reason = job.get("read_error")
+        result = "“자격 요건”을 읽지 못했어요"
+        if isinstance(reason, str) and reason.strip():
+            result = f"{result} · {reason.strip()}"
+        return _line(
+            "analyze_posting",
+            "공고 읽기",
+            "err",
+            target=target or "회사 채용 페이지",
+            resultLine=result,
+        )
     counts = (_count(required), _count(preferred))
     result = f"필수 {counts[0]}개 · 우대 {counts[1] or 0}개" if counts[0] else ""
     return _line(
@@ -264,6 +276,362 @@ def done_summary(source: str, fit_from, fit_to, bullets: list) -> dict:
 
 def boost_line(cycle: int, before: float, after: float) -> dict:
     return _line("boost", f"점수 올리기 {cycle}회", resultLine=f"{before:.1f} → {after:.1f}")
+
+
+def think_event(phase: str, seconds: float) -> dict:
+    return {"type": "think", "seconds": max(1, round(seconds)), "phase": phase}
+
+
+_ACTION_TAG = {
+    "expand": "강화",
+    "modify": "수정",
+    "add": "추가",
+    "condense": "축소",
+    "remove": "축소",
+}
+
+
+def strategy_plan(output: dict) -> dict | None:
+    if not isinstance(output, dict):
+        return None
+    sections = output.get("sections")
+    if not isinstance(sections, list):
+        return None
+    rows: list[dict] = []
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for item in sections:
+        if len(rows) >= 6:
+            break
+        if not isinstance(item, dict):
+            continue
+        tag = _ACTION_TAG.get(str(item.get("action") or "").strip().lower())
+        if tag is None:
+            continue
+        label = str(item.get("section") or "").strip()
+        if not label:
+            continue
+        reason = item.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            focus = item.get("suggested_focus")
+            reason = focus if isinstance(focus, str) else ""
+        rows.append({"tag": tag, "label": label, "note": str(reason).strip()[:60]})
+        words = item.get("suggested_keywords")
+        if isinstance(words, str):
+            words = [words]
+        if not isinstance(words, list):
+            continue
+        for word in words:
+            text = str(word).strip()
+            key = text.casefold()
+            if text and key not in seen and len(keywords) < 6:
+                seen.add(key)
+                keywords.append(text)
+    if not rows:
+        return None
+    plan = {
+        "type": "plan",
+        "id": "strategy",
+        "title": "수정 전략",
+        "meta": f"섹션 {len(rows)}개",
+        "rows": rows,
+    }
+    if keywords:
+        plan["keywords"] = keywords
+    return plan
+
+
+def strategy_line(plan: dict) -> dict:
+    rows = plan.get("rows") if isinstance(plan, dict) else None
+    words = plan.get("keywords") if isinstance(plan, dict) else None
+    count = len(rows) if isinstance(rows, list) else 0
+    keywords = len(words) if isinstance(words, list) else 0
+    result = f"섹션 {count}개"
+    if keywords:
+        result = f"{result} · 추가할 키워드 {keywords}개"
+    return _line("strategy", "전략 세우기", target="공고 요건 ↔ 내 경력", resultLine=result)
+
+
+_PAPER_KIND = {
+    "resume": "이력서",
+    "portfolio": "포트폴리오",
+    "cover_letter": "자기소개서",
+}
+
+
+def _strip_md(text: str) -> str:
+    return text.replace("#", "").replace("*", "").replace("_", "").replace("`", "")
+
+
+def _md_heading(line: str) -> str | None:
+    if line.startswith("# "):
+        return line[2:].strip()
+    if line.startswith("## "):
+        return line[3:].strip()
+    return None
+
+
+def _body_line(line: str) -> str:
+    text = line.strip()
+    if text.startswith("- "):
+        text = "• " + text[2:]
+    return _strip_md(text).strip()
+
+
+def paper_event(
+    target: str, version: int, markdown: str, fallback_heading: str = ""
+) -> dict | None:
+    if not isinstance(markdown, str) or not markdown.strip():
+        return None
+    heading = ""
+    lines: list[str] = []
+    for raw in markdown.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        found = _md_heading(stripped)
+        if found is not None and not heading:
+            heading = _strip_md(found).strip()
+            continue
+        cleaned = _body_line(stripped)
+        if cleaned:
+            lines.append(cleaned[:120])
+    kind = _PAPER_KIND.get(target, target)
+    number = int(version)
+    return {
+        "type": "paper",
+        "id": f"draft-{target}-v{number}",
+        "label": f"{kind} 초안 v{number}",
+        "heading": heading or fallback_heading or "",
+        "lines": lines[:6],
+    }
+
+
+_TONE_OPTIONS = (
+    {"id": "professional", "label": "전문적으로"},
+    {"id": "confident", "label": "자신 있게"},
+    {"id": "concise", "label": "짧게"},
+    {"id": "technical", "label": "기술 중심으로"},
+    {"id": "collaborative", "label": "협업 중심으로"},
+    {"id": "preserve", "label": "원래 말투로"},
+)
+
+
+def _github_found_label(analysis: dict) -> str:
+    found = analysis.get("github") if isinstance(analysis.get("github"), dict) else {}
+    url = str(found.get("url") or "").strip()
+    if url:
+        return url
+    username = str(found.get("username") or "").strip()
+    if not username:
+        return ""
+    if "github.com" in username.lower():
+        return username
+    return f"github.com/{username}"
+
+
+def _material_rows(inputs: dict, analysis: dict) -> list[dict]:
+    rows: list[dict] = []
+    file_name = _file_name(inputs)
+    if file_name:
+        sub = "마이 › 서류" if inputs.get("documentId") else "올린 파일"  # noqa: RUF001
+        rows.append({"id": "m_file", "label": file_name, "sub": sub, "action": "change"})
+    posting = inputs.get("posting") if isinstance(inputs.get("posting"), dict) else {}
+    company = str(posting.get("company") or "").strip()
+    title = str(posting.get("title") or "").strip()
+    if company or title:
+        row = {
+            "id": "m_posting",
+            "label": title or company,
+            "sub": "홈 › 북마크 공고" if inputs.get("postingId") else "붙여넣은 링크",  # noqa: RUF001
+            "action": "change",
+        }
+        if company:
+            row["badge"] = company[:1]
+        rows.append(row)
+    provided = str(inputs.get("github") or "").strip()
+    page = ""
+    pages = inputs.get("pages") if isinstance(inputs.get("pages"), dict) else {}
+    for url in pages:
+        if _github_page(str(url)):
+            page = str(url)
+            break
+    found = _github_found_label(analysis)
+    if provided:
+        rows.append({"id": "m_github", "label": provided, "sub": "내 링크", "action": "change"})
+    elif page:
+        rows.append({"id": "m_github", "label": page, "sub": "내 링크", "action": "change"})
+    elif found:
+        rows.append(
+            {"id": "m_github", "label": found, "sub": "이력서에서 찾았어요", "action": "change"}
+        )
+    return rows
+
+
+def intake_panel(inputs: dict | None, analysis: dict | None = None) -> list[dict]:
+    bag = inputs if isinstance(inputs, dict) else {}
+    found = analysis if isinstance(analysis, dict) else {}
+    sections = [
+        {
+            "id": "targets",
+            "kind": "chips",
+            "title": "어떤 산출물을 만들까요?",
+            "multiple": True,
+            "options": [
+                {"id": "resume", "label": "이력서"},
+                {"id": "portfolio", "label": "포트폴리오"},
+                {"id": "cover_letter", "label": "자기소개서"},
+            ],
+            "selected": ["resume"],
+        }
+    ]
+    rows = _material_rows(bag, found)
+    if rows:
+        sections.append(
+            {
+                "id": "materials",
+                "kind": "rows",
+                "title": "가져올 자료",
+                "options": rows,
+            }
+        )
+    sections.append(
+        {
+            "id": "tone",
+            "kind": "chips",
+            "title": "어떤 말투로 쓸까요?",
+            "options": [dict(item) for item in _TONE_OPTIONS],
+            "selected": ["preserve"],
+        }
+    )
+    return sections
+
+
+def quality_line(auto_fixes, recommendations) -> dict:
+    fixes = auto_fixes if isinstance(auto_fixes, list) else []
+    recs = recommendations if isinstance(recommendations, list) else []
+    fixed, offered = len(fixes), len(recs)
+    if fixed and offered:
+        result = f"바로 고친 것 {fixed}개 · 추천 {offered}개"
+    elif fixed:
+        result = f"바로 고친 것 {fixed}개"
+    elif offered:
+        result = f"추천 {offered}개"
+    else:
+        result = "고칠 곳이 없어요"
+    return _line(
+        "quality_check",
+        "품질 검사",
+        target="오타 · 문법 · 말투 · ATS",
+        resultLine=result,
+    )
+
+
+def quality_diff(auto_fixes) -> dict | None:
+    hunks = []
+    for fix in auto_fixes if isinstance(auto_fixes, list) else []:
+        if not isinstance(fix, dict):
+            continue
+        line = fix.get("line") if isinstance(fix.get("line"), int) else None
+        hunks.append({"line": line, "sign": "-", "text": str(fix.get("before") or "")})
+        hunks.append({"line": line, "sign": "+", "text": str(fix.get("after") or "")})
+    if not hunks:
+        return None
+    return {"type": "diff", "documentId": "", "revisionId": "", "hunks": hunks}
+
+
+def quality_choice(recommendations) -> dict | None:
+    options = []
+    selected = []
+    for rec in recommendations if isinstance(recommendations, list) else []:
+        if len(options) >= 6:
+            break
+        if not isinstance(rec, dict):
+            continue
+        label = str(rec.get("label") or "").strip()
+        if not label:
+            continue
+        item = {"id": f"rec{len(options) + 1}", "label": label}
+        desc = rec.get("desc")
+        if isinstance(desc, str) and desc.strip():
+            item["desc"] = desc.strip()
+        options.append(item)
+        if rec.get("priority") == "P1":
+            selected.append(item["id"])
+    if not options:
+        return None
+    copied = [dict(item) for item in options]
+    return {
+        "type": "choice",
+        "kind": "RESUME_GATE",
+        "gate": "quality",
+        "title": "추천 수정도 반영할까요?",
+        "multiple": True,
+        "recommended": "rec1",
+        "options": options,
+        "sections": [
+            {
+                "id": "recs",
+                "kind": "toggle",
+                "options": copied,
+                "selected": selected,
+            }
+        ],
+        "submit": {
+            "label": "{n}개 반영하고 디자인으로",
+            "zeroLabel": "그대로 디자인으로",
+        },
+    }
+
+
+def apply_recommendations_line(labels: list[str]) -> dict | None:
+    picked = [str(item) for item in labels if str(item).strip()]
+    if not picked:
+        return None
+    return {
+        "type": "tool",
+        "name": "apply_recommendations",
+        "state": "ok",
+        "tier": "SAFE_WRITE",
+        "summary": "추천 수정 반영",
+        "target": f"{len(picked)}개",
+        "resultLine": " · ".join(picked),
+    }
+
+
+def feedback_line(count: int) -> dict:
+    return _line(
+        "feedback",
+        "피드백 정리",
+        target="공고 요건 ↔ 내 이력서",
+        resultLine=f"고칠 점 {count}개",
+    )
+
+
+def feedback_plan(analysis: dict) -> dict | None:
+    raw = analysis.get("feedback") if isinstance(analysis, dict) else None
+    if not isinstance(raw, list):
+        return None
+    rows = []
+    for item in raw:
+        if len(rows) >= 5:
+            break
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("problem") or "").strip()
+        if not label:
+            continue
+        note = str(item.get("fix") or "").strip()[:60]
+        rows.append({"tag": str(item.get("tag") or "").strip(), "label": label, "note": note})
+    if not rows:
+        return None
+    return {
+        "type": "plan",
+        "id": "feedback",
+        "title": "고칠 점",
+        "meta": f"{len(rows)}개",
+        "rows": rows,
+    }
 
 
 def boost_fit(first: float, after: float) -> dict:

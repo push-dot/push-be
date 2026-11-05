@@ -364,3 +364,225 @@ async def test_profile_result_without_a_fit_says_the_profile_was_fixed():
     assert result["summary"] == "다 됐어요! 프로필을 고쳤어요."
     assert "fitFrom" not in result
     assert result["bullets"] == ["Kafka를 기술 스택 맨 앞으로 옮기기"]
+
+
+def test_think_event_rounds_to_nearest_at_least_one():
+    from app.harness.personal.resume.progress import think_event
+
+    assert think_event("craft", 0.2)["seconds"] == 1
+    assert think_event("craft", 6.4)["seconds"] == 6
+    event = think_event("strategy", 2)
+    assert event == {"type": "think", "seconds": 2, "phase": "strategy"}
+    assert "seq" not in event
+
+
+def test_strategy_plan_maps_actions_to_tags():
+    from app.harness.personal.resume.progress import strategy_plan
+
+    plan = strategy_plan(
+        {
+            "sections": [
+                {"section": "경력", "action": "expand", "reason": "성과를 키운다"},
+                {"section": "기술", "action": "modify", "reason": "스택을 맞춘다"},
+                {"section": "프로젝트", "action": "add", "reason": "결제 프로젝트를 넣는다"},
+                {"section": "수상", "action": "condense", "reason": "한 줄로 줄인다"},
+                {"section": "학력", "action": "keep", "reason": "그대로 둔다"},
+            ]
+        }
+    )
+    assert plan is not None
+    assert [row["tag"] for row in plan["rows"]] == ["강화", "수정", "추가", "축소"]
+    assert plan["meta"] == "섹션 4개"
+    assert plan["id"] == "strategy"
+    assert plan["title"] == "수정 전략"
+
+
+def test_strategy_plan_none_when_only_keep():
+    from app.harness.personal.resume.progress import strategy_plan
+
+    assert (
+        strategy_plan({"sections": [{"section": "학력", "action": "keep", "reason": "유지"}]})
+        is None
+    )
+
+
+def test_strategy_plan_caps_keywords_at_six_and_dedupes():
+    from app.harness.personal.resume.progress import strategy_plan
+
+    plan = strategy_plan(
+        {
+            "sections": [
+                {
+                    "section": "기술",
+                    "action": "expand",
+                    "reason": "키워드",
+                    "suggested_keywords": [
+                        "Kotlin",
+                        "kotlin",
+                        "Kafka",
+                        "Spring",
+                        "SQL",
+                        "Redis",
+                        "AWS",
+                    ],
+                }
+            ]
+        }
+    )
+    assert plan["keywords"] == ["Kotlin", "Kafka", "Spring", "SQL", "Redis", "AWS"]
+
+
+def test_strategy_line_omits_keyword_count_when_zero():
+    from app.harness.personal.resume.progress import strategy_line
+
+    quiet = strategy_line({"rows": [{"tag": "수정", "label": "경력", "note": "한 줄"}]})
+    assert quiet["resultLine"] == "섹션 1개"
+    assert "키워드" not in quiet["resultLine"]
+    loud = strategy_line({"rows": [{}, {}], "keywords": ["Kotlin"]})
+    assert loud["resultLine"] == "섹션 2개 · 추가할 키워드 1개"
+    assert loud["summary"] == "전략 세우기"
+    assert loud["target"] == "공고 요건 ↔ 내 경력"
+
+
+def test_paper_event_strips_markdown_and_caps_lines():
+    from app.harness.personal.resume.progress import paper_event
+
+    markdown = "\n".join(["**굵게**", "- x", "삼", "사", "오", "육", "칠", "팔", "구", "십"])
+    event = paper_event("resume", 1, markdown)
+    assert event["id"] == "draft-resume-v1"
+    assert event["label"] == "이력서 초안 v1"
+    assert len(event["lines"]) == 6
+    assert event["lines"][0] == "굵게"
+    assert event["lines"][1] == "• x"
+    assert all("#" not in line and "*" not in line for line in event["lines"])
+    headed = paper_event("cover_letter", 1, "# 김서준\n본문", "김서준 · 백엔드")
+    assert headed["heading"] == "김서준"
+    assert headed["lines"] == ["본문"]
+    assert headed["label"] == "자기소개서 초안 v1"
+    fallback = paper_event("portfolio", 2, "본문만", "김서준 · 백엔드")
+    assert fallback["heading"] == "김서준 · 백엔드"
+    assert fallback["id"] == "draft-portfolio-v2"
+
+
+def test_paper_event_none_for_empty_draft():
+    from app.harness.personal.resume.progress import paper_event
+
+    assert paper_event("resume", 1, "") is None
+    assert paper_event("resume", 1, "   \n") is None
+
+
+def test_feedback_plan_from_analysis():
+    from app.harness.personal.resume.progress import feedback_plan
+
+    plan = feedback_plan(
+        {
+            "feedback": [
+                {"tag": "키워드", "problem": "키워드가 없어요", "fix": "결제 승인을 넣어요"},
+                {"tag": "도메인", "problem": "도메인이 약해요", "fix": "핀테크를 적어요"},
+                {"tag": "성과", "problem": "숫자가 없어요", "fix": "승인율을 적어요"},
+            ]
+        }
+    )
+    assert plan["id"] == "feedback"
+    assert plan["title"] == "고칠 점"
+    assert plan["meta"] == "3개"
+    assert plan["rows"][0] == {
+        "tag": "키워드",
+        "label": "키워드가 없어요",
+        "note": "결제 승인을 넣어요",
+    }
+
+
+def test_feedback_plan_none_without_structured_feedback():
+    from app.harness.personal.resume.progress import feedback_plan
+
+    assert feedback_plan({"message": "키워드가 부족해요", "improvements": ["한 줄"]}) is None
+    assert feedback_plan({"feedback": "문장으로만 왔어요"}) is None
+
+
+def test_intake_panel_rows_from_inputs():
+    from app.harness.personal.resume.progress import intake_panel
+
+    inputs = {
+        "fileName": "김서준_백엔드_이력서_2026.pdf",
+        "documentId": "doc-1",
+        "posting": {"company": "모아페이", "title": "백엔드 엔지니어 (Kotlin·Spring)"},
+        "postingId": "post-1",
+    }
+    sections = intake_panel(inputs, {"github": {"username": "seojun-kim"}})
+    materials = next(section for section in sections if section["id"] == "materials")
+    assert [row["sub"] for row in materials["options"]] == [
+        "마이 › 서류",  # noqa: RUF001
+        "홈 › 북마크 공고",  # noqa: RUF001
+        "이력서에서 찾았어요",
+    ]
+    assert materials["options"][0]["label"] == "김서준_백엔드_이력서_2026.pdf"
+    assert materials["options"][1]["badge"] == "모"
+    assert materials["options"][2]["label"] == "github.com/seojun-kim"
+    without = intake_panel(inputs, {})
+    assert len(next(section for section in without if section["id"] == "materials")["options"]) == 2
+    assert all(section["id"] != "materials" for section in intake_panel({}))
+
+
+def test_posting_line_err_with_reason():
+    line = posting_line(
+        {
+            "jobs": {
+                "company": "모아페이",
+                "title": "백엔드",
+                "read_error": "로그인이 필요한 영역이에요",
+            }
+        },
+        failed=True,
+    )
+    assert line["state"] == "err"
+    assert line["name"] == "analyze_posting"
+    assert line["target"] == "모아페이 · 백엔드"
+    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요 · 로그인이 필요한 영역이에요"
+
+
+def test_posting_line_err_without_reason():
+    line = posting_line({"jobs": {}}, failed=True)
+    assert line["target"] == "회사 채용 페이지"
+    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요"
+    assert "·" not in line["resultLine"]
+
+
+def test_quality_line_counts():
+    from app.harness.personal.resume.progress import quality_line
+
+    assert quality_line([1, 2], [1, 2, 3])["resultLine"] == "바로 고친 것 2개 · 추천 3개"
+    assert quality_line([], [1])["resultLine"] == "추천 1개"
+    assert quality_line([1], [])["resultLine"] == "바로 고친 것 1개"
+    assert quality_line([], [])["resultLine"] == "고칠 곳이 없어요"
+
+
+def test_quality_diff_pairs_before_after():
+    from app.harness.personal.resume.progress import quality_diff
+
+    diff = quality_diff([{"line": 4, "before": "old", "after": "new"}])
+    assert diff == {
+        "type": "diff",
+        "documentId": "",
+        "revisionId": "",
+        "hunks": [
+            {"line": 4, "sign": "-", "text": "old"},
+            {"line": 4, "sign": "+", "text": "new"},
+        ],
+    }
+
+
+def test_quality_choice_preselects_p1():
+    from app.harness.personal.resume.progress import quality_choice
+
+    event = quality_choice(
+        [
+            {"label": "숫자로", "priority": "P1"},
+            {"label": "키워드", "desc": "공고 단어", "priority": "P2"},
+            {"label": "도메인", "priority": "P1"},
+        ]
+    )
+    assert event["sections"][0]["selected"] == ["rec1", "rec3"]
+    assert event["options"][1]["desc"] == "공고 단어"
+    assert "cancel" not in {item["id"] for item in event["options"]}
+    assert event["submit"]["zeroLabel"] == "그대로 디자인으로"

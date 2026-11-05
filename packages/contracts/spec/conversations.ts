@@ -12,8 +12,54 @@ const option = obj({
   id: str,
   label: str,
   desc: { type: "string", description: "Second line under the label" },
-  badge: { type: "string", description: "Short tag such as 추천; only the review gate's CLASSIC option sends one" },
+  sub: { type: "string", description: "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers." },
+  badge: { type: "string", description: "Short tag such as 추천, or the company initial on a material row" },
+  action: { ...enumOf("change"), description: "Material rows only. Opens the material picker. This id is not an answer." },
 }, ["id", "label"]);
+
+const choiceSubmit = obj({
+  label: { type: "string", description: "Confirm button. {n} is the number of selected ids in toggle sections." },
+  zeroLabel: { type: "string", description: "Button label when {n} would be 0" },
+  optionLabels: {
+    type: "object",
+    additionalProperties: { type: "string" },
+    description: "Thumbnails: button label for the selected option id. CLASSIC → 클래식으로 만들기.",
+  },
+}, ["label"]);
+
+const choiceSection = {
+  description: "A new client renders sections instead of options. options stays as the fallback for an older client.",
+  oneOf: [
+    obj({
+      id: str,
+      kind: enumOf("chips"),
+      title: str,
+      multiple: { type: "boolean", description: "Present and true when every chip in the section may be selected" },
+      options: arr(option),
+      selected: { ...arr(str), description: "Default ids. Applied only when the answer contains submit and the section has no pick." },
+    }, ["id", "kind", "options", "selected"]),
+    obj({
+      id: str,
+      kind: enumOf("rows"),
+      title: str,
+      options: arr(option),
+    }, ["id", "kind", "options"]),
+    obj({
+      id: str,
+      kind: enumOf("toggle"),
+      title: str,
+      options: arr(option),
+      selected: { ...arr(str), description: "Default on. With submit, an id is on only when it is in optionIds. Without submit, a toggle section that was not touched keeps selected." },
+    }, ["id", "kind", "options", "selected"]),
+    obj({
+      id: str,
+      kind: enumOf("thumbnails"),
+      title: str,
+      options: arr(option),
+      selected: arr(str),
+    }, ["id", "kind", "options", "selected"]),
+  ],
+};
 
 const hunk = obj({ line: nullable(int), sign: enumOf("+", "-", ""), text: str });
 
@@ -47,6 +93,33 @@ const resultAction = obj({
 const chatEvents: Record<string, Schema> = {
   status: obj({ type: enumOf("status"), text: str, seq }),
   token: obj({ type: enumOf("token"), text: str, seq }),
+  think: obj({
+    type: enumOf("think"),
+    seconds: { ...int, minimum: 1, description: "How long the model step took. Nearest second, then at least 1. No text and no chain-of-thought." },
+    phase: { type: "string", description: "Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it." },
+    seq,
+  }, ["type", "seconds", "phase", "seq"]),
+  plan: obj({
+    type: enumOf("plan"),
+    id: { type: "string", description: "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card." },
+    title: str,
+    meta: { type: "string", description: "섹션 4개 or 3개" },
+    rows: arr(obj({
+      tag: { type: "string", description: "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력." },
+      label: str,
+      note: str,
+    }, ["tag", "label", "note"])),
+    keywords: { ...arr(str), description: "Strategy card only. Up to 6, without a leading +" },
+    seq,
+  }, ["type", "id", "title", "meta", "rows", "seq"]),
+  paper: obj({
+    type: enumOf("paper"),
+    id: { type: "string", description: "draft-{target}-v{version}, e.g. draft-resume-v1. A new version is a new card. The same id replaces the card." },
+    label: { type: "string", description: "이력서 초안 v1, 포트폴리오 초안 v1, or 자기소개서 초안 v1" },
+    heading: str,
+    lines: { ...arr(str), description: "Up to 6 preview lines, markdown stripped, each at most 120 characters" },
+    seq,
+  }, ["type", "id", "label", "heading", "lines", "seq"]),
   tool: obj({
     type: enumOf("tool"),
     name: str,
@@ -105,7 +178,9 @@ const chatEvents: Record<string, Schema> = {
     detail: { type: "string", description: "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress" },
     note: { type: "string", description: "Profile present gate: where the PDF can be exported" },
     documentId: { type: "string", description: "Present gate: the saved profile document, when there is one" },
-    options: arr(option),
+    options: { ...arr(option), description: "Old-client fallback. A client that does not read sections answers from this list." },
+    sections: { ...arr(choiceSection), description: "Present → render these instead of options. Row sections are display only." },
+    submit: { ...choiceSubmit, description: "Present → the answer is the button, not a tapped option. Send optionId submit and optionIds [submit, …picked ids]." },
     resolution: resolutionField,
     seq,
   }, ["type", "id", "options", "seq"]),
@@ -250,7 +325,10 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). "
   + "During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. "
   + "Every field added after the first release is optional; a client that ignores it keeps working. "
-  + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown.";
+  + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. "
+  + "think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. "
+  + "A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
+  + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.";
 
 const postMessageBody = body(closed({
   text: { type: "string", minLength: 1, maxLength: 20000 },
@@ -428,7 +506,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/approvals/{approvalId}", {
     tag: "conversations",
     summary: "Answer a chat approval or choice card",
-    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's options. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 with jobId when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
+    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
     params: [id, pathParam("approvalId")],
     body: body(closed({
       optionId: { type: "string", minLength: 1 },

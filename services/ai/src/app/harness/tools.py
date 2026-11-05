@@ -116,11 +116,13 @@ async def call_structured(spec: ToolSpec, args: BaseModel, ctx: ToolContext) -> 
     return done.result, done.ok
 
 
-RETRY_WARNING = "한 번 더 시도했어요"
+RETRY_WARNING = "시간이 오래 걸려서 한 번 더 시도했어요"
 
 
 async def call_retrying(
-    spec: ToolSpec, args: BaseModel, ctx: ToolContext,
+    spec: ToolSpec,
+    args: BaseModel,
+    ctx: ToolContext,
 ) -> tuple[dict, bool, bool]:
     result, ok = await call_structured(spec, args, ctx)
     if ok or spec.tier is not Tier.READ or result.get("error") != "TOOL_FAILED":
