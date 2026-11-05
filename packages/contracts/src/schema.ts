@@ -3295,6 +3295,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search skills used by open postings
+         * @description Skill names from open postings, matched case-insensitively as a substring of q. Names that start with q come first, then by postingCount. An empty q lists the most common skills.
+         */
+        get: operations["getSkills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources": {
         parameters: {
             query?: never;
@@ -4835,10 +4855,14 @@ export interface components {
             id: string;
             message: string;
             posting: {
+                careerMax: number | null;
+                careerMin: number;
                 company: string;
+                deadline: string | null;
                 /** Format: uuid */
                 id: string;
                 imageUrl: string | null;
+                location: string;
                 title: string;
             } | null;
             readAt: string | null;
@@ -4848,6 +4872,8 @@ export interface components {
                 displayName: string;
                 headline: string;
                 id: string;
+                /** @enum {string} */
+                kind: "PERSON" | "COMPANY";
             };
             sender: {
                 avatarUrl: string | null;
@@ -4855,6 +4881,8 @@ export interface components {
                 displayName: string;
                 headline: string;
                 id: string;
+                /** @enum {string} */
+                kind: "PERSON" | "COMPANY";
             };
             /** @enum {string} */
             status: "SENT" | "READ" | "ACCEPTED" | "DECLINED";
@@ -11980,6 +12008,37 @@ export interface operations {
                                 term: string;
                             }[];
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSkills: {
+        parameters: {
+            query?: {
+                /** @description Substring to match */
+                q?: string;
+                /** @description Maximum skills to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            name: string;
+                            postingCount: number;
+                        }[];
                     };
                 };
             };

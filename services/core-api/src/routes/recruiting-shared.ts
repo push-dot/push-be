@@ -265,12 +265,14 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
     id: String(row.id),
     sender: {
       ...person(row, "sender_id", "sender_name"),
+      kind: row.sender_company == null || row.sender_company === "" ? "PERSON" : "COMPANY",
       companyName: row.sender_company == null || row.sender_company === "" ? null : String(row.sender_company),
       headline: row.sender_headline == null ? "" : String(row.sender_headline),
       avatarUrl: imageUrl(row.sender_avatar),
     },
     recipient: {
       ...person(row, "profile_user_id", "recipient_name"),
+      kind: row.recipient_company == null || row.recipient_company === "" ? "PERSON" : "COMPANY",
       companyName: row.recipient_company == null || row.recipient_company === "" ? null : String(row.recipient_company),
       headline: row.recipient_headline == null ? "" : String(row.recipient_headline),
       avatarUrl: imageUrl(row.recipient_avatar),
@@ -281,6 +283,10 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
       title: String(row.posting_title ?? ""),
       company: String(row.posting_company ?? ""),
       imageUrl: imageUrl(row.posting_image),
+      location: String(row.posting_location ?? ""),
+      careerMin: Number(row.posting_career_min ?? 0),
+      careerMax: row.posting_career_max == null ? null : Number(row.posting_career_max),
+      deadline: row.posting_deadline == null || row.posting_deadline === "" ? null : String(row.posting_deadline).slice(0, 10),
     },
     status: String(row.status ?? "SENT"),
     readAt: ts(row.read_at),
@@ -290,6 +296,7 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
 
 export const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
   o.message, o.posting_id, jp.title AS posting_title, jp.company AS posting_company, jp.image_key AS posting_image,
+  jp.location AS posting_location, jp.career_min AS posting_career_min, jp.career_max AS posting_career_max, jp.deadline AS posting_deadline,
   o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company,
   rp.headline AS recipient_headline, rp.avatar_key AS recipient_avatar, rc.name AS recipient_company
   FROM offers o

@@ -107,3 +107,33 @@ test("a guest can open a public posting without writing a view row for the nil u
 });
 }
 
+
+test("guest skill search is public and binds the query and limit", async () => {
+  const { res, calls } = await run("/api/v1/skills?q=%20Kot%20&limit=5");
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { data: unknown[] }).data, []);
+  const call = calls.find((c) => c.sql.includes("jsonb_array_elements_text"))!;
+  assert.deepEqual(call.params, [NIL, "Kot", 5]);
+  assert.match(call.sql, /strpos\(lower\(sk\), lower\(\$2::text\)\) > 0/);
+});
+
+test("skill search defaults to 20 skills and rejects a bad limit or a long query", async () => {
+  const { calls } = await run("/api/v1/skills");
+  assert.deepEqual(calls.find((c) => c.sql.includes("jsonb_array_elements_text"))!.params, [NIL, "", 20]);
+  for (const path of ["/api/v1/skills?limit=0", "/api/v1/skills?limit=51", "/api/v1/skills?limit=x", "/api/v1/skills?q=" + "a".repeat(41)]) {
+    const { res } = await run(path);
+    assert.equal(res.status, 400, path);
+    assert.equal(await codeOf(res), "VALIDATION_ERROR");
+  }
+});
+
+test("skill search maps rows to name and postingCount", async () => {
+  resetLimits();
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("jsonb_array_elements_text")) return { rows: [{ name: "Kotlin", posting_count: 12 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/skills?q=kot"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await res.json() as { data: unknown }).data, [{ name: "Kotlin", postingCount: 12 }]);
+});

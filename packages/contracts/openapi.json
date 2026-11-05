@@ -5593,8 +5593,32 @@
             "anyOf": [
               {
                 "properties": {
+                  "careerMax": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "careerMin": {
+                    "type": "integer"
+                  },
                   "company": {
                     "type": "string"
+                  },
+                  "deadline": {
+                    "anyOf": [
+                      {
+                        "format": "date",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "id": {
                     "format": "uuid",
@@ -5610,6 +5634,9 @@
                       }
                     ]
                   },
+                  "location": {
+                    "type": "string"
+                  },
                   "title": {
                     "type": "string"
                   }
@@ -5618,7 +5645,11 @@
                   "id",
                   "title",
                   "company",
-                  "imageUrl"
+                  "imageUrl",
+                  "location",
+                  "careerMin",
+                  "careerMax",
+                  "deadline"
                 ],
                 "type": "object"
               },
@@ -5668,11 +5699,19 @@
               },
               "id": {
                 "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "PERSON",
+                  "COMPANY"
+                ],
+                "type": "string"
               }
             },
             "required": [
               "id",
               "displayName",
+              "kind",
               "companyName",
               "headline",
               "avatarUrl"
@@ -5709,11 +5748,19 @@
               },
               "id": {
                 "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "PERSON",
+                  "COMPANY"
+                ],
+                "type": "string"
               }
             },
             "required": [
               "id",
               "displayName",
+              "kind",
               "companyName",
               "headline",
               "avatarUrl"
@@ -26660,6 +26707,85 @@
           }
         ],
         "summary": "Trending search terms and skills",
+        "tags": [
+          "postings"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/skills": {
+      "get": {
+        "description": "Skill names from open postings, matched case-insensitively as a substring of q. Names that start with q come first, then by postingCount. An empty q lists the most common skills.",
+        "operationId": "getSkills",
+        "parameters": [
+          {
+            "description": "Substring to match",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "maxLength": 40,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum skills to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "postingCount": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "postingCount"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Search skills used by open postings",
         "tags": [
           "postings"
         ],
