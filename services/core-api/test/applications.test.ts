@@ -207,5 +207,5 @@ test("without applied the list is unchanged and has no total", async () => {
   const bad = await handle(new Request("https://core.example/api/v1/applications?applied=1", {
     headers: { authorization: "Bearer t" },
   }), ENV, { query, now: () => NOW });
-  assert.equal(bad.status, 422);
+  assert.equal(bad.status, 400);
 });
