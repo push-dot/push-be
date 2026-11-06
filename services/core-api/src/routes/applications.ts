@@ -19,6 +19,8 @@ type Row = Record<string, unknown>;
 
 const validStage = (stage: string): boolean => STAGE_ORDER.includes(stage) || stage === "REJECTED" || stage === "WITHDRAWN";
 const afterApplied = (stage: string): boolean => stage === "SCREENING" || stage === "INTERVIEW" || stage === "OFFER";
+const APPLIED_STAGES = ["APPLIED", "SCREENING", "INTERVIEW", "OFFER", ...TERMINAL];
+const isApplied = (stage: string, appliedAt: unknown): boolean => appliedAt != null || TERMINAL.has(stage) || stage === "APPLIED" || afterApplied(stage);
 
 const canPatchStage = (from: string, to: string): boolean => {
   if (from === to) return true;
@@ -159,7 +161,13 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
     params.push("%" + q + "%", "%" + q + "%");
     where.push(`(company ILIKE $${params.length - 1} OR title ILIKE $${params.length})`);
   }
-  return listPage(ctx.deps.query, ctx.rid, APP_SELECT, "applications", where, params, page, appDto);
+  const applied = ctx.url.searchParams.get("applied");
+  if (applied !== null && applied !== "true" && applied !== "false") throw fieldError("applied", "must be true or false");
+  if (applied === "true") {
+    params.push(APPLIED_STAGES);
+    where.push(`(applied_at IS NOT NULL OR stage = ANY($${params.length}::text[]))`);
+  }
+  return listPage(ctx.deps.query, ctx.rid, APP_SELECT, "applications", where, params, page, appDto, applied === "true");
 };
 
 const FIT_PARTS = ["techStack", "experienceLink", "careerLevel", "keyword", "domain"] as const;
@@ -357,7 +365,7 @@ export const applicationChecklist = async (ctx: Ctx, idRaw: string): Promise<Res
        (SELECT count(*) FROM interviews WHERE user_id = $1 AND application_id = $2) AS interviews`,
     [ctx.user.id, id]);
   const stage = String(app.stage);
-  const applied = app.applied_at != null || TERMINAL.has(stage) || stage === "APPLIED" || afterApplied(stage);
+  const applied = isApplied(stage, app.applied_at);
   return data(200, {
     items: [
       { key: "evidence", label: "Career evidence collected", completed: Number(counts?.evidence) > 0 },

@@ -171,3 +171,41 @@ test("GET does not insert an ai job", async () => {
   assert.equal(res.status, 200);
   assert.equal(calls.some((call) => call.sql.includes("INSERT INTO chat_jobs") || call.sql.includes("INSERT INTO ai_jobs") || call.sql.includes("INSERT INTO posting_fit_cache")), false);
 });
+
+test("applied=true keeps submitted applications and returns the full total", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("count(*)::int AS total")) return [{ total: 7 }];
+    if (sql.includes("FROM applications")) return [{
+      id: APP, revision: 1, job_id: E1, company: "Acme", title: "Backend", stage: "APPLIED", notes: "",
+      applied_at: "2026-10-20T00:00:00Z", next_action_at: null, imported: false,
+      created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z",
+    }];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/applications?applied=true", {
+    headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: unknown[]; page: { total: number } };
+  assert.equal(body.data.length, 1);
+  assert.equal(body.page.total, 7);
+  const list = calls.find((c) => c.sql.includes("ORDER BY created_at DESC"));
+  assert.match(list!.sql, /applied_at IS NOT NULL OR stage = ANY/);
+  assert.deepEqual(list!.params[1], ["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN"]);
+});
+
+test("without applied the list is unchanged and has no total", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder();
+  const res = await handle(new Request("https://core.example/api/v1/applications?applied=false", {
+    headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { page: Record<string, unknown> };
+  assert.equal("total" in body.page, false);
+  assert.equal(calls.some((c) => c.sql.includes("count(*)")), false);
+  const bad = await handle(new Request("https://core.example/api/v1/applications?applied=1", {
+    headers: { authorization: "Bearer t" },
+  }), ENV, { query, now: () => NOW });
+  assert.equal(bad.status, 422);
+});
