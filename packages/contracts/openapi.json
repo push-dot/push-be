@@ -7780,6 +7780,19 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "true keeps only submitted applications: appliedAt set, or stage APPLIED, SCREENING, INTERVIEW, OFFER, ACCEPTED, REJECTED or WITHDRAWN. page.total is then included and counts every match, not just this page.",
+            "in": "query",
+            "name": "applied",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {

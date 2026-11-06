@@ -71,8 +71,11 @@ type Row = Record<string, unknown>;
 
 /** Keyset page over `(created_at, id)`, newest first, as the Python stores list. */
 export const listPage = async (
-  q: Query, rid: string, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row,
+  q: Query, rid: string, cols: string, table: string, where: string[], params: unknown[], page: Page, dto: (row: Row) => Row, withTotal = false,
 ): Promise<Response> => {
+  const counted = withTotal
+    ? one(q, `SELECT count(*)::int AS total FROM ${table} WHERE ${where.join(" AND ")}`, [...params])
+    : null;
   const args = [...params];
   const conds = [...where];
   if (page.cursor) {
@@ -83,5 +86,6 @@ export const listPage = async (
   const rows = await query(q,
     `SELECT ${cols} FROM ${table} WHERE ${conds.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
   const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
-  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, rid);
+  const total = counted ? Number((await counted)?.total ?? 0) : undefined;
+  return pageBody(paged.items.map(dto), paged.nextCursor, paged.hasMore, rid, total);
 };

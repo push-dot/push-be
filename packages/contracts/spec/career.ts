@@ -22,7 +22,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/applications", {
     tag: "applications",
     summary: "List applications",
-    params: [...pageParams, query("stage", stage), query("query", str, "Case-insensitive match on company or title")],
+    params: [...pageParams, query("stage", stage), query("query", str, "Case-insensitive match on company or title"), query("applied", enumOf("true", "false"), "true keeps only submitted applications: appliedAt set, or stage APPLIED, SCREENING, INTERVIEW, OFFER, ACCEPTED, REJECTED or WITHDRAWN. page.total is then included and counts every match, not just this page.")],
     responses: { 200: okPage(ref("Application")) },
   }),
   post("core", "/api/v1/applications", {
