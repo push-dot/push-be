@@ -11969,6 +11969,49 @@
         ],
         "x-owner": "core"
       },
+      "get": {
+        "description": "Same item as one entry of the list, including archived conversations. 404 when the conversation is missing or not the caller's personal one. 400 when id is not a UUID.",
+        "operationId": "getConversationsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversationsListItem"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Get a conversation",
+        "tags": [
+          "conversations"
+        ],
+        "x-owner": "gateway"
+      },
       "patch": {
         "description": "409 REVISION_CONFLICT with details.currentRevision when expectedRevision does not match. 404 when the conversation is not visible to the caller.",
         "operationId": "patchConversationsById",
