@@ -28,6 +28,18 @@ const likePattern = (raw: string | null): string | null => {
   return `%${trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 };
 
+const CONVERSATION_SELECT = "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
+    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
+    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
+    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
+    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
+    + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
+    + "ELSE 'DONE' END AS status, " + LAST_LINE + " "
+    + "FROM conversations c "
+    + "LEFT JOIN users cu ON cu.id = c.user_id "
+    + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
+    + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true ";
+
 async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null, archived = false): Promise<Response> {
   let filterSql = "";
   const params: unknown[] = [ownerId];
@@ -47,23 +59,31 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
     ? "company_id = $1::uuid"
     : "user_id = $1::uuid AND company_id IS NULL";
   const rows = await deps.query(
-    "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
-    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
-    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
-    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
-    + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-    + "ELSE 'DONE' END AS status, " + LAST_LINE + " "
-    + "FROM conversations c "
-    + "LEFT JOIN users cu ON cu.id = c.user_id "
-    + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
-    + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
+    CONVERSATION_SELECT
     + "WHERE " + ownerSql + " AND c.archived = " + (archived ? "true" : "false")
     + filterSql
     + ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`,
     params,
   );
   return jsonResponse(200, pageBody(rows, limit, conversationJson), rid);
+}
+
+export async function getConversation(request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
+  const id = parseUuid(rawId);
+  if (!id) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  try {
+    const rows = await deps.query(
+      CONVERSATION_SELECT
+      + "WHERE c.id = $1::uuid AND c.user_id = $2::uuid AND c.company_id IS NULL",
+      [id, user.id],
+    );
+    if (!rows[0]) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    return await freshRead(jsonResponse(200, { data: conversationJson(rows[0]) }, rid), request, rid);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
 }
 
 export async function listConversations(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
