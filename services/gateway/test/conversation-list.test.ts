@@ -326,3 +326,69 @@ test("an expired approval card does not flag the conversation as NEEDS_APPROVAL"
     assert.match(sql, /a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)/);
   }
 });
+
+const getQuery = (seen: Array<[string, unknown[]]>, ownerId = USER): Query => {
+  const base = listQuery([]);
+  return async (sql, params) => {
+    if (!sql.includes("WHERE c.id = $1::uuid")) return base(sql, params);
+    seen.push([sql, params]);
+    if (params[1] !== ownerId) return [];
+    return rowsFor(sql).filter((row) => row.id === params[0]);
+  };
+};
+
+const getOne = (id: string, query: Query) => handle(new Request(
+  `https://push-be.example/api/v1/conversations/${id}`,
+  { headers: { authorization: "Bearer secret-token" } },
+), env(), deps(query));
+
+test("get one returns the list item shape for the caller's own conversation", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne(NEEDS_ID, getQuery(seen));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { data: {
+    id: NEEDS_ID,
+    revision: 4,
+    applicationId: null,
+    title: "승인 대기",
+    pinned: true,
+    createdAt: "2026-10-15T00:00:00Z",
+    updatedAt: "2026-10-17T00:00:00Z",
+    status: "NEEDS_APPROVAL",
+    lastLine: "이 공고에 지원해요",
+    lastMessagePreview: "가".repeat(140),
+    createdBy: { displayName: "Bea" },
+    postingId: POSTING_ID,
+  } });
+  assert.deepEqual(seen[0][1], [NEEDS_ID, USER]);
+  assert.doesNotMatch(String(seen[0][0]), /archived/);
+  assert.match(String(seen[0][0]), /THEN 'NEEDS_APPROVAL'.*THEN 'RUNNING'.*ELSE 'DONE' END AS status/);
+});
+
+test("get one is 404 for another user's or a missing conversation", async () => {
+  resetLimits();
+  const foreign = await getOne(NEEDS_ID, getQuery([], "99999999-9999-4999-8999-999999999999"));
+  assert.equal(foreign.status, 404);
+  resetLimits();
+  const missing = await getOne("11111111-1111-4111-8111-111111111111", getQuery([]));
+  assert.equal(missing.status, 404);
+});
+
+test("get one is 400 for a non-UUID id and never reaches the database", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne("not-a-uuid", getQuery(seen));
+  assert.equal(res.status, 400);
+  assert.equal(seen.length, 0);
+});
+
+test("get one needs a token and /internal stays hidden", async () => {
+  resetLimits();
+  const anon = await handle(new Request(`https://push-be.example/api/v1/conversations/${NEEDS_ID}`), env(), deps(getQuery([])));
+  assert.equal(anon.status, 401);
+  const hidden = await handle(new Request(`https://push-be.example/internal/api/v1/conversations/${NEEDS_ID}`, {
+    headers: { authorization: "Bearer secret-token", "x-push-internal": "1" },
+  }), env(), deps(getQuery([])));
+  assert.equal(hidden.status, 404);
+});

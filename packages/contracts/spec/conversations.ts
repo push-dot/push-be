@@ -390,6 +390,13 @@ export const routes: Route[] = [
     ],
     responses: { 200: okPage(ref("ConversationsListItem")) },
   }),
+  get("gateway", "/api/v1/conversations/{id}", {
+    tag: "conversations",
+    summary: "Get a conversation",
+    description: "Same item as one entry of the list, including archived conversations. 404 when the conversation is missing or not the caller's personal one. 400 when id is not a UUID.",
+    params: [id],
+    responses: { 200: ok(ref("ConversationsListItem")) },
+  }),
   post("core", "/api/v1/conversations", {
     tag: "conversations",
     summary: "Create a conversation",

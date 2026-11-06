@@ -1047,7 +1047,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get a conversation
+         * @description Same item as one entry of the list, including archived conversations. 404 when the conversation is missing or not the caller's personal one. 400 when id is not a UUID.
+         */
+        get: operations["getConversationsById"];
         put?: never;
         post?: never;
         /**
@@ -7281,6 +7285,31 @@ export interface operations {
                             }[];
                             title: string;
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConversationsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ConversationsListItem"];
                     };
                 };
             };

@@ -9,7 +9,7 @@ import type { Deps, FrontEnv } from "./types.ts";
 import { errorResponse, preflight, requestIdOf, withCors } from "./http.ts";
 import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
-import { listConversations, listMessages, streamActive, streamCancel, streamMessage } from "./routes/conversations.ts";
+import { getConversation, listConversations, listMessages, streamActive, streamCancel, streamMessage } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
 import { invalidateAfterWrite, isInternalCall, proxy, proxyPython } from "./routes/proxy.ts";
@@ -56,6 +56,10 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   }
   if (request.method === "GET" && path === "/api/v1/conversations") {
     return listConversations(request, env, deps, url, rid, limits, now);
+  }
+  const one = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
+  if (request.method === "GET" && one) {
+    return getConversation(request, env, deps, one[1], rid, limits, now);
   }
   const messages = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
   if (request.method === "GET" && messages) {
