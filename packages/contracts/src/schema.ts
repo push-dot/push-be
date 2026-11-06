@@ -5405,6 +5405,8 @@ export interface operations {
                 stage?: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
                 /** @description Case-insensitive match on company or title */
                 query?: string;
+                /** @description true keeps only submitted applications: appliedAt set, or stage APPLIED, SCREENING, INTERVIEW, OFFER, ACCEPTED, REJECTED or WITHDRAWN. page.total is then included and counts every match, not just this page. */
+                applied?: "true" | "false";
             };
             header?: never;
             path?: never;
