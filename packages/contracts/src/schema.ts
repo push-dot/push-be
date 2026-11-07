@@ -2545,7 +2545,7 @@ export interface paths {
         put?: never;
         /**
          * Send an offer message
-         * @description 409 unless the offer is ACCEPTED.
+         * @description 409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.
          */
         post: operations["postMeOffersByIdMessages"];
         delete?: never;

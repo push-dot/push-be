@@ -196,7 +196,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/messages", {
     tag,
     summary: "Send an offer message",
-    description: "409 unless the offer is ACCEPTED.",
+    description: "409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.",
     params: [id],
     body: body(obj({ body: text(1, 2000) })),
     responses: { 201: ok(ref("OfferMessage"), "Created") },

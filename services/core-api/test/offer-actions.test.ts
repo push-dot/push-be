@@ -216,3 +216,35 @@ test("sending an offer to a user who blocked the sender is 403 BLOCKED and inser
   assert.equal(res.body.error?.code, "BLOCKED");
   assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offers")), false);
 });
+
+const messageWorld = (blockedBy: string | null) => world((sql, params) => {
+  if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ status: "ACCEPTED" })];
+  if (sql.includes("FROM user_blocks")) return params[0] === blockedBy && params[1] === ME ? [{ blocked: 1 }] : [];
+  return undefined;
+});
+
+test("messaging a user who blocked the sender is 403 BLOCKED and inserts nothing", async () => {
+  const w = messageWorld(OTHER);
+  const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/messages`, { body: "hi" });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error?.code, "BLOCKED");
+  assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offer_messages")), false);
+});
+
+test("messaging still works when only the sender blocked the other user", async () => {
+  const res = await messageWorld(null).call("POST", `/api/v1/me/offers/${OFFER}/messages`, { body: "hi" });
+  assert.equal(res.status, 201);
+});
+
+test("listing messages and deciding an offer ignore blocks", async () => {
+  const w = world((sql) => {
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow()];
+    if (sql.includes("FROM user_blocks")) return [{ blocked: 1 }];
+    if (sql.startsWith("UPDATE offers SET status = $2")) return [{ id: OFFER }];
+    return undefined;
+  });
+  assert.equal((await w.call("GET", `/api/v1/me/offers/${OFFER}/messages`)).status, 200);
+  resetLimits();
+  assert.equal((await w.call("POST", `/api/v1/me/offers/${OFFER}/decline`)).status, 200);
+  assert.equal(w.seen.some((c) => c.sql.includes("FROM user_blocks")), false);
+});

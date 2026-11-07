@@ -22594,7 +22594,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "409 unless the offer is ACCEPTED.",
+        "description": "409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.",
         "operationId": "postMeOffersByIdMessages",
         "parameters": [
           {

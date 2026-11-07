@@ -132,6 +132,9 @@ async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
 async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
   if (String(offer.status) !== "ACCEPTED") throw new HttpError(409, "CONFLICT", "offer is not accepted");
+  const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
+  const blocked = await one(ctx.deps.query, "SELECT 1 AS blocked FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [other, ctx.user.id]);
+  if (blocked) throw new HttpError(403, "BLOCKED", "this user is not accepting messages from you");
   const body = await readObject(ctx.request);
   const text = textOf(body.body, "body", 1, 2000);
   const id = crypto.randomUUID();
@@ -139,7 +142,6 @@ async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   await query(ctx.deps.query,
     "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
     [id, offer.id, ctx.user.id, text, now]);
-  const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
   await notify(ctx, other, "OFFER", "새 메시지", text, { kind: "offer", id: String(offer.id) });
   return data(201, {
     id, offerId: String(offer.id), sender: { id: ctx.user.id, displayName: ctx.user.displayName }, body: text, createdAt: ts(now),
