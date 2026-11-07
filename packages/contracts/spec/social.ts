@@ -68,7 +68,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/profiles/{id}/offer", {
     tag,
     summary: "Send an offer to a profile",
-    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.",
+    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404. 403 BLOCKED when the profile owner blocked the sender.",
     params: [id],
     body: body(obj({ message: text(1, 500), postingId: nullable(uuid) }, ["message"])),
     responses: { 201: ok(ref("Offer"), "Created") },
@@ -113,7 +113,12 @@ export const routes: Route[] = [
   get("core", "/api/v1/me/offers", {
     tag,
     summary: "List my offers",
-    params: [{ name: "box", in: "query", required: true, schema: enumOf("received", "sent") }, ...pageParams],
+    description: "Archived offers and offers whose other party the caller blocked are left out, and total counts the same filters.",
+    params: [
+      { name: "box", in: "query", required: true, schema: enumOf("received", "sent") },
+      query("archived", enumOf("0", "1"), "1 lists only the offers the caller archived. 0 or absent lists the rest. Any other value is 400."),
+      ...pageParams,
+    ],
     responses: { 200: okPage(ref("Offer")) },
   }),
   get("core", "/api/v1/me/offers/{id}", {
@@ -137,6 +142,49 @@ export const routes: Route[] = [
     description: "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.",
     params: [id],
     responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/archive", {
+    tag,
+    summary: "Archive an offer",
+    description: "Either party. Archiving is per user and idempotent: archiving again keeps the first archivedAt. Anyone else is 404.",
+    params: [id],
+    responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/unarchive", {
+    tag,
+    summary: "Unarchive an offer",
+    description: "Either party. Idempotent. archivedAt is null in the response. Anyone else is 404.",
+    params: [id],
+    responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/report", {
+    tag,
+    summary: "Report an offer",
+    description: "Either party reports the other. Stored for review, no automatic action. Reporting again adds another report. Anyone else is 404.",
+    params: [id],
+    body: body(obj({ reason: nullable(text(1, 500)) }, []), false),
+    responses: { 204: noContent },
+  }),
+  get("core", "/api/v1/me/blocks", {
+    tag,
+    summary: "List users I blocked",
+    description: "Newest first.",
+    params: [...pageParams],
+    responses: { 200: okPage(ref("BlockedUser")) },
+  }),
+  post("core", "/api/v1/me/blocks", {
+    tag,
+    summary: "Block a user",
+    description: "400 when userId is the caller, 404 when the user does not exist. Idempotent. A blocked user cannot send the caller offers (403 BLOCKED), and offers between the two leave the caller's offer lists.",
+    body: body(obj({ userId: uuid })),
+    responses: { 204: noContent },
+  }),
+  del("core", "/api/v1/me/blocks/{userId}", {
+    tag,
+    summary: "Unblock a user",
+    description: "Idempotent.",
+    params: [pathParam("userId")],
+    responses: { 204: noContent },
   }),
   get("core", "/api/v1/me/offers/{id}/messages", {
     tag,
@@ -426,7 +474,9 @@ export const schemas: Record<string, Schema> = {
     status: enumOf("SENT", "READ", "ACCEPTED", "DECLINED"),
     readAt: nullable(dateTime),
     createdAt: dateTime,
-  }),
+    archivedAt: { ...nullable(dateTime), description: "When the caller archived this offer. Null when not archived. Per caller." },
+  }, ["id", "sender", "recipient", "message", "posting", "status", "readAt", "createdAt"]),
+  BlockedUser: obj({ user: person, createdAt: dateTime }),
   OfferMessage: obj({ id: uuid, offerId: uuid, sender: person, body: str, createdAt: dateTime }),
   ProfileLink: obj({
     id: uuid,
