@@ -48,7 +48,6 @@ const offerRow = (extra: Row = {}): Row => ({
 
 beforeEach(() => resetLimits());
 
-// --- archive -------------------------------------------------------------
 
 const archiveWorld = (stored: { at: string | null } = { at: null }) => world((sql, params) => {
   if (sql.startsWith("SELECT oa.archived_at, o.id")) return params[1] === ME ? [offerRow({ archived_at: stored.at })] : [];
@@ -95,7 +94,6 @@ test("archive and unarchive are 404 for a non-party and write nothing", async ()
   assert.equal(w.seen.some((c) => /^(INSERT|DELETE)/.test(c.sql) && c.sql.includes("offer_archives")), false);
 });
 
-// --- list filters --------------------------------------------------------
 
 test("offer lists hide archived and blocked offers by default and show only archived ones with archived=1", async () => {
   for (const [box, mine, other] of [["received", "o.profile_user_id", "o.sender_id"], ["sent", "o.sender_id", "o.profile_user_id"]]) {
@@ -122,7 +120,6 @@ test("offer lists reject an archived value other than 0 or 1", async () => {
   assert.deepEqual(res.body.error?.details, { field: "archived" });
 });
 
-// --- report --------------------------------------------------------------
 
 const reportWorld = (row: Row) => world((sql, params) => (sql.startsWith("SELECT oa.archived_at, o.id") ? (params[0] === OFFER && params[1] === ME ? [row] : []) : undefined));
 
@@ -157,7 +154,6 @@ test("report is 404 for a non-party", async () => {
   assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offer_reports")), false);
 });
 
-// --- blocks --------------------------------------------------------------
 
 test("blocking yourself is 400 and an unknown user is 404", async () => {
   const w = world();
