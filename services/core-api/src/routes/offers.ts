@@ -4,12 +4,19 @@ import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_SQL, notify } from "./recruiting-shared.ts";
 
+const withArchive = (user: string): string => " LEFT JOIN offer_archives oa ON oa.offer_id = o.id AND oa.user_id = " + user;
+
 async function listOffers(ctx: Ctx): Promise<Response> {
   const box = ctx.url.searchParams.get("box");
   if (box !== "received" && box !== "sent") throw fieldError("box", "must be received or sent");
+  const archived = ctx.url.searchParams.get("archived");
+  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT " + OFFER_SQL + (box === "received" ? " WHERE o.profile_user_id = $1" : " WHERE o.sender_id = $1");
+  const mine = box === "received" ? "o.profile_user_id" : "o.sender_id";
+  const other = box === "received" ? "o.sender_id" : "o.profile_user_id";
+  let sql = "SELECT oa.archived_at, " + OFFER_SQL + withArchive("$1") + ` WHERE ${mine} = $1 AND oa.offer_id IS ${archived === "1" ? "NOT NULL" : "NULL"}`
+    + ` AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE b.blocker_id = $1 AND b.blocked_id = ${other})`;
   const total = await countWhere(ctx, sql, " FROM offers o", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -25,7 +32,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
 
 async function offerFor(ctx: Ctx, idRaw: string): Promise<Record<string, unknown>> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "SELECT " + OFFER_SQL + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, "SELECT oa.archived_at, " + OFFER_SQL + withArchive("$2") + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
   if (!row) throw notFound();
   return row;
 }
@@ -66,6 +73,18 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
     await notify(ctx, String(row.sender_id), "OFFER", "제안을 수락했어요", "", { kind: "offer", id: String(row.id) });
   }
   return data(200, offerDto(row), ctx.rid);
+}
+
+async function archiveOffer(ctx: Ctx, idRaw: string, archive: boolean): Promise<Response> {
+  const offer = await offerFor(ctx, idRaw);
+  if (archive) {
+    await query(ctx.deps.query,
+      "INSERT INTO offer_archives (user_id, offer_id, archived_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, offer_id) DO NOTHING",
+      [ctx.user.id, offer.id, ctx.now.toISOString()]);
+  } else {
+    await query(ctx.deps.query, "DELETE FROM offer_archives WHERE user_id = $1 AND offer_id = $2", [ctx.user.id, offer.id]);
+  }
+  return data(200, offerDto(await offerFor(ctx, idRaw)), ctx.rid);
 }
 
 async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -123,6 +142,8 @@ export const dispatchOffers = async (ctx: Ctx, path: string): Promise<Response |
   if (accept && method === "POST") return decideOffer(ctx, accept[1], "ACCEPTED");
   const decline = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/decline$/);
   if (decline && method === "POST") return decideOffer(ctx, decline[1], "DECLINED");
+  const archive = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/(archive|unarchive)$/);
+  if (archive && method === "POST") return archiveOffer(ctx, archive[1], archive[2] === "archive");
   const offerId = path.match(/^\/api\/v1\/me\/offers\/([^/]+)$/);
   if (offerId && method === "GET") return getOffer(ctx, offerId[1]);
   return null;
