@@ -1,5 +1,5 @@
 import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, pageBody, requireUuid } from "../http.ts";
+import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_SQL, notify } from "./recruiting-shared.ts";
@@ -87,6 +87,20 @@ async function archiveOffer(ctx: Ctx, idRaw: string, archive: boolean): Promise<
   return data(200, offerDto(await offerFor(ctx, idRaw)), ctx.rid);
 }
 
+async function reportOffer(ctx: Ctx, idRaw: string): Promise<Response> {
+  const offer = await offerFor(ctx, idRaw);
+  const body: Record<string, unknown> = await readObject(ctx.request).catch((err: unknown) => {
+    if (err instanceof HttpError && err.message === "request body required") return {};
+    throw err;
+  });
+  const reason = body.reason == null ? null : textOf(body.reason, "reason", 1, 500);
+  const reported = String(offer.sender_id) === ctx.user.id ? offer.profile_user_id : offer.sender_id;
+  await query(ctx.deps.query,
+    "INSERT INTO offer_reports (id, reporter_id, reported_user_id, offer_id, reason, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+    [crypto.randomUUID(), ctx.user.id, reported, offer.id, reason, ctx.now.toISOString()]);
+  return noContent(ctx.rid);
+}
+
 async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
   const page = pageOf(ctx.url);
@@ -144,6 +158,8 @@ export const dispatchOffers = async (ctx: Ctx, path: string): Promise<Response |
   if (decline && method === "POST") return decideOffer(ctx, decline[1], "DECLINED");
   const archive = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/(archive|unarchive)$/);
   if (archive && method === "POST") return archiveOffer(ctx, archive[1], archive[2] === "archive");
+  const report = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/report$/);
+  if (report && method === "POST") return reportOffer(ctx, report[1]);
   const offerId = path.match(/^\/api\/v1\/me\/offers\/([^/]+)$/);
   if (offerId && method === "GET") return getOffer(ctx, offerId[1]);
   return null;

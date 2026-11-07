@@ -121,3 +121,38 @@ test("offer lists reject an archived value other than 0 or 1", async () => {
   assert.equal(res.body.error?.code, "VALIDATION_ERROR");
   assert.deepEqual(res.body.error?.details, { field: "archived" });
 });
+
+// --- report --------------------------------------------------------------
+
+const reportWorld = (row: Row) => world((sql, params) => (sql.startsWith("SELECT oa.archived_at, o.id") ? (params[0] === OFFER && params[1] === ME ? [row] : []) : undefined));
+
+test("report stores the other party as reported_user_id and returns 204, with or without a reason", async () => {
+  for (const [row, reported] of [[offerRow(), OTHER], [offerRow({ sender_id: ME, profile_user_id: OTHER }), OTHER]] as const) {
+    for (const body of [undefined, {}, { reason: "spam" }, { reason: null }]) {
+      resetLimits();
+      const w = reportWorld(row);
+      const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/report`, body);
+      assert.equal(res.status, 204, JSON.stringify(body));
+      const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO offer_reports"))!;
+      assert.deepEqual(insert.params.slice(1), [ME, reported, OFFER, body?.reason ?? null, NOW.toISOString()]);
+    }
+  }
+});
+
+test("report rejects an empty or oversized reason and stores nothing", async () => {
+  const w = reportWorld(offerRow());
+  for (const reason of ["", "x".repeat(501), 5]) {
+    resetLimits();
+    const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/report`, { reason });
+    assert.equal(res.status, 400, String(reason).slice(0, 5));
+    assert.equal(res.body.error?.code, "VALIDATION_ERROR");
+  }
+  assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offer_reports")), false);
+});
+
+test("report is 404 for a non-party", async () => {
+  const w = reportWorld(offerRow());
+  const res = await w.call("POST", `/api/v1/me/offers/${STRANGER}/report`, { reason: "spam" });
+  assert.equal(res.status, 404);
+  assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offer_reports")), false);
+});
