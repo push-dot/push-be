@@ -25,6 +25,7 @@ import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
 import { dispatchMe } from "./routes/me.ts";
+import { dispatchBlocks } from "./routes/blocks.ts";
 import { dispatchOffers } from "./routes/offers.ts";
 import { dispatchPostings } from "./routes/postings.ts";
 import { dispatchPosts } from "./routes/posts.ts";
@@ -218,6 +219,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (profiles) return profiles;
   const offers = await dispatchOffers(ctx, path);
   if (offers) return offers;
+  const blocks = await dispatchBlocks(ctx, path);
+  if (blocks) return blocks;
   const posts = await dispatchPosts(ctx, path);
   if (posts) return posts;
   const mine = await dispatchMe(ctx, path);

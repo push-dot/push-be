@@ -156,3 +156,67 @@ test("report is 404 for a non-party", async () => {
   assert.equal(res.status, 404);
   assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offer_reports")), false);
 });
+
+// --- blocks --------------------------------------------------------------
+
+test("blocking yourself is 400 and an unknown user is 404", async () => {
+  const w = world();
+  const self = await w.call("POST", "/api/v1/me/blocks", { userId: ME });
+  assert.equal(self.status, 400);
+  assert.deepEqual(self.body.error?.details, { field: "userId" });
+  for (const body of [{}, { userId: "nope" }]) {
+    resetLimits();
+    assert.equal((await w.call("POST", "/api/v1/me/blocks", body)).status, 400);
+  }
+  resetLimits();
+  const unknown = await w.call("POST", "/api/v1/me/blocks", { userId: OTHER });
+  assert.equal(unknown.status, 404);
+  assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO user_blocks")), false);
+});
+
+test("blocking inserts idempotently and returns 204; unblocking deletes and returns 204", async () => {
+  const w = world((sql) => (sql.startsWith("SELECT id FROM users") ? [{ id: OTHER }] : undefined));
+  const block = await w.call("POST", "/api/v1/me/blocks", { userId: OTHER });
+  assert.equal(block.status, 204);
+  const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO user_blocks"))!;
+  assert.match(insert.sql, /ON CONFLICT \(blocker_id, blocked_id\) DO NOTHING$/);
+  assert.deepEqual(insert.params, [ME, OTHER, NOW.toISOString()]);
+  resetLimits();
+  const unblock = await w.call("DELETE", `/api/v1/me/blocks/${OTHER}`);
+  assert.equal(unblock.status, 204);
+  assert.deepEqual(w.seen.find((c) => c.sql.startsWith("DELETE FROM user_blocks"))!.params, [ME, OTHER]);
+  resetLimits();
+  assert.equal((await w.call("DELETE", "/api/v1/me/blocks/nope")).status, 400);
+});
+
+test("the block list is newest first, paginates and reports the total", async () => {
+  const rows = [
+    { blocked_id: OTHER, display_name: "Bob", created_at: "2026-10-02T00:00:00Z" },
+    { blocked_id: STRANGER, display_name: "Cy", created_at: "2026-10-01T00:00:00Z" },
+  ];
+  const w = world((sql, params) => {
+    if (sql.startsWith("SELECT count(*)")) return [{ total: 2 }];
+    if (sql.includes("FROM user_blocks b")) return rows.slice(0, Number(params.at(-1)));
+    return undefined;
+  });
+  const res = await w.call("GET", "/api/v1/me/blocks?limit=1");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.data, [{ user: { id: OTHER, displayName: "Bob" }, createdAt: "2026-10-02T00:00:00Z" }]);
+  assert.deepEqual([res.body.page?.hasMore, res.body.page?.total], [true, 2]);
+  const list = w.seen.find((c) => c.sql.startsWith("SELECT b.blocked_id"))!;
+  assert.match(list.sql, /WHERE b\.blocker_id = \$1 ORDER BY b\.created_at DESC, b\.blocked_id DESC LIMIT \$2$/);
+  await w.call("GET", `/api/v1/me/blocks?cursor=${res.body.page!.nextCursor}`);
+  assert.match(w.seen.at(-1)!.sql, /AND \(b\.created_at, b\.blocked_id\) < \(\$2, \$3\)/);
+});
+
+test("sending an offer to a user who blocked the sender is 403 BLOCKED and inserts nothing", async () => {
+  const w = world((sql, params) => {
+    if (sql.includes("FROM profiles p LEFT JOIN user_settings")) return [{ user_id: OTHER, open_to_offers: true, profile_public: true }];
+    if (sql.includes("FROM user_blocks")) return params[0] === OTHER && params[1] === ME ? [{ blocked: 1 }] : [];
+    return undefined;
+  });
+  const res = await w.call("POST", `/api/v1/profiles/${OTHER}/offer`, { message: "hi" });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error?.code, "BLOCKED");
+  assert.equal(w.seen.some((c) => c.sql.startsWith("INSERT INTO offers")), false);
+});
