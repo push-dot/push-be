@@ -261,7 +261,7 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
       id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png",
       location: "서울 강남구", careerMin: 5, careerMax: null, deadline: "2026-11-20",
     },
-    status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z",
+    status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z", archivedAt: null,
   });
   const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO offers"))!;
   assert.deepEqual(insert.params.slice(1, 5), [ME, OTHER, "join us", POSTING]);
@@ -270,7 +270,7 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
 });
 
 test("offers: a sender that belongs to a company is a COMPANY party", async () => {
-  const w = world((sql) => (sql.startsWith("SELECT o.id") ? [offerRow({ sender_company: "그린티켓" })] : undefined));
+  const w = world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [offerRow({ sender_company: "그린티켓" })] : undefined));
   const res = await w.call("GET", `/api/v1/me/offers/${OFFER}`);
   assert.equal(res.status, 200);
   const offer = res.body.data as unknown as { sender: { kind: string; companyName: string }; recipient: { kind: string } };
@@ -309,7 +309,7 @@ test("offers: sending is refused for self, closed postings, hidden or closed pro
 
 test("offers: messages are listed only for a participant and paginate", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("SELECT o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
     if (sql.includes("FROM offer_messages m")) {
       return [
         { id: "f3000000-0000-4000-8000-000000000002", offer_id: OFFER, sender_id: OTHER, sender_name: "Bob", body: "hey", created_at: "2026-10-22T00:00:02Z" },
@@ -322,7 +322,7 @@ test("offers: messages are listed only for a participant and paginate", async ()
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, [{ id: "f3000000-0000-4000-8000-000000000002", offerId: OFFER, sender: { id: OTHER, displayName: "Bob" }, body: "hey", createdAt: "2026-10-22T00:00:02Z" }]);
   assert.equal(res.body.page?.hasMore, true);
-  const lookup = w.seen.find((c) => c.sql.startsWith("SELECT o.id"))!;
+  const lookup = w.seen.find((c) => c.sql.startsWith("SELECT oa.archived_at, o.id"))!;
   assert.match(lookup.sql, /WHERE o\.id = \$1 AND \(o\.sender_id = \$2 OR o\.profile_user_id = \$2\)$/);
   await w.call("GET", `/api/v1/me/offers/${OFFER}/messages?cursor=${res.body.page!.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /AND \(m\.created_at, m\.id\) < \(\$2, \$3\)/);
@@ -374,7 +374,7 @@ test("a second accept that loses the race gets 409 instead of overwriting the de
   const { handle } = await import("../src/handler.ts");
   const OFFER = "60000000-0000-4000-8000-000000000001";
   const { query } = recorder((sql) => {
-    if (sql.startsWith("SELECT o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
     if (sql.startsWith("UPDATE offers")) return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];
     return null;
   });

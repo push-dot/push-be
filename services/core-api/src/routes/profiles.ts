@@ -358,6 +358,8 @@ async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
      FROM profiles p LEFT JOIN user_settings s ON s.user_id = p.user_id WHERE p.user_id = $1`,
     [id]);
   if (!profile || !asBool(profile.profile_public)) throw notFound();
+  const blocked = await one(ctx.deps.query, "SELECT 1 AS blocked FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [id, ctx.user.id]);
+  if (blocked) throw new HttpError(403, "BLOCKED", "this user is not accepting offers from you");
   if (!asBool(profile.open_to_offers)) throw new HttpError(403, "FORBIDDEN", "profile is not accepting offers");
   const offerId = crypto.randomUUID();
   const now = ctx.now.toISOString();

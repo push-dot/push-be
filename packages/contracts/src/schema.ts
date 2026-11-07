@@ -2081,6 +2081,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List users I blocked
+         * @description Newest first.
+         */
+        get: operations["getMeBlocks"];
+        put?: never;
+        /**
+         * Block a user
+         * @description 400 when userId is the caller, 404 when the user does not exist. Idempotent. A blocked user cannot send the caller offers (403 BLOCKED), and offers between the two leave the caller's offer lists.
+         */
+        post: operations["postMeBlocks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/blocks/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unblock a user
+         * @description Idempotent.
+         */
+        delete: operations["deleteMeBlocksByUserId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/bookmarks": {
         parameters: {
             query?: never;
@@ -2393,7 +2437,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List my offers */
+        /**
+         * List my offers
+         * @description Archived offers and offers whose other party the caller blocked are left out, and total counts the same filters.
+         */
         get: operations["getMeOffers"];
         put?: never;
         post?: never;
@@ -2443,6 +2490,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/offers/{id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive an offer
+         * @description Either party. Archiving is per user and idempotent: archiving again keeps the first archivedAt. Anyone else is 404.
+         */
+        post: operations["postMeOffersByIdArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/offers/{id}/decline": {
         parameters: {
             query?: never;
@@ -2478,9 +2545,49 @@ export interface paths {
         put?: never;
         /**
          * Send an offer message
-         * @description 409 unless the offer is ACCEPTED.
+         * @description 409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.
          */
         post: operations["postMeOffersByIdMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report an offer
+         * @description Either party reports the other. Stored for review, no automatic action. Reporting again adds another report. Anyone else is 404.
+         */
+        post: operations["postMeOffersByIdReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/offers/{id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive an offer
+         * @description Either party. Idempotent. archivedAt is null in the response. Anyone else is 404.
+         */
+        post: operations["postMeOffersByIdUnarchive"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3037,7 +3144,7 @@ export interface paths {
         put?: never;
         /**
          * Send an offer to a profile
-         * @description 403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.
+         * @description 403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404. 403 BLOCKED when the profile owner blocked the sender.
          */
         post: operations["postProfilesByIdOffer"];
         delete?: never;
@@ -3676,6 +3783,14 @@ export interface components {
             spentMicroCredits: number;
             /** @enum {string} */
             subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
+        };
+        BlockedUser: {
+            /** Format: date-time */
+            createdAt: string;
+            user: {
+                displayName: string;
+                id: string;
+            };
         };
         CalendarEvent: {
             applicationId: string | null;
@@ -4732,7 +4847,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -4877,6 +4992,8 @@ export interface components {
             type: string;
         };
         Offer: {
+            /** @description When the caller archived this offer. Null when not archived. Per caller. */
+            archivedAt?: string | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: uuid */
@@ -9590,6 +9707,85 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getMeBlocks: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BlockedUser"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeBlocks: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    userId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMeBlocksByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getMeBookmarks: {
         parameters: {
             query?: {
@@ -10148,6 +10344,8 @@ export interface operations {
         parameters: {
             query: {
                 box: "received" | "sent";
+                /** @description 1 lists only the offers the caller archived. 0 or absent lists the rest. Any other value is 400. */
+                archived?: "0" | "1";
                 /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
@@ -10218,6 +10416,34 @@ export interface operations {
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdArchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {
@@ -10320,6 +10546,64 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["OfferMessage"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdReport: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    reason?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeOffersByIdUnarchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Offer"];
                     };
                 };
             };

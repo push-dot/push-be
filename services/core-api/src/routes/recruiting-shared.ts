@@ -291,6 +291,7 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
     status: String(row.status ?? "SENT"),
     readAt: ts(row.read_at),
     createdAt: ts(row.created_at),
+    archivedAt: ts(row.archived_at),
   };
 }
 

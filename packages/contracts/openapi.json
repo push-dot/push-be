@@ -847,6 +847,34 @@
         ],
         "type": "object"
       },
+      "BlockedUser": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user": {
+            "properties": {
+              "displayName": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "displayName"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "user",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "CalendarEvent": {
         "properties": {
           "applicationId": {
@@ -4972,7 +5000,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, ...",
                 "type": "string"
               },
               "details": {
@@ -5579,6 +5607,18 @@
       },
       "Offer": {
         "properties": {
+          "archivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the caller archived this offer. Null when not archived. Per caller."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -20941,6 +20981,141 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/me/blocks": {
+      "get": {
+        "description": "Newest first.",
+        "operationId": "getMeBlocks",
+        "parameters": [
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/BlockedUser"
+                      },
+                      "type": "array"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List users I blocked",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      },
+      "post": {
+        "description": "400 when userId is the caller, 404 when the user does not exist. Idempotent. A blocked user cannot send the caller offers (403 BLOCKED), and offers between the two leave the caller's offer lists.",
+        "operationId": "postMeBlocks",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "userId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "userId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Block a user",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/blocks/{userId}": {
+      "delete": {
+        "description": "Idempotent.",
+        "operationId": "deleteMeBlocksByUserId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Unblock a user",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/me/bookmarks": {
       "get": {
         "operationId": "getMeBookmarks",
@@ -22045,6 +22220,7 @@
     },
     "/api/v1/me/offers": {
       "get": {
+        "description": "Archived offers and offers whose other party the caller blocked are left out, and total counts the same filters.",
         "operationId": "getMeOffers",
         "parameters": [
           {
@@ -22055,6 +22231,19 @@
               "enum": [
                 "received",
                 "sent"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 lists only the offers the caller archived. 0 or absent lists the rest. Any other value is 400.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "0",
+                "1"
               ],
               "type": "string"
             }
@@ -22236,6 +22425,54 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/me/offers/{id}/archive": {
+      "post": {
+        "description": "Either party. Archiving is per user and idempotent: archiving again keeps the first archivedAt. Anyone else is 404.",
+        "operationId": "postMeOffersByIdArchive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Offer"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Archive an offer",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/me/offers/{id}/decline": {
       "post": {
         "description": "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.",
@@ -22357,7 +22594,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "409 unless the offer is ACCEPTED.",
+        "description": "409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.",
         "operationId": "postMeOffersByIdMessages",
         "parameters": [
           {
@@ -22417,6 +22654,112 @@
           }
         },
         "summary": "Send an offer message",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/offers/{id}/report": {
+      "post": {
+        "description": "Either party reports the other. Stored for review, no automatic action. Reporting again adds another report. Anyone else is 404.",
+        "operationId": "postMeOffersByIdReport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "reason": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Report an offer",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/offers/{id}/unarchive": {
+      "post": {
+        "description": "Either party. Idempotent. archivedAt is null in the response. Anyone else is 404.",
+        "operationId": "postMeOffersByIdUnarchive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Offer"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Unarchive an offer",
         "tags": [
           "social"
         ],
@@ -25339,7 +25682,7 @@
     },
     "/api/v1/profiles/{id}/offer": {
       "post": {
-        "description": "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404.",
+        "description": "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404. 403 BLOCKED when the profile owner blocked the sender.",
         "operationId": "postProfilesByIdOffer",
         "parameters": [
           {
