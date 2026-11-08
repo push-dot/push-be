@@ -384,9 +384,29 @@ export interface paths {
         put?: never;
         /**
          * Set new password with reset token
-         * @description Revokes every session of the user.
+         * @description Revokes every session of the user. 410 TOKEN_EXPIRED (details.email, the account email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailPasswordResetConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/password-reset/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up a password reset link
+         * @description Read-only: does not consume the token. Returns the account email for the reset form. 410 TOKEN_EXPIRED (details.email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
+         */
+        get: operations["getAuthEmailPasswordResetByToken"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -424,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Verify email and create the account
-         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email.
+         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
         delete?: never;
@@ -521,7 +541,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a phone code and sign in
-         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if that identity belongs to another account (details.provider: the provider of the account that owns the phone, such as google, apple, github, email or phone; absent when no account owns it). A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
          */
         post: operations["postAuthPhoneVerify"];
         delete?: never;
@@ -6157,6 +6177,34 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAuthEmailPasswordResetByToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: email */
+                            email: string;
+                        };
+                    };
+                };
             };
             default: components["responses"]["Error"];
         };
