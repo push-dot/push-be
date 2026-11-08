@@ -1,8 +1,13 @@
-import { one, query } from "../db.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
-import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_SQL, notify } from "./recruiting-shared.ts";
+import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_COLS, OFFER_FROM, notify } from "./recruiting-shared.ts";
+
+// Mirrors the block check of POST /me/offers/{id}/messages: the other party blocked the caller.
+const offerSelect = (user: string): string => "SELECT oa.archived_at, " + OFFER_COLS
+  + `, EXISTS (SELECT 1 FROM user_blocks bm WHERE bm.blocked_id = ${user} AND bm.blocker_id = CASE WHEN o.sender_id = ${user} THEN o.profile_user_id ELSE o.sender_id END) AS blocked_me`
+  + OFFER_FROM;
 
 const withArchive = (user: string): string => " LEFT JOIN offer_archives oa ON oa.offer_id = o.id AND oa.user_id = " + user;
 
@@ -15,7 +20,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [ctx.user.id];
   const mine = box === "received" ? "o.profile_user_id" : "o.sender_id";
   const other = box === "received" ? "o.sender_id" : "o.profile_user_id";
-  let sql = "SELECT oa.archived_at, " + OFFER_SQL + withArchive("$1") + ` WHERE ${mine} = $1 AND oa.offer_id IS ${archived === "1" ? "NOT NULL" : "NULL"}`
+  let sql = offerSelect("$1") + withArchive("$1") + ` WHERE ${mine} = $1 AND oa.offer_id IS ${archived === "1" ? "NOT NULL" : "NULL"}`
     + ` AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE b.blocker_id = $1 AND b.blocked_id = ${other})`;
   const total = await countWhere(ctx, sql, " FROM offers o", params.slice());
   if (page.cursor) {
@@ -32,7 +37,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
 
 async function offerFor(ctx: Ctx, idRaw: string): Promise<Record<string, unknown>> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "SELECT oa.archived_at, " + OFFER_SQL + withArchive("$2") + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, offerSelect("$2") + withArchive("$2") + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
   if (!row) throw notFound();
   return row;
 }
@@ -60,8 +65,14 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
   let reply = "";
   if (status === "ACCEPTED" && body.reply != null) reply = textOf(body.reply, "reply", 1, 2000);
   const now = ctx.now.toISOString();
-  const decided = await one(ctx.deps.query,
-    "UPDATE offers SET status = $2 WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id", [row.id, status]);
+  const guard = " WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id";
+  let decided: Record<string, unknown> | null;
+  try {
+    decided = await one(ctx.deps.query, "UPDATE offers SET status = $2, responded_at = $3" + guard, [row.id, status, now]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    decided = await one(ctx.deps.query, "UPDATE offers SET status = $2" + guard, [row.id, status]);
+  }
   if (!decided) throw new HttpError(409, "CONFLICT", "offer is already closed");
   if (reply) {
     await query(ctx.deps.query,
@@ -69,6 +80,7 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
       [crypto.randomUUID(), row.id, ctx.user.id, reply, now]);
   }
   row.status = status;
+  row.responded_at = now;
   if (status === "ACCEPTED") {
     await notify(ctx, String(row.sender_id), "OFFER", "제안을 수락했어요", "", { kind: "offer", id: String(row.id) });
   }

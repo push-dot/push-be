@@ -3458,7 +3458,7 @@ export interface paths {
         };
         /**
          * List the file library
-         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.
+         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.
          */
         get: operations["getSources"];
         put?: never;
@@ -3491,7 +3491,11 @@ export interface paths {
         delete: operations["deleteSourcesById"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Rename an uploaded source
+         * @description Sets the file name of an upload the caller owns (trimmed, 1-200 characters, else 400 VALIDATION_ERROR). Returns the GET /sources item. An AI document id (or any id that is not the caller's upload) is 404 NOT_FOUND; rename an AI document through PATCH /documents/{id} title, which needs expectedRevision.
+         */
+        patch: operations["patchSourcesById"];
         trace?: never;
     };
     "/api/v1/sources/{id}/content": {
@@ -4793,6 +4797,8 @@ export interface components {
             };
         };
         DocumentsLibraryItem: {
+            /** @description Company of the application the AI document belongs to. Null for uploads. */
+            company: string | null;
             /** Format: date-time */
             createdAt: string;
             fileName: string;
@@ -4804,6 +4810,8 @@ export interface components {
             /** @description UPLOAD, AI, or the stored source origin */
             origin: string;
             pageCount: number | null;
+            /** @description Title of the application the AI document belongs to. Null for uploads. */
+            postingTitle: string | null;
             size: number;
         };
         DocumentsProfileDraft: {
@@ -4994,6 +5002,8 @@ export interface components {
         Offer: {
             /** @description When the caller archived this offer. Null when not archived. Per caller. */
             archivedAt?: string | null;
+            /** @description Whether POST /me/offers/{id}/messages would succeed for the caller: status ACCEPTED and the other party has not blocked the caller. */
+            canSend: boolean;
             /** Format: date-time */
             createdAt: string;
             /** Format: uuid */
@@ -5020,6 +5030,8 @@ export interface components {
                 /** @enum {string} */
                 kind: "PERSON" | "COMPANY";
             };
+            /** @description When the recipient accepted or declined. Null while open, and for offers answered before this was recorded. */
+            respondedAt: string | null;
             sender: {
                 avatarUrl: string | null;
                 companyName: string | null;
@@ -5191,6 +5203,8 @@ export interface components {
         };
         ProfileDetail: {
             avatarUrl: string | null;
+            /** @description The profile owner has blocked the caller. False for the caller's own profile. POST /profiles/{id}/offer is then 403 BLOCKED. */
+            blockedMe: boolean;
             careerStatus: ("satisfied" | "seeking" | "feedback") | null;
             careers: components["schemas"]["SocialProfileCareer"][];
             contact: string | null;
@@ -12518,6 +12532,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchSourcesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    fileName: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DocumentsLibraryItem"];
+                    };
+                };
             };
             default: components["responses"]["Error"];
         };

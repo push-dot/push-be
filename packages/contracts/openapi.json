@@ -4752,6 +4752,17 @@
       },
       "DocumentsLibraryItem": {
         "properties": {
+          "company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company of the application the AI document belongs to. Null for uploads."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -4791,6 +4802,17 @@
               }
             ]
           },
+          "postingTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Title of the application the AI document belongs to. Null for uploads."
+          },
           "size": {
             "type": "integer"
           }
@@ -4803,7 +4825,9 @@
           "pageCount",
           "createdAt",
           "origin",
-          "kind"
+          "kind",
+          "company",
+          "postingTitle"
         ],
         "type": "object"
       },
@@ -5619,6 +5643,10 @@
             ],
             "description": "When the caller archived this offer. Null when not archived. Per caller."
           },
+          "canSend": {
+            "description": "Whether POST /me/offers/{id}/messages would succeed for the caller: status ACCEPTED and the other party has not blocked the caller.",
+            "type": "boolean"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -5759,6 +5787,18 @@
             ],
             "type": "object"
           },
+          "respondedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the recipient accepted or declined. Null while open, and for offers answered before this was recorded."
+          },
           "sender": {
             "properties": {
               "avatarUrl": {
@@ -5826,6 +5866,8 @@
           "posting",
           "status",
           "readAt",
+          "respondedAt",
+          "canSend",
           "createdAt"
         ],
         "type": "object"
@@ -6633,6 +6675,10 @@
               }
             ]
           },
+          "blockedMe": {
+            "description": "The profile owner has blocked the caller. False for the caller's own profile. POST /profiles/{id}/offer is then 403 BLOCKED.",
+            "type": "boolean"
+          },
           "careerStatus": {
             "anyOf": [
               {
@@ -6766,7 +6812,8 @@
           "contact",
           "updatedAt",
           "following",
-          "offered"
+          "offered",
+          "blockedMe"
         ],
         "type": "object"
       },
@@ -27245,7 +27292,7 @@
     },
     "/api/v1/sources": {
       "get": {
-        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.",
+        "description": "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.",
         "operationId": "getSources",
         "parameters": [
           {
@@ -27446,6 +27493,70 @@
           }
         },
         "summary": "Get a source",
+        "tags": [
+          "sources"
+        ],
+        "x-owner": "core"
+      },
+      "patch": {
+        "description": "Sets the file name of an upload the caller owns (trimmed, 1-200 characters, else 400 VALIDATION_ERROR). Returns the GET /sources item. An AI document id (or any id that is not the caller's upload) is 404 NOT_FOUND; rename an AI document through PATCH /documents/{id} title, which needs expectedRevision.",
+        "operationId": "patchSourcesById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "fileName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fileName"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DocumentsLibraryItem"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Rename an uploaded source",
         "tags": [
           "sources"
         ],

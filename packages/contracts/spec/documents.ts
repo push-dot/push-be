@@ -295,7 +295,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/sources", {
     tag: "sources",
     summary: "List the file library",
-    description: "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.",
+    description: "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.",
     params: [...pageParams, query("kind", enumOf("UPLOAD", "AI"))],
     responses: { 200: okPage(ref("DocumentsLibraryItem")) },
   }),
@@ -318,6 +318,14 @@ export const routes: Route[] = [
     summary: "Get a source",
     params: [id],
     responses: { 200: ok(ref("Source")) },
+  }),
+  patch("core", "/api/v1/sources/{id}", {
+    tag: "sources",
+    summary: "Rename an uploaded source",
+    description: "Sets the file name of an upload the caller owns (trimmed, 1-200 characters, else 400 VALIDATION_ERROR). Returns the GET /sources item. An AI document id (or any id that is not the caller's upload) is 404 NOT_FOUND; rename an AI document through PATCH /documents/{id} title, which needs expectedRevision.",
+    params: [id],
+    body: body(closed({ fileName: { type: "string", minLength: 1, maxLength: 200 } }, ["fileName"])),
+    responses: { 200: ok(ref("DocumentsLibraryItem")) },
   }),
   del("core", "/api/v1/sources/{id}", {
     tag: "sources",
@@ -587,6 +595,8 @@ export const schemas: Record<string, Schema> = {
     createdAt: dateTime,
     origin: { type: "string", description: "UPLOAD, AI, or the stored source origin" },
     kind: { ...nullable(str), description: "Document kind given at upload, or the document kind for an AI row. Null when that kind was not stored." },
+    company: { ...nullable(str), description: "Company of the application the AI document belongs to. Null for uploads." },
+    postingTitle: { ...nullable(str), description: "Title of the application the AI document belongs to. Null for uploads." },
   }),
   DocumentsProfileDraft: obj({
     displayName: str,

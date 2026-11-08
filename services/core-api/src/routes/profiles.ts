@@ -226,7 +226,7 @@ export async function searchPeople(ctx: Ctx, q: string): Promise<Response> {
 
 async function loadProfile(ctx: Ctx, userId: string): Promise<Record<string, unknown> | null> {
   return one(ctx.deps.query,
-    profileSelect(", EXISTS (SELECT 1 FROM offers o WHERE o.sender_id = $1 AND o.profile_user_id = p.user_id) AS offered")
+    profileSelect(", EXISTS (SELECT 1 FROM offers o WHERE o.sender_id = $1 AND o.profile_user_id = p.user_id) AS offered, EXISTS (SELECT 1 FROM user_blocks bb WHERE bb.blocker_id = p.user_id AND bb.blocked_id = $1) AS blocked_me")
       + " WHERE p.user_id = $2",
     [ctx.user.id, userId]);
 }
@@ -238,7 +238,7 @@ async function getProfile(ctx: Ctx, idRaw: string): Promise<Response> {
   const self = id === ctx.user.id;
   if (!self && !asBool(row.profile_public)) throw notFound();
   const dto = profileDto(row, ctx.user.id, viewer);
-  return data(200, { ...dto, following: asBool(row.following), offered: asBool(row.offered) }, ctx.rid);
+  return data(200, { ...dto, following: asBool(row.following), offered: asBool(row.offered), blockedMe: asBool(row.blocked_me) }, ctx.rid);
 }
 
 async function ensureProfile(ctx: Ctx): Promise<void> {
@@ -253,7 +253,7 @@ async function getMyProfile(ctx: Ctx): Promise<Response> {
   const row = await loadProfile(ctx, ctx.user.id);
   if (!row) throw notFound();
   const dto = profileDto(row, ctx.user.id, viewer);
-  return data(200, { ...dto, following: false, offered: false }, ctx.rid);
+  return data(200, { ...dto, following: false, offered: false, blockedMe: false }, ctx.rid);
 }
 
 function careersOf(value: unknown): unknown[] {
@@ -335,7 +335,7 @@ async function patchMyProfile(ctx: Ctx): Promise<Response> {
   const viewer = await viewerCompanyOf(ctx);
   const row = await loadProfile(ctx, ctx.user.id);
   if (!row) throw notFound();
-  return data(200, { ...profileDto(row, ctx.user.id, viewer), following: false, offered: false }, ctx.rid);
+  return data(200, { ...profileDto(row, ctx.user.id, viewer), following: false, offered: false, blockedMe: false }, ctx.rid);
 }
 
 async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
