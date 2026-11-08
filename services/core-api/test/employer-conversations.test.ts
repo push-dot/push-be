@@ -229,8 +229,9 @@ test("ULTRA pdf upload stores a conversation_attachments row", async () => {
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { id: string; fileName: string; mimeType: string } };
+  const body = await res.json() as { data: { id: string; fileName: string; mimeType: string; size: number } };
   assert.equal(typeof body.data.id, "string");
+  assert.equal(body.data.size, bytes.byteLength);
   assert.equal(body.data.fileName, "resume.pdf");
   assert.equal(body.data.mimeType, "application/pdf");
   assert.equal(params.includes(COMPANY), true);

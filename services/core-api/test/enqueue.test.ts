@@ -118,6 +118,7 @@ test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FR
   if (free.ok) return;
   assert.equal(ultra.ok, true);
   assert.equal(queueDepthLimit("ULTRA") > depth, true);
+  assert.equal(free.ahead, depth);
   const err = new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: free.retryAfterSec });
   const res = errorOf(err, "rid");
   assert.equal(res.status, 429);
