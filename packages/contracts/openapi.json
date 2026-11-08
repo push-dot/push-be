@@ -1823,6 +1823,16 @@
               }
             ]
           },
+          "legalName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "logoKey": {
             "anyOf": [
               {
@@ -1939,12 +1949,18 @@
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "invitedAt": {
+            "description": "Last send: expiresAt minus the 7 day invite TTL",
+            "format": "date-time",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "email",
-          "expiresAt"
+          "expiresAt",
+          "invitedAt"
         ],
         "type": "object"
       },
@@ -11108,7 +11124,7 @@
     },
     "/api/v1/companies/invites/{token}": {
       "get": {
-        "description": "404 when the token is unknown, accepted, expired, or the company is pending deletion.",
+        "description": "404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.",
         "operationId": "getCompaniesInvitesByToken",
         "parameters": [
           {
@@ -11182,7 +11198,7 @@
     },
     "/api/v1/companies/invites/{token}/accept": {
       "post": {
-        "description": "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.",
+        "description": "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).",
         "operationId": "postCompaniesInvitesByTokenAccept",
         "parameters": [
           {
@@ -11270,6 +11286,18 @@
                       {
                         "maxLength": 2000,
                         "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "legalName": {
+                    "anyOf": [
+                      {
+                        "description": "Registered company name. Trimmed; empty clears it. name stays the brand name",
+                        "maxLength": 120,
                         "type": "string"
                       },
                       {
@@ -11446,6 +11474,84 @@
           }
         },
         "summary": "Invite a member by email",
+        "tags": [
+          "companies"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/companies/me/invites/{id}": {
+      "delete": {
+        "description": "ADMIN only. Frees the seat. 404 NOT_FOUND when the invite is unknown, accepted or another company's.",
+        "operationId": "deleteCompaniesMeInvitesById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Cancel a pending invite",
+        "tags": [
+          "companies"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/companies/me/invites/{id}/resend": {
+      "post": {
+        "description": "ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.",
+        "operationId": "postCompaniesMeInvitesByIdResend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CompanyInvite"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Resend an invite",
         "tags": [
           "companies"
         ],
@@ -11647,7 +11753,7 @@
     },
     "/api/v1/companies/verify": {
       "post": {
-        "description": "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.",
+        "description": "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.",
         "operationId": "postCompaniesVerify",
         "parameters": [
           {
@@ -11669,6 +11775,11 @@
                     "pattern": "^\\d{10}$",
                     "type": "string"
                   },
+                  "legalName": {
+                    "description": "Optional registered company name. Trimmed; empty is ignored",
+                    "maxLength": 120,
+                    "type": "string"
+                  },
                   "pNm": {
                     "description": "Representative name",
                     "minLength": 1,
@@ -11684,7 +11795,8 @@
                   "bNo",
                   "startDt",
                   "pNm",
-                  "bNm"
+                  "bNm",
+                  "legalName"
                 ],
                 "type": "object"
               }

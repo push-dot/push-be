@@ -839,7 +839,7 @@ export interface paths {
         };
         /**
          * Preview an invite
-         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion.
+         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.
          */
         get: operations["getCompaniesInvitesByToken"];
         put?: never;
@@ -861,7 +861,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an invite
-         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
          */
         post: operations["postCompaniesInvitesByTokenAccept"];
         delete?: never;
@@ -909,6 +909,46 @@ export interface paths {
          * @description ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full. 409 CONFLICT if already a member. 502 PROVIDER_ERROR when invite mail fails. A failed resend leaves the old token in place.
          */
         post: operations["postCompaniesMeInvites"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/invites/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a pending invite
+         * @description ADMIN only. Frees the seat. 404 NOT_FOUND when the invite is unknown, accepted or another company's.
+         */
+        delete: operations["deleteCompaniesMeInvitesById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/invites/{id}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend an invite
+         * @description ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.
+         */
+        post: operations["postCompaniesMeInvitesByIdResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -987,7 +1027,7 @@ export interface paths {
         put?: never;
         /**
          * Verify business registration and create company
-         * @description EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.
+         * @description EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.
          */
         post: operations["postCompaniesVerify"];
         delete?: never;
@@ -4015,6 +4055,7 @@ export interface components {
             id: string;
             industry?: string | null;
             intro?: string | null;
+            legalName?: string | null;
             logoKey?: string | null;
             logoUrl?: string | null;
             name: string;
@@ -4036,6 +4077,11 @@ export interface components {
             expiresAt: string;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: date-time
+             * @description Last send: expiresAt minus the 7 day invite TTL
+             */
+            invitedAt: string;
         };
         CompanyMember: {
             displayName: string;
@@ -7085,6 +7131,7 @@ export interface operations {
                 "application/json": {
                     industry?: string | null;
                     intro?: string | null;
+                    legalName?: string | null;
                     logoKey?: string | null;
                     representativeName?: string | null;
                     website?: string | null;
@@ -7158,6 +7205,55 @@ export interface operations {
                         data: {
                             email: string;
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteCompaniesMeInvitesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postCompaniesMeInvitesByIdResend: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CompanyInvite"];
                     };
                 };
             };
@@ -7283,6 +7379,8 @@ export interface operations {
                     bNm: string;
                     /** @description Business registration number */
                     bNo: string;
+                    /** @description Optional registered company name. Trimmed; empty is ignored */
+                    legalName: string;
                     /** @description Representative name */
                     pNm: string;
                     /** @description Opening date YYYYMMDD */
