@@ -473,7 +473,7 @@ test("applicant detail returns the snapshot documents and fit score", async () =
   assert.equal(res.status, 200);
   const body = await res.json() as { data: { application: { fitScore: number }; documents: { id: string; title: string; content: string }[] } };
   assert.equal(body.data.application.fitScore, 80);
-  assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
+  assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}", pageCount: null }]);
   const appSql = seen.find((call) => call.sql.includes("applications") && call.sql.includes("fit_score"));
   assert.ok(appSql);
   assert.match(appSql.sql, /gap_analyses/);
@@ -1502,7 +1502,7 @@ test("apply answers with the winning application when a simultaneous apply hits 
   assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
 });
 
-test("posting facets run their four counts in parallel", async () => {
+test("posting facets run their five counts in parallel", async () => {
   const { handle } = await import("../src/handler.ts");
   let inFlight = 0;
   let peak = 0;
@@ -1517,7 +1517,7 @@ test("posting facets run their four counts in parallel", async () => {
     inFlight += 1;
     started += 1;
     peak = Math.max(peak, inFlight);
-    if (started === 4) {
+    if (started === 5) {
       clearTimeout(fallback);
       release();
     }
@@ -1528,7 +1528,7 @@ test("posting facets run their four counts in parallel", async () => {
   try {
     const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
     assert.equal(res.status, 200);
-    assert.equal(peak, 4);
+    assert.equal(peak, 5);
   } finally {
     clearTimeout(fallback);
     release();

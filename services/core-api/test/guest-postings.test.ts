@@ -45,6 +45,58 @@ test("guest locations are public", async () => {
   assert.equal(locations.params[0], NIL);
 });
 
+test("locations group by city only when asked and reject other levels", async () => {
+  const city = await run("/api/v1/postings/locations?level=city");
+  assert.equal(city.res.status, 200);
+  const grouped = city.calls.find((call) => call.sql.includes("regexp_split_to_array"));
+  assert.ok(grouped);
+  assert.match(grouped.sql, /GROUP BY 1 ORDER BY 2 DESC, 1 ASC/);
+
+  const district = await run("/api/v1/postings/locations?level=district");
+  assert.equal(district.res.status, 200);
+  assert.ok(district.calls.find((call) => call.sql.includes("GROUP BY p.location ORDER BY count DESC, p.location ASC")));
+
+  const bad = await run("/api/v1/postings/locations?level=country");
+  assert.equal(bad.res.status, 400);
+  assert.equal(await codeOf(bad.res), "VALIDATION_ERROR");
+});
+
+test("city locations return summed counts from the grouped rows", async () => {
+  resetLimits();
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("regexp_split_to_array")) return { rows: [{ location: "서울", count: 5 }, { location: "경기", count: 2 }], rowCount: 2 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/locations?level=city"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await res.json() as { data: unknown }).data, [{ location: "서울", count: 5 }, { location: "경기", count: 2 }]);
+});
+
+test("employmentType facet lists every type with zeros and ignores its own filter", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("GROUP BY p.employment_type")) return { rows: [{ id: "intern", count: 4 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/facets?employmentType=full_time&category=dev"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { employmentType: { id: string; count: number }[] } };
+  assert.deepEqual(body.data.employmentType, [
+    { id: "full_time", count: 0 }, { id: "contract", count: 0 }, { id: "intern", count: 4 },
+    { id: "freelance", count: 0 }, { id: "dispatch", count: 0 },
+  ]);
+  const own = seen.find((call) => call.sql.includes("GROUP BY p.employment_type"));
+  assert.ok(own);
+  assert.doesNotMatch(own.sql, /p\.employment_type = ANY/);
+  assert.match(own.sql, /p\.job_category = ANY/);
+  const category = seen.find((call) => call.sql.includes("GROUP BY p.job_category"));
+  assert.ok(category);
+  assert.match(category.sql, /p\.employment_type = ANY/);
+});
+
 test("guest posting detail is not unauthenticated", async () => {
   const { res, calls } = await run(`/api/v1/postings/${POSTING}`);
   assert.notEqual(res.status, 401);
