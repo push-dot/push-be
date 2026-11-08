@@ -144,7 +144,6 @@ export const LAST_LINE = "COALESCE("
   + "WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING') ORDER BY j.created_at DESC LIMIT 1) "
   + "AND e.type IN ('status', 'tool') ORDER BY e.id DESC LIMIT 1)) AS last_line";
 
-// Pending jobs created before this conversation's oldest pending job; null when it has none.
 // shortcut: global PENDING order, ignores priority lanes; upgrade when the queue exposes per-lane positions
 export const QUEUE_POSITION = "(SELECT CASE WHEN me.at IS NULL THEN NULL ELSE (SELECT count(*)::int FROM chat_jobs p "
   + "WHERE p.status = 'PENDING' AND p.created_at < me.at) END FROM (SELECT min(j.created_at) AS at FROM chat_jobs j "

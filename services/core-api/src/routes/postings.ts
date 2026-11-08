@@ -212,7 +212,6 @@ async function listPostingLocations(ctx: Ctx): Promise<Response> {
   if (level !== "district" && level !== "city") throw fieldError("level", "must be district or city");
   const rows = await withPublicStatus(async (withStatus) => {
     const params: unknown[] = [ctx.user.id];
-    // city groups by the first whitespace token (서울 강남구 -> 서울)
     const place = level === "city" ? "(regexp_split_to_array(btrim(p.location), '\\s+'))[1]" : "p.location";
     let sql = `SELECT ${place} AS location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
     sql = appendPostingFilters(sql, params, ctx.url, false);

@@ -275,7 +275,6 @@ function attachmentList(raw: unknown): unknown[] {
   return Array.isArray(attachments) ? attachments : [];
 }
 
-/** Name and byte size of the uploaded PDFs a message page refers to, in one query; the content column is never selected. */
 async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredFiles> {
   const files: StoredFiles = new Map();
   const ids = new Set<string>();
