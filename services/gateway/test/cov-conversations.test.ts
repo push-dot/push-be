@@ -167,7 +167,7 @@ test("a cached session lists only the caller's personal conversations with filte
   assert.deepEqual(body.data, [{
     id: CONV_A, revision: 3, applicationId: null, title: "", pinned: true,
     createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-09T00:00:00Z", status: "DONE",
-    lastLine: null, lastMessagePreview: "", createdBy: { displayName: "" }, postingId: null,
+    queuePosition: null, lastLine: null, lastMessagePreview: "", createdBy: { displayName: "" }, postingId: null,
   }]);
   assert.deepEqual(body.page, { hasMore: true, nextCursor: encodeCursor("2026-10-09T00:00:00Z", CONV_A) });
 });

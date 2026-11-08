@@ -464,7 +464,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/messages", {
     tag: "conversations",
     summary: "Send a message (queue a chat job)",
-    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec.",
+    description: "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (queued jobs counted).",
     params: [id],
     body: postMessageBody,
     responses: { 202: ok(chatJob, "Accepted") },
@@ -508,7 +508,7 @@ export const routes: Route[] = [
         },
       },
     },
-    responses: { 201: ok(obj({ id: uuid, fileName: str, mimeType: enumOf("application/pdf") }), "Created") },
+    responses: { 201: ok(obj({ id: uuid, fileName: str, mimeType: enumOf("application/pdf"), size: { type: "integer", description: "Stored PDF size in bytes" } }, ["id", "fileName", "mimeType"]), "Created") },
   }),
   post("core", "/api/v1/conversations/{id}/approvals/{approvalId}", {
     tag: "conversations",
@@ -672,6 +672,10 @@ export const schemas: Record<string, Schema> = {
     createdAt: dateTime,
     updatedAt: dateTime,
     status: enumOf("NEEDS_APPROVAL", "RUNNING", "DONE"),
+    queuePosition: {
+      ...nullable(int),
+      description: "Pending chat jobs queued before this conversation's pending job (0 is next in line). Null when it has none.",
+    },
     lastLine: {
       ...nullable(str),
       description: "NEEDS_APPROVAL: the waiting card's title. RUNNING: the newest status text or tool line (summary · target) of the queued or running job. Null otherwise.",
@@ -679,7 +683,7 @@ export const schemas: Record<string, Schema> = {
     lastMessagePreview: { type: "string", maxLength: 140 },
     createdBy: obj({ displayName: str }),
     postingId: nullable(uuid),
-  }),
+  }, ["id", "revision", "applicationId", "title", "pinned", "createdAt", "updatedAt", "status", "lastLine", "lastMessagePreview", "createdBy", "postingId"]),
   Message: obj({
     id: uuid,
     conversationId: uuid,
@@ -694,6 +698,8 @@ export const schemas: Record<string, Schema> = {
     id: str,
     documentId: str,
     title: str,
+    fileName: { type: "string", description: "Uploaded PDF name, present when id is an attachment of this conversation" },
+    size: { type: "integer", description: "Uploaded PDF size in bytes, present with fileName" },
   }, ["type", "id"]),
   ConversationsApprovalAnswer: obj({
     id: uuid,

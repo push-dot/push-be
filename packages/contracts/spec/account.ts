@@ -284,7 +284,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/fit", {
     tag: "ai",
     summary: "Queue a posting fit analysis",
-    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
+    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec, details.ahead) under backpressure.",
     params: [pathParam("id")],
     body: body(obj({ documentId: uuid })),
     responses: { 202: ok(obj({ jobId: uuid }), "Accepted") },

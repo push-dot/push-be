@@ -26,7 +26,7 @@ const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknow
   const queue = queueFor(type, plan, "PERSONAL");
   const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
   if (!pressure.ok) {
-    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }
   const key = (ctx.request.headers.get("idempotency-key") || "").trim();
   const { jobId } = await enqueueJob(ctx.deps.query, {
