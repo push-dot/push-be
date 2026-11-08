@@ -15,6 +15,7 @@ const password: Schema = { type: "string", minLength: 8, maxLength: 128, descrip
 const providerParam = pathParam("provider", enumOf("google", "github", "apple"));
 const tokenParam = pathParam("token", str);
 const userIdParam = pathParam("userId");
+const inviteIdParam = pathParam("id");
 const imageTypes = ["image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
 export const routes: Route[] = [
@@ -295,12 +296,13 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/verify", {
     tag: "companies",
     summary: "Verify business registration and create company",
-    description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.",
+    description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.",
     body: body(obj({
       bNo: { type: "string", pattern: "^\\d{10}$", description: "Business registration number" },
       startDt: { type: "string", pattern: "^\\d{8}$", description: "Opening date YYYYMMDD" },
       pNm: { type: "string", minLength: 1, description: "Representative name" },
       bNm: { type: "string", minLength: 1, description: "Business name" },
+      legalName: { type: "string", maxLength: 120, description: "Optional registered company name. Trimmed; empty is ignored" },
     })),
     responses: { 201: ok(ref("Company"), "Created") },
   }),
@@ -322,6 +324,7 @@ export const routes: Route[] = [
         website: nullable({ type: "string", format: "uri", maxLength: 2000, description: "http or https URL with no username or password" }),
         intro: nullable({ type: "string", minLength: 1, maxLength: 2000 }),
         representativeName: nullable({ type: "string", minLength: 1, maxLength: 80 }),
+        legalName: nullable({ type: "string", maxLength: 120, description: "Registered company name. Trimmed; empty clears it. name stays the brand name" }),
       },
     }),
     responses: { 200: ok(ref("Company")) },
@@ -352,6 +355,20 @@ export const routes: Route[] = [
     description: "ADMIN only.",
     responses: { 200: okList(ref("CompanyInvite")) },
   }),
+  post("core", "/api/v1/companies/me/invites/{id}/resend", {
+    tag: "companies",
+    summary: "Resend an invite",
+    description: "ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.",
+    params: [inviteIdParam],
+    responses: { 200: ok(ref("CompanyInvite")) },
+  }),
+  del("core", "/api/v1/companies/me/invites/{id}", {
+    tag: "companies",
+    summary: "Cancel a pending invite",
+    description: "ADMIN only. Frees the seat. 404 NOT_FOUND when the invite is unknown, accepted or another company's.",
+    params: [inviteIdParam],
+    responses: { 204: noContent },
+  }),
   post("core", "/api/v1/companies/me/invites", {
     tag: "companies",
     summary: "Invite a member by email",
@@ -363,7 +380,7 @@ export const routes: Route[] = [
     tag: "companies",
     summary: "Preview an invite",
     auth: "public",
-    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion.",
+    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.",
     params: [tokenParam],
     responses: {
       200: ok(obj({ companyName: str, inviterName: str, inviterRole: companyRole, email: str, expiresAt: dateTime })),
@@ -372,7 +389,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/invites/{token}/accept", {
     tag: "companies",
     summary: "Accept an invite",
-    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.",
+    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).",
     params: [tokenParam],
     responses: { 204: noContent },
   }),
@@ -516,6 +533,7 @@ export const schemas: Record<string, Schema> = {
     website: nullable(str),
     intro: nullable(str),
     representativeName: nullable(str),
+    legalName: nullable(str),
   }, ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats"]),
   CompanyMember: obj({
     userId: uuid,
@@ -528,6 +546,7 @@ export const schemas: Record<string, Schema> = {
     id: uuid,
     email: str,
     expiresAt: dateTime,
+    invitedAt: { ...dateTime, description: "Last send: expiresAt minus the 7 day invite TTL" },
   }),
   Consents: obj({
     referenceData: bool,
