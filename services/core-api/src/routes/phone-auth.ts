@@ -21,6 +21,7 @@ const ACTIVE_CODE = "SELECT id, code_hash, expires_at, attempts FROM phone_codes
 const BUMP = "UPDATE phone_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts";
 const CONSUME_ONE = "UPDATE phone_codes SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL";
 const BY_PHONE = "SELECT id FROM users WHERE phone = $1 AND is_employer = false";
+const OWNER_BY_PHONE = "SELECT id, provider FROM users WHERE phone = $1 AND is_employer = false";
 const INSERT_USER = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,'phone',$2,'user','ko',$3,NULL,NULL,false,NULL,$2)";
 const INSERT_SOCIAL = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,$2,$3,'user','ko',$4,$5,$6,false,NULL,$7)";
 const SET_SOCIAL = "UPDATE users SET provider = $2, provider_subject = $3 WHERE id = $1 AND provider = 'phone'";
@@ -213,13 +214,33 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
     throw new HttpError(400, "PHONE_CODE_EXPIRED", "code is expired");
   }
-  if (Number(row.attempts) >= max) throw new HttpError(429, "RATE_LIMITED", "too many attempts");
+  if (Number(row.attempts) >= max) {
+    throw new HttpError(429, "RATE_LIMITED", "too many attempts", { reason: "TOO_MANY_ATTEMPTS", maxAttempts: max });
+  }
   if (await sha256Hex(`${String(row.id)}:${code}`) !== String(row.code_hash)) {
-    await query(ctx.deps.query, BUMP, [String(row.id)]);
-    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
+    const bumped = await one(ctx.deps.query, BUMP, [String(row.id)]);
+    const used = Number(bumped?.attempts ?? Number(row.attempts) + 1);
+    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid", { attemptsLeft: Math.max(0, max - used) });
   }
   const pending = await pendingOf(ctx, body);
   await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
+  try {
+    return await signIn(ctx, phone, pending);
+  } catch (err) {
+    if (!(err instanceof HttpError) || err.code !== "PHONE_TAKEN") throw err;
+    throw new HttpError(409, "PHONE_TAKEN", err.message, await ownerDetails(ctx, phone));
+  }
+};
+
+// The code is proven by now, so naming the owning provider leaks nothing the caller does not hold.
+const ownerDetails = async (ctx: Ctx, phone: string): Promise<{ provider: string } | null> => {
+  const owner = await one(ctx.deps.query, OWNER_BY_PHONE, [phone]);
+  if (!owner) return null;
+  const [social] = await socialProviders(ctx, String(owner.id));
+  return { provider: social ?? String(owner.provider) };
+};
+
+const signIn = async (ctx: Ctx, phone: string, pending: PendingSignup | null): Promise<Response> => {
   if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (owner) return linkOrBlock(ctx, String(owner.id), pending, phone);

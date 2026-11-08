@@ -61,6 +61,7 @@ function isCore(method: string, path: string): boolean {
     || path === "/api/v1/auth/phone/send"
     || path === "/api/v1/auth/phone/verify"
   )) return true;
+  if (method === "GET" && /^\/api\/v1\/auth\/email\/password-reset\/[^/]+$/.test(path)) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
