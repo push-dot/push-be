@@ -1144,6 +1144,8 @@ test("email auth posts are owned by core", () => {
     assert.equal(ownerOf("POST", path), "core");
   }
   assert.equal(ownerOf("GET", "/api/v1/auth/phone/send"), "deny");
+  assert.equal(ownerOf("GET", "/api/v1/auth/email/password-reset/tok_en-1"), "core");
+  assert.equal(ownerOf("DELETE", "/api/v1/auth/email/password-reset/tok_en-1"), "deny");
 });
 
 test("company routes are owned by core", () => {

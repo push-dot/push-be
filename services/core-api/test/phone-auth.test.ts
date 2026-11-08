@@ -16,7 +16,7 @@ const OAUTH = "22222222-2222-4222-8222-222222222222";
 const OWNER = "33333333-3333-4333-8333-333333333333";
 
 type Row = Record<string, unknown>;
-type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number; existingProviders?: string[] } | null } };
+type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number; existingProviders?: string[]; attemptsLeft?: number; reason?: string; maxAttempts?: number; provider?: string } | null } };
 type Session = { data: { created?: boolean; linked?: boolean; provider?: string; pendingToken?: string; accessToken?: string; user: { id: string; accountType: string } } };
 type Sent = { phone: string; code: string };
 
@@ -89,9 +89,9 @@ const createDb = () => {
       if (row) row.consumed_at = params[1];
       return { rows: [], rowCount: row ? 1 : 0 };
     }
-    if (sql.startsWith("SELECT id FROM users WHERE phone")) {
+    if (sql.startsWith("SELECT id FROM users WHERE phone") || sql.startsWith("SELECT id, provider FROM users WHERE phone")) {
       const row = users.find((item) => item.phone === params[0] && item.is_employer === false);
-      return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 };
+      return { rows: row ? [{ id: row.id, provider: row.provider }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("INSERT INTO users")) {
       const social = !sql.includes("'phone'");
@@ -263,7 +263,9 @@ test("verify rejects a wrong code, an expired code, and too many attempts", asyn
   const wrong = sent[0].code === "000000" ? "000001" : "000000";
   const invalid = await verify(db, sent, wrong);
   assert.equal(invalid.status, 400);
-  assert.equal((await invalid.json() as Err).error.code, "PHONE_CODE_INVALID");
+  const wrongBody = await invalid.json() as Err;
+  assert.equal(wrongBody.error.code, "PHONE_CODE_INVALID");
+  assert.deepEqual(wrongBody.error.details, { attemptsLeft: 4 });
   assert.equal(db.codes[0].attempts, 1);
   assert.equal(db.users.length, 0);
 
@@ -277,7 +279,47 @@ test("verify rejects a wrong code, an expired code, and too many attempts", asyn
   db.codes[0].attempts = 5;
   const limited = await verify(db, sent, wrong);
   assert.equal(limited.status, 429);
-  assert.equal((await limited.json() as Err).error.code, "RATE_LIMITED");
+  const limitedBody = await limited.json() as Err;
+  assert.equal(limitedBody.error.code, "RATE_LIMITED");
+  assert.deepEqual(limitedBody.error.details, { reason: "TOO_MANY_ATTEMPTS", maxAttempts: 5 });
+});
+
+test("the last wrong try reports no attempts left", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  await send(db, sent);
+  db.codes[0].attempts = 4;
+  const wrong = sent[0].code === "000000" ? "000001" : "000000";
+  const res = await verify(db, sent, wrong);
+  assert.equal(res.status, 400);
+  assert.deepEqual((await res.json() as Err).error.details, { attemptsLeft: 0 });
+});
+
+test("PHONE_TAKEN on verify names the provider that owns the phone, and send reveals nothing", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
+  db.identities.push({ user_id: OAUTH, provider: "phone", provider_subject: PHONE });
+  const sentRes = await send(db, sent);
+  assert.equal(sentRes.status, 202);
+  const taken = await verify(db, sent, sent[0].code);
+  assert.equal(taken.status, 409);
+  const body = await taken.json() as Err;
+  assert.equal(body.error.code, "PHONE_TAKEN");
+  assert.deepEqual(body.error.details, { provider: "google" });
+});
+
+test("PHONE_TAKEN for a phone-only owner reports provider phone", async () => {
+  const db = createDb();
+  const sent: Sent[] = [];
+  db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: PHONE, phone: PHONE }));
+  db.identities.push({ user_id: OAUTH, provider: "google", provider_subject: "gsub" });
+  await send(db, sent);
+  const taken = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub") });
+  assert.equal(taken.status, 409);
+  const body = await taken.json() as Err;
+  assert.equal(body.error.code, "PHONE_TAKEN");
+  assert.deepEqual(body.error.details, { provider: "phone" });
 });
 
 test("verify creates a personal account once, then logs into it", async () => {

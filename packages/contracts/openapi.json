@@ -9166,7 +9166,7 @@
     },
     "/api/v1/auth/email/password-reset/confirm": {
       "post": {
-        "description": "Revokes every session of the user.",
+        "description": "Revokes every session of the user. 410 TOKEN_EXPIRED (details.email, the account email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
         "operationId": "postAuthEmailPasswordResetConfirm",
         "requestBody": {
           "content": {
@@ -9203,6 +9203,60 @@
         },
         "security": [],
         "summary": "Set new password with reset token",
+        "tags": [
+          "auth"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/auth/email/password-reset/{token}": {
+      "get": {
+        "description": "Read-only: does not consume the token. Returns the account email for the reset form. 410 TOKEN_EXPIRED (details.email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
+        "operationId": "getAuthEmailPasswordResetByToken",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "email": {
+                          "format": "email",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "email"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Look up a password reset link",
         "tags": [
           "auth"
         ],
@@ -9295,7 +9349,7 @@
     },
     "/api/v1/auth/email/verify": {
       "post": {
-        "description": "409 EMAIL_TAKEN (details.accountType) if a user already has that email.",
+        "description": "409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
         "operationId": "postAuthEmailVerify",
         "requestBody": {
           "content": {
@@ -9570,7 +9624,7 @@
     },
     "/api/v1/auth/phone/verify": {
       "post": {
-        "description": "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.",
+        "description": "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if that identity belongs to another account (details.provider: the provider of the account that owns the phone, such as google, apple, github, email or phone; absent when no account owns it). A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
         "operationId": "postAuthPhoneVerify",
         "requestBody": {
           "content": {
