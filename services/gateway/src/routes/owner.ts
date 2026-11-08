@@ -99,7 +99,7 @@ function isCore(method: string, path: string): boolean {
   if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/exports\/[^/]+\/result$/.test(path)) return method === "POST";
   if (path === "/api/v1/sources") return method === "GET" || method === "POST";
-  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH" || method === "DELETE";
   if (/^\/api\/v1\/sources\/[^/]+\/content$/.test(path)) return method === "GET";
   if (path === "/api/v1/uploads/images") return method === "POST";
   if (/^\/api\/v1\/uploads\/images\/[^/]+$/.test(path)) return method === "GET";

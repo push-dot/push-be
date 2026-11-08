@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { recorder } from "../test-support/recorder.ts";
+import { recorder, USER as RECORDER_USER } from "../test-support/recorder.ts";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -206,5 +206,71 @@ test("the source library keeps a Push document with no mime type and drops a mar
   assert.equal(res.status, 200);
   assert.deepEqual(body.data.map((item) => item.id), [E3, E2]);
 });
-}
 
+
+test("AI library rows carry the application's company and posting title from one joined query; uploads carry null", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM sources")) return [{ id: E1, file_name: "cv.pdf", mime_type: "application/pdf", size: 2, created_at: "2026-10-04T00:00:00Z" }];
+    if (sql.includes("FROM documents")) return [
+      { id: E2, title: "이력서", created_at: "2026-10-06T00:00:00Z", kind: "RESUME", company: "모아페이", posting_title: "백엔드 엔지니어 (Kotlin·Spring)" },
+      { id: E3, title: "자소서", created_at: "2026-10-05T00:00:00Z", kind: "COVER_LETTER" },
+    ];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/sources?limit=10", { headers: { authorization: "Bearer t" } }), ENV, { query, now: () => NOW });
+  const body = await res.json() as { data: { id: string; company: string | null; postingTitle: string | null }[] };
+  assert.deepEqual(body.data.map((i) => [i.id, i.company, i.postingTitle]),
+    [[E2, "모아페이", "백엔드 엔지니어 (Kotlin·Spring)"], [E3, null, null], [E1, null, null]]);
+  const docs = calls.filter((c) => c.sql.includes("FROM documents"));
+  assert.equal(docs.length, 1);
+  assert.match(docs[0].sql, /FROM documents d LEFT JOIN applications a ON a\.id = d\.application_id WHERE d\.user_id = \$1 ORDER BY d\.created_at DESC, d\.id DESC LIMIT \$2$/);
+});
+
+const patchSource = (id: string, body: unknown) => new Request(`https://core.example/api/v1/sources/${id}`, {
+  method: "PATCH",
+  headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+  body: JSON.stringify(body),
+});
+
+test("renaming a source trims the name, updates only the caller's upload and returns the library item", async () => {
+  resetLimits();
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder((sql) => sql.startsWith("UPDATE sources SET file_name") ? [
+    { id: E1, file_name: "김서준_이력서.pdf", mime_type: "application/pdf", size: 9, page_count: 2, origin: "UPLOAD", created_at: "2026-10-04T00:00:00Z", doc_kind: "RESUME" },
+  ] : null);
+  const res = await handle(patchSource(E1, { fileName: "  김서준_이력서.pdf  " }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { data: unknown }).data, {
+    id: E1, fileName: "김서준_이력서.pdf", mimeType: "application/pdf", size: 9, pageCount: 2, createdAt: "2026-10-04T00:00:00Z",
+    origin: "UPLOAD", kind: "RESUME", company: null, postingTitle: null,
+  });
+  const update = calls.find((c) => c.sql.startsWith("UPDATE sources SET file_name"))!;
+  assert.match(update.sql, /WHERE id = \$1::uuid AND user_id = \$2 RETURNING/);
+  assert.deepEqual(update.params, [E1, RECORDER_USER, "김서준_이력서.pdf"]);
+});
+
+test("renaming is 404 for an id that is not the caller's upload, including an AI document", async () => {
+  resetLimits();
+  const { handle } = await import("../src/handler.ts");
+  const { calls, query } = recorder();
+  const res = await handle(patchSource(E2, { fileName: "x.pdf" }), ENV, { query, now: () => NOW });
+  assert.equal(res.status, 404);
+  assert.equal(((await res.json()) as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal(calls.some((c) => c.sql.includes("documents")), false);
+});
+
+test("renaming rejects a missing, blank, non-string or over-200-character name and writes nothing", async () => {
+  const { handle } = await import("../src/handler.ts");
+  for (const body of [{}, { fileName: "   " }, { fileName: 7 }, { fileName: "a".repeat(201) }]) {
+    resetLimits();
+    const { calls, query } = recorder();
+    const res = await handle(patchSource(E1, body), ENV, { query, now: () => NOW });
+    assert.equal(res.status, 400, JSON.stringify(body).slice(0, 30));
+    const err = (await res.json() as { error: { code: string; details: unknown } }).error;
+    assert.equal(err.code, "VALIDATION_ERROR");
+    assert.deepEqual(err.details, { field: "fileName" });
+    assert.equal(calls.some((c) => c.sql.startsWith("UPDATE sources")), false);
+  }
+});
+}

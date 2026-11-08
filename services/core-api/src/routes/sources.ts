@@ -5,6 +5,7 @@ import { pageOf, ts } from "../page.ts";
 import { encodeCursor, parseUtc } from "../time.ts";
 import type { Ctx } from "../types.ts";
 import { declaredTooLarge } from "./images.ts";
+import { readObject, textOf } from "./recruiting-shared.ts";
 
 const MAX_SOURCE_BYTES = 20 << 20;
 
@@ -66,9 +67,15 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string; kind: string | null };
+type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string; kind: string | null; company: string | null; postingTitle: string | null };
 
 const kindOf = (value: unknown): string | null => value == null || value === "" ? null : String(value);
+
+const sourceItem = (row: Record<string, unknown>): LibraryItem => ({
+  id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
+  pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
+  origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind), company: null, postingTitle: null,
+});
 
 const rank = (createdAt: unknown): string => {
   const p = parseUtc(createdAt);
@@ -86,17 +93,14 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   // Each side needs at most limit + 1 rows past the cursor; the merged page is cut from their union.
   const params: unknown[] = [ctx.user.id];
-  let after = "";
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    after = " AND (created_at, id) < ($2, $3)";
-  }
+  if (page.cursor) params.push(page.cursor.createdAt, page.cursor.id);
   params.push(page.limit + 1);
-  const tail = `${after} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  const tail = (a: string): string => `${page.cursor ? ` AND (${a}created_at, ${a}id) < ($2, $3)` : ""} ORDER BY ${a}created_at DESC, ${a}id DESC LIMIT $${params.length}`;
   const [uploads, documents] = await Promise.all([
     kind === "AI" ? null : query(ctx.deps.query,
-      "SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind FROM sources WHERE user_id = $1" + tail, params),
-    kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at, to_jsonb(documents)->>'kind' AS kind FROM documents WHERE user_id = $1" + tail, params),
+      "SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind FROM sources WHERE user_id = $1" + tail(""), params),
+    kind === "UPLOAD" ? null : query(ctx.deps.query,
+      "SELECT d.id, d.title, d.created_at, to_jsonb(d)->>'kind' AS kind, a.company, a.title AS posting_title FROM documents d LEFT JOIN applications a ON a.id = d.application_id WHERE d.user_id = $1" + tail("d."), params),
   ]);
   const sourceRows = (uploads?.rows ?? []).filter((row) => {
     const name = String(row.file_name ?? "");
@@ -104,14 +108,11 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
     return !name.toLowerCase().endsWith(".md") && mime.toLowerCase() !== "text/markdown";
   });
   const items: LibraryItem[] = [
-    ...sourceRows.map((row) => ({
-      id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
-      pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
-      origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind),
-    })),
+    ...sourceRows.map(sourceItem),
     ...(documents?.rows ?? []).map((row) => ({
       id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
       createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
+      company: row.company == null ? null : String(row.company), postingTitle: row.posting_title == null ? null : String(row.posting_title),
     })),
   ].sort(newerFirst);
   const hasMore = items.length > page.limit;
@@ -133,6 +134,17 @@ export const getSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
     sha256: String(row.sha256), status: String(row.status), createdAt: ts(row.created_at),
   }, ctx.rid);
+};
+
+export const renameSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const body = await readObject(ctx.request);
+  const fileName = textOf(typeof body.fileName === "string" ? body.fileName.trim() : body.fileName, "fileName", 1, 200);
+  const row = await one(ctx.deps.query,
+    "UPDATE sources SET file_name = $3 WHERE id = $1::uuid AND user_id = $2 RETURNING id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind",
+    [id, ctx.user.id, fileName]);
+  if (!row) throw notFound();
+  return data(200, sourceItem(row), ctx.rid);
 };
 
 const fromBase64 = (text: string): Uint8Array => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
@@ -182,6 +194,7 @@ export const dispatchSources = async (ctx: Ctx, path: string): Promise<Response 
   if (!m) return null;
   if (m[2] && method === "GET") return getSourceContent(ctx, m[1]);
   if (!m[2] && method === "GET") return getSource(ctx, m[1]);
+  if (!m[2] && method === "PATCH") return renameSource(ctx, m[1]);
   if (!m[2] && method === "DELETE") return deleteSource(ctx, m[1]);
   return null;
 };

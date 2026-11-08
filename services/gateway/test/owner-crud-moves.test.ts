@@ -23,6 +23,7 @@ test("source, image and career evidence routes go to core except file parsing", 
   assert.equal(ownerOf("GET", "/api/v1/sources"), "core");
   assert.equal(ownerOf("POST", "/api/v1/sources"), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}`), "core");
+  assert.equal(ownerOf("PATCH", `/api/v1/sources/${ID}`), "core");
   assert.equal(ownerOf("DELETE", `/api/v1/sources/${ID}`), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/content`), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/profile-draft`), "python");
