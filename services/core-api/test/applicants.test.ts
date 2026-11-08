@@ -473,7 +473,7 @@ test("applicant detail returns the snapshot documents and fit score", async () =
   assert.equal(res.status, 200);
   const body = await res.json() as { data: { application: { fitScore: number }; documents: { id: string; title: string; content: string }[] } };
   assert.equal(body.data.application.fitScore, 80);
-  assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}", pageCount: null }]);
+  assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
   const appSql = seen.find((call) => call.sql.includes("applications") && call.sql.includes("fit_score"));
   assert.ok(appSql);
   assert.match(appSql.sql, /gap_analyses/);

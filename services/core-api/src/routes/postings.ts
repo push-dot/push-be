@@ -885,23 +885,33 @@ const fileBytes = (value: unknown): Uint8Array<ArrayBuffer> | null => {
   return out;
 };
 
-const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string; pageCount: number | null }[]> => {
-  const snapshots = "SELECT s.id, s.title, s.content, NULL::int AS page_count, s.created_at FROM application_snapshots s WHERE s.application_id = $1";
-  const files = " UNION ALL SELECT f.id, f.file_name, ''::text, f.page_count, f.created_at FROM application_files f WHERE f.application_id = $1";
-  const order = " ORDER BY created_at, id";
-  let rows;
-  try {
-    rows = await query(ctx.deps.query, snapshots + files + order, [applicationId]);
-  } catch (err) {
-    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
-    rows = await query(ctx.deps.query, snapshots + order, [applicationId]);
-  }
+const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string }[]> => {
+  const rows = await query(ctx.deps.query,
+    "SELECT id, title, content FROM application_snapshots WHERE application_id = $1 ORDER BY created_at, id",
+    [applicationId]);
   return rows.rows.map((row) => ({
     id: String(row.id),
     title: String(row.title ?? ""),
     content: snapshotText(row.content),
-    pageCount: row.page_count == null || row.page_count === "" ? null : Number(row.page_count),
   }));
+};
+
+const applicationFiles = async (ctx: Ctx, applicationId: string): Promise<{ id: string; fileName: string; mimeType: string; size: number; pageCount: number | null }[]> => {
+  try {
+    const rows = await query(ctx.deps.query,
+      "SELECT id, file_name, mime_type, size, page_count FROM application_files WHERE application_id = $1 ORDER BY created_at, id",
+      [applicationId]);
+    return rows.rows.map((row) => ({
+      id: String(row.id),
+      fileName: String(row.file_name ?? ""),
+      mimeType: String(row.mime_type ?? ""),
+      size: Number(row.size ?? 0),
+      pageCount: row.page_count == null ? null : Number(row.page_count),
+    }));
+  } catch (err) {
+    if (isMissingRelation(err) || isUndefinedColumn(err)) return [];
+    throw err;
+  }
 };
 
 const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
@@ -918,9 +928,10 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
     }
   };
-  const [, documents, person] = await Promise.all([
+  const [, documents, files, person] = await Promise.all([
     markSeen(),
     snapshotDocuments(ctx, applicationId),
+    applicationFiles(ctx, applicationId),
     one(ctx.deps.query,
       `SELECT u.display_name, u.email, p.headline, p.careers, p.skills,
          (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
@@ -930,6 +941,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
   return data(200, {
     application: companyApplicationDto(application),
     documents,
+    files,
     applicant: {
       displayName: String(person?.display_name ?? ""),
       email: person?.email == null ? "" : String(person.email),

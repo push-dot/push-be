@@ -292,7 +292,8 @@ export const schemas: Record<string, Schema> = {
   }),
   ApplicantDetail: obj({
     application: ref("PostingsApplicantApplication"),
-    documents: arr(obj({ id: uuid, title: str, content: str, pageCount: { ...nullable(int), description: "Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id" } })),
+    documents: arr(obj({ id: uuid, title: str, content: str })),
+    files: { ...arr(obj({ id: uuid, fileName: str, mimeType: str, size: int, pageCount: nullable(int) })), description: "Files attached at apply time. Download with GET postings/{id}/applicants/{applicationId}/files/{fileId}" },
     applicant: obj({
       displayName: str,
       email: str,

@@ -377,6 +377,33 @@
                   "format": "uuid",
                   "type": "string"
                 },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "content"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "files": {
+            "description": "Files attached at apply time. Download with GET postings/{id}/applicants/{applicationId}/files/{fileId}",
+            "items": {
+              "properties": {
+                "fileName": {
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
                 "pageCount": {
                   "anyOf": [
                     {
@@ -385,17 +412,17 @@
                     {
                       "type": "null"
                     }
-                  ],
-                  "description": "Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id"
+                  ]
                 },
-                "title": {
-                  "type": "string"
+                "size": {
+                  "type": "integer"
                 }
               },
               "required": [
                 "id",
-                "title",
-                "content",
+                "fileName",
+                "mimeType",
+                "size",
                 "pageCount"
               ],
               "type": "object"
@@ -406,6 +433,7 @@
         "required": [
           "application",
           "documents",
+          "files",
           "applicant"
         ],
         "type": "object"

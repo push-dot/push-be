@@ -3754,9 +3754,16 @@ export interface components {
                 content: string;
                 /** Format: uuid */
                 id: string;
-                /** @description Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id */
-                pageCount: number | null;
                 title: string;
+            }[];
+            /** @description Files attached at apply time. Download with GET postings/{id}/applicants/{applicationId}/files/{fileId} */
+            files: {
+                fileName: string;
+                /** Format: uuid */
+                id: string;
+                mimeType: string;
+                pageCount: number | null;
+                size: number;
             }[];
         };
         Application: {

@@ -252,22 +252,23 @@ test("applicant list derives documentKinds from the aggregated documents in one 
 
 const detailQuery = (person: Record<string, unknown>, files: Record<string, unknown>[] = []): Deps["query"] => async (sql) => {
   if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
-  if (sql.includes("application_snapshots")) return { rows: files, rowCount: files.length };
+  if (sql.includes("application_snapshots")) return { rows: [{ id: APP, title: "이력서", content: "{}" }], rowCount: 1 };
+  if (sql.includes("FROM application_files")) return { rows: files, rowCount: files.length };
   if (sql.includes("FROM applications")) return { rows: [{ id: APP, user_id: APPLICANT, stage: "APPLIED", revision: 1, applied_at: NOW }], rowCount: 1 };
   if (sql.includes("FROM users")) return { rows: [{ display_name: "Bea", email: "bea@push.app", ...person }], rowCount: 1 };
   return empty;
 };
 
-test("applicant detail links the hub profile only when it is public and adds file pageCount", async () => {
+test("applicant detail links the hub profile only when it is public and lists attached files apart from documents", async () => {
   resetLimits();
   const seen: Call[] = [];
   const res = await handle(get(`/api/v1/postings/${POSTING}/applicants/${APP}`), env(), deps(authed(seen, detailQuery({ hub_public: true }, [
-    { id: APP, title: "이력서", content: "{}", page_count: null },
-    { id: POSTING, title: "resume.pdf", content: "", page_count: 3 },
+    { id: POSTING, file_name: "resume.pdf", mime_type: "application/pdf", size: 2048, page_count: 3 },
   ]))));
-  const body = await res.json() as { data: { applicant: { hubProfileId: string | null }; documents: { pageCount: number | null }[] } };
+  const body = await res.json() as { data: { applicant: { hubProfileId: string | null }; documents: unknown[]; files: unknown[] } };
   assert.equal(body.data.applicant.hubProfileId, APPLICANT);
-  assert.deepEqual(body.data.documents.map((doc) => doc.pageCount), [null, 3]);
+  assert.deepEqual(body.data.documents, [{ id: APP, title: "이력서", content: "{}" }]);
+  assert.deepEqual(body.data.files, [{ id: POSTING, fileName: "resume.pdf", mimeType: "application/pdf", size: 2048, pageCount: 3 }]);
   const person = seen.find((call) => call.sql.includes("hub_public"));
   assert.ok(person);
   assert.match(person.sql, /COALESCE\(s\.profile_public, true\)/);
