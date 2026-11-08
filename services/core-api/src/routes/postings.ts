@@ -26,6 +26,7 @@ import {
   enumList,
   pushArray,
   anyOf,
+  NOT_DELETING,
   postingDto,
   POSTING_COLS,
   openClause,
@@ -39,6 +40,10 @@ import {
 } from "./recruiting-shared.ts";
 
 const EMPLOYMENT = new Set(["full_time", "contract", "intern", "freelance", "dispatch"]);
+
+const DRAFT_SOURCES = new Set(["AGENT", "MANUAL"]);
+
+const DRAFT_SOURCE_COL = "to_jsonb(p) ->> 'draft_source' AS draft_source";
 
 const CAREER_YEARS = new Set(["0", "1-3", "4-6", "7-9", "10+"]);
 
@@ -69,7 +74,7 @@ function appendPostingFilters(
   params: unknown[],
   url: URL,
   withLocation: boolean,
-  skip: { category?: boolean; career?: boolean; skills?: boolean } = {},
+  skip: { category?: boolean; career?: boolean; skills?: boolean; employment?: boolean } = {},
 ): string {
   const q = url.searchParams.get("q") || "";
   if (q) {
@@ -119,7 +124,7 @@ function appendPostingFilters(
     }
   }
   const employment = enumList(url, "employmentType", EMPLOYMENT, "employmentType");
-  if (employment.length) {
+  if (employment.length && !skip.employment) {
     const i = pushArray(params, employment);
     sql += ` AND p.employment_type = ANY(${anyOf(i)})`;
   }
@@ -138,7 +143,7 @@ const APPLICANT_COUNT_RETURNING =
   "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = job_postings.id) AS applicant_count";
 
 const detailSql = (withStatus: boolean, where: string): string =>
-  `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
+  `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${DRAFT_SOURCE_COL}, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
 
 const postingSort = (url: URL): "latest" | "deadline" | "popular" => {
   const sort = url.searchParams.get("sort") || "latest";
@@ -203,11 +208,15 @@ async function listPostings(ctx: Ctx): Promise<Response> {
 }
 
 async function listPostingLocations(ctx: Ctx): Promise<Response> {
+  const level = ctx.url.searchParams.get("level") ?? "district";
+  if (level !== "district" && level !== "city") throw fieldError("level", "must be district or city");
   const rows = await withPublicStatus(async (withStatus) => {
     const params: unknown[] = [ctx.user.id];
-    let sql = `SELECT p.location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
+    // city groups by the first whitespace token (서울 강남구 -> 서울)
+    const place = level === "city" ? "(regexp_split_to_array(btrim(p.location), '\\s+'))[1]" : "p.location";
+    let sql = `SELECT ${place} AS location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
     sql = appendPostingFilters(sql, params, ctx.url, false);
-    sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
+    sql += level === "city" ? " GROUP BY 1 ORDER BY 2 DESC, 1 ASC" : " GROUP BY p.location ORDER BY count DESC, p.location ASC";
     return query(ctx.deps.query, sql, params);
   });
   return data(200, rows.rows.map((row) => ({ location: String(row.location ?? ""), count: Number(row.count ?? 0) })), ctx.rid);
@@ -237,6 +246,18 @@ const categoryFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
   });
   const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
   return [...JOB_CATEGORIES].map((id) => ({ id, count: counts.get(id) ?? 0 }));
+};
+
+const employmentFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = "SELECT p.employment_type AS id, count(*)::int AS count" + facetWhere(withStatus);
+    sql = appendPostingFilters(sql, params, ctx.url, true, { employment: true });
+    sql += " GROUP BY p.employment_type";
+    return query(ctx.deps.query, sql, params);
+  });
+  const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
+  return [...EMPLOYMENT].map((id) => ({ id, count: counts.get(id) ?? 0 }));
 };
 
 const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
@@ -288,10 +309,10 @@ const listSkills = async (ctx: Ctx): Promise<Response> => {
 };
 
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
-  const [career, category, location, skills] = await Promise.all([
-    careerFacet(ctx), categoryFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
+  const [career, category, employmentType, location, skills] = await Promise.all([
+    careerFacet(ctx), categoryFacet(ctx), employmentFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
   ]);
-  return data(200, { career, category, location, skills }, ctx.rid);
+  return data(200, { career, category, employmentType, location, skills }, ctx.rid);
 };
 
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -368,6 +389,10 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     if (body.status !== "DRAFT" && body.status !== "OPEN") throw fieldError("status", "invalid status");
     postingStatus = body.status;
   }
+  if (body.draftSource != null && !(typeof body.draftSource === "string" && DRAFT_SOURCES.has(body.draftSource))) {
+    throw fieldError("draftSource", "must be AGENT or MANUAL");
+  }
+  const draftSource = body.draftSource == null ? null : String(body.draftSource);
   const account = await verifiedCompany(ctx);
   const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
   if (!company) throw fieldError("company", "company must be 1-200 characters");
@@ -377,17 +402,22 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   const base = [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
     JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
     fields.text, fields.choseong, fields.jamo, now, postingStatus];
-  try {
-    await query(ctx.deps.query,
-      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22,$23)`,
-      [...base, ctx.user.id]);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
-    await query(ctx.deps.query,
-      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
-      base);
+  // Older schemas lack draft_source (0040) and created_by; fall back one column set at a time.
+  const tiers: [string, string, unknown[]][] = [
+    [", created_by, draft_source", ",$23,$24::text", [ctx.user.id, draftSource]],
+    [", created_by", ",$23", [ctx.user.id]],
+    ["", "", []],
+  ];
+  for (const [at, [cols, vals, extra]] of tiers.entries()) {
+    try {
+      await query(ctx.deps.query,
+        `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status${cols})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22${vals})`,
+        [...base, ...extra]);
+      break;
+    } catch (err) {
+      if (!isUndefinedColumn(err) || at === tiers.length - 1) throw err;
+    }
   }
   await enqueueIngest(ctx, { postingId: id });
   return data(201, postingDto({
@@ -395,7 +425,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,
     created_at: now, bookmarked: false, applied: false, description, requirements, work_conditions: workConditions,
     preferred, revision: 1, closed_at: null, status: postingStatus, applicant_count: 0,
-    new_applicant_count: 0, created_by_name: ctx.user.displayName,
+    new_applicant_count: 0, created_by_name: ctx.user.displayName, draft_source: draftSource,
   }, true, true), ctx.rid);
 }
 
@@ -574,6 +604,8 @@ const revisionConflict = (currentRevision: number): HttpError =>
 
 const POSTING_RETURNING = `id, company, title, job_category, image_key, skills, career_min, career_max, location, employment_type, deadline, source_url, created_at, revision, preferred, closed_at, description, requirements, work_conditions, status`;
 
+const DRAFT_SOURCE_RETURNING = "to_jsonb(job_postings) ->> 'draft_source' AS draft_source";
+
 const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
@@ -635,7 +667,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const updated = await one(ctx.deps.query,
     `UPDATE job_postings SET company = $3, title = $4, job_category = $5, career_min = $6, career_max = $7, location = $8, employment_type = $9, description = $10, requirements = $11::jsonb, work_conditions = $12::jsonb, skills = $13::jsonb, preferred = $14::jsonb, image_key = $15, source_url = $16, deadline = $17, search_text = $18, search_choseong = $19, search_jamo = $20, status = $22, revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $21
-     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}`,
+     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}, ${DRAFT_SOURCE_RETURNING}`,
     [id, company.id, next.company, next.title, next.job_category, careerMin, careerMax, next.location, next.employment_type, next.description,
       JSON.stringify(jsonList(next.requirements)), JSON.stringify(jsonObject(next.work_conditions)), JSON.stringify(jsonList(next.skills)), JSON.stringify(jsonList(next.preferred)),
       next.image_key ?? null, next.source_url ?? null, next.deadline ?? null, fields.text, fields.choseong, fields.jamo, expected, next.status ?? "OPEN"]);
@@ -662,7 +694,7 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const updated = await one(ctx.deps.query,
     `UPDATE job_postings SET closed_at = $3, status = 'CLOSED', revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $4 AND closed_at IS NULL
-     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}`,
+     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}, ${DRAFT_SOURCE_RETURNING}`,
     [id, company.id, ctx.now.toISOString(), expected]);
   if (!updated) {
     const again = await one(ctx.deps.query, "SELECT revision FROM job_postings WHERE id = $1 AND company_id = $2", [id, company.id]);
@@ -692,7 +724,7 @@ const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     const unseen = "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = p.id AND (to_jsonb(a) ->> 'company_seen_at') IS NULL) AS new_applicant_count";
     const creator = "(SELECT u.display_name FROM users u WHERE u.id = NULLIF(to_jsonb(p) ->> 'created_by', '')::uuid) AS created_by_name";
-    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${unseen}, ${creator}, ${postingFlags("$1")}` + where;
+    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${unseen}, ${creator}, ${DRAFT_SOURCE_COL}, ${postingFlags("$1")}` + where;
     if (page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -761,12 +793,15 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const params: unknown[] = [postingId];
   const documentsSql = (withFiles: boolean): string => {
     const files = withFiles
-      ? `UNION ALL SELECT f.file_name, f.page_count, f.created_at, f.id FROM application_files f WHERE f.application_id = a.id`
+      ? `UNION ALL SELECT f.file_name, f.page_count, f.created_at, f.id,
+          CASE WHEN lower(f.mime_type) LIKE 'application/pdf%' THEN 'PDF' ELSE 'FILE' END FROM application_files f WHERE f.application_id = a.id`
       : "";
     return `COALESCE((
-      SELECT json_agg(json_build_object('title', d.title, 'pages', d.pages) ORDER BY d.created_at, d.id)
+      SELECT json_agg(json_build_object('title', d.title, 'pages', d.pages, 'kind', d.kind) ORDER BY d.created_at, d.id)
       FROM (
-        SELECT s.title, NULL::int AS pages, s.created_at, s.id FROM application_snapshots s WHERE s.application_id = a.id
+        SELECT s.title, NULL::int AS pages, s.created_at, s.id,
+          CASE WHEN EXISTS (SELECT 1 FROM documents dd WHERE dd.id = s.document_id AND dd.kind = 'HUB_PROFILE') THEN 'PROFILE' END AS kind
+          FROM application_snapshots s WHERE s.application_id = a.id
         ${files}
       ) d
     ), '[]'::json)`;
@@ -806,6 +841,7 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
         avatarUrl: imageUrl(row.avatar_key),
       },
       documents: documentPages(row.documents),
+      documentKinds: documentKinds(row.documents),
       stage: String(row.stage ?? ""),
       appliedAt: ts(row.applied_at) ?? "",
     },
@@ -816,17 +852,26 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 };
 
-const documentPages = (value: unknown): { title: string; pages: number | null }[] => {
+const documentRows = (value: unknown): Record<string, unknown>[] => {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
   }
   if (!Array.isArray(raw)) return [];
-  return raw.map((item) => {
-    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+  return raw.map((item) => (item && typeof item === "object" ? item as Record<string, unknown> : {}));
+};
+
+const documentPages = (value: unknown): { title: string; pages: number | null }[] =>
+  documentRows(value).map((row) => {
     const pages = row.pages == null || row.pages === "" ? null : Number(row.pages);
     return { title: String(row.title ?? ""), pages: pages != null && Number.isFinite(pages) ? pages : null };
   });
+
+const DOCUMENT_KINDS = ["PROFILE", "PDF", "FILE"];
+
+const documentKinds = (value: unknown): string[] => {
+  const present = new Set(documentRows(value).map((row) => String(row.kind ?? "")));
+  return DOCUMENT_KINDS.filter((kind) => present.has(kind));
 };
 
 const fileBytes = (value: unknown): Uint8Array<ArrayBuffer> | null => {
@@ -840,14 +885,22 @@ const fileBytes = (value: unknown): Uint8Array<ArrayBuffer> | null => {
   return out;
 };
 
-const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string }[]> => {
-  const rows = await query(ctx.deps.query,
-    "SELECT id, title, content FROM application_snapshots WHERE application_id = $1 ORDER BY created_at, id",
-    [applicationId]);
+const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id: string; title: string; content: string; pageCount: number | null }[]> => {
+  const snapshots = "SELECT s.id, s.title, s.content, NULL::int AS page_count, s.created_at FROM application_snapshots s WHERE s.application_id = $1";
+  const files = " UNION ALL SELECT f.id, f.file_name, ''::text, f.page_count, f.created_at FROM application_files f WHERE f.application_id = $1";
+  const order = " ORDER BY created_at, id";
+  let rows;
+  try {
+    rows = await query(ctx.deps.query, snapshots + files + order, [applicationId]);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+    rows = await query(ctx.deps.query, snapshots + order, [applicationId]);
+  }
   return rows.rows.map((row) => ({
     id: String(row.id),
     title: String(row.title ?? ""),
     content: snapshotText(row.content),
+    pageCount: row.page_count == null || row.page_count === "" ? null : Number(row.page_count),
   }));
 };
 
@@ -869,8 +922,9 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
     markSeen(),
     snapshotDocuments(ctx, applicationId),
     one(ctx.deps.query,
-      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
-       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
+      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills,
+         (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN user_settings s ON s.user_id = u.id WHERE u.id = $1`,
       [String(application.user_id)]),
   ]);
   return data(200, {
@@ -882,6 +936,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       headline: person?.headline == null ? "" : String(person.headline),
       careers: jsonList(person?.careers),
       skills: jsonList(person?.skills).map(String),
+      hubProfileId: asBool(person?.hub_public) ? String(application.user_id) : null,
     },
   }, ctx.rid);
 };

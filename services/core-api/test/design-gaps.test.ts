@@ -173,5 +173,6 @@ test("applicant list and detail add profile fields and document pages", async ()
     headline: "Backend",
     careers: [{ company: "Acme" }],
     skills: ["Go"],
+    hubProfileId: null,
   });
 });

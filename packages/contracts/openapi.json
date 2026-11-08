@@ -255,6 +255,18 @@
             "format": "date-time",
             "type": "string"
           },
+          "documentKinds": {
+            "description": "Distinct kinds in fixed order: PROFILE (a hub profile snapshot), PDF (an attached PDF), FILE (any other attached file)",
+            "items": {
+              "enum": [
+                "PROFILE",
+                "PDF",
+                "FILE"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
           "documents": {
             "items": {
               "properties": {
@@ -300,6 +312,7 @@
           "applicationId",
           "applicant",
           "documents",
+          "documentKinds",
           "stage",
           "appliedAt"
         ],
@@ -322,6 +335,18 @@
               "headline": {
                 "type": "string"
               },
+              "hubProfileId": {
+                "anyOf": [
+                  {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null"
+              },
               "skills": {
                 "items": {
                   "type": "string"
@@ -334,7 +359,8 @@
               "email",
               "headline",
               "careers",
-              "skills"
+              "skills",
+              "hubProfileId"
             ],
             "type": "object"
           },
@@ -351,6 +377,17 @@
                   "format": "uuid",
                   "type": "string"
                 },
+                "pageCount": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id"
+                },
                 "title": {
                   "type": "string"
                 }
@@ -358,7 +395,8 @@
               "required": [
                 "id",
                 "title",
-                "content"
+                "content",
+                "pageCount"
               ],
               "type": "object"
             },
@@ -6310,6 +6348,21 @@
               "description": {
                 "type": "string"
               },
+              "draftSource": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AGENT",
+                      "MANUAL"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed."
+              },
               "newApplicantCount": {
                 "description": "Applicants the company has not opened yet",
                 "type": "integer"
@@ -6473,6 +6526,21 @@
                   }
                 ]
               },
+              "draftSource": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AGENT",
+                      "MANUAL"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed."
+              },
               "newApplicantCount": {
                 "description": "Applicants the company has not opened yet",
                 "type": "integer"
@@ -6490,7 +6558,8 @@
               "status",
               "applicantCount",
               "newApplicantCount",
-              "createdBy"
+              "createdBy",
+              "draftSource"
             ],
             "type": "object"
           }
@@ -23950,7 +24019,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).",
+        "description": "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy, draftSource).",
         "operationId": "postPostings",
         "parameters": [
           {
@@ -23997,6 +24066,21 @@
                     "maxLength": 50000,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "draftSource": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "AGENT",
+                          "MANUAL"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Who wrote the draft. Create only; null or omitted stores null. Anything else is 400."
                   },
                   "employmentType": {
                     "enum": [
@@ -24137,7 +24221,7 @@
     },
     "/api/v1/postings/facets": {
       "get": {
-        "description": "Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.",
+        "description": "Each facet ignores its own filter (career ignores careerYears, category ignores category, employmentType ignores employmentType, skills ignores skills); location ignores location. category and employmentType list every value including zero counts, location and skills only non-zero ones.",
         "operationId": "getPostingsFacets",
         "parameters": [
           {
@@ -24240,6 +24324,24 @@
                           },
                           "type": "array"
                         },
+                        "employmentType": {
+                          "items": {
+                            "properties": {
+                              "count": {
+                                "type": "integer"
+                              },
+                              "id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "count"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "location": {
                           "items": {
                             "properties": {
@@ -24280,6 +24382,7 @@
                       "required": [
                         "career",
                         "category",
+                        "employmentType",
                         "location",
                         "skills"
                       ],
@@ -24314,6 +24417,7 @@
     },
     "/api/v1/postings/locations": {
       "get": {
+        "description": "level=city groups by the first whitespace-separated token of location (\"서울 강남구\" counts under \"서울\") with summed counts, ordered by count desc then name. Omitted or level=district lists each full location. Any other level is 400.",
         "operationId": "getPostingsLocations",
         "parameters": [
           {
@@ -24359,6 +24463,19 @@
             "required": false,
             "schema": {
               "description": "Comma-separated employment types: full_time, contract, intern, freelance, dispatch",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Grouping level; default district",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "enum": [
+                "district",
+                "city"
+              ],
               "type": "string"
             }
           }
@@ -24518,6 +24635,21 @@
                     "maxLength": 50000,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "draftSource": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "AGENT",
+                          "MANUAL"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Who wrote the draft. Create only; null or omitted stores null. Anything else is 400."
                   },
                   "employmentType": {
                     "enum": [

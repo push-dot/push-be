@@ -2859,7 +2859,7 @@ export interface paths {
         put?: never;
         /**
          * Create a posting
-         * @description Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).
+         * @description Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy, draftSource).
          */
         post: operations["postPostings"];
         delete?: never;
@@ -2877,7 +2877,7 @@ export interface paths {
         };
         /**
          * Filter facet counts for open postings
-         * @description Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.
+         * @description Each facet ignores its own filter (career ignores careerYears, category ignores category, employmentType ignores employmentType, skills ignores skills); location ignores location. category and employmentType list every value including zero counts, location and skills only non-zero ones.
          */
         get: operations["getPostingsFacets"];
         put?: never;
@@ -2895,7 +2895,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Open posting counts by location */
+        /**
+         * Open posting counts by location
+         * @description level=city groups by the first whitespace-separated token of location ("서울 강남구" counts under "서울") with summed counts, ordered by count desc then name. Omitted or level=district lists each full location. Any other level is 400.
+         */
         get: operations["getPostingsLocations"];
         put?: never;
         post?: never;
@@ -3723,6 +3726,8 @@ export interface components {
             applicationId: string;
             /** Format: date-time */
             appliedAt: string;
+            /** @description Distinct kinds in fixed order: PROFILE (a hub profile snapshot), PDF (an attached PDF), FILE (any other attached file) */
+            documentKinds: ("PROFILE" | "PDF" | "FILE")[];
             documents: {
                 pages: number | null;
                 title: string;
@@ -3736,6 +3741,8 @@ export interface components {
                 displayName: string;
                 email: string;
                 headline: string;
+                /** @description The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null */
+                hubProfileId: string | null;
                 skills: string[];
             };
             application: components["schemas"]["PostingsApplicantApplication"];
@@ -3743,6 +3750,8 @@ export interface components {
                 content: string;
                 /** Format: uuid */
                 id: string;
+                /** @description Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id */
+                pageCount: number | null;
                 title: string;
             }[];
         };
@@ -5195,6 +5204,8 @@ export interface components {
                 displayName: string;
             } | null;
             description: string;
+            /** @description Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed. */
+            draftSource?: ("AGENT" | "MANUAL") | null;
             /** @description Applicants the company has not opened yet */
             newApplicantCount?: number;
             preferred: string[];
@@ -5229,6 +5240,8 @@ export interface components {
             createdBy: {
                 displayName: string;
             } | null;
+            /** @description Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed. */
+            draftSource: ("AGENT" | "MANUAL") | null;
             /** @description Applicants the company has not opened yet */
             newApplicantCount: number;
             /** @enum {string} */
@@ -11188,6 +11201,8 @@ export interface operations {
                     company?: string;
                     deadline?: string | null;
                     description: string;
+                    /** @description Who wrote the draft. Create only; null or omitted stores null. Anything else is 400. */
+                    draftSource?: ("AGENT" | "MANUAL") | null;
                     /** @enum {string} */
                     employmentType: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
                     /** @description Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .. */
@@ -11260,6 +11275,10 @@ export interface operations {
                                 count: number;
                                 id: string;
                             }[];
+                            employmentType: {
+                                count: number;
+                                id: string;
+                            }[];
                             location: {
                                 count: number;
                                 id: string;
@@ -11284,6 +11303,8 @@ export interface operations {
                 skills?: string;
                 careerYears?: string;
                 employmentType?: string;
+                /** @description Grouping level; default district */
+                level?: "district" | "city";
             };
             header?: never;
             path?: never;
@@ -11352,6 +11373,8 @@ export interface operations {
                     company?: string;
                     deadline?: string | null;
                     description?: string;
+                    /** @description Who wrote the draft. Create only; null or omitted stores null. Anything else is 400. */
+                    draftSource?: ("AGENT" | "MANUAL") | null;
                     /** @enum {string} */
                     employmentType?: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
                     expectedRevision: number;

@@ -172,6 +172,7 @@ export function postingDto(row: Record<string, unknown>, detail: boolean, member
     dto.newApplicantCount = Number(row.new_applicant_count ?? 0);
     const createdName = row.created_by_name == null || row.created_by_name === "" ? "" : String(row.created_by_name);
     dto.createdBy = createdName ? { displayName: createdName } : null;
+    dto.draftSource = row.draft_source == null || row.draft_source === "" ? null : String(row.draft_source);
   } else if (row.status != null && row.status !== "") {
     dto.status = String(row.status);
   }

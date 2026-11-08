@@ -43,6 +43,7 @@ const postingWriteFields: Record<string, Schema> = {
   sourceUrl,
   deadline: nullable(date),
   status: enumOf("DRAFT", "OPEN"),
+  draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Create only; null or omitted stores null. Anything else is 400." },
 };
 
 export const routes: Route[] = [
@@ -62,7 +63,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings", {
     tag: "postings",
     summary: "Create a posting",
-    description: "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).",
+    description: "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy, draftSource).",
     body: body(obj(postingWriteFields, ["title", "jobCategory", "careerMin", "location", "employmentType", "description"])),
     responses: { 201: ok(ref("PostingDetail"), "Created") },
   }),
@@ -70,9 +71,9 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Filter facet counts for open postings",
     auth: "optional",
-    description: "Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.",
+    description: "Each facet ignores its own filter (career ignores careerYears, category ignores category, employmentType ignores employmentType, skills ignores skills); location ignores location. category and employmentType list every value including zero counts, location and skills only non-zero ones.",
     params: filterParams(true),
-    responses: { 200: ok(obj({ career: arr(facetItem), category: arr(facetItem), location: arr(facetItem), skills: arr(facetItem) })) },
+    responses: { 200: ok(obj({ career: arr(facetItem), category: arr(facetItem), employmentType: arr(facetItem), location: arr(facetItem), skills: arr(facetItem) })) },
   }),
   get("core", "/api/v1/skills", {
     tag: "postings",
@@ -89,7 +90,8 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Open posting counts by location",
     auth: "optional",
-    params: filterParams(false),
+    description: "level=city groups by the first whitespace-separated token of location (\"서울 강남구\" counts under \"서울\") with summed counts, ordered by count desc then name. Omitted or level=district lists each full location. Any other level is 400.",
+    params: [...filterParams(false), query("level", enumOf("district", "city"), "Grouping level; default district")],
     responses: { 200: okList(obj({ location: str, count: int })) },
   }),
   get("core", "/api/v1/postings/{id}", {
@@ -220,6 +222,7 @@ const memberFields: Record<string, Schema> = {
   applicantCount: int,
   newApplicantCount: { type: "integer", description: "Applicants the company has not opened yet" },
   createdBy: nullable(obj({ displayName: str })),
+  draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed." },
 };
 
 export const schemas: Record<string, Schema> = {
@@ -269,6 +272,7 @@ export const schemas: Record<string, Schema> = {
       avatarUrl: nullable(str),
     }),
     documents: arr(obj({ title: str, pages: nullable(int) })),
+    documentKinds: { type: "array", items: enumOf("PROFILE", "PDF", "FILE"), description: "Distinct kinds in fixed order: PROFILE (a hub profile snapshot), PDF (an attached PDF), FILE (any other attached file)" },
     stage: applicationStage,
     appliedAt: dateTime,
   }),
@@ -288,13 +292,14 @@ export const schemas: Record<string, Schema> = {
   }),
   ApplicantDetail: obj({
     application: ref("PostingsApplicantApplication"),
-    documents: arr(obj({ id: uuid, title: str, content: str })),
+    documents: arr(obj({ id: uuid, title: str, content: str, pageCount: { ...nullable(int), description: "Pages of an attached file; null for snapshots and when unknown. Attached files are listed after the snapshots with empty content; id is the file id" } })),
     applicant: obj({
       displayName: str,
       email: str,
       headline: str,
       careers: arr(any),
       skills: arr(str),
+      hubProfileId: { ...nullable(uuid), description: "The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null" },
     }),
   }),
   SearchResult: {
