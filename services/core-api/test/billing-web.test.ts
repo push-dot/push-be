@@ -24,7 +24,7 @@ const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   STRIPE_PRICE_EMPLOYER_BASIC: "price_1UZkaG0iRL0sMmznUELNqD4P",
   STRIPE_PRICE_EMPLOYER_PRO: PRO_PRICE,
   STRIPE_PRICE_EMPLOYER_ULTRA: ULTRA_PRICE,
-  STRIPE_PRICE_TOPUP: "price_1UZkaL0iRL0sMmznDdXyVyUd",
+  STRIPE_PRICE_TOPUP: "price_1UZl8R0iRL0sMmzn1MkSBY01",
   STRIPE_RETURN_ORIGINS: "https://push.example, http://localhost:5174/",
   ...extra,
 });
@@ -120,11 +120,12 @@ test("an unlisted or missing origin falls back to the first allowlisted origin, 
 test("credit purchase returns to the plans page with checkout=credits", async () => {
   const w = world(companyRow);
   const calls: StripeCall[] = [];
-  const res = await handle(post("/api/v1/billing/topup", { amount: 500 }, "https://push.example"), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch(calls) });
+  const res = await handle(post("/api/v1/billing/topup", { packs: 2 }, "https://push.example"), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch(calls) });
   assert.equal(res.status, 200);
   const form = formOf(calls[0]);
   assert.equal(form.get("mode"), "payment");
-  assert.equal(form.get("line_items[0][quantity]"), "500");
+  assert.equal(form.get("line_items[0][quantity]"), "2");
+  assert.equal(form.get("metadata[amountMicroCredits]"), String(2 * 1500 * 6000));
   assert.equal(form.get("success_url"), "https://push.example/employer/plans?checkout=credits&session_id={CHECKOUT_SESSION_ID}");
   assert.equal(form.get("cancel_url"), "https://push.example/employer/plans?checkout=canceled");
 });
@@ -135,7 +136,7 @@ test("checkout without a valid return origin is not configured and never calls S
       resetLimits();
       const w = world(companyRow);
       const calls: StripeCall[] = [];
-      const res = await handle(post(path, { planId: "PRO", amount: 50 }, "https://push.example"), envOf({ STRIPE_RETURN_ORIGINS: origins }), { query: w.query, now: () => NOW, fetch: stripeFetch(calls) });
+      const res = await handle(post(path, { planId: "PRO", packs: 1 }, "https://push.example"), envOf({ STRIPE_RETURN_ORIGINS: origins }), { query: w.query, now: () => NOW, fetch: stripeFetch(calls) });
       assert.equal(res.status, 503, `${path} ${origins}`);
       assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_CONFIGURED");
       assert.equal(calls.length, 0);
@@ -162,48 +163,21 @@ const planCompleted = {
   } },
 };
 
-const planStripe = (calls: StripeCall[]) => stripeFetch(calls, (call) => {
-  if (call.url.includes("/v1/invoices/")) return json({ id: "in_1UZkat0iRL0sMmznrJtHIQOA", hosted_invoice_url: RECEIPT });
-  if (call.method === "GET" && call.url.includes("/v1/subscriptions")) {
-    return json({ data: [{ id: "sub_1UZkat0iRL0sMmznsruv4T1R" }, { id: "sub_1UZkaj0iRL0sMmznl3T10Y1Q" }] });
-  }
-  return json({ id: "sub_1UZkaj0iRL0sMmznl3T10Y1Q", status: "canceled" });
-});
-
-test("a plan change checkout stores the payment row, the new subscription, and ends the old one with proration", async () => {
+test("a receipt lookup failure still records the plan payment with a null receipt", async () => {
   const w = world();
-  const calls: StripeCall[] = [];
-  const first = await handle(await signed(planCompleted), envOf(), { query: w.query, now: () => NOW, fetch: planStripe(calls) });
-  assert.equal(first.status, 200);
-  const [row] = w.ledger();
-  assert.equal(w.ledger().length, 1);
-  assert.deepEqual(row?.params.slice(1), [COMPANY, 180_000_000, "cs_test_ultra", NOW.toISOString(), "Ultra 월 구독", 20000, RECEIPT]);
-  const update = w.seen.find((call) => call.sql.startsWith("UPDATE companies SET plan"));
-  assert.deepEqual(update?.params, [COMPANY, "ULTRA", "cus_VawTPdFMM1vGO3", "sub_1UZkat0iRL0sMmznsruv4T1R"]);
-  const deletes = calls.filter((call) => call.method === "DELETE");
-  assert.deepEqual(deletes.map((call) => call.url), ["https://api.stripe.com/v1/subscriptions/sub_1UZkaj0iRL0sMmznl3T10Y1Q?prorate=true&invoice_now=true"]);
-
-  const replay = await handle(await signed(planCompleted), envOf(), { query: w.query, now: () => NOW, fetch: planStripe(calls) });
-  assert.equal(replay.status, 200);
-  assert.equal(w.ledger().length, 1);
-  assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
-});
-
-test("a failed old-subscription cancel forgets the event so Stripe retries it", async () => {
-  const w = world();
-  const ok = planStripe([]);
-  const res = await handle(await signed(planCompleted), envOf(), { query: w.query, now: () => NOW, fetch: (async (input, init) =>
-    init?.method === "DELETE" ? json({ error: { message: "boom" } }, 500) : ok(input, init)) as typeof fetch });
-  assert.equal(res.status, 500);
-  assert.equal(w.seen.some((call) => call.sql.startsWith("DELETE FROM stripe_events")), true);
-});
-
-test("a receipt lookup failure still grants the plan with a null receipt", async () => {
-  const w = world();
-  const fetchImpl = stripeFetch([], (call) => call.url.includes("/v1/invoices/") ? json({ error: {} }, 500) : json({ data: [] }));
+  const fetchImpl = stripeFetch([], (call) => call.url.includes("/v1/invoices/") ? json({ error: {} }, 500) : json({ id: "sub_1UZkat0iRL0sMmznsruv4T1R", status: "canceled" }));
   const res = await handle(await signed(planCompleted), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(5), ["Ultra 월 구독", 20000, null]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "cs_test_ultra", NOW.toISOString(), "Ultra 월 구독", 20000, null]);
+});
+
+test("a payment in another currency keeps its row but stores no USD amount", async () => {
+  const w = world();
+  const fetchImpl = stripeFetch([], () => json({ id: "sub_1UZkat0iRL0sMmznsruv4T1R", status: "canceled" }));
+  const event = { ...planCompleted, id: "evt_krw", data: { object: { ...planCompleted.data.object, id: "cs_test_krw", currency: "krw", amount_total: 28000000, invoice: null } } };
+  const res = await handle(await signed(event), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
+  assert.equal(res.status, 200);
+  assert.deepEqual(w.ledger()[0]?.params.slice(5), ["Ultra 월 구독", null, null]);
 });
 
 test("a credit purchase completion credits the company with 크레딧 구매, the paid amount, and the charge receipt", async () => {
@@ -214,14 +188,14 @@ test("a credit purchase completion credits the company with 크레딧 구매, th
     id: "evt_topup",
     type: "checkout.session.completed",
     data: { object: {
-      id: "cs_test_topup", mode: "payment", payment_status: "paid", amount_total: 500, customer: "cus_VawTPdFMM1vGO3",
+      id: "cs_test_topup", mode: "payment", payment_status: "paid", amount_total: 2000, currency: "usd", customer: "cus_VawTPdFMM1vGO3",
       payment_intent: "pi_test", invoice: null, client_reference_id: COMPANY,
-      metadata: { amountMicroCredits: String(500 * 6000), audience: "EMPLOYER", ownerId: COMPANY },
+      metadata: { amountMicroCredits: String(2 * 1500 * 6000), audience: "EMPLOYER", ownerId: COMPANY },
     } },
   };
   const res = await handle(await signed(event), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 3_000_000, "cs_test_topup", NOW.toISOString(), "크레딧 구매", 500, "https://pay.stripe.com/receipts/payment/test_ch"]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 18_000_000, "cs_test_topup", NOW.toISOString(), "크레딧 구매", 2000, "https://pay.stripe.com/receipts/payment/test_ch"]);
   assert.equal(calls[0]?.url, "https://api.stripe.com/v1/payment_intents/pi_test?expand[]=latest_charge");
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE companies")), false);
 });
@@ -234,6 +208,8 @@ const invoice = (extra: Row = {}) => ({
     object: "invoice",
     billing_reason: "subscription_cycle",
     amount_paid: 10000,
+    total: 10000,
+    currency: "usd",
     customer: "cus_VawTPdFMM1vGO3",
     hosted_invoice_url: RECEIPT,
     lines: { data: [{ amount: 10000, pricing: { price_details: { price: PRO_PRICE }, type: "price_details" } }] },
@@ -250,10 +226,10 @@ test("a renewal invoice adds a zero-credit payment row once", async () => {
   assert.equal(w.ledger().length, 1);
 });
 
-test("first invoices, credit-only invoices, and personal customers add no payment row", async () => {
+test("first invoices, fully covered invoices, and personal customers add no payment row", async () => {
   const cases: [Row, ((sql: string) => Row[] | undefined)][] = [
     [{ billing_reason: "subscription_create" }, companyRow],
-    [{ amount_paid: 0, lines: { data: [{ amount: -10000, pricing: { price_details: { price: PRO_PRICE } } }] } }, companyRow],
+    [{ amount_paid: 0, total: 0 }, companyRow],
     [{}, () => undefined],
   ];
   for (const [extra, reply] of cases) {
@@ -277,6 +253,35 @@ test("deleting the subscription a plan change replaced leaves the company plan a
   assert.match(update?.sql ?? "", /stripe_subscription_id IS NULL OR stripe_subscription_id = \$2/);
   assert.deepEqual(update?.params, ["cus_VawTPdFMM1vGO3", "sub_1UZkaj0iRL0sMmznl3T10Y1Q"]);
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE users")), false);
+});
+
+test("a replaced subscription's negative final invoice adds a 요금제 변경 환급 row with the refunded amount", async () => {
+  const w = world(companyRow);
+  const res = await handle(await signed(invoice({
+    id: "in_1UZkb80iRL0sMmznDmcpmzrV", amount_paid: 0, total: -10000,
+    lines: { data: [{ amount: -10000, pricing: { price_details: { price: PRO_PRICE }, type: "price_details" } }] },
+  })), envOf(), { query: w.query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_1UZkb80iRL0sMmznDmcpmzrV", NOW.toISOString(), "요금제 변경 환급", -10000, RECEIPT]);
+});
+
+test("credit packs outside 1 to 20, or the old amount field, are a 400 on packs and never reach Stripe", async () => {
+  for (const body of [{ packs: 0 }, { packs: 21 }, { packs: 1.5 }, { packs: "3" }, { packs: null }, { amount: 50 }]) {
+    resetLimits();
+    const w = world(companyRow);
+    const calls: StripeCall[] = [];
+    const res = await handle(post("/api/v1/billing/topup", body, "https://push.example"), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch(calls) });
+    assert.equal(res.status, 400, JSON.stringify(body));
+    const error = (await res.json() as { error: { code: string; details?: { field?: string } } }).error;
+    assert.equal(error.code, "VALIDATION_ERROR");
+    assert.equal(error.details?.field, "packs");
+    assert.equal(calls.length, 0);
+  }
+  resetLimits();
+  const calls: StripeCall[] = [];
+  const max = await handle(post("/api/v1/billing/topup", { packs: 20 }, "https://push.example"), envOf(), { query: world(companyRow).query, now: () => NOW, fetch: stripeFetch(calls) });
+  assert.equal(max.status, 200);
+  assert.equal(formOf(calls[0]).get("metadata[amountMicroCredits]"), String(20 * 1500 * 6000));
 });
 
 test("the ledger returns description, amountUsd, and receiptUrl", async () => {

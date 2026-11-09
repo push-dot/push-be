@@ -227,15 +227,15 @@ export const routes: Route[] = [
   post("core", "/api/v1/billing/checkout", {
     tag: "billing",
     summary: "Create Stripe subscription checkout session",
-    description: "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. Stripe returns the buyer to <origin>/employer/plans?checkout=success&session_id=<id>, or ?checkout=canceled. <origin> is the request Origin when it is in STRIPE_RETURN_ORIGINS, else the first entry. A paid plan change ends the earlier subscription with a prorated credit. 503 NOT_CONFIGURED when the Stripe key, the plan price, or the return origin is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.",
+    description: "Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. Stripe returns the buyer to <origin>/employer/plans?checkout=success&session_id=<id>, or ?checkout=canceled. <origin> is the request Origin when it is in STRIPE_RETURN_ORIGINS, else the first entry. The webhook acts only on a live subscription of that plan's price and never moves the company to an older subscription than it has. A paid plan change ends every older subscription: with a prorated credit to the Stripe balance on an upgrade, without one when this month's plan credits already exceed the new plan (a downgrade). Plan credits are granted once per calendar month at the highest plan of the month: an upgrade adds only the difference, a downgrade adds nothing. 503 NOT_CONFIGURED when the Stripe key, the plan price, or the return origin is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.",
     body: body(obj({ planId: enumOf("PRO", "ULTRA", "BASIC") })),
     responses: { 200: ok(obj({ url: str, expiresAt: nullable(dateTime) })) },
   }),
   post("core", "/api/v1/billing/topup", {
     tag: "billing",
     summary: "Create Stripe credit top-up checkout session",
-    description: "EMPLOYER: company ADMIN only, credits go to the company. Anyone else gets 403. Returns to <origin>/employer/plans?checkout=credits&session_id=<id>, or ?checkout=canceled, with <origin> chosen as for checkout. 503 NOT_CONFIGURED when the Stripe key, the top-up price, or the return origin is missing. 502 PROVIDER_ERROR when Stripe fails.",
-    body: body(obj({ amount: { type: "integer", minimum: 1, maximum: 100000, description: "Credit units (quantity of the top-up price)" } })),
+    description: "EMPLOYER: company ADMIN only, credits go to the company. Anyone else gets 403. One pack is 1,500 credits for $10 USD; buy 1 to 20 packs (400 VALIDATION_ERROR, field packs, otherwise). Returns to <origin>/employer/plans?checkout=credits&session_id=<id>, or ?checkout=canceled, with <origin> chosen as for checkout. 503 NOT_CONFIGURED when the Stripe key, the top-up price, or the return origin is missing. 502 PROVIDER_ERROR when Stripe fails.",
+    body: body(obj({ packs: { type: "integer", minimum: 1, maximum: 20, description: "Number of 1,500-credit packs ($10 each)" } })),
     responses: { 200: urlOnly },
   }),
   post("core", "/api/v1/billing/portal", {
@@ -259,7 +259,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/billing/ledger", {
     tag: "billing",
     summary: "Credit ledger",
-    description: "EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts, credit purchases, and renewals (renewals carry 0 credits; the month's credits are a separate row).",
+    description: "EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts and renewals (0 credits), credit purchases (the pack credits), and 요금제 변경 환급 refunds (negative amountUsd, credited to the Stripe balance). The month's plan credits are separate rows with referenceId monthly:YYYY-MM:BASIC|PRO|ULTRA. A 이전 구독 해지 실패 row (no amountUsd) means a replaced subscription could not be canceled yet.",
     params: [...pageParams],
     responses: { 200: okPage(ref("LedgerEntry")) },
   }),
@@ -504,8 +504,8 @@ export const schemas: Record<string, Schema> = {
     balanceAfter: int,
     referenceId: nullable(str),
     createdAt: dateTime,
-    description: { ...nullable(str), description: "Payment label, e.g. Pro 월 구독 or 크레딧 구매. Null for non-payment rows and rows written before 2026-11." },
-    amountUsd: { ...nullable({ type: "number" }), description: "Amount paid in USD (cents / 100). Null when the row is not a Stripe payment." },
+    description: { ...nullable(str), description: "Payment label: {Plan} 월 구독, 크레딧 구매, 요금제 변경 환급, or the 이전 구독 해지 실패 note. Null for credit grants and rows written before 2026-11." },
+    amountUsd: { ...nullable({ type: "number" }), description: "Amount in USD (cents / 100), negative for a refund to the Stripe balance. Null when the row is not a Stripe payment or the payment was not in USD." },
     receiptUrl: { ...nullable(str), description: "Stripe hosted invoice or charge receipt. Null when unknown." },
   }),
   AccountAiUsage: obj({

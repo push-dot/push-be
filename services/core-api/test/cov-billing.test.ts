@@ -122,7 +122,7 @@ test("billing ledger: employer ledger reads the company rows only; no company is
 test("billing topup: employer admin buys for the company using the company's stripe customer", async () => {
   const w = world({ employer: true, role: "ADMIN" }, (sql) => sql.startsWith("SELECT stripe_customer_id FROM companies") ? [{ stripe_customer_id: "cus_co" }] : undefined);
   const calls: { url: string; method: string; body: string }[] = [];
-  const res = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 3 }), envOf(),
+  const res = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 3 }), envOf(),
     { query: w.query, now: () => NOW, fetch: stripeFetch(calls, () => json({ url: "https://pay.example/topup" })) }));
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, { url: "https://pay.example/topup" });
@@ -136,14 +136,14 @@ test("billing topup: employer admin buys for the company using the company's str
 
 test("billing topup: employer member is forbidden and a vanished company is 404", async () => {
   const noFetch = (() => { throw new Error("must not call stripe"); }) as unknown as typeof fetch;
-  const member = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: "MEMBER" }).query, now: () => NOW, fetch: noFetch }));
+  const member = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: "MEMBER" }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(member.status, 403);
   assert.equal(member.body.error?.code, "FORBIDDEN");
   resetLimits();
-  const orphan = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: null }).query, now: () => NOW, fetch: noFetch }));
+  const orphan = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: null }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(orphan.status, 404);
   resetLimits();
-  const gone = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: "ADMIN" }).query, now: () => NOW, fetch: noFetch }));
+  const gone = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: "ADMIN" }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(gone.status, 404);
 });
 

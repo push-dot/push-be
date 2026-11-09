@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, ensureMonthlyGrant, grantMicro, iapTopupMicro } from "../billing/credits.ts";
+import { DISPLAY_MICRO, ensureMonthlyGrant, grantedThisMonth, grantMicro, iapTopupMicro } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -10,7 +10,10 @@ import type { CoreEnv, Ctx } from "../types.ts";
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
 const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
 const TOLERANCE = 300;
-const MAX_TOPUP = 100_000;
+const PACK_MICRO = 1500 * DISPLAY_MICRO;
+const MAX_PACKS = 20;
+const LIVE = new Set(["active", "trialing"]);
+const CANCELLABLE = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -72,13 +75,15 @@ type Payment = { description: string | null; amountUsdCents: number | null; rece
 
 const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
     [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl]);
 };
 
 const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
 const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
 const TOPUP_DESCRIPTION = "크레딧 구매";
+const REFUND_DESCRIPTION = "요금제 변경 환급";
+const CANCEL_FAILED_DESCRIPTION = "이전 구독 해지 실패";
 
 // Allowlist, never echo the Origin header: success_url must not carry an attacker-chosen origin.
 const returnOrigin = (ctx: Ctx): string => {
@@ -173,6 +178,9 @@ async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchPa
   return body;
 }
 
+const subscriptionsOf = (list: Record<string, unknown>): Record<string, unknown>[] =>
+  Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
+
 const employerPrice = (env: CoreEnv, planId: string): string => {
   if (planId === "BASIC") return env.STRIPE_PRICE_EMPLOYER_BASIC || "";
   if (planId === "PRO") return env.STRIPE_PRICE_EMPLOYER_PRO || "";
@@ -226,8 +234,9 @@ export async function cancelSubscriptions(ctx: Ctx, customerId?: string): Promis
   try {
     // Without a status filter Stripe lists every subscription that is not already canceled.
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
-    const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
-    for (const sub of subs) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+    for (const sub of subscriptionsOf(list)) {
+      if (CANCELLABLE.has(String(sub.status))) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+    }
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "stripe subscription cancel failed");
   }
@@ -374,14 +383,56 @@ const chargeReceipt = (ctx: Ctx, intent: unknown): Promise<string | null> => typ
     (body) => (body.latest_charge as { receipt_url?: unknown } | null | undefined)?.receipt_url)
   : Promise.resolve(null);
 
-// A plan change is a new Checkout subscription; end the old one with a prorated credit so the company never pays twice.
-async function cancelReplaced(ctx: Ctx, customer: string, keep: string): Promise<void> {
-  const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
-  const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
-  for (const sub of subs) {
-    if (String(sub.id) === keep) continue;
-    await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)) + "?prorate=true&invoice_now=true");
+const usdCents = (obj: Record<string, unknown>, cents: number | null): number | null => {
+  if (cents == null || obj.currency === "usd") return cents;
+  console.error(`billing: ${String(obj.id)} paid in ${String(obj.currency)}, amount not stored`);
+  return null;
+};
+
+const priceOf = (sub: Record<string, unknown>): string =>
+  ((sub.items as { data?: { price?: { id?: string } }[] } | undefined)?.data?.[0]?.price?.id) || "";
+
+// A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number }, refund: boolean): Promise<void> {
+  for (const customer of customers) {
+    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
+    for (const sub of subscriptionsOf(list)) {
+      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !(Number(sub.created) < keep.created)) continue;
+      try {
+        await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)) + (refund ? "?prorate=true&invoice_now=true" : ""));
+      } catch (err) {
+        console.error(`billing: company ${companyId} still has replaced subscription ${String(sub.id)}, cancel failed`);
+        await companyLedger(ctx, companyId, 0, "cancel_failed:" + String(sub.id), { description: CANCEL_FAILED_DESCRIPTION, amountUsdCents: null, receiptUrl: null });
+        throw err;
+      }
+    }
   }
+}
+
+// Acts on a live subscription of the paid plan only, and never moves the company to an older one than it has,
+// so a late or replayed checkout can neither point the company at an ended subscription nor cancel the live one.
+async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | "PRO" | "ULTRA", customer: string, subscriptionId: string): Promise<void> {
+  if (!customer || !subscriptionId) return;
+  const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+  if (!LIVE.has(String(sub.status)) || priceOf(sub) !== employerPrice(ctx.env, planId) || sub.customer !== customer) {
+    console.error(`billing: company ${companyId} checkout subscription ${subscriptionId} not adopted (${String(sub.status)})`);
+    return;
+  }
+  const before = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [companyId]);
+  await query(ctx.deps.query,
+    "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz WHERE id = $1 AND (stripe_subscription_created_at IS NULL OR stripe_subscription_created_at <= $5::timestamptz)",
+    [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString()]);
+  const kept = await one(ctx.deps.query, "SELECT plan, stripe_subscription_id, stripe_subscription_created_at FROM companies WHERE id = $1", [companyId]);
+  const keepPlan = employerPlanOf(kept?.plan);
+  const keepId = String(kept?.stripe_subscription_id ?? "");
+  if (!keepPlan || !keepId) return;
+  if (keepId === subscriptionId) await ensureMonthlyGrant(ctx.deps.query, { audience: "EMPLOYER", plan: planId, ownerId: companyId, now: ctx.now });
+  // Unused time is refunded only while this month's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
+  const refund = await grantedThisMonth(ctx.deps.query, companyId, ctx.now) <= grantMicro("EMPLOYER", keepPlan);
+  const previous = before?.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
+  const customers = previous && previous !== customer ? [customer, previous] : [customer];
+  const keepCreated = new Date(kept?.stripe_subscription_created_at as string).getTime() / 1000;
+  await cancelReplaced(ctx, companyId, customers, { id: keepId, created: keepCreated }, refund);
 }
 
 const linePlan = (env: CoreEnv, obj: Record<string, unknown>): "BASIC" | "PRO" | "ULTRA" | null => {
@@ -395,18 +446,21 @@ const linePlan = (env: CoreEnv, obj: Record<string, unknown>): "BASIC" | "PRO" |
   return null;
 };
 
-// Renewals are payment rows only: the month's credits come from ensureMonthlyGrant. The first invoice is the checkout row.
+// Renewals and plan-change refunds are payment rows only: the month's credits come from ensureMonthlyGrant.
+// The first invoice is the checkout row. A replaced subscription's final invoice is negative and becomes Stripe balance.
 async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
   if (obj.billing_reason !== "subscription_cycle") return;
-  const amount = positiveInt(obj.amount_paid);
+  const total = Number(obj.total);
+  const refund = Number.isSafeInteger(total) && total < 0;
+  const amount = refund ? total : positiveInt(obj.amount_paid);
   const customer = String(obj.customer || "");
   if (amount == null || !customer || !obj.id) return;
   const company = await one(ctx.deps.query, "SELECT id, plan FROM companies WHERE stripe_customer_id = $1", [customer]);
   if (!company) return;
   const plan = linePlan(ctx.env, obj) ?? employerPlanOf(company.plan);
   await companyLedger(ctx, String(company.id), 0, String(obj.id), {
-    description: plan ? planDescription(plan) : null,
-    amountUsdCents: amount,
+    description: refund ? REFUND_DESCRIPTION : plan ? planDescription(plan) : null,
+    amountUsdCents: usdCents(obj, amount),
     receiptUrl: httpsUrl(obj.hosted_invoice_url),
   });
 }
@@ -423,7 +477,7 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     if (String(meta.audience || "") === "EMPLOYER") {
       await companyLedger(ctx, ownerId, micro, reference, {
         description: TOPUP_DESCRIPTION,
-        amountUsdCents: positiveInt(obj.amount_total),
+        amountUsdCents: usdCents(obj, positiveInt(obj.amount_total)),
         receiptUrl: await chargeReceipt(ctx, obj.payment_intent),
       });
     }
@@ -435,17 +489,12 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     if (!UUID.test(companyId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
     const planId = employerPlanOf(meta.plan || meta.planId);
     if (!planId) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
-    const customer = String(obj.customer || "");
-    const subscription = String(obj.subscription || "");
-    await query(ctx.deps.query,
-      "UPDATE companies SET plan = $2, stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id), stripe_subscription_id = COALESCE(NULLIF($4, ''), stripe_subscription_id) WHERE id = $1",
-      [companyId, planId, customer, subscription]);
-    await companyLedger(ctx, companyId, grantMicro("EMPLOYER", planId), String(obj.id || ""), {
+    await companyLedger(ctx, companyId, 0, String(obj.id || ""), {
       description: planDescription(planId),
-      amountUsdCents: positiveInt(obj.amount_total),
+      amountUsdCents: usdCents(obj, positiveInt(obj.amount_total)),
       receiptUrl: await invoiceReceipt(ctx, obj.invoice),
     });
-    if (customer && subscription) await cancelReplaced(ctx, customer, subscription);
+    await adoptSubscription(ctx, companyId, planId, String(obj.customer || ""), String(obj.subscription || ""));
     return;
   }
   const userId = String(obj.client_reference_id || "");
@@ -530,9 +579,9 @@ const requireKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP"
 export const topup = async (ctx: Ctx): Promise<Response> => {
   if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   const body = await readObject(ctx.request);
-  const amount = body.amount;
-  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_TOPUP) {
-    throw new HttpError(400, "VALIDATION_ERROR", "must be a positive integer", { field: "amount" });
+  const packs = body.packs;
+  if (typeof packs !== "number" || !Number.isSafeInteger(packs) || packs < 1 || packs > MAX_PACKS) {
+    throw new HttpError(400, "VALIDATION_ERROR", "must be an integer from 1 to " + MAX_PACKS, { field: "packs" });
   }
   if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
   if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
@@ -547,10 +596,10 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
     const form = new URLSearchParams({
       mode: "payment",
       "line_items[0][price]": price,
-      "line_items[0][quantity]": String(amount),
+      "line_items[0][quantity]": String(packs),
       ...returnUrls(ctx, "credits"),
       client_reference_id: ownerId,
-      "metadata[amountMicroCredits]": String(amount * DISPLAY_MICRO),
+      "metadata[amountMicroCredits]": String(packs * PACK_MICRO),
       "metadata[audience]": "EMPLOYER",
       "metadata[ownerId]": ownerId,
     });
