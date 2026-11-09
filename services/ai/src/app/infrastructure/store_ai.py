@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
+from app.claimctx import LostClaim, claim_job, claim_token
 from app.domain.entities import AiUsage
 from app.domain.pagination import Cursor, Page
 from app.infrastructure.store_common import Conds, Store, list_page
@@ -24,27 +25,41 @@ _USAGE_UPSERT = (
     + "status = EXCLUDED.status "
     "WHERE (ai_usage.status <> 'SETTLED' OR EXCLUDED.status = 'SETTLED')"
 )
+# A queue job's usage is written only while the job runs and its reservation is open. FOR SHARE makes a close
+# (queue/credits.py _close) wait for the write to commit and count it; a write after the close finds no open job.
+_OPEN_JOB = ("SELECT r.job_id FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
+             "WHERE r.job_id = {} AND r.status = 'RESERVED' AND j.status = 'RUNNING' FOR SHARE OF r")
 _USAGE_JOB_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '$12::uuid')}), ins AS ("
     f"INSERT INTO ai_usage ({_USAGE_COLS}, job_id) "
-    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+    "SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,job_id FROM open_job"
     + _USAGE_UPSERT.replace(
         "status = EXCLUDED.status WHERE",
         "status = EXCLUDED.status, "
         "job_id = COALESCE(ai_usage.job_id, EXCLUDED.job_id) WHERE",
         1)
+    + ") SELECT EXISTS (SELECT 1 FROM open_job)"
+)
+_SETTLE_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '(SELECT job_id FROM ai_usage WHERE id = $1)')}), upd AS ("
+    "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, cost_micro_credits = $4, status = 'SETTLED' "
+    "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED') "
+    "AND (job_id IS NULL OR job_id IN (SELECT job_id FROM open_job)) RETURNING id) "
+    "SELECT job_id IS NULL OR EXISTS (SELECT 1 FROM open_job) FROM ai_usage WHERE id = $1"
 )
 
 
 class AiUsageStore(Store):
     async def create_for_job(self, u: AiUsage, job_id) -> None:
-        await self.q().execute(
-            _USAGE_JOB_SQL,
-            u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
-            u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
-            u.created_at, job_id)
+        """Raises LostClaim when the job is not running or has no open reservation: its usage would go uncapped."""
+        if not await self.q().fetchval(
+                _USAGE_JOB_SQL,
+                u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
+                u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
+                u.created_at, job_id):
+            raise LostClaim()
 
     async def create(self, u: AiUsage) -> None:
-        from app.claimctx import LostClaim, claim_job, claim_token
         values = (
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
             u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
@@ -92,11 +107,10 @@ class AiUsageStore(Store):
 
     async def settle(self, id_: UUID, input_tokens: int, output_tokens: int,
                      cost_micro_credits: int) -> None:
-        await self.q().execute(
-            "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, "
-            "cost_micro_credits = $4, status = 'SETTLED' "
-            "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED')",
-            id_, input_tokens, output_tokens, cost_micro_credits)
+        """Raises LostClaim when the row belongs to a queue job that was closed meanwhile (see _OPEN_JOB)."""
+        if await self.q().fetchval(
+                _SETTLE_SQL, id_, input_tokens, output_tokens, cost_micro_credits) is False:
+            raise LostClaim()
 
     async def release(self, id_: UUID) -> None:
         await self.q().execute(

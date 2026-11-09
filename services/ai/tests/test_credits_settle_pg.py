@@ -5,11 +5,17 @@ Runs on a migrated Postgres (BILLING_PG_URL, set by the CI test-db job) and skip
 
 import asyncio
 import os
+import random
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 
+from app.claimctx import LostClaim
+from app.db import DB
+from app.domain.entities import AiUsage
+from app.infrastructure.store_ai import AiUsageStore
 from app.queue.admin import AdminJobs
 from app.queue.credits import ShortBalance, available_micro, release_job, settle_job
 from app.queue.dispatcher import PgJobs
@@ -69,9 +75,10 @@ async def job(pool, user, reserve, used, *, company=None, status="RUNNING", rese
     await pool.execute(
         "INSERT INTO ai_jobs (id, type, queue, user_id, company_id, status, max_attempts, payload, updated_at) "
         "VALUES ($1, 'chat', 'q:chat', $2, $3, $4, 3, '{}', $5)", jid, user, company, status, NOW - timedelta(hours=1))
-    await pool.execute(
-        "INSERT INTO credit_reservations (job_id, user_id, company_id, amount_micro, status) VALUES ($1, $2, $3, $4, $5)",
-        jid, user, company, reserve, reservation)
+    if reservation is not None:
+        await pool.execute(
+            "INSERT INTO credit_reservations (job_id, user_id, company_id, amount_micro, status) "
+            "VALUES ($1, $2, $3, $4, $5)", jid, user, company, reserve, reservation)
     if used:
         await pool.execute(
             "INSERT INTO ai_usage (id, user_id, provider, model, managed, input_tokens, output_tokens, "
@@ -297,3 +304,138 @@ async def test_reconcile_skips_an_owner_whose_row_stays_locked(pg):
     async with pool.acquire() as conn:
         assert await PgJobs(conn).reconcile_credits(NOW) >= 1
     assert await pool.fetchval("SELECT status FROM credit_reservations WHERE job_id = $1", held) == "SETTLED"
+
+
+def usage(user, cost, status="SETTLED"):
+    return AiUsage(id=uuid4(), user_id=user, provider="OPENAI", model="m", managed=True, input_tokens=1,
+                   output_tokens=1, cost_micro_credits=cost, status=status, created_at=NOW)
+
+
+async def cancel(pool, jid):
+    async with pool.acquire() as conn:
+        return await AdminJobs(conn).cancel(jid, NOW)
+
+
+@pytest.mark.asyncio
+async def test_usage_after_an_admin_cancel_is_refused(pg):
+    pool, new_user, _ = pg
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 80, 0)
+    store = AiUsageStore(DB(pool))
+    reserved = usage(user, 0, "RESERVED")
+    await store.create_for_job(reserved, jid)
+    assert await cancel(pool, jid) is True
+    # The worker's call returns after the cancel: neither its settle nor a new meter row is charged.
+    with pytest.raises(LostClaim):
+        await store.settle(reserved.id, 1, 1, 150)
+    with pytest.raises(LostClaim):
+        await store.create_for_job(usage(user, 150), jid)
+    assert await available(pool, user) == 100
+    assert await write_offs(pool, "user_id", user) == []
+
+
+@pytest.mark.asyncio
+async def test_usage_of_a_job_without_a_reservation_is_refused(pg):
+    pool, new_user, _ = pg
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 0, 0, reservation=None)
+    with pytest.raises(LostClaim):
+        await AiUsageStore(DB(pool)).create_for_job(usage(user, 150), jid)
+    assert await available(pool, user) == 100
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_waits_for_a_usage_write_in_flight_and_caps_it(pg):
+    pool, new_user, _ = pg
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 80, 0)
+    db = DB(pool)
+    store = AiUsageStore(db)
+    reserved = usage(user, 0, "RESERVED")
+    await store.create_for_job(reserved, jid)
+    closing = []
+
+    async def settle_then_hold():
+        await store.settle(reserved.id, 1, 1, 150)
+        closing.append(asyncio.create_task(cancel(pool, jid)))
+        await asyncio.sleep(0.5)
+        # The release waits on the reservation this write holds instead of closing it without the 150.
+        assert not closing[0].done()
+
+    await db.do(settle_then_hold)
+    assert await closing[0] is True
+    assert await write_offs(pool, "user_id", user) == [50]
+    assert await available(pool, user) == 0
+
+
+async def deadlocks(pool):
+    return await pool.fetchval("SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()")
+
+
+@pytest.mark.asyncio
+async def test_usage_racing_a_close_never_leaves_a_negative_balance(pg):
+    pool, new_user, new_company = pg
+    rng = random.Random(254)
+    before = await deadlocks(pool)
+    for round_ in range(30):
+        user = await new_user()
+        company = await new_company(user) if round_ % 3 == 0 else None
+        credits = rng.randint(0, 200)
+        await grant(pool, credits, user=None if company else user, company=company)
+        jid = await job(pool, user, rng.randint(0, credits), 0, company=company)
+        store = AiUsageStore(DB(pool))
+
+        async def write(cost, delay):
+            # Spread the writes before, during and after the close.
+            await asyncio.sleep(delay)
+            try:
+                await store.create_for_job(usage(user, cost), jid)
+            except LostClaim:
+                pass
+
+        async def finish():
+            await pool.execute("UPDATE ai_jobs SET status = 'DONE' WHERE id = $1", jid)
+            await settle(pool, jid)
+
+        close = cancel(pool, jid) if round_ % 2 else finish()
+        await asyncio.gather(close, *(write(rng.randint(1, 120), rng.random() * 0.03) for _ in range(rng.randint(1, 6))))
+        used = await pool.fetchval(
+            "SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage WHERE job_id = $1 AND status = 'SETTLED'", jid)
+        owner_col, owner = ("company_id", company) if company else ("user_id", user)
+        # Usage past the credits is written off exactly, whichever way the writes and the close interleave.
+        assert sum(await write_offs(pool, owner_col, owner)) == max(used - credits, 0), round_
+        assert await available(pool, user, company) == max(credits - used, 0), round_
+        assert await pool.fetchval("SELECT status FROM credit_reservations WHERE job_id = $1", jid) != "RESERVED"
+    assert await deadlocks(pool) == before
+
+
+@pytest.mark.asyncio
+async def test_a_busy_owner_costs_the_pass_one_lock_timeout_not_one_per_reservation(pg):
+    pool, new_user, _ = pg
+    busy, free = await new_user(), await new_user()
+    for user in (busy, free):
+        await grant(pool, 500, user=user)
+    held = [await job(pool, busy, 80, 30, status="DONE") for _ in range(3)]
+    dying = [await job(pool, busy, 80, 30) for _ in range(3)]
+    await pool.execute("UPDATE ai_jobs SET attempts = max_attempts - 1 WHERE id = ANY($1::uuid[])", dying)
+    done = await job(pool, free, 80, 30, status="DONE")
+    async with pool.acquire() as webhook, webhook.transaction():
+        await webhook.execute("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", busy)
+        async with pool.acquire() as conn:
+            for step in (lambda: PgJobs(conn).reconcile_credits(NOW), lambda: PgJobs(conn).mark_retry(dying, NOW)):
+                started = time.monotonic()
+                await asyncio.wait_for(step(), 15)
+                # One 3s lock timeout for the busy owner, then its other reservations wait for the next pass.
+                assert time.monotonic() - started < 5
+    assert await pool.fetchval("SELECT status FROM credit_reservations WHERE job_id = $1", done) == "SETTLED"
+    assert await pool.fetchval(
+        "SELECT count(*) FROM credit_reservations WHERE job_id = ANY($1::uuid[]) AND status = 'RESERVED'",
+        held + dying) == 6
+    async with pool.acquire() as conn:
+        await PgJobs(conn).reconcile_credits(NOW + timedelta(minutes=10))
+    assert await pool.fetchval(
+        "SELECT count(*) FROM credit_reservations WHERE job_id = ANY($1::uuid[]) AND status = 'RESERVED'",
+        held + dying) == 0

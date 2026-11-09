@@ -24,12 +24,21 @@ def claimed():
 
 
 async def test_create_for_job_passes_job_id_last():
-    db, conn = fake_db()
+    db, conn = fake_db(True)
     u, job = _usage(), uuid4()
     await AiUsageStore(db).create_for_job(u, job)
     _, sql, args = conn.last
     assert "job_id = COALESCE(ai_usage.job_id, EXCLUDED.job_id)" in sql
     assert args[0] == u.id and args[1] == USER and args[-1] == job and len(args) == 12
+
+
+async def test_usage_of_a_closed_job_is_refused():
+    with pytest.raises(LostClaim):
+        await AiUsageStore(fake_db(False)[0]).create_for_job(_usage(), uuid4())
+    with pytest.raises(LostClaim):
+        await AiUsageStore(fake_db(False)[0]).settle(uuid4(), 1, 2, 3)
+    # None: no such row (or a released one), nothing to refuse.
+    await AiUsageStore(fake_db(None)[0]).settle(uuid4(), 1, 2, 3)
 
 
 async def test_create_without_claim_is_plain_upsert():

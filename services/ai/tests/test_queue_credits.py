@@ -269,6 +269,8 @@ async def test_pg_settle_and_release_round_trip():
             "input_tokens int NULL, output_tokens int NULL, "
             "cost_micro_credits bigint NOT NULL, status text NOT NULL, "
             "created_at timestamptz NULL, job_id uuid NULL)")
+        await conn.execute("CREATE TABLE ai_jobs (id uuid PRIMARY KEY, status text NOT NULL)")
+        await conn.execute("INSERT INTO ai_jobs (id, status) VALUES ($1, 'RUNNING'), ($2, 'RUNNING')", JOB, AGAIN)
         await conn.execute(
             "INSERT INTO credit_reservations (job_id, user_id, amount_micro, status) "
             "VALUES ($1, $2, 80, 'RESERVED')", JOB, USER)
@@ -286,12 +288,13 @@ async def test_pg_settle_and_release_round_trip():
         await release_job(conn, AGAIN, NOW + timedelta(seconds=1))
         released = await conn.fetchval("SELECT status FROM credit_reservations WHERE job_id=$1", AGAIN)
         assert released == "RELEASED"
-        await conn.execute(
-            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9,
-            "RESERVED", NOW, JOB)
-        await conn.execute(
-            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9,
-            "RESERVED", NOW, AGAIN)
+        # A closed reservation takes no more usage.
+        assert await conn.fetchval(
+            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9, "RESERVED", NOW, JOB) is False
+        await conn.execute("UPDATE credit_reservations SET status = 'RESERVED'")
+        for job in (JOB, AGAIN):
+            assert await conn.fetchval(
+                _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9, "RESERVED", NOW, job) is True
         kept = await conn.fetchval("SELECT job_id FROM ai_usage WHERE id=$1", USAGE)
         assert kept == JOB
     finally:

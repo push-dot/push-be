@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from app.account_purge import purge_deleted
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
-from app.queue.credits import release_job, settle_job, unless_busy
+from app.queue.credits import close_each
 from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
 from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
@@ -57,11 +57,10 @@ class PgJobs(AdminJobs):
         rows = await self.conn.fetch(
             "UPDATE ai_jobs SET attempts = attempts + 1, run_after = $1, updated_at = $1, "
             "status = CASE WHEN attempts + 1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
-            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) RETURNING id, queue, status",
+            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) "
+            "RETURNING id, id AS job_id, user_id, company_id, queue, status",
             now, list(ids))
-        for row in rows:
-            if row["status"] == "DEAD":
-                await unless_busy(release_job(self.conn, row["id"], now))
+        await close_each(self.conn, [row for row in rows if row["status"] == "DEAD"], now)
         return [_row(row, "id", "queue", "status") for row in rows]
 
     async def pending_jobs(self, now):
@@ -75,14 +74,11 @@ class PgJobs(AdminJobs):
         """Close reservations left RESERVED when a worker died between finish and settle."""
         before = now - timedelta(seconds=RECONCILE_AFTER_S)
         rows = await self.conn.fetch(
-            "SELECT r.job_id, j.status FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
+            "SELECT r.job_id, r.user_id, r.company_id, j.status FROM credit_reservations r "
+            "JOIN ai_jobs j ON j.id = r.job_id "
             "WHERE r.status = 'RESERVED' AND j.status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') "
             "AND j.updated_at < $1", before)
-        closed = 0
-        for row in rows:
-            close = settle_job if row["status"] == "DONE" else release_job
-            closed += await unless_busy(close(self.conn, row["job_id"], now))
-        return closed
+        return await close_each(self.conn, rows, now)
 
 
 def _row(row, *keys):

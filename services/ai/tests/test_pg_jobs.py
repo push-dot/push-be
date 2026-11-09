@@ -25,6 +25,7 @@ async def test_pg_jobs_sql_round_trip():
         await conn.execute(
             "CREATE TABLE ai_jobs ("
             "id uuid PRIMARY KEY, type text NOT NULL, queue text NOT NULL, "
+            "user_id uuid NULL, company_id uuid NULL, "
             "status text NOT NULL, run_after timestamptz NOT NULL, "
             "attempts int NOT NULL DEFAULT 0, max_attempts int NOT NULL DEFAULT 2, "
             "heartbeat_at timestamptz NULL, updated_at timestamptz NOT NULL)")
