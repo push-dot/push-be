@@ -132,7 +132,7 @@ export const routes: Route[] = [
       password,
       accountType: enumOf("EMPLOYER"),
       displayName: { type: "string", minLength: 1, maxLength: 80, description: "Trimmed. Blank after trim is rejected. Max 80 code points after trim." },
-      agreeTerms: { type: "boolean", enum: [true], description: "The user checked 이용약관·개인정보 처리방침. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores the agreement at the signup time." },
+      agreeTerms: { type: "boolean", enum: [true], description: "The user checked one box: 만 14세 이상이며 이용약관과 개인정보 처리방침에 동의. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores age14, terms and privacy together, all at the signup time." },
     }, ["email", "password", "accountType", "displayName", "agreeTerms"])),
     responses: { 202: accepted },
   }),

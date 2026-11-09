@@ -174,7 +174,7 @@ const createDb = () => {
     if (sql.startsWith("INSERT INTO user_consents")) {
       consents.push({
         user_id: params[0], reference_data: params[1], updated_at: params[2],
-        terms_version: params[3] ?? null, service_terms_at: params[4] ?? null, privacy_at: params[4] ?? null,
+        terms_version: params[3] ?? null, age14_at: params[4] ?? null, service_terms_at: params[4] ?? null, privacy_at: params[4] ?? null,
       });
       return { rows: [], rowCount: 1 };
     }
@@ -431,7 +431,7 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(db.signups.length, 0);
   assert.deepEqual(db.consents, [{
     user_id: db.users[0].id, reference_data: false, updated_at: NOW.toISOString(),
-    terms_version: TERMS_VERSION, service_terms_at: NOW.toISOString(), privacy_at: NOW.toISOString(),
+    terms_version: TERMS_VERSION, age14_at: NOW.toISOString(), service_terms_at: NOW.toISOString(), privacy_at: NOW.toISOString(),
   }]);
   assert.equal(db.tokens[0].used_at, NOW.toISOString());
   assert.equal(body.data.user.id, db.users[0].id);

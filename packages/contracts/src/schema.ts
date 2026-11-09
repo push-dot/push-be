@@ -6317,7 +6317,7 @@ export interface operations {
                     /** @enum {string} */
                     accountType: "EMPLOYER";
                     /**
-                     * @description The user checked 이용약관·개인정보 처리방침. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores the agreement at the signup time.
+                     * @description The user checked one box: 만 14세 이상이며 이용약관과 개인정보 처리방침에 동의. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores age14, terms and privacy together, all at the signup time.
                      * @enum {boolean}
                      */
                     agreeTerms: true;

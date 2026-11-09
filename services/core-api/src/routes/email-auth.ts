@@ -173,9 +173,10 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     throw err;
   }
   await Promise.all([
-    // Signup refused a request without agreeTerms: true, so the signup request (its created_at) is the agreement.
+    // agreeTerms: true means 만 14세 이상 + 이용약관 + 개인정보 처리방침, and the signup request (its created_at) is when.
+    // user_consents_terms_chk wants all four of terms_version and the three timestamps, or none.
     query(ctx.deps.query,
-      "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz)",
+      "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$5::timestamptz)",
       [userId, asBool(row.consent_reference), now, TERMS_VERSION, row.created_at]),
     query(ctx.deps.query, "DELETE FROM email_signups WHERE id = $1", [String(row.signup_id)]),
   ]);
