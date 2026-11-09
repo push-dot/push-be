@@ -106,6 +106,7 @@ def _callback_type():
         return _CALLBACK
     from langchain_core.callbacks import AsyncCallbackHandler
 
+    from app.claimctx import LostClaim
     from app.domain.entities.ai_usage import ai_cost_micro_credits
 
     class _AiUsageCallback(AsyncCallbackHandler):
@@ -134,6 +135,9 @@ def _callback_type():
                     outgoing,
                     ai_cost_micro_credits("OPENAI", "", incoming, outgoing),
                 )
+            except LostClaim:
+                # The job was closed meanwhile; the gate's own settle after the call raises it to the worker.
+                return
             except Exception:
                 logging.getLogger(__name__).exception(
                     "usage settle failed id=%s", self.reservation_id

@@ -112,7 +112,7 @@ async def test_cancel_marks_cancelled_and_releases_reserved_credits():
     conn = Conn(tags=["UPDATE 1"], row=[{"user_id": USER, "company_id": None},
                                         {"amount_micro": 500, "settled_micro": 0}])
     assert await AdminJobs(conn).cancel(JOB, NOW) is True
-    (_, cancel, cargs, _), _, _, _, (_, release, rargs, in_tx) = conn.log
+    (_, cancel, cargs, _), _, _, _, _, (_, release, rargs, in_tx) = conn.log
     assert "SET status = 'CANCELLED'" in cancel and "('QUEUED', 'RETRY', 'RUNNING')" in cancel
     assert cargs == (JOB, NOW)
     assert "credit_reservations SET status = $3" in release and "status = 'RESERVED'" in release

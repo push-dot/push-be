@@ -89,6 +89,10 @@ async def _close(conn, job_id, now, status: str) -> tuple[int, int] | None:
             return None
         user_id, company_id = owner["user_id"], owner["company_id"]
         await lock_owner(conn, user_id, company_id)
+        # A usage write holds the open reservation FOR SHARE (store_ai.py _OPEN_JOB). Waiting for it in its own statement
+        # lets the sum below, on a fresh snapshot, count that usage; once closed, later writes are refused.
+        await conn.execute(
+            "SELECT 1 FROM credit_reservations WHERE job_id = $1 AND status = 'RESERVED' FOR NO KEY UPDATE", job_id)
         row = await conn.fetchrow(
             "UPDATE credit_reservations SET status = $3, updated_at = $2, settled_micro = "
             "(SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage WHERE job_id = $1 AND status = 'SETTLED') "
@@ -122,3 +126,22 @@ async def settle_job(conn, job_id, now) -> int:
 async def release_job(conn, job_id, now) -> None:
     """Release the hold of a job that failed, died or was cancelled; usage it already ran stays charged."""
     await _close(conn, job_id, now, "RELEASED")
+
+
+async def close_each(conn, rows, now) -> int:
+    """Settle (DONE) or release each row's reservation (job_id, user_id, company_id, status); returns how many closed.
+
+    After one owner's row stays locked, that owner's other rows wait for the next pass instead of each waiting out
+    LOCK_TIMEOUT, so the pass (and dispatch behind it) stalls for one timeout per busy owner, not per reservation.
+    """
+    busy, closed = set(), 0
+    for row in rows:
+        owner = row["company_id"] or row["user_id"]
+        if owner in busy:
+            continue
+        close = settle_job if row["status"] == "DONE" else release_job
+        if await unless_busy(close(conn, row["job_id"], now)):
+            closed += 1
+        else:
+            busy.add(owner)
+    return closed

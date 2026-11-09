@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4, uuid5
 
+from app.claimctx import LostClaim
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
@@ -67,15 +68,19 @@ class AIGate:
                      job_id=None) -> None:
         if user_id is None:
             return
-        from app.claimctx import LostClaim
+        row = ent.AiUsage(
+            id=usage_row_id(job_id, "meter:" + model), user_id=user_id,
+            provider="OPENAI", model=model, managed=True,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cost_micro_credits=ent.ai_cost_micro_credits(
+                "OPENAI", model, input_tokens, output_tokens),
+            status=ent.USAGE_SETTLED, created_at=_now())
         try:
-            await self.usage.create(ent.AiUsage(
-                id=usage_row_id(job_id, "meter:" + model), user_id=user_id,
-                provider="OPENAI", model=model, managed=True,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                cost_micro_credits=ent.ai_cost_micro_credits(
-                    "OPENAI", model, input_tokens, output_tokens),
-                status=ent.USAGE_SETTLED, created_at=_now()))
+            # A queue job's meter rows join the job, so its settle counts them against the reservation.
+            if job_id and queue_backend() == "redis":
+                await self.usage.create_for_job(row, job_id)
+            else:
+                await self.usage.create(row)
         except LostClaim:
             raise
         except Exception:
@@ -206,6 +211,9 @@ class AIGate:
                 usage_id, input_tokens, output_tokens,
                 ent.ai_cost_micro_credits("OPENAI", model,
                                           input_tokens, output_tokens))
+        except LostClaim:
+            await self._release(usage_id)
+            raise
         except Exception:
             logging.getLogger(__name__).exception(
                 "usage settle failed id=%s", usage_id)
@@ -365,7 +373,7 @@ class AIGate:
                                usage.get("input_tokens", 0),
                                usage.get("output_tokens", 0))
             settled = True
-        except DomainError:
+        except (DomainError, LostClaim):
             raise
         except Exception:
             raise provider_error("AI provider request failed")
