@@ -1,6 +1,6 @@
-import { neon, types } from "@neondatabase/serverless";
+import { Client, neon, types } from "@neondatabase/serverless";
 
-import type { QueryResult } from "./db.ts";
+import { inTransaction, type QueryResult, type Transaction } from "./db.ts";
 import { handle, type CoreEnv } from "./handler.ts";
 
 types.setTypeParser(1114, (value: string) => value);
@@ -18,6 +18,7 @@ export default {
       const waitUntil = ctx?.waitUntil;
       return await handle(request, env, {
         query: queryOf(env),
+        ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : {}),
         ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : {}),
       });
     } catch {
@@ -42,5 +43,18 @@ function neonQuery(databaseUrl: string) {
     const result = await sql.query(text, params, { fullResults: true });
     const rows = (result.rows || []) as Record<string, unknown>[];
     return { rows, rowCount: result.rowCount ?? rows.length };
+  };
+}
+
+// Neon's HTTP queries are one statement each; an interactive transaction needs a WebSocket client, opened and closed per transaction.
+function neonTransaction(databaseUrl: string): Transaction {
+  return async (work) => {
+    const client = new Client(databaseUrl);
+    await client.connect();
+    try {
+      return await inTransaction(client, work);
+    } finally {
+      await client.end();
+    }
   };
 }

@@ -3858,6 +3858,8 @@ export interface components {
             audience: "PERSONAL" | "EMPLOYER";
             balanceMicroCredits: number;
             monthlyMicroCredits: number;
+            /** @description False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it. */
+            paymentsEnabled: boolean;
             periodEndsAt: string | null;
             plan: ("FREE" | "PRO" | "ULTRA" | "BASIC") | null;
             reservedMicroCredits: number;
@@ -5051,14 +5053,14 @@ export interface components {
             balanceAfter: number;
             /** Format: date-time */
             createdAt: string;
-            /** @description Payment label: {Plan} 월 구독, 크레딧 구매, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11. */
+            /** @description Payment label: {Plan} 월 구독, 크레딧 구매, 크레딧 구매 환불, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11. */
             description: string | null;
             /** Format: uuid */
             id: string;
             /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
             receiptUrl: string | null;
             referenceId: string | null;
-            /** @description Currently PURCHASE */
+            /** @description PURCHASE, or REFUND: a refunded credit top-up, negative, at most the credits still unspent. Its referenceId is the purchase's. */
             type: string;
         };
         Message: {

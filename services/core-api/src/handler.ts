@@ -33,6 +33,8 @@ import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
+const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
+
 const PUBLIC = new Set([
   "/api/v1/auth/exchange",
   "/api/v1/auth/refresh",
@@ -186,6 +188,10 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
   if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
 
+  // 약관 4조·11조7항: no payment is taken until PAYMENTS_ENABLED=1 (off in production until 사업자등록).
+  if (method === "POST" && PAYMENT_PATHS.has(path) && ctx.env.PAYMENTS_ENABLED !== "1") {
+    throw new HttpError(503, "PAYMENTS_DISABLED", "payments are not open yet");
+  }
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
   if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
