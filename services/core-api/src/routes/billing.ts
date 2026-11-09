@@ -100,7 +100,7 @@ const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: strin
 const REFUND_DESCRIPTION = "요금제 변경 환급";
 
 // Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
-const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED", referenceId: string, detail: string): Promise<void> => {
+const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED", referenceId: string, detail: string): Promise<void> => {
   console.error(JSON.stringify({ billingAlert: kind, companyId, referenceId, detail }));
   await query(ctx.deps.query,
     "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
@@ -485,8 +485,11 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
     for (const sub of subscriptionsOf(list)) {
       if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
       const id = String(sub.id);
-      const refund = LIVE.has(String(sub.status)) && currentPeriodPaid(ctx.env, sub)
+      const refundable = LIVE.has(String(sub.status))
         && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
+      const refund = refundable && currentPeriodPaid(ctx.env, sub);
+      // Fail closed: with no readable invoice the period may be paid, so an operator checks it and refunds by hand.
+      const unread = refundable && (sub.latest_invoice == null || typeof sub.latest_invoice !== "object");
       const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
         if (refund) {
@@ -500,6 +503,7 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
         throw new AlertingError({ companyId, kind: "CANCEL_FAILED", referenceId: id, detail: `replaced subscription still billing, kept ${keep.id}` });
       }
       await resolveCancelAlert(ctx, id);
+      if (unread) await raiseAlert(ctx, companyId, "REFUND_SKIPPED", id, `latest_invoice unreadable (${typeof sub.latest_invoice}), canceled without refund, kept ${keep.id}`);
     }
   }
 }

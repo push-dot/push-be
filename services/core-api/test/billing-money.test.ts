@@ -78,6 +78,8 @@ function stripeWorld(customer: string) {
   // The latest invoice bills the current period and is paid, unless the subscription is listed here: renewed, its invoice still a draft.
   const sessions: Row[] = [];
   const drafts = new Set<string>();
+  // Listed with latest_invoice as a bare id, as if the expand did not apply.
+  const unexpanded = new Set<string>();
   const latestInvoice = (sub: Sub) => {
     const item = sub.items.data[0]!;
     return {
@@ -126,7 +128,7 @@ function stripeWorld(customer: string) {
       const owner = url.searchParams.get("customer");
       const expand = url.searchParams.getAll("expand[]").includes("data.latest_invoice");
       const listed = [...subs.values()].filter((sub) => sub.customer === owner && sub.status !== "canceled");
-      return json({ object: "list", data: expand ? listed.map((sub) => ({ ...sub, latest_invoice: latestInvoice(sub) })) : listed, has_more: false });
+      return json({ object: "list", data: expand ? listed.map((sub) => ({ ...sub, latest_invoice: unexpanded.has(sub.id) ? "in_latest_" + sub.id : latestInvoice(sub) })) : listed, has_more: false });
     }
     if (url.pathname.startsWith("/v1/invoices/")) return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: RECEIPT });
     if (url.pathname === "/v1/checkout/sessions" && method === "GET") {
@@ -135,7 +137,7 @@ function stripeWorld(customer: string) {
     }
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
-  return { subs, calls, fail, open, drafts, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
+  return { subs, calls, fail, open, drafts, unexpanded, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
 }
 
 type World = ReturnType<typeof stripeWorld>;
@@ -809,6 +811,25 @@ test("audit draft window: an upgrade while the renewal invoice is still a draft 
   assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
   assert.equal(planCredits(await ledgerOf(co.id)), 45_000);
   assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+});
+
+test("an upgrade whose replaced live subscription has no readable latest_invoice cancels without a refund and opens a REFUND_SKIPPED alert", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  stripe.unexpanded.add(pro.id);
+  const at = START + DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", at), at), 200);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
+  assert.deepEqual(await alertsOf(co.id), [{ kind: "REFUND_SKIPPED", reference_id: pro.id, resolved: false }]);
+  // A downgrade refunds nothing anyway, so an unreadable invoice there opens no alert.
+  stripe.unexpanded.add(ultra.id);
+  const basic = stripe.subscribe("BASIC", at + DAY);
+  assert.equal(await deliver(stripe, checkout(co.id, basic, "BASIC", at + DAY), at + DAY), 200);
+  assert.equal((await alertsOf(co.id)).length, 1);
 });
 
 test("a subscription event of a customer the company has left is accepted and changes nothing", async (t) => {
