@@ -26,6 +26,7 @@ const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   STRIPE_PRICE_EMPLOYER_PRO: "price_employer_pro",
   STRIPE_PRICE_EMPLOYER_ULTRA: "price_employer_ultra",
   STRIPE_PRICE_TOPUP: "price_topup",
+  STRIPE_RETURN_ORIGINS: "https://web.example,http://localhost:5174",
   IAP_PRODUCT_PRO: "ios.pro",
   IAP_PRODUCT_ULTRA: "ios.ultra",
   IAP_PRODUCT_TOPUP: "ios.topup",

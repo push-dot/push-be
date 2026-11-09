@@ -16,7 +16,8 @@ type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: bo
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production", STRIPE_SECRET_KEY: "sk_test", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_PRICE_PRO: "price_pro",
-  STRIPE_PRICE_ULTRA: "price_ultra", STRIPE_PRICE_TOPUP: "price_topup", STRIPE_PORTAL_RETURN_URL: "https://app.example/billing", ...extra,
+  STRIPE_PRICE_ULTRA: "price_ultra", STRIPE_PRICE_TOPUP: "price_topup", STRIPE_PORTAL_RETURN_URL: "https://app.example/billing",
+  STRIPE_RETURN_ORIGINS: "https://web.example", ...extra,
 });
 
 type Who = { employer?: boolean; role?: string | null; customer?: string | null };
@@ -94,8 +95,8 @@ test("billing ledger: personal ledger is scoped to the caller and paginated", as
   const first = await read(await handle(request("GET", "/api/v1/billing/ledger?limit=2"), envOf(), { query: w.query, now: () => NOW }));
   assert.equal(first.status, 200);
   assert.deepEqual(first.body.data, [
-    { id: "f1000000-0000-4000-8000-000000000003", type: "PURCHASE", amountMicroCredits: 5000, balanceAfter: 9000, referenceId: "cs_1", createdAt: "2026-10-03T00:00:00Z" },
-    { id: "f1000000-0000-4000-8000-000000000002", type: "USAGE", amountMicroCredits: -100, balanceAfter: 4000, referenceId: null, createdAt: "2026-10-02T00:00:00Z" },
+    { id: "f1000000-0000-4000-8000-000000000003", type: "PURCHASE", amountMicroCredits: 5000, balanceAfter: 9000, referenceId: "cs_1", createdAt: "2026-10-03T00:00:00Z", description: null, amountUsd: null, receiptUrl: null },
+    { id: "f1000000-0000-4000-8000-000000000002", type: "USAGE", amountMicroCredits: -100, balanceAfter: 4000, referenceId: null, createdAt: "2026-10-02T00:00:00Z", description: null, amountUsd: null, receiptUrl: null },
   ]);
   assert.equal(first.body.page?.hasMore, true);
   const sql = w.seen.at(-1)!;

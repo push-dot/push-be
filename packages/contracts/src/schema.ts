@@ -641,7 +641,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe subscription checkout session
-         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. 503 NOT_CONFIGURED when the Stripe key or the plan price is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.
+         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. Stripe returns the buyer to <origin>/employer/plans?checkout=success&session_id=<id>, or ?checkout=canceled. <origin> is the request Origin when it is in STRIPE_RETURN_ORIGINS, else the first entry. A paid plan change ends the earlier subscription with a prorated credit. 503 NOT_CONFIGURED when the Stripe key, the plan price, or the return origin is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingCheckout"];
         delete?: never;
@@ -679,7 +679,7 @@ export interface paths {
         };
         /**
          * Credit ledger
-         * @description EMPLOYER accounts see the company ledger.
+         * @description EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts, credit purchases, and renewals (renewals carry 0 credits; the month's credits are a separate row).
          */
         get: operations["getBillingLedger"];
         put?: never;
@@ -721,7 +721,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe credit top-up checkout session
-         * @description EMPLOYER: company ADMIN only, credits go to the company. 503 NOT_CONFIGURED when the Stripe key or the top-up price is missing. 502 PROVIDER_ERROR when Stripe fails.
+         * @description EMPLOYER: company ADMIN only, credits go to the company. Anyone else gets 403. Returns to <origin>/employer/plans?checkout=credits&session_id=<id>, or ?checkout=canceled, with <origin> chosen as for checkout. 503 NOT_CONFIGURED when the Stripe key, the top-up price, or the return origin is missing. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingTopup"];
         delete?: never;
@@ -5043,11 +5043,17 @@ export interface components {
         };
         LedgerEntry: {
             amountMicroCredits: number;
+            /** @description Amount paid in USD (cents / 100). Null when the row is not a Stripe payment. */
+            amountUsd: number | null;
             balanceAfter: number;
             /** Format: date-time */
             createdAt: string;
+            /** @description Payment label, e.g. Pro 월 구독 or 크레딧 구매. Null for non-payment rows and rows written before 2026-11. */
+            description: string | null;
             /** Format: uuid */
             id: string;
+            /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
+            receiptUrl: string | null;
             referenceId: string | null;
             /** @description Currently PURCHASE */
             type: string;

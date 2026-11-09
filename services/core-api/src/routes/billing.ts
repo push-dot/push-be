@@ -68,10 +68,37 @@ const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId:
     [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString()]);
 };
 
-const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string): Promise<void> => {
+type Payment = { description: string | null; amountUsdCents: number | null; receiptUrl: string | null };
+
+const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
-    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString()]);
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
+    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl]);
+};
+
+const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
+const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
+const TOPUP_DESCRIPTION = "크레딧 구매";
+
+// Allowlist, never echo the Origin header: success_url must not carry an attacker-chosen origin.
+const returnOrigin = (ctx: Ctx): string => {
+  const allowed = (ctx.env.STRIPE_RETURN_ORIGINS ?? "").split(",").map((item) => item.trim().replace(/\/+$/, "")).filter((item) => {
+    try {
+      const url = new URL(item);
+      return (url.protocol === "https:" || url.protocol === "http:") && url.origin === item;
+    } catch {
+      return false;
+    }
+  });
+  const origin = ctx.request.headers.get("origin") ?? "";
+  if (allowed.includes(origin)) return origin;
+  if (!allowed[0]) throw new HttpError(503, "NOT_CONFIGURED", "billing return origin is not configured");
+  return allowed[0];
+};
+
+const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, string> => {
+  const plans = returnOrigin(ctx) + "/employer/plans?checkout=";
+  return { success_url: plans + success + "&session_id={CHECKOUT_SESSION_ID}", cancel_url: plans + "canceled" };
 };
 
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
@@ -182,8 +209,7 @@ export async function checkout(ctx: Ctx): Promise<Response> {
     mode: "subscription",
     "line_items[0][price]": price,
     "line_items[0][quantity]": "1",
-    success_url: ctx.env.STRIPE_SUCCESS_URL || "",
-    cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
+    ...returnUrls(ctx, "success"),
     client_reference_id: ctx.user.companyId,
     "metadata[audience]": "EMPLOYER",
     "metadata[plan]": body.planId,
@@ -229,7 +255,7 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   if (employer && !ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const page = pageOf(ctx.url);
   const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
-  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at FROM billing_ledger WHERE "
+  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -246,6 +272,9 @@ export async function ledger(ctx: Ctx): Promise<Response> {
       balanceAfter: Number(row.balance_after),
       referenceId: row.reference_id == null ? null : String(row.reference_id),
       createdAt: ts(row.created_at),
+      description: row.description == null ? null : String(row.description),
+      amountUsd: row.amount_usd_cents == null ? null : Number(row.amount_usd_cents) / 100,
+      receiptUrl: row.receipt_url == null ? null : String(row.receipt_url),
     },
     createdAt: row.created_at,
     id: String(row.id),
@@ -305,6 +334,7 @@ export async function webhook(ctx: Ctx): Promise<Response> {
     else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
       await subscriptionChanged(ctx, String(event.type), obj);
     }
+    else if (event.type === "invoice.paid") await invoicePaid(ctx, obj);
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
     throw err;
@@ -324,6 +354,63 @@ const positiveInt = (value: unknown): number | null => {
   return parsed;
 };
 
+const httpsUrl = (value: unknown): string | null => typeof value === "string" && value.startsWith("https://") ? value : null;
+
+// The receipt link is display data: a Stripe read failure must not block the credit grant.
+const receiptOf = async (ctx: Ctx, path: string, pick: (body: Record<string, unknown>) => unknown): Promise<string | null> => {
+  try {
+    return httpsUrl(pick(await stripe(ctx, "GET", path)));
+  } catch {
+    return null;
+  }
+};
+
+const invoiceReceipt = (ctx: Ctx, invoice: unknown): Promise<string | null> => typeof invoice === "string" && invoice
+  ? receiptOf(ctx, "/v1/invoices/" + encodeURIComponent(invoice), (body) => body.hosted_invoice_url)
+  : Promise.resolve(null);
+
+const chargeReceipt = (ctx: Ctx, intent: unknown): Promise<string | null> => typeof intent === "string" && intent
+  ? receiptOf(ctx, "/v1/payment_intents/" + encodeURIComponent(intent) + "?expand[]=latest_charge",
+    (body) => (body.latest_charge as { receipt_url?: unknown } | null | undefined)?.receipt_url)
+  : Promise.resolve(null);
+
+// A plan change is a new Checkout subscription; end the old one with a prorated credit so the company never pays twice.
+async function cancelReplaced(ctx: Ctx, customer: string, keep: string): Promise<void> {
+  const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
+  const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
+  for (const sub of subs) {
+    if (String(sub.id) === keep) continue;
+    await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)) + "?prorate=true&invoice_now=true");
+  }
+}
+
+const linePlan = (env: CoreEnv, obj: Record<string, unknown>): "BASIC" | "PRO" | "ULTRA" | null => {
+  type Line = { amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } } };
+  const lines = ((obj.lines as { data?: Line[] } | undefined)?.data) || [];
+  for (const line of lines) {
+    if (!(Number(line.amount) > 0)) continue;
+    const plan = employerPlanByPrice(env, line.price?.id || line.pricing?.price_details?.price || "");
+    if (plan) return plan;
+  }
+  return null;
+};
+
+// Renewals are payment rows only: the month's credits come from ensureMonthlyGrant. The first invoice is the checkout row.
+async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
+  if (obj.billing_reason !== "subscription_cycle") return;
+  const amount = positiveInt(obj.amount_paid);
+  const customer = String(obj.customer || "");
+  if (amount == null || !customer || !obj.id) return;
+  const company = await one(ctx.deps.query, "SELECT id, plan FROM companies WHERE stripe_customer_id = $1", [customer]);
+  if (!company) return;
+  const plan = linePlan(ctx.env, obj) ?? employerPlanOf(company.plan);
+  await companyLedger(ctx, String(company.id), 0, String(obj.id), {
+    description: plan ? planDescription(plan) : null,
+    amountUsdCents: amount,
+    receiptUrl: httpsUrl(obj.hosted_invoice_url),
+  });
+}
+
 async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
   if (obj.payment_status === "unpaid") return;
   const meta = metaOf(obj);
@@ -333,19 +420,32 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     const ownerId = String(meta.ownerId || obj.client_reference_id || "");
     if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
     const reference = String(obj.id || "");
-    if (String(meta.audience || "") === "EMPLOYER") await companyLedger(ctx, ownerId, micro, reference);
+    if (String(meta.audience || "") === "EMPLOYER") {
+      await companyLedger(ctx, ownerId, micro, reference, {
+        description: TOPUP_DESCRIPTION,
+        amountUsdCents: positiveInt(obj.amount_total),
+        receiptUrl: await chargeReceipt(ctx, obj.payment_intent),
+      });
+    }
     else await userLedger(ctx, ownerId, micro, reference);
     return;
   }
   if (String(meta.audience || "") === "EMPLOYER") {
     const companyId = String(meta.ownerId || obj.client_reference_id || "");
     if (!UUID.test(companyId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
-    const planId = String(meta.plan || meta.planId || "");
-    if (!EMPLOYER_PLANS.has(planId)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+    const planId = employerPlanOf(meta.plan || meta.planId);
+    if (!planId) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+    const customer = String(obj.customer || "");
+    const subscription = String(obj.subscription || "");
     await query(ctx.deps.query,
-      "UPDATE companies SET plan = $2, stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id = $1",
-      [companyId, planId, String(obj.customer || "")]);
-    await companyLedger(ctx, companyId, grantMicro("EMPLOYER", planId), String(obj.id || ""));
+      "UPDATE companies SET plan = $2, stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id), stripe_subscription_id = COALESCE(NULLIF($4, ''), stripe_subscription_id) WHERE id = $1",
+      [companyId, planId, customer, subscription]);
+    await companyLedger(ctx, companyId, grantMicro("EMPLOYER", planId), String(obj.id || ""), {
+      description: planDescription(planId),
+      amountUsdCents: positiveInt(obj.amount_total),
+      receiptUrl: await invoiceReceipt(ctx, obj.invoice),
+    });
+    if (customer && subscription) await cancelReplaced(ctx, customer, subscription);
     return;
   }
   const userId = String(obj.client_reference_id || "");
@@ -365,12 +465,15 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
   const canceled = type === "customer.subscription.deleted" || ENDED.has(String(obj.status ?? ""));
   const items = ((obj.items as { data?: { price?: { id?: string } }[] } | undefined)?.data) || [];
   const priceId = items[0]?.price?.id || "";
+  const current = "stripe_customer_id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)";
   const company = await one(ctx.deps.query,
     canceled
-      ? "UPDATE companies SET plan = NULL WHERE stripe_customer_id = $1 RETURNING id"
-      : "UPDATE companies SET plan = COALESCE($2, plan) WHERE stripe_customer_id = $1 RETURNING id",
-    canceled ? [customer] : [customer, priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
+      ? `UPDATE companies SET plan = NULL WHERE ${current} RETURNING id`
+      : `UPDATE companies SET plan = COALESCE($3, plan) WHERE ${current} RETURNING id`,
+    canceled ? [customer, String(obj.id || "")] : [customer, String(obj.id || ""), priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
   if (company) return;
+  const replaced = await one(ctx.deps.query, "SELECT id FROM companies WHERE stripe_customer_id = $1", [customer]);
+  if (replaced) return;
   const period = obj.current_period_end ? new Date(Number(obj.current_period_end) * 1000).toISOString() : null;
   const status = canceled ? "CANCELED" : "ACTIVE";
   const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
@@ -445,8 +548,7 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
       mode: "payment",
       "line_items[0][price]": price,
       "line_items[0][quantity]": String(amount),
-      success_url: ctx.env.STRIPE_SUCCESS_URL || "",
-      cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
+      ...returnUrls(ctx, "credits"),
       client_reference_id: ownerId,
       "metadata[amountMicroCredits]": String(amount * DISPLAY_MICRO),
       "metadata[audience]": "EMPLOYER",
