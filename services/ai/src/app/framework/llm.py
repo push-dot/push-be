@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 
-_GO_PREFIX = "opencode-go/"
 _CALLBACK = None
 
 
@@ -12,32 +11,18 @@ def chat_model_for(
     web_search: bool = False,
     streaming: bool = True,
     config,
-    session_id: str = "",
     cls=None,
 ):
-    from app.domain.plan_levers import provider_for
     from app.framework.models import chat_model
 
     model = levers.model
-    headers = None
-    if model.startswith(_GO_PREFIX):
-        model = model[len(_GO_PREFIX) :]
-        base_url = config.opencode_go_base_url
-        api_key = config.opencode_go_key
-        if session_id:
-            headers = {"x-opencode-session": session_id}
-    else:
-        base_url = config.ai_base_url
-        api_key = config.managed_ai_key
     if web_search and not model.endswith(":online"):
         model += ":online"
     return chat_model(
-        api_key=api_key,
+        api_key=config.managed_ai_key,
         model=model,
-        base_url=base_url,
+        base_url=config.ai_base_url,
         reasoning=(levers.effort or "").lower(),
-        headers=headers,
-        provider=provider_for(model, config),
         streaming=streaming,
         cls=cls,
     )

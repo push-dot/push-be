@@ -17,7 +17,6 @@ export interface CoreEnv {
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
-  MANAGED_GO?: string;
   TOKEN_ENCRYPTION_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

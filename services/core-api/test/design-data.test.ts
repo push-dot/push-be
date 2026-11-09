@@ -21,7 +21,7 @@ type Call = { sql: string; params: unknown[] };
 type Err = { error: { code: string; details: { field?: string } | null } };
 type Page = { data: { id: string }[]; page: { nextCursor: string | null; hasMore: boolean; total: number } };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 

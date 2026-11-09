@@ -71,11 +71,10 @@ class GateModel:
         else:
             from app.config import Config
             config = Config()
-        web = bool(self.ai.web_search) and not str(self.ai.model).startswith("opencode-go/")
+        web = bool(self.ai.web_search)
         lc = chat_model_for(
             PlanLevers(self.ai.model, self.ai.effort, "", "", "", 0),
-            web_search=web, streaming=True, config=config,
-            session_id=str(self.user_id or ""), cls=self.cls)
+            web_search=web, streaming=True, config=config, cls=self.cls)
         store = getattr(self.gate, "usage", None)
         callback = None
         if store is not None and self.turn.get("usage_id") is not None:

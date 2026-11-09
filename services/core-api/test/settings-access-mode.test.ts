@@ -9,7 +9,7 @@ const NOW = "2026-10-21T00:00:00.000Z";
 
 type Call = { sql: string; params: unknown[] };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 

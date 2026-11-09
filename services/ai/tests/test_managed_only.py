@@ -15,7 +15,7 @@ def _client():
     app = FastAPI()
     app.add_exception_handler(DomainError, domain_error_handler)
     app.include_router(ai.router, prefix="/api/v1")
-    app.state.deps = SimpleNamespace(cfg=SimpleNamespace(managed_ai=True, managed_go=False))
+    app.state.deps = SimpleNamespace(cfg=SimpleNamespace(managed_ai=True))
     return TestClient(app)
 
 
@@ -30,4 +30,4 @@ def test_models_are_available_only_through_managed():
     assert r.status_code == 200
     rows = {m["model"]: m["available"] for m in r.json()["data"]}
     assert rows["deepseek/deepseek-v4.1-flash"] is True
-    assert rows["opencode-go/deepseek-v4.1-flash"] is False
+    assert "opencode-go/deepseek-v4.1-flash" not in rows

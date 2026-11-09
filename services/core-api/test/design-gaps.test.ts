@@ -14,7 +14,7 @@ const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
 
 type Call = { sql: string; params: unknown[] };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
 const authed = (seen: Call[], employer: boolean, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {

@@ -961,7 +961,7 @@ test("email login clears the company deletion mark", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "ada@push.app", password: "secret123" }),
     }),
-    { APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" },
+    { APP_ENV: "production", MANAGED_AI: "1" },
     { query, now: () => NOW },
   );
   assert.equal(res.status, 200);

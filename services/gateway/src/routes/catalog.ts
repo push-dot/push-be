@@ -15,7 +15,7 @@ export async function aiModels(request: Request, env: FrontEnv, deps: Deps, url:
   if (provider && !validProvider(provider)) return fieldError("provider", "unsupported provider", rid);
   const ttl = Math.max(1, Number(env.MODEL_CACHE_TTL || "600") || 600);
   const text = pyJson({
-    data: listModels({ provider, managedAi: flag(env.MANAGED_AI), managedGo: flag(env.MANAGED_GO) }),
+    data: listModels({ provider, managedAi: flag(env.MANAGED_AI) }),
   });
   return conditional(text, request, rid, `private, max-age=${ttl}`);
 }

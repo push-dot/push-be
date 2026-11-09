@@ -15,7 +15,7 @@ const NOW = "2026-10-21T00:00:00.000Z";
 type Call = { sql: string; params: unknown[] };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0", ...extra,
+  APP_ENV: "production", MANAGED_AI: "1", ...extra,
 });
 
 const deps = (query: Deps["query"], fetchImpl?: typeof fetch): Deps => ({

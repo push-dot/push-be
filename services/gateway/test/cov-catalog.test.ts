@@ -7,7 +7,7 @@ const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
 const NOW = new Date("2026-10-18T00:00:00Z");
 const MODELS = "https://push-be.example/api/v1/ai/models";
 const TOKENS: Record<string, string> = { [USER_A]: "tok-a" };
-const GO = "opencode-go/deepseek-v4.1-flash";
+const FREE = "deepseek/deepseek-v4.1-flash";
 
 type Seen = Array<[string, unknown[]]>;
 
@@ -18,7 +18,6 @@ const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
   CORE: noBinding,
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   ...extra,
 });
 
@@ -54,10 +53,11 @@ const fake = (seen: Seen, f: Fake): Query => async (sql, params = []) => {
 const get = (user: string, query = "", headers: Record<string, string> = {}): Request =>
   new Request(MODELS + query, { headers: { authorization: `Bearer ${TOKENS[user]}`, ...headers } });
 
-const goAvailable = async (res: Response): Promise<boolean> => {
+const freeAvailable = async (res: Response): Promise<boolean> => {
   assert.equal(res.status, 200);
   const body = await res.json() as { data: { model: string; available: boolean }[] };
-  return body.data.find((m) => m.model === GO)!.available;
+  assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/")), false);
+  return body.data.find((m) => m.model === FREE)!.available;
 };
 
 
@@ -90,16 +90,16 @@ test("an unknown token on the shared read is 401 and the next request re-checks 
   assert.ok(queried > 0, "a miss must re-check the token");
 });
 
-test("availability follows MANAGED_AI and MANAGED_GO only", async () => {
+test("availability follows MANAGED_AI only", async () => {
   resetLimits();
   const seen: Seen = [];
   const res = await handle(get(USER_A), env(), deps(fake(seen, { user: USER_A })));
-  assert.equal(await goAvailable(res), false);
+  assert.equal(await freeAvailable(res), true);
   assert.ok(seen.some(([sql]) => isShared(sql)));
   assert.equal(seen.some(([sql]) => sql.includes("ai_keys")), false);
 
   resetLimits();
-  assert.equal(await goAvailable(await handle(get(USER_A), env({ MANAGED_GO: "1" }), deps(fake([], { user: USER_A })))), true);
+  assert.equal(await freeAvailable(await handle(get(USER_A), env({ MANAGED_AI: "0" }), deps(fake([], { user: USER_A })))), false);
 
   resetLimits();
   const denied = await handle(get(USER_A), env(), deps(fake([], { user: USER_A, shared: "none" })));
