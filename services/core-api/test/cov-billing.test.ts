@@ -15,7 +15,7 @@ type Call = { sql: string; params: unknown[] };
 type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; details: unknown } };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production", STRIPE_SECRET_KEY: "sk_test", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_PRICE_PRO: "price_pro",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1", STRIPE_SECRET_KEY: "sk_test", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_PRICE_PRO: "price_pro",
   STRIPE_PRICE_ULTRA: "price_ultra", STRIPE_PRICE_TOPUP: "price_topup", STRIPE_PORTAL_RETURN_URL: "https://app.example/billing",
   STRIPE_RETURN_ORIGINS: "https://web.example", ...extra,
 });
@@ -160,7 +160,7 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
   test(`billing webhook: a personal subscription update on ${price} sets plan ${plan}`, async () => {
     const w = world({}, (sql) => {
       if (sql.startsWith("INSERT INTO stripe_events")) return [{ event_id: "evt_1" }];
-      if (sql.includes("UPDATE users")) return [{ id: USER }];
+      if (sql.startsWith("SELECT id FROM users")) return [{ id: USER }];
       return undefined;
     });
     const sub = { id: "sub_1", customer: "cus_1", status: "active", items: { data: [{ price: { id: price }, current_period_end: 1767225600 }] } };
@@ -168,16 +168,48 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
       envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json(sub)) });
     assert.equal(res.status, 200);
     const update = w.seen.find((c) => c.sql.includes("UPDATE users"))!;
-    assert.deepEqual(update.params, ["cus_1", "ACTIVE", "2026-01-01T00:00:00.000Z", plan, "sub_1", false]);
+    assert.deepEqual(update.params, [USER, "ACTIVE", "2026-01-01T00:00:00.000Z", plan]);
   });
 }
 
-test("billing webhook: an update for an unknown customer fails and forgets the event so Stripe retries", async () => {
+test("billing webhook: an update for an unknown customer fails without a Stripe read and forgets the event so Stripe retries", async () => {
   const w = world({}, (sql) => sql.startsWith("INSERT INTO stripe_events") ? [{ event_id: "evt_2" }] : undefined);
+  const calls: { url: string; method: string; body: string }[] = [];
   const res = await read(await handle(await signed({
     id: "evt_2", type: "customer.subscription.updated", data: { object: { id: "sub_ghost", customer: "cus_ghost", status: "active" } },
-  }), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json({ id: "sub_ghost", customer: "cus_ghost", status: "active" })) }));
+  }), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch(calls, () => json({ id: "sub_ghost", customer: "cus_ghost", status: "active" })) }));
   assert.equal(res.status, 500);
+  assert.equal(calls.length, 0);
   const forget = w.seen.find((c) => c.sql.startsWith("DELETE FROM stripe_events"));
   assert.deepEqual(forget?.params, ["evt_2"]);
+});
+
+test("payments stay closed unless PAYMENTS_ENABLED is 1, and nothing reaches stripe or the ledger", async () => {
+  const noFetch = (() => { throw new Error("must not call stripe"); }) as unknown as typeof fetch;
+  const paths = [
+    ["/api/v1/billing/checkout", { plan: "PRO" }],
+    ["/api/v1/billing/topup", { quantity: 1 }],
+    ["/api/v1/billing/iap/verify", { platform: "ios", productId: "push.credits.topup", transactionId: "t1", receipt: "r" }],
+  ] as const;
+  for (const flag of [undefined, "0", "true"]) {
+    for (const [path, body] of paths) {
+      resetLimits();
+      const w = world({ employer: path.endsWith("topup"), role: path.endsWith("topup") ? "owner" : null });
+      const res = await read(await handle(request("POST", path, body), envOf({ PAYMENTS_ENABLED: flag }),
+        { query: w.query, now: () => NOW, fetch: noFetch }));
+      assert.equal(res.status, 503, `${path} with ${flag}`);
+      assert.equal(res.body.error?.code, "PAYMENTS_DISABLED");
+      assert.ok(!w.seen.some((call) => /billing_ledger|UPDATE users|UPDATE companies/.test(call.sql)), path);
+    }
+  }
+  resetLimits();
+  const status = await handle(request("GET", "/api/v1/billing"), envOf({ PAYMENTS_ENABLED: undefined }),
+    { query: world().query, now: () => NOW, fetch: noFetch });
+  assert.equal(status.status, 200);
+  for (const [path, body] of paths) {
+    resetLimits();
+    const open = await read(await handle(request("POST", path, body), envOf(),
+      { query: world({ employer: path.endsWith("topup"), role: "owner" }).query, now: () => NOW, fetch: stripeFetch([], () => json({})) }));
+    assert.notEqual(open.body.error?.code, "PAYMENTS_DISABLED", path);
+  }
 });

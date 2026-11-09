@@ -1,8 +1,8 @@
-import { DISPLAY_MICRO, carryInto, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, monthKey, periodKey, periodsOf, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
-import { isMissingRelation, one, query } from "../db.ts";
+import { isMissingRelation, one, query, type Transaction } from "../db.ts";
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
@@ -15,8 +15,8 @@ const MAX_PACKS = 20;
 const LIVE = new Set(["active", "trialing"]);
 const CANCELLABLE = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
-// Stripe never brings these back; unpaid turns active again once its invoice is paid.
-const FINAL = new Set(["canceled", "incomplete_expired"]);
+// Written on the cancel that refunds a replaced subscription's unused time, so the successor carries that period's credits.
+const REFUNDED = "push: replaced, unused time refunded";
 const UUID = /^[0-9a-f-]{36}$/i;
 
 async function readObject(request: Request): Promise<Record<string, unknown>> {
@@ -93,6 +93,16 @@ const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "
     "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
     [crypto.randomUUID(), companyId, kind, referenceId, detail, ctx.now.toISOString()]);
 };
+
+// Thrown to fail a webhook with an alert that must outlive the rolled-back transaction.
+type Alert = { companyId: string; kind: "CANCEL_FAILED"; referenceId: string; detail: string };
+class AlertingError extends Error {
+  readonly alert: Alert;
+  constructor(alert: Alert) {
+    super(alert.detail);
+    this.alert = alert;
+  }
+}
 
 const resolveCancelAlert = (ctx: Ctx, subscriptionId: string): Promise<unknown> => query(ctx.deps.query,
   "UPDATE billing_alerts SET resolved_at = $2 WHERE kind = 'CANCEL_FAILED' AND reference_id = $1 AND resolved_at IS NULL",
@@ -344,21 +354,28 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   let event: Record<string, unknown> = {};
   try { event = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>; } catch { event = {}; }
   if (!event.id) throw new HttpError(400, "VALIDATION_ERROR", "invalid webhook payload");
-  const fresh = await one(ctx.deps.query,
-    "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
-    [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
-  if (!fresh) return data(200, { received: true }, ctx.rid);
   const obj = ((event.data as { object?: Record<string, unknown> } | undefined)?.object) || {};
+  // One transaction per event: each handler locks the company (or user) row first, so the billing changes of one owner run one
+  // at a time and a failure rolls back the event row with the rest. In-memory test fakes have no transactions.
+  const inTransaction: Transaction = ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
   try {
-    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-      await checkoutCompleted(ctx, obj);
-    }
-    else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
-      await subscriptionChanged(ctx, String(event.type), obj);
-    }
-    else if (event.type === "invoice.paid") await invoicePaid(ctx, obj);
+    await inTransaction(async (q) => {
+      const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
+      const fresh = await one(q,
+        "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+        [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
+      if (!fresh) return;
+      if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+        await checkoutCompleted(tx, obj);
+      }
+      else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+        await subscriptionChanged(tx, String(event.type), obj);
+      }
+      else if (event.type === "invoice.paid") await invoicePaid(tx, obj);
+    });
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
+    if (err instanceof AlertingError) await raiseAlert(ctx, err.alert.companyId, err.alert.kind, err.alert.referenceId, err.alert.detail);
     throw err;
   }
   return data(200, { received: true }, ctx.rid);
@@ -412,7 +429,8 @@ const olderThan = (sub: Record<string, unknown>, keep: { id: string; created: nu
 
 // A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
 // Unused time is refunded only while the replaced period's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
-// A past_due or unpaid subscription is never refunded: Stripe would credit unused time of a period whose invoice was never paid.
+// A past_due or unpaid subscription is never refunded: Stripe would credit unused time of a period whose invoice was never paid. Its open
+// invoices are voided first, so a late payment cannot land on a subscription the company left.
 async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }): Promise<void> {
   for (const customer of customers) {
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
@@ -420,42 +438,37 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
       if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
       const id = String(sub.id);
       const refund = LIVE.has(String(sub.status)) && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now) <= grantMicro("EMPLOYER", keep.plan);
+      const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
-        await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(id) + (refund ? "?prorate=true&invoice_now=true" : ""));
-      } catch (err) {
-        await raiseAlert(ctx, companyId, "CANCEL_FAILED", id, `replaced subscription still billing, kept ${keep.id}`);
-        throw err;
+        if (refund) {
+          await stripe(ctx, "DELETE", path + "?" + new URLSearchParams({ prorate: "true", invoice_now: "true", "cancellation_details[comment]": REFUNDED }));
+        } else {
+          const open = await stripe(ctx, "GET", "/v1/invoices?status=open&limit=100&subscription=" + encodeURIComponent(id));
+          for (const invoice of subscriptionsOf(open)) await stripe(ctx, "POST", "/v1/invoices/" + encodeURIComponent(String(invoice.id)) + "/void");
+          await stripe(ctx, "DELETE", path);
+        }
+      } catch {
+        throw new AlertingError({ companyId, kind: "CANCEL_FAILED", referenceId: id, detail: `replaced subscription still billing, kept ${keep.id}` });
       }
       await resolveCancelAlert(ctx, id);
     }
   }
 }
 
-// Plan credits carry only out of a credited period still running at `start` on a subscription Stripe still bills, which the switch
-// then ends with a refund. An ended subscription, or a past_due one whose credited period is over, carries nothing: the new plan is paid in full.
-async function runningKey(ctx: Ctx, subscriptionId: string, periodUnix: number | null, start: Date): Promise<string | null> {
+// The period whose unused time a replacing checkout refunded, read back from Stripe so a retry after a crash finds it too.
+async function refundedStart(ctx: Ctx, subscriptionId: string): Promise<number | null> {
   const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
-  const item = itemOf(sub);
-  const running = CANCELLABLE.has(String(sub.status)) && Number(item?.current_period_end) > start.getTime() / 1000
-    && (periodUnix == null || Number(item?.current_period_start) <= periodUnix);
-  if (!running) return null;
-  return periodUnix == null ? monthKey(start) : periodKey(subscriptionId, new Date(periodUnix * 1000));
-}
-
-// A retry that no longer sees the switch finds what it replaced again: the latest period of the previous subscription, whose rows are
-// final once the company left it, or the month when the company came from calendar months. Only the subscription's first period carries.
-async function replacedKey(ctx: Ctx, companyId: string, subscriptionId: string, start: Date): Promise<string | null> {
-  const at = start.getTime() / 1000;
-  const periods = await periodsOf(ctx.deps.query, companyId);
-  if (periods.some((period) => period.subscriptionId === subscriptionId && period.start < at)) return null;
-  const previous = periods.filter((period) => period.subscriptionId !== subscriptionId && period.start <= at).sort((a, b) => b.start - a.start)[0];
-  return previous ? runningKey(ctx, previous.subscriptionId, previous.start, start) : monthKey(start);
+  const details = sub.cancellation_details as { comment?: unknown } | null | undefined;
+  return sub.status === "canceled" && details?.comment === REFUNDED ? positiveInt(itemOf(sub)?.current_period_start) : null;
 }
 
 // Acts on a live subscription of the paid plan only, and never moves the company to an older one than it has,
 // so a late or replayed checkout can neither point the company at an ended subscription nor cancel the live one.
 async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | "PRO" | "ULTRA", customer: string, subscriptionId: string): Promise<void> {
   if (!customer || !subscriptionId) return;
+  const q = ctx.deps.query;
+  const before = await one(q, "SELECT plan, stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1 FOR NO KEY UPDATE", [companyId]);
+  if (!before) return;
   const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
   if (!LIVE.has(String(sub.status)) || priceOf(sub) !== employerPrice(ctx.env, planId) || sub.customer !== customer) {
     console.error(`billing: company ${companyId} checkout subscription ${subscriptionId} not adopted (${String(sub.status)})`);
@@ -464,38 +477,25 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
     }
     return;
   }
-  const q = ctx.deps.query;
   const start = new Date(Number(itemOf(sub)?.current_period_start ?? sub.created) * 1000);
-  const before = await one(q, "SELECT stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1", [companyId]);
-  const current = String(before?.stripe_subscription_id ?? "");
-  const switching = current !== subscriptionId && !(current && olderThan(sub, { id: current, created: Number(before?.created_unix) }));
-  // A company on calendar months leaves the month its new period starts in, the same month on the first delivery and on every retry.
-  const previousKey = !switching ? null
-    : current ? await runningKey(ctx, current, before?.period_unix == null ? null : Number(before.period_unix), start) : monthKey(start);
-  // An upgrade or same-plan swap keeps the tiers the replaced period granted; a downgrade starts the lower plan fresh.
-  const carry = async (key: string): Promise<number> => {
-    const level = await keyLevel(q, companyId, key);
-    return level <= grantMicro("EMPLOYER", planId) ? level : 0;
-  };
-  // Written before the switch so a retry after a crash still finds them.
-  if (previousKey) await carryInto(q, { companyId, key: periodKey(subscriptionId, start), level: await carry(previousKey), now: ctx.now });
-  await query(q,
-    "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = CASE WHEN stripe_subscription_id IS DISTINCT FROM $4 THEN $6::timestamptz ELSE credit_period_start END WHERE id = $1 AND stripe_ended_subscription_id IS DISTINCT FROM $4 AND (stripe_subscription_created_at IS NULL OR stripe_subscription_created_at < $5::timestamptz OR (stripe_subscription_created_at = $5::timestamptz AND stripe_subscription_id COLLATE \"C\" <= $4))",
-    [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
-  const kept = await one(q, "SELECT plan, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1", [companyId]);
-  const keepPlan = employerPlanOf(kept?.plan);
-  const keepId = String(kept?.stripe_subscription_id ?? "");
-  if (!keepPlan || !keepId) return;
-  if (keepId === subscriptionId && kept?.period_unix != null) {
-    const periodStart = new Date(Number(kept.period_unix) * 1000);
-    // The replaced period can still grant between the carry rows and the switch (a billing read of the month, a retried checkout of
-    // the replaced subscription), so its level is read again here, also on a retry that no longer sees the switch.
-    const from = switching ? previousKey : periodStart.getTime() === start.getTime() ? await replacedKey(ctx, companyId, subscriptionId, start) : null;
-    await grantPeriod(q, { companyId, subscriptionId, periodStart, plan: planId, carry: from ? await carry(from) : 0, now: ctx.now });
+  const current = String(before.stripe_subscription_id ?? "");
+  const switching = current !== subscriptionId && !(current && olderThan(sub, { id: current, created: Number(before.created_unix) }));
+  const keepPlan = switching ? planId : employerPlanOf(before.plan);
+  const keep = switching ? { id: subscriptionId, created: Number(sub.created) } : { id: current, created: Number(before.created_unix) };
+  if (switching) {
+    await query(q,
+      "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = $6::timestamptz WHERE id = $1",
+      [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
   }
-  const previous = before?.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
-  const customers = previous && previous !== customer ? [customer, previous] : [customer];
-  await cancelReplaced(ctx, companyId, customers, { id: keepId, created: Number(kept?.created_unix), plan: keepPlan });
+  const previous = before.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
+  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan });
+  if (!switching) return;
+  // An upgrade or same-plan swap keeps the tiers of the period whose unused time was just refunded; a downgrade, or a replaced
+  // subscription that was not refunded, starts the new plan fresh. A company on calendar months carries the month its period starts in.
+  const refunded = before.period_unix == null ? null : current ? await refundedStart(ctx, current) : null;
+  const from = before.period_unix == null ? monthKey(start) : refunded ? periodKey(current, new Date(refunded * 1000)) : null;
+  const level = from ? await keyLevel(q, companyId, from) : 0;
+  await grantPeriod(q, { companyId, subscriptionId, periodStart: start, plan: planId, carry: level <= grantMicro("EMPLOYER", planId) ? level : 0, now: ctx.now });
 }
 
 const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
@@ -513,7 +513,8 @@ const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" |
   return null;
 };
 
-// A paid renewal of the company's current subscription opens its next credit period; past_due never reaches here.
+// A paid cycle invoice grants its period, whatever order it arrives in: also one paid late after a newer period, and one of a
+// subscription the company has since left, unless that period is the one the replacing checkout refunded (its credits carried).
 // The total, not amount_paid, is the charge: a renewal paid from the Stripe balance has amount_paid 0.
 // The first invoice is the checkout row. A replaced subscription's final invoice is negative and becomes Stripe balance.
 async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
@@ -521,7 +522,7 @@ async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void
   const total = Number(obj.total);
   const customer = String(obj.customer || "");
   if (!Number.isSafeInteger(total) || !customer || !obj.id) return;
-  const company = await one(ctx.deps.query, "SELECT id, plan, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1", [customer]);
+  const company = await one(ctx.deps.query, "SELECT id, plan, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
   if (!company) return;
   const companyId = String(company.id);
   const line = planLine(ctx.env, obj);
@@ -532,11 +533,13 @@ async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void
     receiptUrl: httpsUrl(obj.hosted_invoice_url),
   });
   const subscriptionId = String((obj.parent as { subscription_details?: { subscription?: unknown } } | null | undefined)?.subscription_details?.subscription ?? "");
-  if (total < 0 || !subscriptionId || subscriptionId !== String(company.stripe_subscription_id ?? "")) return;
+  const current = subscriptionId === String(company.stripe_subscription_id ?? "");
+  if (total < 0 || !subscriptionId || (!current && total === 0)) return;
   if (!line?.start) {
     await raiseAlert(ctx, companyId, "NOT_GRANTED", String(obj.id), `paid renewal of ${subscriptionId} has no employer plan line`);
     return;
   }
+  if (!current && await refundedStart(ctx, subscriptionId) === line.start) return;
   const periodStart = new Date(line.start * 1000);
   await query(ctx.deps.query,
     "UPDATE companies SET credit_period_start = $2::timestamptz WHERE id = $1 AND stripe_subscription_id = $3 AND (credit_period_start IS NULL OR credit_period_start < $2::timestamptz)",
@@ -589,50 +592,45 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
 
 // Subscription events arrive late and out of order. A delete is final; an update is read back from Stripe and applied only to
 // the company's current subscription, so a stale copy can neither revive the plan of an ended one nor end a live one.
-// An ended subscription is recorded, so an update read from Stripe before the delete and written after it does nothing.
 async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: string, currentId: string, subscriptionId: string): Promise<void> {
-  let final = type === "customer.subscription.deleted";
-  if (!final) {
+  if (type !== "customer.subscription.deleted") {
     if (!subscriptionId || subscriptionId !== currentId) return;
     const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
     if (!ENDED.has(String(sub.status))) {
       const plan = LIVE.has(String(sub.status)) ? employerPlanByPrice(ctx.env, priceOf(sub)) : null;
-      if (plan) {
-        await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2 AND stripe_ended_subscription_id IS DISTINCT FROM $2",
-          [companyId, subscriptionId, plan]);
-      }
+      if (plan) await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2", [companyId, subscriptionId, plan]);
       return;
     }
-    final = FINAL.has(String(sub.status));
   }
   await query(ctx.deps.query,
-    "UPDATE companies SET plan = NULL, stripe_ended_subscription_id = CASE WHEN $3::boolean THEN $2 ELSE stripe_ended_subscription_id END WHERE id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)",
-    [companyId, subscriptionId, final]);
+    "UPDATE companies SET plan = NULL WHERE id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)",
+    [companyId, subscriptionId]);
   await resolveCancelAlert(ctx, subscriptionId);
 }
 
 // Personal Stripe subscriptions are legacy; they follow the employer rules: an update is read back from Stripe, a delete is final.
+// An active App Store or Google Play subscription owns the user's plan, so a late Stripe event leaves it alone.
 async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
   const customer = String(obj.customer || "");
   const subscriptionId = String(obj.id || "");
   if (!customer || !subscriptionId) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
-  const company = await one(ctx.deps.query, "SELECT id, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1", [customer]);
+  const company = await one(ctx.deps.query, "SELECT id, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
   if (company) {
     await companySubscriptionChanged(ctx, type, String(company.id), String(company.stripe_subscription_id ?? ""), subscriptionId);
     return;
   }
+  const user = await one(ctx.deps.query, "SELECT id FROM users WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
+  if (!user) throw new HttpError(500, "INTERNAL", "internal error");
   const deleted = type === "customer.subscription.deleted";
   const sub = deleted ? obj : await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
   const canceled = deleted || ENDED.has(String(sub.status ?? ""));
   const priceId = priceOf(sub);
   const end = itemOf(sub)?.current_period_end;
   const period = end ? new Date(Number(end) * 1000).toISOString() : null;
-  const status = canceled ? "CANCELED" : "ACTIVE";
   const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
-  const user = await one(ctx.deps.query,
-    "WITH target AS (SELECT id FROM users WHERE stripe_customer_id = $1), updated AS (UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan), stripe_ended_subscription_id = CASE WHEN $6::boolean THEN $5 ELSE stripe_ended_subscription_id END WHERE id IN (SELECT id FROM target) AND ($2 = 'CANCELED' OR stripe_ended_subscription_id IS DISTINCT FROM $5) RETURNING id) SELECT id FROM target",
-    [customer, status, period, plan, subscriptionId, deleted || FINAL.has(String(sub.status ?? ""))]);
-  if (!user) throw new HttpError(500, "INTERNAL", "internal error");
+  await query(ctx.deps.query,
+    "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE')",
+    [String(user.id), canceled ? "CANCELED" : "ACTIVE", period, plan]);
 }
 
 const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {
@@ -768,12 +766,14 @@ const grantNote = async (
   const upper = notificationType.toUpperCase();
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
     const row = await one(ctx.deps.query,
-      "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
+      "SELECT user_id, product_id FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = 'CANCELED', expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
     if (!row?.user_id) return;
+    // A refunded credit top-up is not the subscription: the plan stays.
+    if (productKind(ctx.env, String(row.product_id ?? productId)) === "TOPUP") return;
     await query(ctx.deps.query,
       "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
       [String(row.user_id), expiresAt]);
