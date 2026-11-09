@@ -155,21 +155,23 @@ async def test_open_billing_alerts_fire_until_resolved():
 
 @pytest.mark.asyncio
 async def test_open_billing_alerts_is_zero_before_the_table_exists():
-    import asyncpg
-
     from app.queue.admin import AdminJobs
 
-    class Missing:
-        async def fetchval(self, sql, *args):
-            raise asyncpg.exceptions.UndefinedTableError('relation "billing_alerts" does not exist')
+    class PgError(Exception):
+        def __init__(self, sqlstate):
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
 
-    class Down:
-        async def fetchval(self, sql, *args):
-            raise asyncpg.exceptions.ConnectionDoesNotExistError("closed")
+    class Conn:
+        def __init__(self, sqlstate):
+            self.sqlstate = sqlstate
 
-    assert await AdminJobs(Missing()).open_billing_alerts() == 0
-    with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
-        await AdminJobs(Down()).open_billing_alerts()
+        async def fetchval(self, sql, *args):
+            raise PgError(self.sqlstate)
+
+    assert await AdminJobs(Conn("42P01")).open_billing_alerts() == 0
+    with pytest.raises(PgError):
+        await AdminJobs(Conn("08003")).open_billing_alerts()
 
 
 @pytest.mark.asyncio
