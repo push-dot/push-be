@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword } from "../mail/password.ts";
 import { allow } from "../ratelimit.ts";
 import type { Ctx } from "../types.ts";
 import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
+import { TERMS_VERSION } from "./consents.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const PASSWORD_MIN = 8;
@@ -148,7 +149,7 @@ const verify = async (ctx: Ctx): Promise<Response> => {
   const token = requireString(body, "token");
   const hash = await sha256Hex(token);
   const found = await one(ctx.deps.query,
-    "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
+    "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference, s.created_at FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
     [hash]);
   const row = await requireFresh(found, ctx.now, async (r) => String(r.email).toLowerCase());
   if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
@@ -169,9 +170,11 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     throw err;
   }
   await Promise.all([
-    asBool(row.consent_reference)
-      ? query(ctx.deps.query, "INSERT INTO user_consents (user_id, reference_data, updated_at) VALUES ($1,$2,$3)", [userId, true, now])
-      : null,
+    // Email signup is employer-only and its form cannot be sent without the 이용약관·개인정보 처리방침
+    // box, so the signup request (its created_at) is the agreement.
+    query(ctx.deps.query,
+      "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz)",
+      [userId, asBool(row.consent_reference), now, TERMS_VERSION, row.created_at]),
     query(ctx.deps.query, "DELETE FROM email_signups WHERE id = $1", [String(row.signup_id)]),
   ]);
   return data(200, await issue(ctx, userId), ctx.rid);

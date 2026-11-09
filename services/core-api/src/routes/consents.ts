@@ -5,7 +5,7 @@ import type { Ctx } from "../types.ts";
 
 const PATH = "/api/v1/me/consents";
 const TERMS_PATH = "/api/v1/me/consents/terms";
-const TERMS_VERSION = "2026-10-29";
+export const TERMS_VERSION = "2026-10-29";
 const REQUIRED = ["age14", "serviceTerms", "privacy"] as const;
 const SELECT = "SELECT reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at, marketing, marketing_at FROM user_consents WHERE user_id = $1";
 // Every parameter is cast: $2 is both a VALUES column and a CASE branch, and without

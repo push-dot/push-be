@@ -5,6 +5,7 @@ import { pkceChallenge } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { createMailer } from "../src/mail/mailer.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+import { TERMS_VERSION } from "../src/routes/consents.ts";
 
 const NOW = new Date("2026-10-21T00:00:00Z");
 const EMAIL = "a@push.app";
@@ -140,6 +141,7 @@ const createDb = () => {
           is_employer: signup.is_employer,
           display_name: signup.display_name,
           consent_reference: signup.consent_reference,
+          created_at: signup.created_at,
         }],
         rowCount: 1,
       };
@@ -170,7 +172,10 @@ const createDb = () => {
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("INSERT INTO user_consents")) {
-      consents.push({ user_id: params[0], reference_data: params[1], updated_at: params[2] });
+      consents.push({
+        user_id: params[0], reference_data: params[1], updated_at: params[2],
+        terms_version: params[3] ?? null, service_terms_at: params[4] ?? null, privacy_at: params[4] ?? null,
+      });
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("UPDATE users SET password_hash")) {
@@ -416,7 +421,10 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(inserted.params[8], true);
   assert.equal(inserted.params[9], pendingHash);
   assert.equal(db.signups.length, 0);
-  assert.equal(db.consents.length, 0);
+  assert.deepEqual(db.consents, [{
+    user_id: db.users[0].id, reference_data: false, updated_at: NOW.toISOString(),
+    terms_version: TERMS_VERSION, service_terms_at: NOW.toISOString(), privacy_at: NOW.toISOString(),
+  }]);
   assert.equal(db.tokens[0].used_at, NOW.toISOString());
   assert.equal(body.data.user.id, db.users[0].id);
 
@@ -762,7 +770,7 @@ test("auth me for an email user includes the company fields", async () => {
   resetLimits();
   const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
   const session = await verified.json() as Session;
-  assert.equal(db.consents.length, 0);
+  assert.equal(db.consents[0].terms_version, TERMS_VERSION);
   resetLimits();
   const me = await handle(new Request("https://core.example/api/v1/auth/me", {
     headers: { authorization: "Bearer " + session.data.accessToken },
