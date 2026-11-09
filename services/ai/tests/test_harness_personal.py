@@ -10,7 +10,8 @@ from langgraph.types import Command
 from app.domain.services.conversation import ConversationService
 from app.harness.core_client import CoreClient
 from app.harness.graph import astream_harness, build_harness_graph
-from app.harness.policy import Tier
+from app.harness.approval import approval_id_for
+from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
 from app.harness.tools import HarnessSpec, ToolContext
@@ -126,6 +127,8 @@ async def test_core_tool_paths(name):
     )
     await tool.run(ctx, tool.args_model.model_validate(args))
     assert (seen[0].method, seen[0].url.path) == expected
+    assert seen[0].headers.get("x-push-approval") == (
+        approval_id_for("job-1", "call-1") if name in ALWAYS_ASK_TOOLS else None)
     if expected[0] in _WRITES:
         assert seen[0].headers["idempotency-key"]
     if seen[0].content:

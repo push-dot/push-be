@@ -29,7 +29,14 @@ _DECISIONS = {
 }
 
 
-def decide(mode: AccessMode, tier: Tier) -> Decision:
+# Actions a person must confirm in every mode, BYPASS included (약관 9조3항).
+# core-api/src/internal-auth.ts APPROVAL_ROUTES refuses these without an approved card.
+ALWAYS_ASK_TOOLS = frozenset({"apply_to_posting", "accept_offer", "change_applicant_stage"})
+
+
+def decide(mode: AccessMode, tier: Tier, tool: str | None = None) -> Decision:
+    if tool in ALWAYS_ASK_TOOLS:
+        return Decision.ASK
     if not isinstance(tier, Tier):
         tier = tier.metadata["tier"]
     return _DECISIONS[(mode, tier)]

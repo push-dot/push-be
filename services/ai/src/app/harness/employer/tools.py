@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from app.framework.fit_judge import judge_fit
+from app.harness.approval import approval_id_for
 from app.harness.core_client import idempotency_key
-from app.harness.policy import Tier
+from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
 
 Stage = Literal["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "REJECTED"]
@@ -100,6 +101,7 @@ def _http(name, tier, model, summary, method, path_of, *, write=False, body_of=N
             company_id=ctx.company_id,
             json=body_of(args) if body_of else None,
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
+            approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
         if wrap == "draft":
             return {"draft": data}

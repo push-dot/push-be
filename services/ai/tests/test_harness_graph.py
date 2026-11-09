@@ -150,17 +150,20 @@ async def test_resume_reject_skips():
     assert json.loads(tool_messages[-1].content) == {"rejected": True}
 
 
-async def test_bypass_never_interrupts():
+async def test_bypass_runs_writes_but_asks_before_applying():
     runs = []
     model = ScriptedChat([
         {"tool_calls": [_call("bookmark_posting", "c1"), _call("apply_to_posting", "c2")]},
-        {"content": "done"},
+        {"content": "waiting"},
     ])
     graph, db = _graph(model, runs)
     events = await _events(graph, _input("BYPASS"))
+    assert runs == [("bookmark", "p1")]
+    assert len(db.rows) == 1
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["toolName"] == "apply_to_posting"
+    await _events(graph, Command(resume={"option_id": "approve"}))
     assert runs == [("bookmark", "p1"), ("apply", "p1")]
-    assert db.rows == []
-    assert not any(event.get("type") == "done" for event in events)
 
 
 async def test_always_ask_asks_safe_write():

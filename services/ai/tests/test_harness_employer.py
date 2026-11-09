@@ -7,9 +7,10 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import ValidationError
 
+from app.harness.approval import approval_id_for
 from app.harness.core_client import CoreClient
 from app.harness.graph import astream_harness, build_harness_graph
-from app.harness.policy import Tier
+from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.registry import REGISTRY
 from app.harness.tools import HarnessSpec, ToolContext
 from tests.fakes import ScriptedChat
@@ -127,6 +128,8 @@ async def test_employer_core_tool_paths(name):
     request = seen[-1]
     assert (request.method, request.url.path) == expected
     assert request.headers["x-push-company"] == "co-1"
+    assert request.headers.get("x-push-approval") == (
+        approval_id_for("job-1", "call-1") if name in ALWAYS_ASK_TOOLS else None)
     if expected[0] in _WRITES:
         assert request.headers["idempotency-key"]
     if name == "draft_posting":
