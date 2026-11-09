@@ -12,6 +12,7 @@ const headers = {
   "x-push-internal-secret": "secret",
   "x-push-act-as": USER,
   "x-push-company": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "x-push-approval": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 };
 
 test("the gateway strips act-as headers and denies /internal", async () => {
@@ -46,6 +47,7 @@ test("the gateway strips act-as headers and denies /internal", async () => {
   assert.equal(seen[0].headers.get("x-push-internal-secret"), null);
   assert.equal(seen[0].headers.get("x-push-act-as"), null);
   assert.equal(seen[0].headers.get("x-push-company"), null);
+  assert.equal(seen[0].headers.get("x-push-approval"), null);
 
   const python = await handle(new Request("https://push-be.example/api/v1/ai/generate", {
     method: "POST",
@@ -56,6 +58,7 @@ test("the gateway strips act-as headers and denies /internal", async () => {
   assert.equal(seen[1].headers.get("x-push-internal-secret"), null);
   assert.equal(seen[1].headers.get("x-push-act-as"), null);
   assert.equal(seen[1].headers.get("x-push-company"), null);
+  assert.equal(seen[1].headers.get("x-push-approval"), null);
 
   const hidden = await handle(new Request("https://push-be.example/internal/ai/jobs", {
     method: "POST",
@@ -112,6 +115,24 @@ test("the gateway forwards act-as headers to core only with the internal secret"
   }), env, deps);
   assert.equal(seen[2].headers.get("x-push-internal-secret"), null);
   assert.equal(seen[2].headers.get("x-push-act-as"), null);
+});
+
+test("an approved AI apply reaches core with its approval card id", async () => {
+  resetLimits();
+  const { seen, binding } = capture();
+  const env = { CORE: binding, APP_ENV: "production", INTERNAL_API_SECRET: "secret" } as FrontEnv;
+  const deps = { query: async () => [] } as Deps;
+  const approval = headers["x-push-approval"];
+  const apply = (secret: string) => new Request("https://push-be.example/api/v1/postings/p1/apply", {
+    method: "POST",
+    headers: { "x-push-internal-secret": secret, "x-push-act-as": USER, "x-push-approval": approval, "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(ownerOf("POST", "/api/v1/postings/p1/apply"), "core");
+  assert.equal((await handle(apply("secret"), env, deps)).status, 200);
+  assert.equal(seen[0].headers.get("x-push-approval"), approval);
+  await handle(apply("wrong"), env, deps);
+  assert.equal(seen[1].headers.get("x-push-approval"), null);
 });
 
 test("act-as-only core routes go to core", () => {
