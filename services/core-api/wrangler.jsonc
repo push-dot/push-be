@@ -13,7 +13,7 @@
   "placement": { "mode": "targeted", "region": "aws:ap-southeast-1" },
   "vars": {
     "APP_ENV": "production",
-    // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조6항).
+    // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
     "PAYMENTS_ENABLED": "0",
     "MANAGED_AI": "1",
     "MANAGED_GO": "0",

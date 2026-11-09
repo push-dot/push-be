@@ -188,7 +188,7 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
   if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
 
-  // 약관 4조·11조6항: no payment is taken until PAYMENTS_ENABLED=1 (off in production until 사업자등록).
+  // 약관 4조·11조7항: no payment is taken until PAYMENTS_ENABLED=1 (off in production until 사업자등록).
   if (method === "POST" && PAYMENT_PATHS.has(path) && ctx.env.PAYMENTS_ENABLED !== "1") {
     throw new HttpError(503, "PAYMENTS_DISABLED", "payments are not open yet");
   }
