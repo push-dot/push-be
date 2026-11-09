@@ -75,8 +75,14 @@ class AdminJobs:
         return {"dbSizeBytes": int(size or 0), "ragNodes": max(int(nodes or 0), 0)}
 
     async def open_billing_alerts(self) -> int:
-        count = await self.conn.fetchval(
-            "SELECT count(*) FROM billing_alerts WHERE resolved_at IS NULL")
+        # Before migration 0042 the table is missing; the other db conditions must still be evaluated.
+        try:
+            count = await self.conn.fetchval(
+                "SELECT count(*) FROM billing_alerts WHERE resolved_at IS NULL")
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) != "42P01":
+                raise
+            return 0
         return int(count or 0)
 
     async def expire_approvals(self, now) -> None:

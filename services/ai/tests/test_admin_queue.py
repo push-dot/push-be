@@ -154,6 +154,25 @@ async def test_open_billing_alerts_fire_until_resolved():
 
 
 @pytest.mark.asyncio
+async def test_open_billing_alerts_is_zero_before_the_table_exists():
+    import asyncpg
+
+    from app.queue.admin import AdminJobs
+
+    class Missing:
+        async def fetchval(self, sql, *args):
+            raise asyncpg.exceptions.UndefinedTableError('relation "billing_alerts" does not exist')
+
+    class Down:
+        async def fetchval(self, sql, *args):
+            raise asyncpg.exceptions.ConnectionDoesNotExistError("closed")
+
+    assert await AdminJobs(Missing()).open_billing_alerts() == 0
+    with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+        await AdminJobs(Down()).open_billing_alerts()
+
+
+@pytest.mark.asyncio
 async def test_alert_debounces_30_minutes_and_sends_recovery():
     sent = Sent()
     async with httpx.AsyncClient(transport=sent.transport()) as http:
