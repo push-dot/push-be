@@ -31,6 +31,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/documents", {
     tag: "documents",
     summary: "List documents",
+    description: "Archived documents are left out.",
     params: [...pageParams, query("applicationId", uuid), query("kind", documentKind)],
     responses: { 200: okPage(ref("Document")) },
   }),
@@ -151,7 +152,7 @@ export const routes: Route[] = [
     tag: "documents",
     auth: "public",
     summary: "Read a shared document snapshot",
-    description: "No auth. Unknown and revoked tokens are both 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
+    description: "No auth. Unknown and revoked tokens, and tokens of an archived document, are all 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
     params: [pathParam("token", str)],
     responses: {
       200: ok(obj({
@@ -295,7 +296,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/sources", {
     tag: "sources",
     summary: "List the file library",
-    description: "Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.",
+    description: "Merges uploaded sources and AI documents, newest first. Archived AI documents are left out. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.",
     params: [...pageParams, query("kind", enumOf("UPLOAD", "AI"))],
     responses: { 200: okPage(ref("DocumentsLibraryItem")) },
   }),

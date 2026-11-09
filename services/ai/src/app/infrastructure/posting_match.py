@@ -20,7 +20,8 @@ POSTING_MATCH_SQL = (
 )
 
 _LATEST_DOCUMENT = (
-    "SELECT id FROM documents WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1")
+    "SELECT id FROM documents WHERE user_id = $1 AND status <> 'ARCHIVED' "
+    "ORDER BY updated_at DESC LIMIT 1")
 
 _USER_KINDS = ["document", "evidence"]
 

@@ -1382,7 +1382,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List documents */
+        /**
+         * List documents
+         * @description Archived documents are left out.
+         */
         get: operations["getDocuments"];
         put?: never;
         /** Create a document */
@@ -1402,7 +1405,7 @@ export interface paths {
         };
         /**
          * Read a shared document snapshot
-         * @description No auth. Unknown and revoked tokens are both 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.
+         * @description No auth. Unknown and revoked tokens, and tokens of an archived document, are all 404 NOT_FOUND. title and kind are read from the document. content and blocks are the pinned version. 404 SHARING_UNAVAILABLE when document_shares is not migrated.
          */
         get: operations["getDocumentsSharedByToken"];
         put?: never;
@@ -3030,7 +3033,7 @@ export interface paths {
         put?: never;
         /**
          * Apply to a posting
-         * @description Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.
+         * @description Archived documents cannot be attached: they are 404 like an unknown documentId. Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.
          */
         post: operations["postPostingsByIdApply"];
         delete?: never;
@@ -3524,7 +3527,7 @@ export interface paths {
         };
         /**
          * List the file library
-         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.
+         * @description Merges uploaded sources and AI documents, newest first. Archived AI documents are left out. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.
          */
         get: operations["getSources"];
         put?: never;

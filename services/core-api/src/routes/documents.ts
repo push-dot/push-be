@@ -213,7 +213,7 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
   }
   const kind = ctx.url.searchParams.get("kind") || null;
   if (kind !== null && !KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
-  const where = ["user_id = $1"];
+  const where = ["user_id = $1", "status <> 'ARCHIVED'"];
   const params: unknown[] = [ctx.user.id];
   for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
     if (value === null) continue;
@@ -872,7 +872,7 @@ const readShare = async (ctx: Ctx, token: string): Promise<Response> => {
        FROM document_shares s
        JOIN document_versions v ON v.id = s.version_id
        JOIN documents d ON d.id = s.document_id
-       WHERE s.token_hash = $1::text AND s.revoked_at IS NULL`,
+       WHERE s.token_hash = $1::text AND s.revoked_at IS NULL AND d.status <> 'ARCHIVED'`,
       [await sha256Hex(token)]);
   } catch (err) {
     if (isMissingRelation(err)) throw sharingUnavailable();

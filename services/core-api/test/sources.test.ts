@@ -224,7 +224,7 @@ test("AI library rows carry the application's company and posting title from one
     [[E2, "모아페이", "백엔드 엔지니어 (Kotlin·Spring)"], [E3, null, null], [E1, null, null]]);
   const docs = calls.filter((c) => c.sql.includes("FROM documents"));
   assert.equal(docs.length, 1);
-  assert.match(docs[0].sql, /FROM documents d LEFT JOIN applications a ON a\.id = d\.application_id WHERE d\.user_id = \$1 ORDER BY d\.created_at DESC, d\.id DESC LIMIT \$2$/);
+  assert.match(docs[0].sql, /FROM documents d LEFT JOIN applications a ON a\.id = d\.application_id WHERE d\.user_id = \$1 AND d\.status <> 'ARCHIVED' ORDER BY d\.created_at DESC, d\.id DESC LIMIT \$2$/);
 });
 
 const patchSource = (id: string, body: unknown) => new Request(`https://core.example/api/v1/sources/${id}`, {
