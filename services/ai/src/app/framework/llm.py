@@ -124,6 +124,14 @@ def _callback_type():
             self._runs[run_id] = status
             return self.reservation_id is not None and self.store is not None
 
+        async def _release(self) -> None:
+            try:
+                await self.store.release(self.reservation_id)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "usage release failed id=%s", self.reservation_id
+                )
+
         async def on_llm_end(self, response, *, run_id, **kwargs):
             if not await self._finish(run_id, "settled"):
                 return
@@ -136,7 +144,8 @@ def _callback_type():
                     ai_cost_micro_credits("OPENAI", "", incoming, outgoing),
                 )
             except LostClaim:
-                # The job was closed meanwhile; the gate's own settle after the call raises it to the worker.
+                # Released here because the fit judge never settles after the call; gate paths still raise from their own settle.
+                await self._release()
                 return
             except Exception:
                 logging.getLogger(__name__).exception(
@@ -146,12 +155,7 @@ def _callback_type():
         async def on_llm_error(self, error, *, run_id, **kwargs):
             if not await self._finish(run_id, "released"):
                 return
-            try:
-                await self.store.release(self.reservation_id)
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "usage release failed id=%s", self.reservation_id
-                )
+            await self._release()
 
     _CALLBACK = _AiUsageCallback
     return _CALLBACK

@@ -8,6 +8,7 @@ import os
 import random
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -336,6 +337,47 @@ async def test_usage_after_an_admin_cancel_is_refused(pg):
 
 
 @pytest.mark.asyncio
+async def test_a_fit_judge_on_a_cancelled_job_releases_its_reservation(pg, monkeypatch):
+    from langchain_core.messages import AIMessage
+
+    from app.domain.services.ai import AIGate
+    from app.framework.fit_judge import judge_fit
+
+    pool, new_user, _ = pg
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 80, 0)
+    gate = AIGate(DB(pool), "key", None)
+
+    class Cancelled:
+        def __init__(self, **kwargs):
+            pass
+
+        def bind_tools(self, tools, **kwargs):
+            self.schema = tools[0]
+            return self
+
+        async def ainvoke(self, messages, config=None, **kwargs):
+            # The job is closed while the call runs; the callback's settle is refused.
+            assert await cancel(pool, jid) is True
+            for callback in config["callbacks"]:
+                await callback.on_llm_end(SimpleNamespace(
+                    generations=[], llm_output={"token_usage": {"prompt_tokens": 900, "completion_tokens": 400}}),
+                    run_id=uuid4())
+            return AIMessage(content="", tool_calls=[{
+                "name": self.schema.__name__, "id": "fit",
+                "args": {"tech_stack": 5, "experience_link": 5, "career_level": 5, "keyword": 5, "domain": 5}}])
+
+    await judge_fit([], ["Python"], "", "Python", "FREE", cls=Cancelled, gate=gate, job_id=jid, user_id=user)
+    # The fit judge never settles after the call, so the callback must not leave the row RESERVED.
+    assert await pool.fetchval("SELECT status FROM ai_usage WHERE job_id = $1", jid) == "RELEASED"
+    month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    assert await AiUsageStore(DB(pool)).sum_cost_since(user, month) == 0
+    assert await available(pool, user) == 100
+
+
+@pytest.mark.asyncio
 async def test_usage_of_a_job_without_a_reservation_is_refused(pg):
     pool, new_user, _ = pg
     user = await new_user()
@@ -413,8 +455,19 @@ async def test_usage_racing_a_close_never_leaves_a_negative_balance(pg):
 
 
 @pytest.mark.asyncio
-async def test_a_busy_owner_costs_the_pass_one_lock_timeout_not_one_per_reservation(pg):
+async def test_a_busy_owner_costs_the_pass_one_lock_attempt_not_one_per_reservation(pg, monkeypatch):
+    from app.queue import credits
+
     pool, new_user, _ = pg
+    attempts = []
+    real_lock_owner = credits.lock_owner
+
+    async def counting(conn, user_id, company_id):
+        attempts.append(user_id)
+        await real_lock_owner(conn, user_id, company_id)
+
+    monkeypatch.setattr(credits, "lock_owner", counting)
+    monkeypatch.setattr(credits, "LOCK_TIMEOUT", "200ms")
     busy, free = await new_user(), await new_user()
     for user in (busy, free):
         await grant(pool, 500, user=user)
@@ -426,10 +479,10 @@ async def test_a_busy_owner_costs_the_pass_one_lock_timeout_not_one_per_reservat
         await webhook.execute("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", busy)
         async with pool.acquire() as conn:
             for step in (lambda: PgJobs(conn).reconcile_credits(NOW), lambda: PgJobs(conn).mark_retry(dying, NOW)):
-                started = time.monotonic()
+                attempts.clear()
                 await asyncio.wait_for(step(), 15)
-                # One 3s lock timeout for the busy owner, then its other reservations wait for the next pass.
-                assert time.monotonic() - started < 5
+                # One lock attempt on the busy owner; its other reservations wait for the next pass.
+                assert attempts.count(busy) == 1
     assert await pool.fetchval("SELECT status FROM credit_reservations WHERE job_id = $1", done) == "SETTLED"
     assert await pool.fetchval(
         "SELECT count(*) FROM credit_reservations WHERE job_id = ANY($1::uuid[]) AND status = 'RESERVED'",
