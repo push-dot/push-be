@@ -29,11 +29,10 @@ export const iapTopupMicro = (raw: string | undefined): number => {
 const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
 const COMPANY_INSERT = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, c.id, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = c.id AND user_id IS NULL) + $3::bigint, $4, $5 FROM ";
 const COMPANY_CONFLICT = " ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
-// The company row lock orders every grant against a subscription switch, so no grant lands on a key the company has left.
+// A month grant runs outside the webhook transaction: the share lock waits for a subscription switch in flight, then sees it.
 // A legacy `monthly:YYYY-MM` row (one row of the whole plan amount) already covers every tier up to its amount.
 const MONTH_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND credit_period_start IS NULL FOR SHARE) c WHERE NOT EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id = $6 AND amount_micro_credits >= $7::bigint)" + COMPANY_CONFLICT;
-const PERIOD_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND stripe_subscription_id = $6 AND credit_period_start = $7::timestamptz FOR SHARE) c" + COMPANY_CONFLICT;
-const CARRY_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFLICT;
+const PERIOD_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFLICT;
 const COMPANY_GRANTS = "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3)";
 
 const EMPLOYER_TIERS = ["BASIC", "PRO", "ULTRA"];
@@ -68,8 +67,8 @@ export const ensureMonthlyGrant = async (
 };
 
 /**
- * Writes the plan credits of one paid period (`period:<sub>:<start>:TIER`) once, and only while the company is on that
- * subscription and period. Tiers within `carry` (what the replaced period already granted) are 0-credit rows.
+ * Writes the plan credits of one paid period (`period:<sub>:<start>:TIER`) once. Tiers within `carry` (what the replaced
+ * period already granted) are 0-credit rows. Callers hold the company row lock of the webhook transaction.
  */
 export const grantPeriod = async (
   q: Query,
@@ -80,16 +79,8 @@ export const grantPeriod = async (
   for (const tier of tiersUpTo(input.plan)) {
     const total = EMPLOYER[tier] ?? 0;
     const amount = total <= input.carry ? 0 : total - Math.max(below, input.carry);
-    await q(PERIOD_STEP, [crypto.randomUUID(), input.companyId, amount, key + ":" + tier, input.now.toISOString(), input.subscriptionId, input.periodStart.toISOString()]);
+    await q(PERIOD_STEP, [crypto.randomUUID(), input.companyId, amount, key + ":" + tier, input.now.toISOString()]);
     below = total;
-  }
-};
-
-/** Marks the tiers within `level` as already granted in `key`, before the company switches to it. */
-export const carryInto = async (q: Query, input: { companyId: string; key: string; level: number; now: Date }): Promise<void> => {
-  for (const tier of EMPLOYER_TIERS) {
-    if ((EMPLOYER[tier] ?? 0) > input.level) return;
-    await q(CARRY_STEP, [crypto.randomUUID(), input.companyId, 0, input.key + ":" + tier, input.now.toISOString()]);
   }
 };
 
@@ -102,16 +93,6 @@ const levelOf = (rows: Record<string, unknown>[], key: string): number => rows.r
 /** The highest plan amount `key` has granted (its top tier row, or a legacy whole-month row). */
 export const keyLevel = async (q: Query, companyId: string, key: string): Promise<number> =>
   levelOf((await q(COMPANY_GRANTS, [companyId, key, key + ":%"])).rows, key);
-
-/** Every Stripe period the company has rows for, as the subscription and the period start in unix seconds. */
-export const periodsOf = async (q: Query, companyId: string): Promise<{ subscriptionId: string; start: number }[]> => {
-  const periods = new Map<string, { subscriptionId: string; start: number }>();
-  for (const row of (await q(COMPANY_GRANTS, [companyId, "", "period:%"])).rows) {
-    const [, subscriptionId = "", start] = String(row.reference_id).split(":");
-    periods.set(subscriptionId + ":" + start, { subscriptionId, start: Number(start) });
-  }
-  return [...periods.values()];
-};
 
 /** The plan amount a subscription's latest period granted. A subscription with no period rows predates 0042: its credits are this month's. */
 export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date): Promise<number> => {

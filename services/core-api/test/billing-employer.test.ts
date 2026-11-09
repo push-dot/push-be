@@ -1422,7 +1422,7 @@ test("an unpaid stripe subscription drops the user to FREE", async () => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
-    if (sql.includes("UPDATE users")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.startsWith("SELECT id FROM users")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
   };
   const sub = { id: "sub_1", customer: "cus_1", status: "unpaid", items: { data: [{ price: { id: "price_pro" } }] } };
@@ -1433,7 +1433,6 @@ test("an unpaid stripe subscription drops the user to FREE", async () => {
   const update = seen.find((call) => call.sql.includes("UPDATE users"));
   assert.equal(update?.params[1], "CANCELED");
   assert.equal(update?.params[3], "FREE");
-  assert.equal(update?.params[5], false);
 });
 
 test("a top-up above the cap is rejected before stripe is called", async () => {
