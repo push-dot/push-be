@@ -54,7 +54,7 @@ export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string
     payload,
     idempotencyKey: job.idempotencyKey,
     conversationId: job.conversationId,
-  });
+  }, ctx.deps.transaction);
   await one(ctx.deps.query, STATUS, [jobId, WAITING]);
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
   return jobId;

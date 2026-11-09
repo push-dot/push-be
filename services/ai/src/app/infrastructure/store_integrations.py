@@ -114,9 +114,9 @@ class BillingStore(Store):
             user_id, plan, status, customer_id, period_ends_at)
 
     async def lock_user(self, user_id: UUID) -> None:
+        # The user row lock core-api takes for every ledger write (billing/credits.ts lockOwner).
         await self.q().execute(
-            "SELECT pg_advisory_xact_lock(hashtext($1::text))",
-            "billing:" + str(user_id))
+            "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", user_id)
 
     async def update_subscription_by_customer(self, customer_id: str, plan: str,
                                               status: str, period_ends_at) -> None:
@@ -150,5 +150,5 @@ class BillingStore(Store):
     async def last_balance(self, user_id: UUID) -> int:
         n = await self.q().fetchval(
             "SELECT balance_after FROM billing_ledger WHERE user_id = $1 "
-            "ORDER BY created_at DESC, id DESC LIMIT 1", user_id)
+            "ORDER BY seq DESC LIMIT 1", user_id)
         return n or 0

@@ -1,4 +1,5 @@
 import type { Query } from "../db.ts";
+import { one } from "../db.ts";
 
 export const DISPLAY_MICRO = 6000;
 
@@ -26,7 +27,13 @@ export const iapTopupMicro = (raw: string | undefined): number => {
   return Number(text) * DISPLAY_MICRO;
 };
 
-const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
+// Every ledger write runs in a transaction that takes its owner's row lock first: writes of one owner commit one at a time, so
+// each reads the balance the last one left, and `seq` (0044) numbers them in commit order. NO KEY UPDATE, not UPDATE: it must
+// not block the FK KEY SHARE locks of ai_jobs and credit_reservations inserts (#239). A transaction locks one owner only.
+export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: string): Promise<Record<string, unknown> | null> =>
+  one(q, audience === "EMPLOYER" ? "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE" : "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);
+
+const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY seq DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
 const COMPANY_INSERT = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, c.id, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = c.id AND user_id IS NULL) + $3::bigint, $4, $5 FROM ";
 const COMPANY_CONFLICT = " ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
 // A month grant runs outside the webhook transaction: the share lock waits for a subscription switch in flight, then sees it.

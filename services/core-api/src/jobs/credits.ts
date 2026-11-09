@@ -8,7 +8,7 @@ const asBig = (value: unknown): bigint => {
   return BigInt(String(value));
 };
 
-const USER_CHARGED = "SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1";
+const USER_CHARGED = "SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY seq DESC LIMIT 1";
 const USER_SETTLED = "SELECT COALESCE(SUM(cost_micro_credits), 0) AS settled FROM ai_usage WHERE user_id = $1 AND status = 'SETTLED'";
 const USER_RESERVED = "SELECT COALESCE(SUM(amount_micro), 0) AS reserved FROM credit_reservations WHERE user_id = $1 AND status = 'RESERVED'";
 // A sum, not the latest balance_after: two company rows written at once would each miss the other's amount.
