@@ -516,3 +516,15 @@ def test_templates_mask_links_but_keep_tech_names():
     assert text.count("{링크}") == 3
     assert "{연락처}" in text
     assert "ASP.NET" in text and "Node.js" in text
+
+
+def test_templates_mask_links_on_common_new_tlds():
+    lines = templates_of(
+        "포트폴리오는 ada.vercel.app 와 notion.so/ada 에 있고 ada.ai, ada.xyz, ada.tech 도 운영했다. "
+        "README.md 와 Vue.js 는 그대로 둔다"
+    )
+    text = " ".join(lines)
+    for leaked in ("vercel.app", "notion.so", "ada.ai", "ada.xyz", "ada.tech"):
+        assert leaked not in text
+    assert text.count("{링크}") == 5
+    assert "README.md" in text and "Vue.js" in text

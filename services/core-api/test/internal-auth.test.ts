@@ -129,7 +129,7 @@ test("act-as apply, offer accept and stage change need the approved card for tha
     ["POST", `/api/v1/postings/${posting}/apply`, "apply_to_posting", { posting_id: posting }],
     ["POST", `/api/v1/me/offers/${offer}/accept`, "accept_offer", { offer_id: offer }],
     ["PATCH", `/api/v1/postings/${posting}/applicants/${application}`, "change_applicant_stage",
-      { posting_id: posting, application_id: application }],
+      { posting_id: posting, application_id: application, stage: "REJECTED" }],
   ] as const;
   for (const [method, path, tool, target] of cases) {
     const asked: unknown[][] = [];

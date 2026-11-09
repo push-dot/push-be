@@ -9,7 +9,7 @@ _EMAIL = re.compile(r"\S{1,64}@\S{1,255}")
 _URL = re.compile(
     r"(?:https?://|www\.)\S{1,2048}"
     # Lower-case only, so tech names like ASP.NET stay.
-    r"|[\w.-]{1,253}\.(?:com|io|dev|net|org|kr|me|co)(?![\w.-])(?:/\S{0,2048})?"
+    r"|[\w.-]{1,253}\.(?:com|io|dev|net|org|kr|me|co|ai|app|so|xyz|tech|site|page|link|blog|ly|gg|info)(?![\w.-])(?:/\S{0,2048})?"
 )
 _PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,24}\d)(?!\d)")
 _QUOTED = re.compile(r"[\"“「『][^\"”」』]{1,500}[\"”」』]")
