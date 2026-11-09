@@ -31,7 +31,7 @@ type Sub = {
 };
 
 const env: CoreEnv = {
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_personal_pro",

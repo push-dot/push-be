@@ -18,7 +18,7 @@ type Call = { sql: string; params: unknown[] };
 type StripeCall = { method: string; url: string; body: string };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_EMPLOYER_BASIC: "price_1UZkaG0iRL0sMmznUELNqD4P",
