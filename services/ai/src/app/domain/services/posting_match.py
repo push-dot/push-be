@@ -40,12 +40,14 @@ async def find_matching_postings(postings, user_vectors, conditions, *, score_fi
 async def run_quick_match(db, user_id, inputs, job_id=None):
     from app.harness.personal.tools import current_ai_gate
     from app.infrastructure.posting_fit_cache import load_fit
-    from app.infrastructure.posting_match import load_corpus, latest_document_id
+    from app.infrastructure.posting_match import load_corpus, latest_document_id, require_live_document
 
     conditions = dict(inputs or {})
     user = _uuid(user_id)
     document_id = _uuid(conditions.get("documentId"))
     query = None if db is None else db.q()
+    if query is not None and document_id is not None and user is not None:
+        await require_live_document(query, user, document_id)
     if query is not None and document_id is None and user is not None:
         document_id = await latest_document_id(query, user)
         if document_id is not None:

@@ -93,7 +93,7 @@ services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
-db/migrations/          0001_init.sql … 0038_user_links_soft_delete.sql
+db/migrations/          0001_init.sql … 0046_rag_nodes_archived.sql
 db/tests/               schema_checks.sql
 infra/docker-compose.yml
 infra/vps/              운영 compose, Traefik, env.example, 배포 스크립트
@@ -220,5 +220,7 @@ npx wrangler deploy --var AI_ORIGIN:https://${AI_HOST}
 Python Worker `push-be-python`은 배포하지 않는다. 게이트웨이 `workers_dev`는 켜져 있고, 코어 `workers_dev`는 꺼져 있다. 코어 크론은 `15 * * * *`이다. 게이트웨이 크론 목록은 비어 있다.
 
 스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 전송 기본은 `tcp`다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
+
+`0046_rag_nodes_archived.sql`은 코드와 순서가 무관하다. 배포 전에 적용하면 이미 보관된 서류·경력 근거·저장 공고의 검색 노드가 바로 지워지고, 서류 노드의 `document_id`가 채워져 빠른 매칭이 서류 기준으로 동작한다. 되돌릴 때는 `DROP FUNCTION rag_nodes_drop_archived() CASCADE;`를 실행한다. 지운 노드와 채운 `document_id`는 되돌릴 필요가 없다.
 
 `develop`에 대한 PR과 push는 바뀐 경로의 테스트만 돌린다. `DEPLOY_BRANCH`(기본 `main`) push는 ai, gateway, core, db 테스트를 모두 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다.

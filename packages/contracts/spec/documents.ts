@@ -83,7 +83,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/exports", {
     tag: "documents",
     summary: "Create an export record for a profile or finalized version",
-    description: "Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise.",
+    description: "Snapshots the version for client-side rendering (status READY_TO_RENDER). A HUB_PROFILE document can export its latest version before finalize. 422 DOCUMENT_NOT_FINALIZED otherwise. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
     body: body(closed({ versionId: uuid, format: enumOf("PDF", "DOCX"), rendererVersion: { type: "string", minLength: 1 } })),
     responses: { 201: ok(ref("DocumentExport"), "Created") },
@@ -91,7 +91,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/profile", {
     tag: "documents",
     summary: "Save a hub profile document or an uploaded file as an application profile",
-    description: "target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404.",
+    description: "target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
     body: body(closed({
       target: enumOf("hub", "application"),
@@ -118,7 +118,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/base-profile", {
     tag: "documents",
     summary: "Set a hub profile document as the user's base profile",
-    description: "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. sections limits that write to headline, intro, careers, skills, and links. Omitted sections keeps today's write. An empty list writes nothing. applied lists the keys that were written. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE.",
+    description: "Owner only. Replaces profiles.headline from the headline section when that section is present, otherwise from the document title. Replaces intro, careers, skills, and user_links only when the latest version has that section; a missing section keeps the current value. sections limits that write to headline, intro, careers, skills, and links. Omitted sections keeps today's write. An empty list writes nothing. applied lists the keys that were written. One statement. A failure leaves the old profile intact. Idempotent: a repeat writes the same fields and does not change the document. The document kind stays HUB_PROFILE. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
     body: body(closed({
       sections: arr(enumOf("headline", "intro", "careers", "skills", "links")),
@@ -134,7 +134,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/share", {
     tag: "documents",
     summary: "Create a document share link",
-    description: "Owner only. Pins versionId or the latest version, including a draft. The raw token is returned once. A second share revokes the previous token. 404 NOT_FOUND for a non-owner, a missing version, or a version on another document. 404 SHARING_UNAVAILABLE when document_shares is not migrated.",
+    description: "Owner only. Pins versionId or the latest version, including a draft. The raw token is returned once. A second share revokes the previous token. 404 NOT_FOUND for a non-owner, a missing version, or a version on another document. 404 SHARING_UNAVAILABLE when document_shares is not migrated. An archived document is 409 INVALID_TRANSITION.",
     params: [id],
     body: body(closed({ versionId: uuid }, []), false),
     responses: {
@@ -189,7 +189,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/documents/{id}/generate", {
     tag: "documents",
     summary: "Queue AI generation of a document",
-    description: "Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs) when the queue is saturated. Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
+    description: "Enqueues a document generation job; poll the job for the result. A missing document is 404; an archived one is 409 INVALID_TRANSITION. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs) when the queue is saturated. Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
     params: [id],
     body: body(obj({
       expectedRevision: int,

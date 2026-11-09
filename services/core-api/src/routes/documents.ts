@@ -96,10 +96,15 @@ const loadDocument = async (ctx: Ctx, id: string): Promise<Row> => {
   return row;
 };
 
+/** Archived documents take no new work: writes, shares, exports, AI jobs, submission drafts, chat context. */
+export const rejectArchived = (row: Row | null | undefined): void => {
+  if (row?.status === "ARCHIVED") throw transition("document is archived");
+};
+
 /** `_get_mutable`: archived documents take no writes. */
 const loadMutable = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await loadDocument(ctx, id);
-  if (row.status === "ARCHIVED") throw transition("document is archived");
+  rejectArchived(row);
   return row;
 };
 
@@ -445,7 +450,7 @@ export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const format = String(values.format);
   if (format !== "PDF" && format !== "DOCX") throw fieldError("format", "must be PDF or DOCX");
   if (!values.rendererVersion) throw fieldError("rendererVersion", "required");
-  const doc = await loadDocument(ctx, id);
+  const doc = await loadMutable(ctx, id);
   const version = await loadVersion(ctx, id, String(values.versionId));
   const hubLatest = String(doc.kind) === "HUB_PROFILE"
     && doc.latest_version_id != null
@@ -796,6 +801,7 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
   if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
   if (present.has("sections") && target !== "hub") throw unprocessable("sections", "unsupported section");
   const doc = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
+  rejectArchived(doc);
   if (doc) return convertHubDocument(ctx, id, doc, target, values, present);
   return convertOwnedSource(ctx, id);
 };
@@ -803,7 +809,7 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
 export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const { values, present } = await strictBody(ctx.request, { sections: { kind: "any" } });
-  const doc = await loadDocument(ctx, id);
+  const doc = await loadMutable(ctx, id);
   if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be the base profile");
   return data(200, await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null), ctx.rid);
 };
@@ -825,7 +831,7 @@ const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     const body = strictObject(parsed, { versionId: { kind: "uuid" } });
     if (body.present.has("versionId")) versionId = String(body.values.versionId);
   }
-  const doc = await loadDocument(ctx, id);
+  const doc = await loadMutable(ctx, id);
   const pinned = versionId || (doc.latest_version_id == null ? "" : String(doc.latest_version_id));
   if (!pinned) throw notFound();
   await loadVersion(ctx, id, pinned);

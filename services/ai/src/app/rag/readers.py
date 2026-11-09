@@ -92,7 +92,7 @@ async def read_document(query, document_id: UUID) -> dict | None:
     row = await query.fetchrow(
         "SELECT d.id, d.user_id, d.title, v.blocks FROM documents d "
         "JOIN document_versions v ON v.id = COALESCE(d.finalized_version_id, d.latest_version_id) "
-        "WHERE d.id = $1",
+        "WHERE d.id = $1 AND d.status <> 'ARCHIVED'",
         document_id)
     if row is None:
         return None

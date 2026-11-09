@@ -7,6 +7,7 @@ import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { rejectArchived } from "./documents.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
@@ -429,15 +430,20 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  const [saved, owned] = await Promise.all([
+  const contextDocumentId = context.documentId == null ? null : String(context.documentId);
+  const [saved, owned, contextDocument] = await Promise.all([
     access ? null : one(ctx.deps.query,
       "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
       [ctx.user.id]),
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
+    contextDocumentId == null ? null : one(ctx.deps.query, "SELECT status FROM documents WHERE id = $1 AND user_id = $2", [contextDocumentId, ctx.user.id]),
   ]);
   if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  // The worker reads context.documentId into the prompt; only the caller's live documents may go there.
+  if (contextDocumentId != null && !contextDocument) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  rejectArchived(contextDocument);
   if (owned.company_id == null) await requireAgentConsent(ctx);
   await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";

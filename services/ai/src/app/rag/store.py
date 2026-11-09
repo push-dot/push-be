@@ -80,7 +80,7 @@ class RagNodeStore:
         return await self._missing(
             "SELECT d.id, d.user_id FROM documents d "
             "JOIN document_versions v ON v.id = COALESCE(d.finalized_version_id, d.latest_version_id) "
-            "WHERE NOT EXISTS (SELECT 1 FROM rag_nodes n WHERE n.source_type = 'document' "
+            "WHERE d.status <> 'ARCHIVED' AND NOT EXISTS (SELECT 1 FROM rag_nodes n WHERE n.source_type = 'document' "
             "AND n.source_id = d.id AND n.embedding_model = $1) "
             "AND ($2::uuid IS NULL OR d.id > $2) ORDER BY d.id LIMIT $3",
             model, after, limit)
