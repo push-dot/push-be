@@ -30,11 +30,12 @@ export const iapTopupMicro = (raw: string | undefined): number => {
 // Every ledger write runs in a transaction that takes its owner's row lock first: writes of one owner commit one at a time, so
 // each reads the balance the last one left, and `seq` (0044) numbers them in commit order. NO KEY UPDATE, not UPDATE: it must
 // not block the FK KEY SHARE locks of ai_jobs and credit_reservations inserts (#239). A transaction locks one owner only.
-// Bounds a transaction that takes the owner row lock, which a Stripe webhook holds across its Stripe calls. A webhook waits
-// up to 15 s (Stripe retries it); a user request waits 3 s and then gives up instead of hanging a chat send.
+// Bounds a transaction that takes the owner row lock, which a Stripe webhook holds across its Stripe calls (10 s each). A webhook
+// waits up to 15 s, past one slow Stripe call of the holder, then fails and Stripe retries it; a user request waits 3 s and then
+// gives up instead of hanging a chat send. statement_timeout stays above lock_timeout, or it would cut the lock wait first (57014).
 export const boundTransaction = (q: Query, lockTimeout: "3s" | "15s"): Promise<unknown> => q(
-  "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', '10s', true), set_config('idle_in_transaction_session_timeout', '30s', true)",
-  [lockTimeout]);
+  "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true), set_config('idle_in_transaction_session_timeout', '30s', true)",
+  [lockTimeout, lockTimeout === "15s" ? "20s" : "10s"]);
 
 export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: string): Promise<Record<string, unknown> | null> =>
   one(q, audience === "EMPLOYER" ? "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE" : "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);

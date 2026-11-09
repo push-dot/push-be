@@ -1327,3 +1327,28 @@ test("employer GET /billing: under a held company row it answers after 3 s witho
     assert.ok(free.ms < 1000, `GET /billing waited ${free.ms} ms on the company row`);
   });
 });
+
+test("a webhook waits out a company row held for 11 s (lock_timeout 15 s), instead of statement_timeout cutting it at 10 s", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const micro = 1500 * MICRO;
+  const session = {
+    id: "cs_test_" + rand(), object: "checkout.session", mode: "payment", status: "complete", payment_status: "paid", amount_total: 1000,
+    currency: "usd", customer: co.customer, payment_intent: "pi_" + rand(), client_reference_id: co.id,
+    metadata: { amountMicroCredits: String(micro), audience: "EMPLOYER", ownerId: co.id },
+  };
+  stripe.sessions.push(session);
+  const event = { id: "evt_" + rand(), object: "event", type: "checkout.session.completed", data: { object: session } };
+  let status = 0;
+  let delivering = Promise.resolve();
+  await holdWhile(pg!, "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE", co.id, async () => {
+    delivering = deliver(stripe, event, START).then((s) => { status = s; });
+    await sleep(11_000);
+    assert.equal(status, 0, "the webhook gave up while the row was held");
+  });
+  await delivering;
+  assert.equal(status, 200);
+  const rows = (await pg!.query("SELECT amount_micro_credits FROM billing_ledger WHERE company_id = $1", [co.id])).rows;
+  assert.deepEqual(rows.map((row) => Number(row.amount_micro_credits)), [micro]);
+});
