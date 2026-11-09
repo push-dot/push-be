@@ -49,8 +49,9 @@ const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): n
 };
 
 // Usage written off (WRITE_OFF rows) was never charged, so the month's spend leaves it out.
-const EMPLOYER_SPEND = "SELECT COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE company_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0) AS spent";
-const PERSONAL_SPEND = "SELECT COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0) AS spent";
+// A write-off booked in the month after its usage would turn that month negative; spend is display only, so floor it at 0.
+const EMPLOYER_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE company_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
+const PERSONAL_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
 
 const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<number> => {
   try {

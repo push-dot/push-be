@@ -870,6 +870,26 @@ test("the month's spend leaves out usage that was written off", async (t) => {
   assert.equal((await billingRead(co.id, START + DAY)).spentMicroCredits, 1000 * MICRO);
 });
 
+test("a write-off booked the month after its usage shows no negative spend and leaves the balance alone", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const member = crypto.randomUUID();
+  await pg!.query("INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'email', $2, 'a')", [member, member]);
+  await pg!.query("INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'ADMIN')", [co.id, member]);
+  // A job ran over across midnight UTC: its usage is October's, its settle and write-off November's.
+  await pg!.query(
+    "INSERT INTO ai_usage (id, user_id, provider, model, managed, input_tokens, output_tokens, cost_micro_credits, status, created_at) VALUES ($1, $2, 'OPENAI', 'm', true, 1, 1, $3, 'SETTLED', $4)",
+    [crypto.randomUUID(), member, 150 * MICRO, "2026-10-31T23:59:00.000Z"]);
+  const before = await billingRead(co.id, START + DAY);
+  await pg!.query(
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) VALUES ($1, NULL, $2, 'WRITE_OFF', $3, $3, $4, $5)",
+    [crypto.randomUUID(), co.id, 50 * MICRO, "writeoff:" + crypto.randomUUID(), new Date(START).toISOString()]);
+  const after = await billingRead(co.id, START + DAY);
+  assert.equal(after.spentMicroCredits, 0);
+  // The floor is display only: the balance the limits read still gains the write-off.
+  assert.equal(after.balanceMicroCredits, Number(before.balanceMicroCredits) + 50 * MICRO);
+});
+
 test("a subscription event of a customer the company has left is accepted and changes nothing", async (t) => {
   const co = await company(t);
   if (!co) return;
