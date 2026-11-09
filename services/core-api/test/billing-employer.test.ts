@@ -1425,12 +1425,15 @@ test("an unpaid stripe subscription drops the user to FREE", async () => {
     if (sql.includes("UPDATE users")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
   };
-  const event = { id: "evt_3", type: "customer.subscription.updated", data: { object: { customer: "cus_1", status: "unpaid", items: { data: [{ price: { id: "price_pro" } }] } } } };
-  const res = await handle(await signedStripe(JSON.stringify(event)), envOf(), { query, now: () => NOW });
+  const sub = { id: "sub_1", customer: "cus_1", status: "unpaid", items: { data: [{ price: { id: "price_pro" } }] } };
+  const event = { id: "evt_3", type: "customer.subscription.updated", data: { object: { ...sub, status: "active" } } };
+  const fetchSub = (async () => new Response(JSON.stringify(sub), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  const res = await handle(await signedStripe(JSON.stringify(event)), envOf(), { query, now: () => NOW, fetch: fetchSub });
   assert.equal(res.status, 200);
   const update = seen.find((call) => call.sql.includes("UPDATE users"));
   assert.equal(update?.params[1], "CANCELED");
   assert.equal(update?.params[3], "FREE");
+  assert.equal(update?.params[5], false);
 });
 
 test("a top-up above the cap is rejected before stripe is called", async () => {

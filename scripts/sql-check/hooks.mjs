@@ -1,6 +1,7 @@
 // Rewrites one known line per service inside the test process only. If a line moves,
 // the hook throws so the capture never silently records nothing.
-const APPEND = "(await import(\"node:fs\")).appendFileSync(process.env.SQL_CAPTURE, JSON.stringify(text) + \"\\n\");";
+// Synchronous, so capture adds no await and concurrent queries reach the database in the order the code sends them.
+const APPEND = "process.getBuiltinModule(\"node:fs\").appendFileSync(process.env.SQL_CAPTURE, JSON.stringify(text) + \"\\n\");";
 
 const TARGETS = [
   {

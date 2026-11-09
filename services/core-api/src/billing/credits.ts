@@ -41,12 +41,6 @@ const tiersUpTo = (plan: string): string[] => EMPLOYER_TIERS.slice(0, EMPLOYER_T
 export const monthKey = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
 export const periodKey = (subscriptionId: string, start: Date): string => `period:${subscriptionId}:${Math.floor(start.getTime() / 1000)}`;
 
-/** The key the company's plan credits are written under now: its paid Stripe period, or the calendar month before it has one. */
-export const companyKey = (row: Record<string, unknown> | null, now: Date): string =>
-  row?.stripe_subscription_id && row.period_unix != null
-    ? periodKey(String(row.stripe_subscription_id), new Date(Number(row.period_unix) * 1000))
-    : monthKey(now);
-
 /**
  * Writes this month's plan credits once. Personal: one `monthly:YYYY-MM` row. Employer, only while the company has no
  * Stripe period (`companies.credit_period_start` is NULL): one row per tier up to the plan (`monthly:YYYY-MM:BASIC|PRO|ULTRA`),
@@ -109,9 +103,15 @@ const levelOf = (rows: Record<string, unknown>[], key: string): number => rows.r
 export const keyLevel = async (q: Query, companyId: string, key: string): Promise<number> =>
   levelOf((await q(COMPANY_GRANTS, [companyId, key, key + ":%"])).rows, key);
 
-/** No other subscription has a period row: the company came to this subscription from calendar months. */
-export const firstPeriod = async (q: Query, companyId: string, subscriptionId: string): Promise<boolean> =>
-  (await q(COMPANY_GRANTS, [companyId, "", "period:%"])).rows.every((row) => String(row.reference_id).startsWith(`period:${subscriptionId}:`));
+/** Every Stripe period the company has rows for, as the subscription and the period start in unix seconds. */
+export const periodsOf = async (q: Query, companyId: string): Promise<{ subscriptionId: string; start: number }[]> => {
+  const periods = new Map<string, { subscriptionId: string; start: number }>();
+  for (const row of (await q(COMPANY_GRANTS, [companyId, "", "period:%"])).rows) {
+    const [, subscriptionId = "", start] = String(row.reference_id).split(":");
+    periods.set(subscriptionId + ":" + start, { subscriptionId, start: Number(start) });
+  }
+  return [...periods.values()];
+};
 
 /** The plan amount a subscription's latest period granted. A subscription with no period rows predates 0042: its credits are this month's. */
 export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date): Promise<number> => {

@@ -581,6 +581,170 @@ test("a renewal paid in full from the Stripe balance (amount_paid 0, total > 0) 
   assert.equal((await billingRead(co.id, START + PERIOD + 7_200_000)).balanceMicroCredits, 30_000 * MICRO);
 });
 
+test("audit X1: a company whose subscription ended in dunning and that pays again 60 days later gets the new period in full", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  const live = stripe.subs.get(pro.id)!;
+  live.items.data[0]!.current_period_start = Math.floor((START + PERIOD) / 1000);
+  live.items.data[0]!.current_period_end = Math.floor((START + 2 * PERIOD) / 1000);
+  live.status = "past_due";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.updated", live), START + PERIOD + 3_600_000), 200);
+  live.status = "canceled";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", live), START + PERIOD + 20 * DAY), 200);
+  const back = START + PERIOD + 80 * DAY;
+  const again = stripe.subscribe("PRO", back);
+  assert.equal(await deliver(stripe, checkout(co.id, again, "PRO", back), back), 200);
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.updated", again), back + 1000), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["period:sub_…:2026-11-02:BASIC", 3000], ["period:sub_…:2026-11-02:PRO", 12000],
+    ["period:sub_…:2027-02-20:BASIC", 3000], ["period:sub_…:2027-02-20:PRO", 12000],
+  ]);
+  assert.deepEqual(payments(rows), [["Pro 월 구독", 100], ["Pro 월 구독", 100]]);
+  assert.deepEqual(stripe.deletes(), []);
+  assert.deepEqual(await companyRow(co.id), { plan: "PRO", stripe_subscription_id: again.id });
+  assert.equal((await billingRead(co.id, back + 2000)).balanceMicroCredits, 30_000 * MICRO);
+});
+
+test("audit X1: a past_due subscription whose paid period is over is replaced without a carry and without a refund", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  const live = stripe.subs.get(pro.id)!;
+  live.items.data[0]!.current_period_start = Math.floor((START + PERIOD) / 1000);
+  live.items.data[0]!.current_period_end = Math.floor((START + 2 * PERIOD) / 1000);
+  live.status = "past_due";
+  const at = START + PERIOD + 5 * DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", at), at), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["period:sub_…:2026-11-02:BASIC", 3000], ["period:sub_…:2026-11-02:PRO", 12000],
+    ["period:sub_…:2026-12-07:BASIC", 3000], ["period:sub_…:2026-12-07:PRO", 12000], ["period:sub_…:2026-12-07:ULTRA", 15000],
+  ]);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
+  assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+});
+
+test("audit X2: two checkouts that each fail right after the switch, with the first one's retry in between, pay out the Ultra plan once", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const db = dbFor({ userId: crypto.randomUUID(), companyId: null });
+  const failAfterSwitch = (first: () => Promise<void> = async () => {}): Query => {
+    let step: "switch" | "fail" | "done" = "switch";
+    return async (sql, params) => {
+      if (step === "switch" && sql.startsWith("UPDATE companies SET plan = $2, stripe_customer_id")) {
+        step = "fail";
+        await first();
+        return db(sql, params);
+      }
+      if (step === "fail") {
+        step = "done";
+        throw new Error("Connection terminated unexpectedly");
+      }
+      return db(sql, params);
+    };
+  };
+  const pro = stripe.subscribe("PRO", START);
+  const proEvent = checkout(co.id, pro, "PRO", START);
+  assert.equal(await deliver(stripe, proEvent, START, failAfterSwitch()), 500);
+  const at = START + DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  const ultraEvent = checkout(co.id, ultra, "ULTRA", at);
+  assert.equal(await deliver(stripe, ultraEvent, at, failAfterSwitch(async () => assert.equal(await deliver(stripe, proEvent, at), 200))), 500);
+  assert.equal(await deliver(stripe, ultraEvent, at + 60_000), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["period:sub_…:2026-11-02:BASIC", 3000], ["period:sub_…:2026-11-02:PRO", 12000],
+    ["period:sub_…:2026-11-03:BASIC", 0], ["period:sub_…:2026-11-03:PRO", 0], ["period:sub_…:2026-11-03:ULTRA", 15000],
+  ]);
+  assert.equal(planCredits(rows), 30_000);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}?prorate=true&invoice_now=true`]);
+  assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+});
+
+// The update reads the subscription from Stripe while it is still active; the delete lands before the update writes.
+const deleteDuringRead = (stripe: World, sub: Sub, at: number): World => ({
+  ...stripe,
+  fetchImpl: (async (input, init) => {
+    const res = await stripe.fetchImpl(input, init);
+    const live = stripe.subs.get(sub.id)!;
+    if (live.status === "active") {
+      live.status = "canceled";
+      assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", live), at), 200);
+    }
+    return res;
+  }) as typeof fetch,
+});
+
+test("audit X4: an update read from Stripe before the delete and written after it does not bring back the ended plan", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const ultra = stripe.subscribe("ULTRA", START);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", START), START), 200);
+  const update = subscriptionEvent("customer.subscription.updated", ultra, { cancel_at_period_end: false });
+  assert.equal(await deliver(deleteDuringRead(stripe, ultra, START + DAY), update, START + DAY + 1000), 200);
+  assert.equal(stripe.subs.get(ultra.id)!.status, "canceled");
+  assert.deepEqual(await companyRow(co.id), { plan: null, stripe_subscription_id: ultra.id });
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", START), START + DAY + 2000), 200);
+  assert.deepEqual(await companyRow(co.id), { plan: null, stripe_subscription_id: ultra.id });
+});
+
+const legacyUser = async (t: TestContext, customer: string): Promise<string | null> => {
+  if (!pg) {
+    t.skip("set BILLING_PG_URL to a migrated Postgres");
+    return null;
+  }
+  const userId = crypto.randomUUID();
+  await pg.query("INSERT INTO users (id, provider, provider_subject, display_name, stripe_customer_id, plan, subscription_status) VALUES ($1, 'apple', $3, 'fixture', $2, 'PRO', 'ACTIVE')",
+    [userId, customer, userId]);
+  return userId;
+};
+
+const personalSub = (stripe: World, at: number): Sub => {
+  const sub = stripe.subscribe("PRO", at);
+  sub.items.data[0]!.price.id = env.STRIPE_PRICE_PRO!;
+  return sub;
+};
+
+const userRow = async (userId: string) => (await pg!.query("SELECT plan, subscription_status FROM users WHERE id = $1", [userId])).rows[0]!;
+
+test("personal: a late customer.subscription.updated copy after the delete is read back from Stripe and keeps the user canceled", async (t) => {
+  const customer = "cus_" + rand();
+  const userId = await legacyUser(t, customer);
+  if (!userId) return;
+  const stripe = stripeWorld(customer);
+  const sub = personalSub(stripe, START);
+  const late = subscriptionEvent("customer.subscription.updated", sub, { cancel_at_period_end: false });
+  sub.status = "canceled";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", sub), START + DAY), 200);
+  assert.equal(await deliver(stripe, late, START + DAY + 5000), 200);
+  assert.deepEqual(await userRow(userId), { plan: "FREE", subscription_status: "CANCELED" });
+  assert.ok(stripe.calls.includes(`GET /v1/subscriptions/${sub.id}`));
+});
+
+test("personal audit X4: an update read from Stripe before the delete and written after it keeps the user canceled", async (t) => {
+  const customer = "cus_" + rand();
+  const userId = await legacyUser(t, customer);
+  if (!userId) return;
+  const stripe = stripeWorld(customer);
+  const sub = personalSub(stripe, START);
+  const update = subscriptionEvent("customer.subscription.updated", sub, { cancel_at_period_end: false });
+  assert.equal(await deliver(deleteDuringRead(stripe, sub, START + DAY), update, START + DAY + 1000), 200);
+  assert.equal(stripe.subs.get(sub.id)!.status, "canceled");
+  assert.deepEqual(await userRow(userId), { plan: "FREE", subscription_status: "CANCELED" });
+});
+
 test("personal grants are unchanged: one full row per store purchase and one monthly row", async (t) => {
   if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
   const userId = crypto.randomUUID();
