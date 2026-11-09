@@ -795,7 +795,9 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
 };
 
-const grantNote = async (
+// One transaction per notice, holding the user row lock as the Stripe webhook does: a refund reads what is left and writes it
+// back, and enqueueJob takes the same lock, so a job cannot reserve credits in between.
+const grantNote = (
   ctx: Ctx,
   notificationType: string,
   transactionId: string,
@@ -803,12 +805,27 @@ const grantNote = async (
   expiresAt: string | null,
   sandbox = false,
 ): Promise<void> => {
+  const inTransaction: Transaction = ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
+  return inTransaction((q) => storeNote({ ...ctx, deps: { ...ctx.deps, query: q } }, notificationType, transactionId, productId, expiresAt, sandbox));
+};
+
+const lockUser = (ctx: Ctx, userId: unknown) => one(ctx.deps.query, "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [String(userId)]);
+
+const storeNote = async (
+  ctx: Ctx,
+  notificationType: string,
+  transactionId: string,
+  productId: string,
+  expiresAt: string | null,
+  sandbox: boolean,
+): Promise<void> => {
   const upper = notificationType.toUpperCase();
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
     // A top-up row is CONSUMED from verify (REFUNDED once refunded), whatever the product id is configured as today.
     const row = await one(ctx.deps.query,
       "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
+    if (row?.user_id) await lockUser(ctx, row.user_id);
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
@@ -831,6 +848,7 @@ const grantNote = async (
     [transactionId]);
   if (!row) return;
   const userId = String(row.user_id);
+  await lockUser(ctx, userId);
   if (kind === "TOPUP") {
     await userLedger(ctx, userId, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
     return;

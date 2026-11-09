@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { Query } from "../db.ts";
+import type { Query, Transaction } from "../db.ts";
 import { isUnique, one } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { reserveCredits } from "./credits.ts";
@@ -106,27 +106,19 @@ const queued = (row: Record<string, unknown>): { jobId: string; queue: QueueName
   queue: String(row.queue) as QueueName,
 });
 
-export const enqueueJob = async (tx: Query, input: EnqueueInput): Promise<{ jobId: string; queue: QueueName }> => {
+const LOCK_USER = "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE";
+const LOCK_COMPANY = "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE";
+
+// A charged job grants the month, reads the balance and reserves in one transaction that first locks the owner row, the lock
+// billing writes (store and Stripe refunds) take: a refund cannot land between the read and the reservation. Free jobs skip it.
+export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: Transaction): Promise<{ jobId: string; queue: QueueName }> => {
   if (input.idempotencyKey) {
-    const existing = await one(tx, EXISTING, [input.userId, input.idempotencyKey]);
+    const existing = await one(db, EXISTING, [input.userId, input.idempotencyKey]);
     if (existing) return queued(existing);
   }
   const audience: Audience = input.companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(input.type, input.plan, audience);
   const amount = estimateMicro(input.type, input.plan);
-  if (amount > 0n) {
-    await ensureMonthlyGrant(tx, {
-      audience,
-      plan: input.plan,
-      ownerId: input.companyId ?? input.userId,
-      now: input.now ?? new Date(),
-    });
-  }
-  await reserveCredits(tx, {
-    userId: input.userId,
-    companyId: input.companyId,
-    amount,
-  });
   const hold = amount > 0n;
   const params: unknown[] = [
     crypto.randomUUID(),
@@ -141,13 +133,28 @@ export const enqueueJob = async (tx: Query, input: EnqueueInput): Promise<{ jobI
     input.conversationId ?? null,
   ];
   if (hold) params.push(amount.toString());
+  const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
-    const row = await one(tx, hold ? INSERT_WITH_RESERVE : INSERT_OPEN, params);
+    const row = !hold ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
+      await one(tx, input.companyId ? LOCK_COMPANY : LOCK_USER, [input.companyId ?? input.userId]);
+      await ensureMonthlyGrant(tx, {
+        audience,
+        plan: input.plan,
+        ownerId: input.companyId ?? input.userId,
+        now: input.now ?? new Date(),
+      });
+      await reserveCredits(tx, {
+        userId: input.userId,
+        companyId: input.companyId,
+        amount,
+      });
+      return one(tx, INSERT_WITH_RESERVE, params);
+    });
     if (!row?.id) throw new HttpError(500, "INTERNAL", "internal error");
     return queued(row);
   } catch (err) {
     if (!isUnique(err) || !input.idempotencyKey) throw err;
-    const existing = await one(tx, EXISTING, [input.userId, input.idempotencyKey]);
+    const existing = await one(db, EXISTING, [input.userId, input.idempotencyKey]);
     if (!existing) throw err;
     return queued(existing);
   }
