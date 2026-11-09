@@ -9,14 +9,26 @@ async def lock_source(db, key: str) -> None:
     await db.q().execute("SELECT pg_advisory_xact_lock(hashtext($1))", key)
 
 
+# A source archived while it was being embedded keeps no nodes: FOR SHARE waits for an
+# uncommitted archive, and the archive trigger cannot run before this insert commits.
+_LIVE = {
+    "document": "SELECT 1 FROM documents WHERE id = $1 AND status <> 'ARCHIVED' FOR SHARE",
+    "evidence": "SELECT 1 FROM career_evidence WHERE id = $1 AND NOT archived FOR SHARE",
+    "job": "SELECT 1 FROM jobs WHERE id = $1 AND NOT archived FOR SHARE",
+}
+
+
 class RagNodeStore:
     def __init__(self, db):
         self.db = db
 
     async def replace(self, source_type: str, source_id: UUID, model: str, rows: list[dict]) -> None:
         async def work():
+            nonlocal rows
             q = self.db.q()
             await lock_source(self.db, f"{source_type}:{source_id}")
+            if source_type in _LIVE and await q.fetchval(_LIVE[source_type], source_id) is None:
+                rows = []
             user_id = rows[0]["user_id"] if rows else None
             company_id = rows[0]["company_id"] if rows else None
             if rows and (user_id is not None or company_id is not None):

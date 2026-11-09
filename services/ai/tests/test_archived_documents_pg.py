@@ -218,3 +218,22 @@ async def test_chat_document_context_reads_only_the_callers_live_documents(db):
     assert "결제 서버" in await read(live)
     assert await read(foreign) == ""
     assert await read(archived) == ""
+
+
+async def test_a_document_archived_while_it_is_embedded_keeps_no_nodes(db):
+    user = await seed_user(db)
+    doc = await seed_document(db, user)
+    store = RagNodeStore(db)
+
+    class ArchivingEmbedder(Embedder):
+        async def embed(self, texts):
+            await db.q().execute("UPDATE documents SET status = 'ARCHIVED' WHERE id = $1", doc)
+            return await super().embed(texts)
+
+    async def beat():
+        return None
+
+    handle = make_ingest(db.q, store, Ingestor(store, ArchivingEmbedder()), None)
+    job = {"id": uuid4(), "user_id": user, "company_id": None, "payload": {"documentId": str(doc)}}
+    await handle(SimpleNamespace(job=job, heartbeat=beat))
+    assert await nodes(db, "document", doc) == 0

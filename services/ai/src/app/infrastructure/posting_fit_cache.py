@@ -19,7 +19,7 @@ _INPUTS = (
     "FROM job_postings p, documents d "
     "JOIN document_versions v ON v.id = d.latest_version_id "
     "JOIN users u ON u.id = d.user_id "
-    "WHERE p.id = $2 AND d.id = $3 AND d.user_id = $1")
+    "WHERE p.id = $2 AND d.id = $3 AND d.user_id = $1 AND d.status <> 'ARCHIVED'")
 
 _COMPANY_POSTING = (
     "SELECT requirements, skills, description FROM job_postings "
