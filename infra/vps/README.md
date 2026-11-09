@@ -22,6 +22,7 @@
 | 무차별 대입 | fail2ban `sshd`(3회 실패 시 1시간, 반복하면 최대 1주), `recidive`. 방화벽에서도 SSH 새 연결을 출처당 분당 6개로 제한한다. 프록시 jail은 두지 않는다. 호출자가 Cloudflare Worker라서 공유 IP를 막으면 서비스가 멈춘다 | `harden.sh` |
 | 커널 | `rp_filter`, 리다이렉트 거부, `tcp_syncookies`, `kptr_restrict=2`, `dmesg_restrict`, `ptrace_scope=2`, 비특권 BPF 금지, `/dev/shm` `noexec` 등 | `harden.sh` |
 | 감사 | auditd가 `/etc/systemd`, `/etc/cron*`, `/etc/ssh`, `/root/.ssh`, `/home/*/.ssh`, `/usr/local/bin`, `/etc/docker`, 계정 파일, `/tmp`·`/dev/shm` 실행을 기록한다. `ausearch -k push-ssh`처럼 키로 찾는다 | `harden.sh` |
+| 로그 보관 | IP가 남는 로그는 14일까지만 둔다. journald는 `MaxRetentionSec=14day`, `MaxFileSec=1day`. `fail2ban.log`, rsyslog(`auth.log`, `kern.log` 등), `wtmp`, `btmp`는 매일 회전하고 13개만 남긴다. auditd는 매일 cron으로 회전하고 `num_logs = 14`. fail2ban 차단 DB는 `dbpurgeage = 1d`. 패키지 설정 파일을 직접 고치므로 업그레이드 때 로컬 값을 유지한다(`--force-confold`) | `harden.sh` |
 | 업데이트 | unattended-upgrades가 Ubuntu 보안 업데이트와 Docker CE를 매일 설치하고, 필요하면 04:30(UTC)에 재부팅한다 | `harden.sh` |
 | 감시 | `push-watchdog.timer`가 5분마다 확인한다. 아래 [경보 대응](#경보-대응)을 본다 | `bin/push-watchdog` |
 

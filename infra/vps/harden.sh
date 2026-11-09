@@ -302,6 +302,12 @@ enabled = true
 bantime = 1w
 findtime = 1d
 EOF
+cat >/etc/fail2ban/fail2ban.d/push.local <<'EOF'
+# Managed by infra/vps/harden.sh. The ban database keeps IPs; pin the 1-day default
+# (bans that are still running stay until they end, at most bantime.maxtime = 1w).
+[DEFAULT]
+dbpurgeage = 1d
+EOF
 systemctl enable fail2ban >/dev/null
 systemctl restart fail2ban
 
@@ -337,7 +343,20 @@ log "auditd"
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 [ -e /etc/ld.so.preload ] || touch /etc/ld.so.preload
 augenrules --load >/dev/null
+# The log carries addr= IPs, and auditd rotates by size only: rotate once a day from cron
+# and keep 14 files, the privacy policy's 14 days.
+sed -i -E 's/^\s*num_logs\s*=.*/num_logs = 14/; s/^\s*max_log_file_action\s*=.*/max_log_file_action = ROTATE/' /etc/audit/auditd.conf
+{ grep -qx 'num_logs = 14' /etc/audit/auditd.conf && grep -qx 'max_log_file_action = ROTATE' /etc/audit/auditd.conf; } \
+  || die "/etc/audit/auditd.conf: could not set num_logs = 14, max_log_file_action = ROTATE"
+cat >/etc/cron.daily/push-audit-rotate <<'EOF'
+#!/bin/sh
+# Managed by infra/vps/harden.sh
+exec systemctl kill --kill-whom=main --signal=USR1 auditd.service
+EOF
+chmod 0755 /etc/cron.daily/push-audit-rotate
 systemctl enable --now auditd >/dev/null
+# auditd.service refuses a manual restart; SIGHUP re-reads auditd.conf on a re-run.
+systemctl kill --kill-whom=main --signal=HUP auditd.service
 
 # ---------------------------------------------------------------- automatic security updates
 log "unattended-upgrades"
@@ -359,6 +378,8 @@ Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+// Keep the log retention edits below on upgrade instead of holding the package back.
+Dpkg::Options { "--force-confdef"; "--force-confold"; };
 EOF
 systemctl enable --now unattended-upgrades >/dev/null
 
@@ -382,8 +403,22 @@ Storage=persistent
 SystemMaxUse=1G
 # Firewall and sshd lines carry IPs; the privacy policy states 14 days.
 MaxRetentionSec=14day
+# Retention only drops whole files; the default 1month file would outlive 14 days.
+MaxFileSec=1day
 EOF
 systemctl restart systemd-journald
+
+# ---------------------------------------------------------------- IP-bearing logs outside journald
+# The same 14 days for fail2ban.log, auth.log and kern.log (rsyslog), wtmp and btmp: rotate
+# daily, keep 13 old files. The package files are edited in place (kept on upgrade, see
+# Dpkg::Options above), so check the result instead of trusting the sed. auditd: see above.
+log "log retention"
+for f in /etc/logrotate.d/fail2ban /etc/logrotate.d/rsyslog /etc/logrotate.d/wtmp /etc/logrotate.d/btmp; do
+  [ -f "$f" ] || continue
+  # wtmp's minsize 1M would skip the daily rotation until the file reaches 1 MB.
+  sed -i -E 's/^(\s*)(daily|weekly|monthly|yearly)\s*$/\1daily/; s/^(\s*)rotate\s+[0-9]+\s*$/\1rotate 13/; /^\s*(min|max)?size\s/d' "$f"
+  { grep -qE '^\s*daily\s*$' "$f" && grep -qE '^\s*rotate 13\s*$' "$f"; } || die "$f: could not set daily, rotate 13"
+done
 
 # ---------------------------------------------------------------- watchdog
 log "watchdog"
