@@ -52,23 +52,54 @@ if awk '
   exit 1
 fi
 
-# The one-time purge in harden.sh: drops archives of the IP-bearing logs, keeps live files and
-# other logs, and does nothing once its marker exists.
+# The one-time purge in harden.sh: force-rotates the live IP-bearing logs (fake logrotate and
+# systemctl below record their calls and leave the files a real rotation would), then drops every
+# rotated file, keeps live files and other logs, writes no marker if a step fails, and does
+# nothing once its marker exists.
 eval "$(sed -n '/^purge_pre_14d_logs() {$/,/^}$/p' harden.sh)"
 root="$(mktemp -d)"
-trap 'rm -f "$env_file"; rm -rf "$root"' EXIT
-mkdir -p "$root/var/log/audit"
+fake="$(mktemp -d)"
+trap 'rm -f "$env_file"; rm -rf "$root" "$fake"' EXIT
+cat >"$fake/logrotate" <<'EOF'
+#!/bin/sh
+echo "logrotate $*" >>"$FAKE_ROOT/calls"
+[ -z "$FAKE_LOGROTATE_FAIL" ] || exit 1
+touch "$FAKE_ROOT/var/log/auth.log.1" "$FAKE_ROOT/var/log/wtmp.1"
+EOF
+cat >"$fake/systemctl" <<'EOF'
+#!/bin/sh
+echo "systemctl $*" >>"$FAKE_ROOT/calls"
+[ "$1" != kill ] || touch "$FAKE_ROOT/var/log/audit/audit.log.1"
+EOF
+chmod +x "$fake/logrotate" "$fake/systemctl"
+export FAKE_ROOT="$root"
+PATH="$fake:$PATH"
+mkdir -p "$root/var/log/audit" "$root/etc/logrotate.d"
+touch "$root/etc/logrotate.d/rsyslog" "$root/etc/logrotate.d/wtmp"
 for f in syslog syslog.1 kern.log kern.log.2.gz auth.log.4.gz wtmp wtmp.1 btmp.1 fail2ban.log.1 \
   dpkg.log.1 audit/audit.log audit/audit.log.3; do
   touch "$root/var/log/$f"
 done
+fail() { echo "purge_pre_14d_logs: $*" >&2; exit 1; }
+# A failed rotation stops the purge before the marker, so the next harden.sh run retries it.
+set +e
+(set -e; FAKE_LOGROTATE_FAIL=1 purge_pre_14d_logs "$root")
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "returned 0 after logrotate failed"
+[ ! -e "$root/var/lib/push/retention-14d-v2" ] || fail "wrote its marker after logrotate failed"
+[ -e "$root/var/log/kern.log.2.gz" ] || fail "deleted files after logrotate failed"
+rm "$root/calls"
 purge_pre_14d_logs "$root"
+want="logrotate -f $root/etc/logrotate.d/rsyslog $root/etc/logrotate.d/wtmp
+systemctl is-active --quiet auditd.service
+systemctl kill --kill-whom=main --signal=USR1 auditd.service"
+[ "$(cat "$root/calls")" = "$want" ] || fail "calls were: $(cat "$root/calls")"
 left="$(cd "$root/var/log" && find . -type f | sort | tr '\n' ' ')"
-[ "$left" = "./audit/audit.log ./dpkg.log.1 ./kern.log ./syslog ./wtmp " ] \
-  || { echo "purge_pre_14d_logs left: $left" >&2; exit 1; }
-[ -s "$root/var/lib/push/retention-14d-v1" ] || { echo "purge_pre_14d_logs wrote no marker" >&2; exit 1; }
+[ "$left" = "./audit/audit.log ./dpkg.log.1 ./kern.log ./syslog ./wtmp " ] || fail "left: $left"
+[ -s "$root/var/lib/push/retention-14d-v2" ] || fail "wrote no marker"
 touch "$root/var/log/kern.log.1"
 purge_pre_14d_logs "$root"
-[ -e "$root/var/log/kern.log.1" ] || { echo "purge_pre_14d_logs ran again after its marker" >&2; exit 1; }
+[ -e "$root/var/log/kern.log.1" ] || fail "ran again after its marker"
+[ "$(cat "$root/calls")" = "$want" ] || fail "rotated again after its marker"
 echo "infra/vps checks passed"
-

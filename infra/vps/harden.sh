@@ -407,7 +407,8 @@ MaxRetentionSec=14day
 MaxFileSec=1day
 EOF
 systemctl restart systemd-journald
-journalctl --vacuum-time=14d >/dev/null
+# Vacuum drops archived files only; rotate first so the active file is one of them.
+journalctl --rotate --vacuum-time=14d >/dev/null
 # ---------------------------------------------------------------- IP-bearing logs outside journald
 # The same 14 days for fail2ban.log, auth.log and kern.log (rsyslog), wtmp and btmp: rotate
 # daily, keep 13 old files. The package files are edited in place (kept on upgrade, see
@@ -422,12 +423,26 @@ for f in /etc/logrotate.d/fail2ban /etc/logrotate.d/rsyslog /etc/logrotate.d/wtm
     || die "$f: could not set daily, rotate 13, ifempty"
 done
 
-# Once per host: files rotated under the old weekly, monthly and size rules hold lines far
-# older than 14 days and would take 13 more rotations to age out. Live files stay.
+# Once per host: files kept under the old weekly, monthly and size rules hold lines far older
+# than 14 days (an unrotated wtmp: every login since install). Rotate the live files once,
+# then delete every rotated file. v2: hosts purged by v1 kept their live files.
 # purge_pre_14d_logs <root>; test/run.sh runs it against a fake root.
 purge_pre_14d_logs() {
-  local marker="$1/var/lib/push/retention-14d-v1"
+  local marker="$1/var/lib/push/retention-14d-v2" f confs=()
   [ -e "$marker" ] && return 0
+  for f in rsyslog fail2ban wtmp btmp; do
+    if [ -f "$1/etc/logrotate.d/$f" ]; then confs+=("$1/etc/logrotate.d/$f"); fi
+  done
+  [ "${#confs[@]}" -eq 0 ] || logrotate -f "${confs[@]}"
+  if systemctl is-active --quiet auditd.service; then
+    # USR1 rotates asynchronously: clear the old archives so a new audit.log.1 means it is done.
+    rm -f "$1"/var/log/audit/audit.log.[0-9]*
+    systemctl kill --kill-whom=main --signal=USR1 auditd.service
+    for _ in {1..20}; do
+      if [ -e "$1/var/log/audit/audit.log.1" ]; then break; fi
+      sleep 0.5
+    done
+  fi
   rm -f "$1"/var/log/{syslog,kern.log,auth.log,mail.log,user.log,cron.log,fail2ban.log,wtmp,btmp}.[0-9]* \
     "$1"/var/log/audit/audit.log.[0-9]*
   mkdir -p "${marker%/*}"
