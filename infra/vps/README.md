@@ -22,6 +22,7 @@
 | 무차별 대입 | fail2ban `sshd`(3회 실패 시 1시간, 반복하면 최대 1주), `recidive`. 방화벽에서도 SSH 새 연결을 출처당 분당 6개로 제한한다. 프록시 jail은 두지 않는다. 호출자가 Cloudflare Worker라서 공유 IP를 막으면 서비스가 멈춘다 | `harden.sh` |
 | 커널 | `rp_filter`, 리다이렉트 거부, `tcp_syncookies`, `kptr_restrict=2`, `dmesg_restrict`, `ptrace_scope=2`, 비특권 BPF 금지, `/dev/shm` `noexec` 등 | `harden.sh` |
 | 감사 | auditd가 `/etc/systemd`, `/etc/cron*`, `/etc/ssh`, `/root/.ssh`, `/home/*/.ssh`, `/usr/local/bin`, `/etc/docker`, 계정 파일, `/tmp`·`/dev/shm` 실행을 기록한다. `ausearch -k push-ssh`처럼 키로 찾는다 | `harden.sh` |
+| 로그 보관 | IP가 남는 로그는 14일까지만 둔다. journald는 `MaxRetentionSec=14day`, `MaxFileSec=1day`. `fail2ban.log`, rsyslog(`auth.log`, `kern.log` 등), `wtmp`, `btmp`는 빈 날에도 매일 회전하고(`ifempty`) 13개만 남긴다. 처음 실행할 때 한 번, 지금 쓰는 파일까지 강제로 회전한 뒤 회전된 파일을 모두 지운다(마커 `/var/lib/push/retention-14d-v2`). 마지막 접속 IP가 남는 `lastlog`는 매일 비운다. auditd는 매일 cron으로 회전하고 `num_logs = 14`. fail2ban 차단 DB는 `dbpurgeage = 1d`. 패키지 설정 파일을 직접 고치므로 업그레이드 때 로컬 값을 유지한다(`--force-confold`) | `harden.sh` |
 | 업데이트 | unattended-upgrades가 Ubuntu 보안 업데이트와 Docker CE를 매일 설치하고, 필요하면 04:30(UTC)에 재부팅한다 | `harden.sh` |
 | 감시 | `push-watchdog.timer`가 5분마다 확인한다. 아래 [경보 대응](#경보-대응)을 본다 | `bin/push-watchdog` |
 
@@ -142,6 +143,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | `listeners` | 호스트에 새 리스닝 소켓이 생겼다 |
 | `containers` | 처음 보는 컨테이너가 떴거나, 컨테이너의 이미지·privileged·호스트 네임스페이스·추가 권한이 바뀌었다. 이미지 다이제스트를 올린 배포 직후 한 번은 정상이다 |
 | `procs` | `/tmp`, `/var/tmp`, `/dev/shm`, `/root`, `/home`에서 실행 중인 프로세스나 masscan·xmrig 같은 이름이 있다 |
+| `confold` | 업그레이드가 `/etc` 아래 `*.dpkg-dist`를 남겼다. `--force-confold`가 우리가 고친 설정을 지키고 새 기본값을 옆에 둔 것이다. `diff <파일> <파일>.dpkg-dist`로 보고, 필요한 변경만 옮긴 뒤 `.dpkg-dist`를 지운다 |
 | `firewall` | 방화벽이 나가는 연결을 버렸다. `*-LIMIT`은 연결 속도 초과(스캐너), `*-DROP`은 SMTP·사설망 시도다. `PUSH chains are missing`은 규칙이 사라졌다는 뜻이다 |
 
 알림은 Discord 웹훅으로 먼저 보내고, 실패하면 Resend로 `ALERT_EMAIL_TO`에 메일을 보낸다. 항상 저널(`journalctl -t push-watchdog`)에도 남는다. 같은 변화는 한 번만 알린다.

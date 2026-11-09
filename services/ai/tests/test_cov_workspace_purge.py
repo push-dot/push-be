@@ -3,14 +3,24 @@ from __future__ import annotations
 import logging
 import os
 
-from app.account_purge import COMPANY_PURGE_SQL, PURGE_SQL, RETENTION, purge_deleted
+from app.account_purge import (
+    COMPANY_PURGE_SQL,
+    OAUTH_STATES_SQL,
+    PHONE_CODES_SQL,
+    PURGE_SQL,
+    RETENTION,
+    SWEEP_BATCH,
+    SWEEP_ROUNDS,
+    purge_deleted,
+)
 from app.infrastructure.images import image_dir
 
 
 class _Pool:
-    def __init__(self, rows=None, error=None):
+    def __init__(self, rows=None, error=None, tags=None):
         self.rows = rows or []
         self.error = error
+        self.tags = tags or {}
         self.sql = []
         self.args = []
 
@@ -26,6 +36,7 @@ class _Pool:
         self.args.append(args)
         if self.error:
             raise self.error
+        return self.tags.get(sql, lambda: "DELETE 0")()
 
 
 def _images(tmp_path, *names):
@@ -73,7 +84,18 @@ async def test_purge_logs_and_swallows_db_errors(tmp_path, caplog):
 async def test_every_statement_gets_its_period_from_the_retention_table():
     pool = _Pool()
     await purge_deleted(pool, None)
-    assert len(pool.sql) == 9
+    assert len(pool.sql) == 15
     assert all("$1::text::interval" in sql for sql in pool.sql)
-    assert {args for args in pool.args} <= {(v,) for v in RETENTION.values()}
-    assert (RETENTION["payment"],) in pool.args and RETENTION["payment"] == "5 years"
+    assert {args[0] for args in pool.args} <= set(RETENTION.values())
+    assert (RETENTION["payment"], SWEEP_BATCH) in pool.args and RETENTION["payment"] == "5 years"
+
+
+async def test_a_sweep_repeats_full_batches_and_stops_at_a_short_one():
+    first, second = PHONE_CODES_SQL, OAUTH_STATES_SQL
+    left = iter([f"DELETE {SWEEP_BATCH}"] * 2 + ["DELETE 7"])
+    pool = _Pool(tags={first: lambda: next(left), second: lambda: f"DELETE {SWEEP_BATCH}"})
+    await purge_deleted(pool, None)
+    assert pool.sql.count(first) == 3
+    # A backlog stops after SWEEP_ROUNDS batches; the next pass takes the rest.
+    assert pool.sql.count(second) == SWEEP_ROUNDS
+    assert all("LIMIT $2" in sql for sql in pool.sql[2:])

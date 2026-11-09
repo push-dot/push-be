@@ -289,9 +289,9 @@ test("model catalog follows the deployed flags and validates provider", async ()
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   const body = JSON.parse(await first.text()) as { data: { model: string; available: boolean }[] };
-  assert.equal(body.data.length, 4);
-  assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/")), false);
-  assert.equal(body.data.find((m) => m.model === "openai/gpt-5.6-sol")?.available, true);
+  assert.equal(body.data.length, 1);
+  assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/") || m.model.startsWith("openai/")), false);
+  assert.equal(body.data.find((m) => m.model === "deepseek/deepseek-v4.1-flash")?.available, true);
   const second = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), { ...env(), MANAGED_AI: "0" }, d);

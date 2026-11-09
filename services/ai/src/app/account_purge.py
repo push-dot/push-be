@@ -61,33 +61,72 @@ COMPANY_PURGE_SQL = (
     "SELECT logo_key AS key FROM gone WHERE logo_key IS NOT NULL"
 )
 
-PHONE_CODES_SQL = "DELETE FROM phone_codes WHERE sent_at < now() - $1::text::interval"
-# A refresh token's access tokens cascade with it; the cascade skips rows already deleted here.
-TOKENS_SQL = (
-    "WITH oauth AS (DELETE FROM oauth_states WHERE expires_at < now() - $1::text::interval), "
-    "exchange AS (DELETE FROM exchange_codes WHERE expires_at < now() - $1::text::interval), "
-    "integration AS (DELETE FROM integration_codes WHERE expires_at < now() - $1::text::interval), "
-    "email AS (DELETE FROM email_tokens WHERE expires_at < now() - $1::text::interval), "
-    "invites AS (DELETE FROM company_invites WHERE expires_at < now() - $1::text::interval), "
-    "refresh AS (DELETE FROM refresh_tokens WHERE expires_at < now() - $1::text::interval) "
-    "DELETE FROM access_tokens WHERE expires_at < now() - $1::text::interval"
+# Sweeps delete at most SWEEP_BATCH rows ($2) per statement, SWEEP_ROUNDS times per pass.
+# The pass holds the dispatcher lock, so a backlog (the first run) drains over several passes.
+SWEEP_BATCH = 5000
+SWEEP_ROUNDS = 10
+
+PHONE_CODES_SQL = (
+    "DELETE FROM phone_codes WHERE ctid IN (SELECT ctid FROM phone_codes "
+    "WHERE sent_at < now() - $1::text::interval LIMIT $2)"
+)
+OAUTH_STATES_SQL = (
+    "DELETE FROM oauth_states WHERE ctid IN (SELECT ctid FROM oauth_states "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
+)
+EXCHANGE_CODES_SQL = (
+    "DELETE FROM exchange_codes WHERE ctid IN (SELECT ctid FROM exchange_codes "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
+)
+INTEGRATION_CODES_SQL = (
+    "DELETE FROM integration_codes WHERE ctid IN (SELECT ctid FROM integration_codes "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
+)
+EMAIL_TOKENS_SQL = (
+    "DELETE FROM email_tokens WHERE ctid IN (SELECT ctid FROM email_tokens "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
+)
+# The policy deletes invites that expired unaccepted; an accepted one goes with its company.
+INVITES_SQL = (
+    "DELETE FROM company_invites WHERE ctid IN (SELECT ctid FROM company_invites "
+    "WHERE accepted_at IS NULL AND expires_at < now() - $1::text::interval LIMIT $2)"
+)
+# A refresh token's access tokens cascade with it.
+REFRESH_TOKENS_SQL = (
+    "DELETE FROM refresh_tokens WHERE ctid IN (SELECT ctid FROM refresh_tokens "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
+)
+ACCESS_TOKENS_SQL = (
+    "DELETE FROM access_tokens WHERE ctid IN (SELECT ctid FROM access_tokens "
+    "WHERE expires_at < now() - $1::text::interval LIMIT $2)"
 )
 # Idempotent replays only matter while a client retries.
-IDEMPOTENCY_SQL = "DELETE FROM idempotency_keys WHERE created_at < now() - $1::text::interval"
+IDEMPOTENCY_SQL = (
+    "DELETE FROM idempotency_keys WHERE ctid IN (SELECT ctid FROM idempotency_keys "
+    "WHERE created_at < now() - $1::text::interval LIMIT $2)"
+)
 # Trending searches read the last 7 days (core-api routes/search.ts).
-SEARCHES_SQL = "DELETE FROM search_queries WHERE created_at < now() - $1::text::interval"
+SEARCHES_SQL = (
+    "DELETE FROM search_queries WHERE ctid IN (SELECT ctid FROM search_queries "
+    "WHERE created_at < now() - $1::text::interval LIMIT $2)"
+)
 # A resend issues a new verify token, so a signup with a live token is kept.
 EMAIL_SIGNUPS_SQL = (
-    "DELETE FROM email_signups s WHERE s.created_at < now() - $1::text::interval "
+    "DELETE FROM email_signups WHERE ctid IN (SELECT s.ctid FROM email_signups s "
+    "WHERE s.created_at < now() - $1::text::interval "
     "AND NOT EXISTS (SELECT 1 FROM email_tokens t "
-    "WHERE t.signup_id = s.id AND t.expires_at > now())"
+    "WHERE t.signup_id = s.id AND t.expires_at > now()) LIMIT $2)"
 )
 # Balances are read from the ledger, so rows of a live account or company stay.
 PAYMENTS_SQL = (
-    "DELETE FROM billing_ledger WHERE user_id IS NULL AND company_id IS NULL "
-    "AND created_at < now() - $1::text::interval"
+    "DELETE FROM billing_ledger WHERE ctid IN (SELECT ctid FROM billing_ledger "
+    "WHERE user_id IS NULL AND company_id IS NULL "
+    "AND created_at < now() - $1::text::interval LIMIT $2)"
 )
-REPORTS_SQL = "DELETE FROM offer_reports WHERE created_at < now() - $1::text::interval"
+REPORTS_SQL = (
+    "DELETE FROM offer_reports WHERE ctid IN (SELECT ctid FROM offer_reports "
+    "WHERE created_at < now() - $1::text::interval LIMIT $2)"
+)
 
 
 def remove_images(storage_dir: str, keys) -> None:
@@ -114,7 +153,11 @@ async def _purge(pool, sql: str, period: str) -> list[str]:
 
 async def _sweep(pool, sql: str, period: str) -> None:
     try:
-        await pool.execute(sql, RETENTION[period])
+        for _ in range(SWEEP_ROUNDS):
+            tag = await pool.execute(sql, RETENTION[period], SWEEP_BATCH)
+            # A short batch ("DELETE n") means nothing past the period is left.
+            if not tag or int(tag.split()[-1]) < SWEEP_BATCH:
+                return
     except Exception as exc:
         logger.warning("%s sweep failed; are the migrations applied? err=%s", period,
                        redact(f"{type(exc).__name__}: {exc}")[:400])
@@ -127,7 +170,13 @@ async def purge_deleted(pool, storage_dir: str | None) -> None:
     keys = await _purge(pool, PURGE_SQL, "account")
     keys += await _purge(pool, COMPANY_PURGE_SQL, "company")
     await _sweep(pool, PHONE_CODES_SQL, "phone_code")
-    await _sweep(pool, TOKENS_SQL, "expired_token")
+    await _sweep(pool, OAUTH_STATES_SQL, "expired_token")
+    await _sweep(pool, EXCHANGE_CODES_SQL, "expired_token")
+    await _sweep(pool, INTEGRATION_CODES_SQL, "expired_token")
+    await _sweep(pool, EMAIL_TOKENS_SQL, "expired_token")
+    await _sweep(pool, INVITES_SQL, "expired_token")
+    await _sweep(pool, REFRESH_TOKENS_SQL, "expired_token")
+    await _sweep(pool, ACCESS_TOKENS_SQL, "expired_token")
     await _sweep(pool, IDEMPOTENCY_SQL, "idempotency_key")
     await _sweep(pool, SEARCHES_SQL, "search_query")
     await _sweep(pool, EMAIL_SIGNUPS_SQL, "email_signup")
