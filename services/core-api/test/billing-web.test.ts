@@ -257,10 +257,10 @@ test("deleting the subscription a plan change replaced leaves the company plan a
 
 test("a replaced subscription's negative final invoice adds a 요금제 변경 환급 row with the refunded amount", async () => {
   const w = world(companyRow);
-  const res = await handle(await signed(invoice({
-    id: "in_1UZkb80iRL0sMmznDmcpmzrV", amount_paid: 0, total: -10000,
-    lines: { data: [{ amount: -10000, pricing: { price_details: { price: PRO_PRICE }, type: "price_details" } }] },
-  })), envOf(), { query: w.query, now: () => NOW });
+  const res = await handle(await signed({ ...invoice({
+    id: "in_1UZkb80iRL0sMmznDmcpmzrV", status: "paid", amount_paid: 0, amount_due: 0, total: -10000, ending_balance: -10000,
+    lines: { data: [{ amount: -10000, description: "Unused time on Push Employer Pro after 09 Nov 2026", pricing: { price_details: { price: PRO_PRICE }, type: "price_details" } }] },
+  }), id: "evt_1UZl9Q0iRL0sMmznDqgeuoxv" }), envOf(), { query: w.query, now: () => NOW });
   assert.equal(res.status, 200);
   assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_1UZkb80iRL0sMmznDmcpmzrV", NOW.toISOString(), "요금제 변경 환급", -10000, RECEIPT]);
 });
