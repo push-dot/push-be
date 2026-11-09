@@ -380,6 +380,7 @@ test("a company stripe customer cancel does not 500 when no user matches", async
   const query: Deps["query"] = async (sql) => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: "evt_del" }], rowCount: 1 };
+    if (sql.startsWith("SELECT id, stripe_subscription_id FROM companies")) return { rows: [{ id: COMPANY, stripe_subscription_id: "sub_1" }], rowCount: 1 };
     if (sql.includes("UPDATE companies")) {
       companySql = sql;
       return { rows: [{ id: COMPANY }], rowCount: 1 };

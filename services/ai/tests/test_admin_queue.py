@@ -154,6 +154,27 @@ async def test_open_billing_alerts_fire_until_resolved():
 
 
 @pytest.mark.asyncio
+async def test_open_billing_alerts_is_zero_before_the_table_exists():
+    from app.queue.admin import AdminJobs
+
+    class PgError(Exception):
+        def __init__(self, sqlstate):
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
+
+    class Conn:
+        def __init__(self, sqlstate):
+            self.sqlstate = sqlstate
+
+        async def fetchval(self, sql, *args):
+            raise PgError(self.sqlstate)
+
+    assert await AdminJobs(Conn("42P01")).open_billing_alerts() == 0
+    with pytest.raises(PgError):
+        await AdminJobs(Conn("08003")).open_billing_alerts()
+
+
+@pytest.mark.asyncio
 async def test_alert_debounces_30_minutes_and_sends_recovery():
     sent = Sent()
     async with httpx.AsyncClient(transport=sent.transport()) as http:

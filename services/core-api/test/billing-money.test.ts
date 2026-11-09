@@ -128,9 +128,9 @@ const signed = async (event: Row, at: number): Promise<Request> => {
   });
 };
 
-const deliver = async (stripe: World, event: Row, at: number): Promise<number> => {
+const deliver = async (stripe: World, event: Row, at: number, query: Query = dbFor({ userId: crypto.randomUUID(), companyId: null })): Promise<number> => {
   resetLimits();
-  const deps: Deps = { query: dbFor({ userId: crypto.randomUUID(), companyId: null }), now: () => new Date(at), fetch: stripe.fetchImpl };
+  const deps: Deps = { query, now: () => new Date(at), fetch: stripe.fetchImpl };
   return (await handle(await signed(event, at), env, deps)).status;
 };
 
@@ -146,7 +146,10 @@ const checkout = (companyId: string, sub: Sub, plan: Plan, at: number) => ({
   } },
 });
 
-const subscriptionEvent = (type: string, sub: Sub) => ({ id: "evt_" + rand(), object: "event", type, data: { object: { ...sub } } });
+const subscriptionEvent = (type: string, sub: Sub, previous: Row = {}) => ({
+  id: "evt_" + rand(), object: "event", api_version: "2026-09-30.endive", created: sub.created, livemode: false, pending_webhooks: 1,
+  request: { id: null, idempotency_key: null }, type, data: { object: structuredClone(sub), previous_attributes: previous },
+});
 
 const refundInvoice = (sub: Sub, cents: number) => ({
   id: "evt_" + rand(),
@@ -345,6 +348,41 @@ test("a company on calendar months that upgrades carries this month's tiers into
   assert.equal((await billingRead(co.id, START + DAY + PERIOD + 7_200_000)).balanceMicroCredits, 60_000 * MICRO);
 });
 
+test("audit A2: a read that grants the month between the carry and the switch, then a DB error and Stripe's retry, still pay out the Ultra plan once", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  await pg!.query("UPDATE companies SET plan = 'PRO' WHERE id = $1", [co.id]);
+  const at = START + DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  const event = checkout(co.id, ultra, "ULTRA", at);
+  const db = dbFor({ userId: crypto.randomUUID(), companyId: null });
+  let step: "read" | "fail" | "done" = "read";
+  const racing: Query = async (sql, params) => {
+    if (step === "read" && sql.startsWith("UPDATE companies SET plan = $2, stripe_customer_id")) {
+      step = "fail";
+      await billingRead(co.id, at);
+      return db(sql, params);
+    }
+    if (step === "fail") {
+      step = "done";
+      throw new Error("Connection terminated unexpectedly");
+    }
+    return db(sql, params);
+  };
+  assert.equal(await deliver(stripe, event, at, racing), 500);
+  assert.equal(step, "done");
+  assert.equal(await deliver(stripe, event, at + 60_000), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["monthly:2026-11:BASIC", 3000], ["monthly:2026-11:PRO", 12000],
+    ["period:sub_…:2026-11-03:BASIC", 0], ["period:sub_…:2026-11-03:PRO", 0], ["period:sub_…:2026-11-03:ULTRA", 15000],
+  ]);
+  assert.equal(planCredits(rows), 30_000);
+  assert.equal((await billingRead(co.id, at + 120_000)).balanceMicroCredits, 30_000 * MICRO);
+});
+
 test("concurrent checkout, its duplicate delivery and billing reads grant the month's plan exactly once", async (t) => {
   const co = await company(t);
   if (!co) return;
@@ -378,6 +416,80 @@ test("out of order: the new subscription's update before its checkout, and the o
   assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
   assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", { ...ultra, status: "canceled" }), START + 2 * DAY), 200);
   assert.equal((await companyRow(co.id)).plan, null);
+});
+
+test("audit E: a late customer.subscription.updated sent before the cancel does not bring back the plan of the deleted subscription", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const ultra = stripe.subscribe("ULTRA", START);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", START), START), 200);
+  const late = subscriptionEvent("customer.subscription.updated", ultra, { cancel_at_period_end: false, metadata: {} });
+  stripe.subs.get(ultra.id)!.status = "canceled";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", stripe.subs.get(ultra.id)!), START + DAY), 200);
+  assert.equal(await deliver(stripe, late, START + DAY + 5000), 200);
+  assert.deepEqual(await companyRow(co.id), { plan: null, stripe_subscription_id: ultra.id });
+  assert.ok(stripe.calls.includes(`GET /v1/subscriptions/${ultra.id}`));
+});
+
+test("customer.subscription.updated applies the subscription as Stripe has it now, not the event's copy", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  const live = stripe.subs.get(pro.id)!;
+  live.status = "unpaid";
+  const unpaid = subscriptionEvent("customer.subscription.updated", live, { status: "past_due" });
+  live.status = "active";
+  const paid = subscriptionEvent("customer.subscription.updated", live, { status: "unpaid" });
+  assert.equal(await deliver(stripe, paid, START + 10 * DAY), 200);
+  assert.equal(await deliver(stripe, unpaid, START + 10 * DAY + 1000), 200);
+  assert.deepEqual(await companyRow(co.id), { plan: "PRO", stripe_subscription_id: pro.id });
+  live.status = "unpaid";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.updated", live, { status: "past_due" }), START + 20 * DAY), 200);
+  assert.equal((await companyRow(co.id)).plan, null);
+});
+
+test("audit D: a paid renewal of a replaced subscription writes its 결제 내역 row and grants nothing", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const basic = stripe.subscribe("BASIC", START);
+  assert.equal(await deliver(stripe, checkout(co.id, basic, "BASIC", START), START), 200);
+  const pro = stripe.subscribe("PRO", START + DAY);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START + DAY), START + DAY), 200);
+  assert.equal(await deliver(stripe, renewal(stripe, basic, "BASIC", START + PERIOD), START + PERIOD + 3_600_000), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["period:sub_…:2026-11-02:BASIC", 3000], ["period:sub_…:2026-11-03:BASIC", 0], ["period:sub_…:2026-11-03:PRO", 12000],
+  ]);
+  assert.deepEqual(payments(rows), [["Basic 월 구독", 20], ["Pro 월 구독", 100], ["Basic 월 구독", 20]]);
+  assert.deepEqual(await companyRow(co.id), { plan: "PRO", stripe_subscription_id: pro.id });
+  assert.equal((await billingRead(co.id, START + PERIOD + 7_200_000)).balanceMicroCredits, 15_000 * MICRO);
+});
+
+test("a cycle invoice that also carries a proration line opens the period from the plan line, not the proration", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  const event = renewal(stripe, pro, "PRO", START + PERIOD) as { data: { object: { lines: { data: Row[] } } } };
+  const mid = Math.floor((START + PERIOD - 10 * DAY) / 1000);
+  event.data.object.lines.data.unshift({
+    amount: 3333, period: { start: mid, end: Math.floor((START + PERIOD) / 1000) },
+    parent: { type: "subscription_item_details", subscription_item_details: { proration: true, subscription: pro.id } },
+    pricing: { price_details: { price: PRO }, type: "price_details" },
+  });
+  assert.equal(await deliver(stripe, event, START + PERIOD + 3_600_000), 200);
+  const rows = await ledgerOf(co.id);
+  show(t, rows);
+  assert.deepEqual(grantRows(rows), [
+    ["period:sub_…:2026-11-02:BASIC", 3000], ["period:sub_…:2026-11-02:PRO", 12000],
+    ["period:sub_…:2026-12-02:BASIC", 3000], ["period:sub_…:2026-12-02:PRO", 12000],
+  ]);
 });
 
 test("a checkout whose subscription is not the paid plan's price changes nothing but the payment row", async (t) => {
