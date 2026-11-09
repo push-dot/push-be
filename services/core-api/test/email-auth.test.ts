@@ -13,7 +13,7 @@ const PASSWORD = "secret123";
 type Row = Record<string, unknown>;
 type Call = { sql: string; params: unknown[] };
 type Mail = { to: string; subject: string; text: string; html: string };
-type Err = { error: { code: string; message: string; details: { field?: string; accountType?: string } | null } };
+type Err = { error: { code: string; message: string; details: { field?: string; accountType?: string; email?: string } | null } };
 type Session = { data: { accessToken: string; refreshToken: string; expiresIn: number; user: { id: string; accountType: string; companyId: string | null; companyRole: string | null } } };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
@@ -424,6 +424,25 @@ test("verify creates the email user and a second use is rejected", async () => {
   const again = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
   assert.equal(again.status, 401);
   assert.equal(db.users.length, 1);
+});
+
+test("verify with an expired unused token is 410 TOKEN_EXPIRED with the signup email", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody({ email: "Mina@Push.app" })), env(), deps(db, mailer));
+  db.tokens[0].expires_at = new Date(NOW.getTime() - 1000).toISOString();
+  resetLimits();
+  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  assert.equal(res.status, 410);
+  const body = await res.json() as Err;
+  assert.equal(body.error.code, "TOKEN_EXPIRED");
+  assert.deepEqual(body.error.details, { email: "mina@push.app" });
+  assert.equal(db.tokens[0].used_at, null);
+  assert.equal(db.users.length, 0);
+  const unknown = await handle(post("/api/v1/auth/email/verify", { token: "nope" }), env(), deps(db, mailer));
+  assert.equal(unknown.status, 401);
 });
 
 test("login waits for verification and checks the password", async () => {
@@ -1009,6 +1028,62 @@ test("an unknown email still pays the password hash cost", async () => {
   const known = await time(EMAIL);
   const unknown = await time("nobody@push.app");
   assert.ok(unknown > known * 0.3, `unknown ${unknown}ms vs known ${known}ms`);
+});
+
+const resetSetup = async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  resetLimits();
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  resetLimits();
+  await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
+  const token = tokenFrom(sent[1]);
+  const peek = (value: string) => handle(new Request(`https://core.example/api/v1/auth/email/password-reset/${value}`), env(), deps(db, mailer));
+  const confirm = (value: string) => handle(
+    post("/api/v1/auth/email/password-reset/confirm", { token: value, password: "newpass123" }), env(), deps(db, mailer));
+  return { db, token, peek, confirm, reset: db.tokens.find((row) => row.kind === "RESET")! };
+};
+
+test("reset confirm with an expired unused token is 410 TOKEN_EXPIRED with the account email", async () => {
+  const { db, token, confirm, reset } = await resetSetup();
+  reset.expires_at = new Date(NOW.getTime() - 1000).toISOString();
+  const previous = db.users[0].password_hash;
+  const res = await confirm(token);
+  assert.equal(res.status, 410);
+  const body = await res.json() as Err;
+  assert.equal(body.error.code, "TOKEN_EXPIRED");
+  assert.deepEqual(body.error.details, { email: EMAIL });
+  assert.equal(reset.used_at, null);
+  assert.equal(db.users[0].password_hash, previous);
+  assert.equal((await confirm("nope")).status, 401);
+});
+
+test("GET password-reset lookup returns the email and never consumes the token", async () => {
+  const { db, token, peek, confirm, reset } = await resetSetup();
+  const before = db.sqls.length;
+  const res = await peek(token);
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { data: unknown }).data, { email: EMAIL });
+  assert.equal(reset.used_at, null);
+  assert.equal(db.sqls.slice(before).some((call) => /^(UPDATE|DELETE|INSERT)/.test(call.sql) && !call.sql.includes("rate_limits")), false);
+  assert.equal((await confirm(token)).status, 204);
+});
+
+test("GET password-reset lookup: expired is 410 with the email, unknown and used are 401", async () => {
+  const { token, peek, confirm, reset } = await resetSetup();
+  assert.equal((await peek("nope")).status, 401);
+  reset.expires_at = new Date(NOW.getTime() - 1000).toISOString();
+  const expired = await peek(token);
+  assert.equal(expired.status, 410);
+  const body = await expired.json() as Err;
+  assert.equal(body.error.code, "TOKEN_EXPIRED");
+  assert.deepEqual(body.error.details, { email: EMAIL });
+  reset.expires_at = new Date(NOW.getTime() + 60_000).toISOString();
+  assert.equal((await confirm(token)).status, 204);
+  assert.equal((await peek(token)).status, 401);
 });
 
 test("oauth callback consumes the state in one statement", async () => {

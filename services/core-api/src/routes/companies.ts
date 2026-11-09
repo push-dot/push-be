@@ -7,13 +7,13 @@ import type { Ctx } from "../types.ts";
 const INVITE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOT_VERIFIED = "사업자 정보를 확인하지 못했어요. 개업 직후라면 1–2일 뒤 다시 시도해 주세요";
 const MINE = "SELECT c.id, c.b_no, c.name, c.plan, c.verified_at, m.role, (SELECT count(*) FROM company_members mm WHERE mm.company_id = c.id AND mm.role = 'MEMBER') AS member_count, (SELECT count(*) FROM company_invites i WHERE i.company_id = c.id AND i.accepted_at IS NULL AND i.expires_at > $2) AS invite_count FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1";
-const MINE_PROFILE = "SELECT c.id, c.b_no, c.name, c.plan, c.verified_at, c.logo_key, c.industry, c.website, c.intro, c.representative_name, m.role, (SELECT count(*) FROM company_members mm WHERE mm.company_id = c.id AND mm.role = 'MEMBER') AS member_count, (SELECT count(*) FROM company_invites i WHERE i.company_id = c.id AND i.accepted_at IS NULL AND i.expires_at > $2) AS invite_count FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1";
+const MINE_PROFILE = "SELECT c.id, c.b_no, c.name, c.plan, c.verified_at, c.logo_key, c.industry, c.website, c.intro, c.representative_name, to_jsonb(c)->>'legal_name' AS legal_name, m.role, (SELECT count(*) FROM company_members mm WHERE mm.company_id = c.id AND mm.role = 'MEMBER') AS member_count, (SELECT count(*) FROM company_invites i WHERE i.company_id = c.id AND i.accepted_at IS NULL AND i.expires_at > $2) AS invite_count FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1";
 const IMAGE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-const PROFILE_KEYS = new Set(["logoKey", "industry", "website", "intro", "representativeName"]);
-const INVITE_SEAT = `WHERE (
-       (SELECT count(*) FROM company_members WHERE company_id = $2 AND role = 'MEMBER')
-       + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)
-     ) < $7`;
+const PROFILE_KEYS = new Set(["logoKey", "industry", "website", "intro", "representativeName", "legalName"]);
+const SEATS_USED = `(SELECT count(*) FROM company_members WHERE company_id = $2 AND role = 'MEMBER')
+       + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)`;
+const INVITE_SEAT = `WHERE (${SEATS_USED}) < $7`;
+const RESEND_COOLDOWN_MS = 60 * 1000;
 
 const TRANSFER_ADMIN = "UPDATE company_members SET role = CASE WHEN user_id = $2 THEN 'ADMIN' ELSE 'MEMBER' END WHERE company_id = $1 AND (user_id = $2 OR role = 'ADMIN')";
 const ACCEPT_INVITE = "WITH claimed AS (UPDATE company_invites SET accepted_at = $3 WHERE id = $1 AND accepted_at IS NULL RETURNING company_id) INSERT INTO company_members (company_id, user_id, role, created_at) SELECT company_id, $2, 'MEMBER', $3 FROM claimed RETURNING company_id";
@@ -60,6 +60,7 @@ const companyJson = (row: Record<string, unknown>) => {
   body.website = textOrNull(row.website);
   body.intro = textOrNull(row.intro);
   body.representativeName = textOrNull(row.representative_name);
+  body.legalName = textOrNull(row.legal_name);
   return body;
 };
 
@@ -78,6 +79,15 @@ const httpUrl = (value: string): boolean => {
   } catch {
     return false;
   }
+};
+
+const legalNameOf = (value: unknown): string | null => {
+  if (value === null) return null;
+  if (typeof value !== "string") throw invalid("legalName");
+  const text = value.trim();
+  if (text === "") return null;
+  if (codePoints(text) > 120) throw invalid("legalName");
+  return text;
 };
 
 const logoKeyOf = (value: unknown): string | null => {
@@ -131,6 +141,18 @@ const businessError = (reason: "MISMATCH" | "SUSPENDED" | "CLOSED"): HttpError =
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
+type InviteReason = "INVALID" | "EXPIRED" | "ACCEPTED" | "COMPANY_DELETING" | "EMAIL_MISMATCH" | "ALREADY_MEMBER";
+
+const inviteFail = (
+  status: number,
+  code: string,
+  message: string,
+  reason: InviteReason,
+  companyName?: unknown,
+): HttpError => new HttpError(status, code, message, reason === "EXPIRED"
+  ? { reason, companyName: companyName == null ? "" : String(companyName) }
+  : { reason });
+
 const rowOf = (body: unknown): Record<string, unknown> | null => {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const list = (body as { data?: unknown }).data;
@@ -181,6 +203,17 @@ const requireAdmin = async (ctx: Ctx): Promise<Record<string, unknown>> => {
   return row;
 };
 
+// Only runs the legal_name statement when a value is given; a missing column (code before migration 0040) falls back to the old statement.
+const withLegalName = async <T>(legalName: string | null, withColumn: () => Promise<T>, without: () => Promise<T>): Promise<T> => {
+  if (legalName == null) return without();
+  try {
+    return await withColumn();
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    return without();
+  }
+};
+
 const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   requireEmployer(ctx);
   const body = await readJson(ctx.request);
@@ -188,6 +221,7 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   const startDt = fieldText(body, "startDt");
   const pNm = fieldText(body, "pNm");
   const bNm = fieldText(body, "bNm");
+  const legalName = "legalName" in body ? legalNameOf(body.legalName) : null;
   if (!/^\d{10}$/.test(bNo)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "bNo" });
   if (!/^\d{8}$/.test(startDt)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "startDt" });
   const existing = await one(ctx.deps.query,
@@ -216,9 +250,13 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   if (shell && existing) {
     const companyId = String(existing.company_id);
     try {
-      const updated = await query(ctx.deps.query,
-        "UPDATE companies SET b_no = $2, name = $3, verified_at = $4 WHERE id = $1 AND verified_at IS NULL",
-        [companyId, bNo, bNm, now]);
+      const updated = await withLegalName(legalName,
+        () => query(ctx.deps.query,
+          "UPDATE companies SET b_no = $2, name = $3, verified_at = $4, legal_name = $5 WHERE id = $1 AND verified_at IS NULL",
+          [companyId, bNo, bNm, now, legalName]),
+        () => query(ctx.deps.query,
+          "UPDATE companies SET b_no = $2, name = $3, verified_at = $4 WHERE id = $1 AND verified_at IS NULL",
+          [companyId, bNo, bNm, now]));
       if ((updated.rowCount ?? 0) === 0) throw new HttpError(409, "CONFLICT", "already in a company");
     } catch (err) {
       if (err instanceof HttpError) throw err;
@@ -233,13 +271,18 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
       verifiedAt: ts(ctx.now),
       role: "ADMIN",
       seats: { used: 0, limit: 0 },
+      legalName,
     }, ctx.rid);
   }
   const companyId = crypto.randomUUID();
   try {
-    await query(ctx.deps.query,
-      "INSERT INTO companies (id, b_no, name, verified_at, plan, created_at) VALUES ($1,$2,$3,$4,NULL,$5)",
-      [companyId, bNo, bNm, now, now]);
+    await withLegalName(legalName,
+      () => query(ctx.deps.query,
+        "INSERT INTO companies (id, b_no, name, verified_at, plan, created_at, legal_name) VALUES ($1,$2,$3,$4,NULL,$5,$6)",
+        [companyId, bNo, bNm, now, now, legalName]),
+      () => query(ctx.deps.query,
+        "INSERT INTO companies (id, b_no, name, verified_at, plan, created_at) VALUES ($1,$2,$3,$4,NULL,$5)",
+        [companyId, bNo, bNm, now, now]));
   } catch (err) {
     if (isUnique(err)) throw new HttpError(409, "COMPANY_EXISTS", "company already exists");
     throw err;
@@ -261,6 +304,7 @@ const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
     verifiedAt: ts(ctx.now),
     role: "ADMIN",
     seats: { used: 0, limit: 0 },
+    legalName,
   }, ctx.rid);
 };
 
@@ -331,6 +375,39 @@ const updateInviteToken = async (ctx: Ctx, id: string, hash: string, expires: st
   }
 };
 
+const restoreInvite = async (ctx: Ctx, id: string, row: Record<string, unknown>): Promise<void> => {
+  await query(ctx.deps.query,
+    "UPDATE company_invites SET token_hash = $2, expires_at = $3 WHERE id = $1",
+    [id, row.token_hash, row.expires_at]);
+};
+
+// A live invite already holds its seat; a lapsed one must win a seat again, and the cooldown reads the last send off expires_at.
+const RESEND_GUARD = `WHERE id = $1 AND company_id = $2 AND accepted_at IS NULL AND expires_at <= $5
+       AND (expires_at > $6 OR (${SEATS_USED}) < $7)`;
+
+const claimResend = async (ctx: Ctx, id: string, companyId: string, hash: string, expires: string, limit: number): Promise<boolean> => {
+  const cutoff = new Date(ctx.now.getTime() + INVITE_MS - RESEND_COOLDOWN_MS).toISOString();
+  const params = [id, companyId, hash, expires, cutoff, ctx.now.toISOString(), limit];
+  let claimed;
+  try {
+    claimed = await query(ctx.deps.query,
+      `UPDATE company_invites SET token_hash = $3, expires_at = $4, inviter_user_id = $8 ${RESEND_GUARD}`,
+      [...params, ctx.user.id]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    claimed = await query(ctx.deps.query, `UPDATE company_invites SET token_hash = $3, expires_at = $4 ${RESEND_GUARD}`, params);
+  }
+  return (claimed.rowCount ?? 0) > 0;
+};
+
+// shortcut: there is no created_at column, and re-sending rotates the expiry, so this is the last send. Add a column if sends need a history.
+const inviteJson = (row: Record<string, unknown>) => ({
+  id: String(row.id),
+  email: row.email == null ? "" : String(row.email),
+  expiresAt: ts(row.expires_at),
+  invitedAt: ts(new Date(Date.parse(String(row.expires_at)) - INVITE_MS)),
+});
+
 const invite = async (ctx: Ctx): Promise<Response> => {
   const mine = await requireAdmin(ctx);
   const body = await readJson(ctx.request);
@@ -376,19 +453,25 @@ const patchCompany = async (ctx: Ctx): Promise<Response> => {
   for (const key of Object.keys(body)) {
     if (!PROFILE_KEYS.has(key)) throw invalid(key);
   }
-  const params: unknown[] = [String(mine.id)];
-  const sets: string[] = [];
-  const add = (column: string, value: unknown) => {
-    params.push(value);
-    sets.push(`${column} = $${params.length}`);
-  };
+  const changes: [string, unknown][] = [];
+  const add = (column: string, value: unknown) => changes.push([column, value]);
   if ("logoKey" in body) add("logo_key", logoKeyOf(body.logoKey));
   if ("industry" in body) add("industry", optionalText(body.industry, "industry", 80));
   if ("website" in body) add("website", websiteOf(body.website));
   if ("intro" in body) add("intro", optionalText(body.intro, "intro", 2000));
   if ("representativeName" in body) add("representative_name", optionalText(body.representativeName, "representativeName", 80));
-  if (sets.length > 0) {
-    await query(ctx.deps.query, `UPDATE companies SET ${sets.join(", ")} WHERE id = $1`, params);
+  if ("legalName" in body) add("legal_name", legalNameOf(body.legalName));
+  const update = (list: [string, unknown][]) => query(ctx.deps.query,
+    `UPDATE companies SET ${list.map(([column], i) => `${column} = $${i + 2}`).join(", ")} WHERE id = $1`,
+    [String(mine.id), ...list.map(([, value]) => value)]);
+  if (changes.length > 0) {
+    try {
+      await update(changes);
+    } catch (err) {
+      const rest = changes.filter(([column]) => column !== "legal_name");
+      if (!isUndefinedColumn(err) || rest.length === changes.length) throw err;
+      if (rest.length > 0) await update(rest);
+    }
   }
   return data(200, companyJson(await loadMine(ctx)), ctx.rid);
 };
@@ -398,11 +481,43 @@ const listInvites = async (ctx: Ctx): Promise<Response> => {
   const rows = await query(ctx.deps.query,
     "SELECT id, email, expires_at FROM company_invites WHERE company_id = $1 AND accepted_at IS NULL AND expires_at > $2 ORDER BY expires_at ASC, id ASC",
     [String(mine.id), ctx.now.toISOString()]);
-  return data(200, rows.rows.map((row) => ({
-    id: String(row.id),
-    email: row.email == null ? "" : String(row.email),
-    expiresAt: ts(row.expires_at),
-  })), ctx.rid);
+  return data(200, rows.rows.map(inviteJson), ctx.rid);
+};
+
+const resendInvite = async (ctx: Ctx, id: string): Promise<Response> => {
+  const mine = await requireAdmin(ctx);
+  const row = await one(ctx.deps.query,
+    "SELECT id, email, token_hash, expires_at FROM company_invites WHERE id = $1::uuid AND company_id = $2::uuid AND accepted_at IS NULL",
+    [id, String(mine.id)]);
+  if (!row) throw notFound();
+  const lapsed = Date.parse(String(row.expires_at)) <= ctx.now.getTime();
+  const wait = Math.ceil((Date.parse(String(row.expires_at)) - INVITE_MS + RESEND_COOLDOWN_MS - ctx.now.getTime()) / 1000);
+  if (wait > 0) throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: wait });
+  const limit = seatLimit(planOf(mine.plan));
+  const email = row.email == null ? "" : String(row.email);
+  const raw = randomToken();
+  const expires = new Date(ctx.now.getTime() + INVITE_MS).toISOString();
+  // The claim comes first so two concurrent resends cannot both win the last seat or double-mail.
+  if (!await claimResend(ctx, id, String(mine.id), await sha256Hex(raw), expires, limit)) {
+    if (lapsed) throw new HttpError(403, "SEAT_LIMIT", "seat limit reached");
+    throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: RESEND_COOLDOWN_MS / 1000 });
+  }
+  try {
+    await sendInvite(ctx, email, raw);
+  } catch {
+    await restoreInvite(ctx, id, row);
+    throw new HttpError(502, "PROVIDER_ERROR", "invite mail failed");
+  }
+  return data(200, inviteJson({ id, email, expires_at: expires }), ctx.rid);
+};
+
+const deleteInvite = async (ctx: Ctx, id: string): Promise<Response> => {
+  const mine = await requireAdmin(ctx);
+  const deleted = await query(ctx.deps.query,
+    "DELETE FROM company_invites WHERE id = $1::uuid AND company_id = $2::uuid AND accepted_at IS NULL",
+    [id, String(mine.id)]);
+  if ((deleted.rowCount ?? 0) === 0) throw notFound();
+  return noContent(ctx.rid);
 };
 
 const loadInvitePreview = async (ctx: Ctx, hash: string): Promise<Record<string, unknown> | null> => {
@@ -444,11 +559,15 @@ const inviterOf = async (ctx: Ctx, row: Record<string, unknown>) => {
 
 const previewInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   const row = await loadInvitePreview(ctx, await sha256Hex(token));
-  if (!row || row.accepted_at != null || row.deletion_requested_at != null) throw notFound();
+  if (!row) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
+  if (row.accepted_at != null) throw inviteFail(404, "NOT_FOUND", "resource not found", "ACCEPTED");
+  if (row.deletion_requested_at != null) throw inviteFail(404, "NOT_FOUND", "resource not found", "COMPANY_DELETING");
   const expires = Date.parse(String(row.expires_at));
-  if (Number.isNaN(expires) || ctx.now.getTime() > expires) throw notFound();
+  if (Number.isNaN(expires) || ctx.now.getTime() > expires) {
+    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", row.company_name);
+  }
   const inviter = await inviterOf(ctx, row);
-  if (!inviter) throw notFound();
+  if (!inviter) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
   return data(200, {
     companyName: row.company_name == null ? "" : String(row.company_name),
     inviterName: inviter.name,
@@ -461,29 +580,31 @@ const previewInvite = async (ctx: Ctx, token: string): Promise<Response> => {
 const acceptInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   requireEmployer(ctx);
   const inviteRow = await one(ctx.deps.query,
-    "SELECT i.id, i.company_id, i.email, i.expires_at, i.accepted_at, c.deletion_requested_at FROM company_invites i JOIN companies c ON c.id = i.company_id WHERE i.token_hash = $1",
+    "SELECT i.id, i.company_id, i.email, i.expires_at, i.accepted_at, c.name AS company_name, c.deletion_requested_at FROM company_invites i JOIN companies c ON c.id = i.company_id WHERE i.token_hash = $1",
     [await sha256Hex(token)]);
-  if (!inviteRow) throw notFound();
-  if (inviteRow.accepted_at != null) throw new HttpError(409, "CONFLICT", "invite already accepted");
-  if (inviteRow.deletion_requested_at != null) throw new HttpError(409, "CONFLICT", "company is pending deletion");
+  if (!inviteRow) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
+  if (inviteRow.accepted_at != null) throw inviteFail(409, "CONFLICT", "invite already accepted", "ACCEPTED");
+  if (inviteRow.deletion_requested_at != null) throw inviteFail(409, "CONFLICT", "company is pending deletion", "COMPANY_DELETING");
   const expires = Date.parse(String(inviteRow.expires_at));
-  if (Number.isNaN(expires) || ctx.now.getTime() > expires) throw notFound();
+  if (Number.isNaN(expires) || ctx.now.getTime() > expires) {
+    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", inviteRow.company_name);
+  }
   const [user, membership] = await Promise.all([
     one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]),
     one(ctx.deps.query, "SELECT company_id FROM company_members WHERE user_id = $1", [ctx.user.id]),
   ]);
   const actual = user?.email == null ? "" : String(user.email).trim().toLowerCase();
   const expected = String(inviteRow.email ?? "").trim().toLowerCase();
-  if (!actual || actual !== expected) throw new HttpError(403, "FORBIDDEN", "invite email does not match");
-  if (membership) throw new HttpError(409, "CONFLICT", "already in a company");
+  if (!actual || actual !== expected) throw inviteFail(403, "FORBIDDEN", "invite email does not match", "EMAIL_MISMATCH");
+  if (membership) throw inviteFail(409, "CONFLICT", "already in a company", "ALREADY_MEMBER");
   let joined: Record<string, unknown> | null;
   try {
     joined = await one(ctx.deps.query, ACCEPT_INVITE, [String(inviteRow.id), ctx.user.id, ctx.now.toISOString()]);
   } catch (err) {
-    if (isUnique(err)) throw new HttpError(409, "CONFLICT", "already in a company");
+    if (isUnique(err)) throw inviteFail(409, "CONFLICT", "already in a company", "ALREADY_MEMBER");
     throw err;
   }
-  if (!joined) throw new HttpError(409, "CONFLICT", "invite already accepted");
+  if (!joined) throw inviteFail(409, "CONFLICT", "invite already accepted", "ACCEPTED");
   return noContent(ctx.rid);
 };
 
@@ -528,6 +649,11 @@ const inviteToken = (raw: string): string => {
   }
 };
 
+const inviteId = (raw: string): string => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) throw notFound();
+  return raw.toLowerCase();
+};
+
 export const dispatchCompanies = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (method === "POST" && path === "/api/v1/companies/verify") return verifyBusiness(ctx);
@@ -540,6 +666,10 @@ export const dispatchCompanies = async (ctx: Ctx, path: string): Promise<Respons
   if (method === "GET" && preview) return previewInvite(ctx, inviteToken(preview[1]));
   const accept = path.match(/^\/api\/v1\/companies\/invites\/([^/]+)\/accept$/);
   if (method === "POST" && accept) return acceptInvite(ctx, inviteToken(accept[1]));
+  const resend = path.match(/^\/api\/v1\/companies\/me\/invites\/([^/]+)\/resend$/);
+  if (method === "POST" && resend) return resendInvite(ctx, inviteId(resend[1]));
+  const pending = path.match(/^\/api\/v1\/companies\/me\/invites\/([^/]+)$/);
+  if (method === "DELETE" && pending) return deleteInvite(ctx, inviteId(pending[1]));
   const member = path.match(/^\/api\/v1\/companies\/me\/members\/([^/]+)$/);
   if (!member) return null;
   const userId = member[1];

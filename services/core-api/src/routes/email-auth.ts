@@ -103,6 +103,24 @@ const consumeToken = async (ctx: Ctx, id: string): Promise<boolean> => {
 const fresh = (row: Record<string, unknown>, now: Date): boolean =>
   row.used_at == null && now.getTime() <= Date.parse(String(row.expires_at));
 
+// A token that exists, is unused and is past expiry is 410 with the account email; anything else unusable stays 401.
+const requireFresh = async (row: Record<string, unknown> | null, now: Date, emailOf: (row: Record<string, unknown>) => Promise<string>): Promise<Record<string, unknown>> => {
+  if (row && fresh(row, now)) return row;
+  if (row && row.used_at == null) throw new HttpError(410, "TOKEN_EXPIRED", "token expired", { email: await emailOf(row) });
+  throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+};
+
+const RESET_TOKEN = "SELECT id, user_id, expires_at, used_at FROM email_tokens WHERE token_hash = $1 AND kind = 'RESET'";
+
+const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown>> => {
+  const row = await one(ctx.deps.query, RESET_TOKEN, [await sha256Hex(token)]);
+  if (row?.user_id == null) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  return requireFresh(row, ctx.now, async (r) => {
+    const user = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [String(r.user_id)]);
+    return String(user?.email ?? "");
+  });
+};
+
 const signup = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const email = requireEmail(body.email);
@@ -129,10 +147,10 @@ const verify = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const token = requireString(body, "token");
   const hash = await sha256Hex(token);
-  const row = await one(ctx.deps.query,
+  const found = await one(ctx.deps.query,
     "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
     [hash]);
-  if (!row || !fresh(row, ctx.now)) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  const row = await requireFresh(found, ctx.now, async (r) => String(r.email).toLowerCase());
   if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
   const email = String(row.email).toLowerCase();
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
@@ -198,18 +216,26 @@ const confirmReset = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const token = requireString(body, "token");
   const password = requirePassword(body.password);
-  const hash = await sha256Hex(token);
-  const row = await one(ctx.deps.query,
-    "SELECT id, user_id, expires_at, used_at FROM email_tokens WHERE token_hash = $1 AND kind = 'RESET'",
-    [hash]);
-  if (!row || row.user_id == null || !fresh(row, ctx.now)) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  const row = await resetRow(ctx, token);
   if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
   await query(ctx.deps.query, "UPDATE users SET password_hash = $2 WHERE id = $1", [String(row.user_id), await hashPassword(password)]);
   await revokeAll(ctx, String(row.user_id));
   return noContent(ctx.rid);
 };
 
+const checkReset = async (ctx: Ctx, token: string): Promise<Response> => {
+  const row = await resetRow(ctx, token);
+  const user = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [String(row.user_id)]);
+  return data(200, { email: String(user?.email ?? "") }, ctx.rid);
+};
+
+const RESET_PEEK = /^\/api\/v1\/auth\/email\/password-reset\/([A-Za-z0-9_-]+)$/;
+
 export const dispatchEmailAuth = async (ctx: Ctx, path: string): Promise<Response | null> => {
+  if (ctx.request.method === "GET") {
+    const peek = path.match(RESET_PEEK);
+    return peek ? checkReset(ctx, peek[1]) : null;
+  }
   if (ctx.request.method !== "POST") return null;
   if (path === "/api/v1/auth/email/signup") return signup(ctx);
   if (path === "/api/v1/auth/email/verify") return verify(ctx);

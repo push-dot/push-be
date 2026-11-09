@@ -104,7 +104,10 @@ test("the stream route rejects before queueing: plan gate, unverified company, c
   resetLimits();
   const busy = await handle(stream(), env({ QUEUE_BACKEND: "redis" }), deps(fake({ depth: 1_000_000 }).query));
   assert.equal(busy.status, 429);
-  assert.equal(await errorCode(busy), "QUEUE_BUSY");
+  const error = (await busy.json() as { error: { code: string; details: { retryAfterSec: number; ahead: number } } }).error;
+  assert.equal(error.code, "QUEUE_BUSY");
+  assert.equal(error.details.ahead, 1_000_000);
+  assert.equal(typeof error.details.retryAfterSec, "number");
 });
 
 test("a personal stream without reference consent is 403 before queueing", async () => {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
-import { LAST_LINE } from "../src/middleware/ratelimit.ts";
+import { LAST_LINE, QUEUE_POSITION } from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -30,6 +30,7 @@ type Fixture = {
   preview: string;
   status: string;
   last_line: string | null;
+  queue_position: number | null;
 };
 
 const FIXTURES: Fixture[] = [
@@ -46,6 +47,7 @@ const FIXTURES: Fixture[] = [
     preview: "still going",
     status: "RUNNING",
     last_line: "이력서 읽기 · 김서준_이력서.pdf",
+    queue_position: 3,
   },
   {
     id: NEEDS_ID,
@@ -60,6 +62,7 @@ const FIXTURES: Fixture[] = [
     preview: LONG_PREVIEW,
     status: "NEEDS_APPROVAL",
     last_line: "이 공고에 지원해요",
+    queue_position: null,
   },
   {
     id: DONE_ID,
@@ -74,6 +77,7 @@ const FIXTURES: Fixture[] = [
     preview: "",
     status: "DONE",
     last_line: null,
+    queue_position: null,
   },
 ];
 
@@ -114,6 +118,7 @@ const rowsFor = (sql: string): Record<string, unknown>[] => {
     last_message_preview: cut ? row.preview.slice(0, 140) : row.preview,
     status: row.status,
     last_line: row.last_line,
+    queue_position: row.queue_position,
   }));
 };
 
@@ -142,6 +147,14 @@ const listQuery = (seen: Array<[string, unknown[]]>): Query => {
   };
 };
 
+const assertQueuePositionSql = (sql: string): void => {
+  assert.ok(sql.includes(QUEUE_POSITION), "queue_position uses the shared fragment");
+  assert.match(sql, /CASE WHEN me\.at IS NULL THEN NULL ELSE \(SELECT count\(\*\)::int FROM chat_jobs p JOIN conversations pc ON pc\.id = p\.conversation_id WHERE p\.status = 'PENDING' AND p\.created_at < me\.at /);
+  assert.match(sql, /AND \(CASE WHEN c\.company_id IS NOT NULL THEN pc\.company_id = c\.company_id ELSE pc\.user_id = c\.user_id AND pc\.company_id IS NULL END\)\) END/);
+  assert.match(sql, /\(SELECT min\(j\.created_at\) AS at FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status = 'PENDING'\) me\) AS queue_position/);
+  assert.doesNotMatch(sql, /status = 'RUNNING'\) me/);
+};
+
 const assertStatusSql = (sql: string): void => {
   const needs = sql.indexOf("THEN 'NEEDS_APPROVAL'");
   const running = sql.indexOf("THEN 'RUNNING'");
@@ -150,6 +163,7 @@ const assertStatusSql = (sql: string): void => {
   assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status IN \('PENDING', 'RUNNING'\)\) THEN 'RUNNING'/);
   assert.match(sql, /ELSE 'DONE' END AS status/);
   assert.ok(sql.includes(LAST_LINE), "last_line uses the shared fragment");
+  assertQueuePositionSql(sql);
   assert.match(sql, /LEFT JOIN LATERAL \(SELECT m\.text FROM messages m WHERE m\.conversation_id = c\.id ORDER BY m\.created_at DESC, m\.id DESC LIMIT 1\) last_msg ON true/);
   assert.doesNotMatch(sql, /m\.text ILIKE/);
   assert.match(sql, /COALESCE\(last_msg\.text, ''\) ILIKE/);
@@ -207,6 +221,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-15T00:00:00Z",
       updatedAt: "2026-10-17T00:00:00Z",
       status: "NEEDS_APPROVAL",
+      queuePosition: null,
       lastLine: "이 공고에 지원해요",
       lastMessagePreview: "가".repeat(140),
       createdBy: { displayName: "Bea" },
@@ -221,6 +236,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-18T00:00:00Z",
       updatedAt: "2026-10-16T00:00:00Z",
       status: "RUNNING",
+      queuePosition: 3,
       lastLine: "이력서 읽기 · 김서준_이력서.pdf",
       lastMessagePreview: "still going",
       createdBy: { displayName: "Ada" },
@@ -235,6 +251,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-14T00:00:00Z",
       updatedAt: "2026-10-14T00:00:00Z",
       status: "DONE",
+      queuePosition: null,
       lastLine: null,
       lastMessagePreview: "",
       createdBy: { displayName: "" },
@@ -356,6 +373,7 @@ test("get one returns the list item shape for the caller's own conversation", as
     createdAt: "2026-10-15T00:00:00Z",
     updatedAt: "2026-10-17T00:00:00Z",
     status: "NEEDS_APPROVAL",
+    queuePosition: null,
     lastLine: "이 공고에 지원해요",
     lastMessagePreview: "가".repeat(140),
     createdBy: { displayName: "Bea" },
@@ -364,6 +382,17 @@ test("get one returns the list item shape for the caller's own conversation", as
   assert.deepEqual(seen[0][1], [NEEDS_ID, USER]);
   assert.doesNotMatch(String(seen[0][0]), /archived/);
   assert.match(String(seen[0][0]), /THEN 'NEEDS_APPROVAL'.*THEN 'RUNNING'.*ELSE 'DONE' END AS status/);
+});
+
+test("get one carries queuePosition for a conversation waiting in the queue", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne(RUNNING_ID, getQuery(seen));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { status: string; queuePosition: number | null } };
+  assert.equal(body.data.status, "RUNNING");
+  assert.equal(body.data.queuePosition, 3);
+  assertQueuePositionSql(String(seen[0][0]));
 });
 
 test("get one is 404 for another user's or a missing conversation", async () => {

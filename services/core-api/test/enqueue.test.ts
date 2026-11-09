@@ -111,13 +111,24 @@ test("same idempotencyKey returns the existing jobId", async () => {
 
 test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FREE but not ULTRA", async () => {
   const depth = queueDepthLimit("FREE") + 1;
-  const db: Query = async () => ({ rows: [{ n: depth }], rowCount: 1 });
-  const free = await checkBackpressure(db, "q:chat", "FREE");
-  const ultra = await checkBackpressure(db, "q:chat", "ULTRA");
+  const owned: unknown[][] = [];
+  const db: Query = async (sql, params) => {
+    if (sql.includes("user_id")) {
+      owned.push(params ?? []);
+      return { rows: [{ n: 4 }], rowCount: 1 };
+    }
+    return { rows: [{ n: depth }], rowCount: 1 };
+  };
+  const free = await checkBackpressure(db, "q:chat", "FREE", { userId: USER });
+  const ultra = await checkBackpressure(db, "q:chat", "ULTRA", { userId: USER });
   assert.equal(free.ok, false);
   if (free.ok) return;
   assert.equal(ultra.ok, true);
   assert.equal(queueDepthLimit("ULTRA") > depth, true);
+  assert.equal(free.ahead, 4);
+  assert.deepEqual(owned, [["q:chat", USER, null]]);
+  await checkBackpressure(db, "q:chat", "FREE", { userId: USER, companyId: COMPANY });
+  assert.deepEqual(owned[1], ["q:chat", USER, COMPANY]);
   const err = new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: free.retryAfterSec });
   const res = errorOf(err, "rid");
   assert.equal(res.status, 429);

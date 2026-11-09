@@ -261,7 +261,7 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
       id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png",
       location: "서울 강남구", careerMin: 5, careerMax: null, deadline: "2026-11-20",
     },
-    status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z", archivedAt: null,
+    status: "SENT", readAt: null, respondedAt: null, canSend: false, createdAt: "2026-10-22T00:00:00Z", archivedAt: null,
   });
   const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO offers"))!;
   assert.deepEqual(insert.params.slice(1, 5), [ME, OTHER, "join us", POSTING]);

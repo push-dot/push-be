@@ -144,6 +144,14 @@ export const LAST_LINE = "COALESCE("
   + "WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING') ORDER BY j.created_at DESC LIMIT 1) "
   + "AND e.type IN ('status', 'tool') ORDER BY e.id DESC LIMIT 1)) AS last_line";
 
+// shortcut: PENDING order within the conversation's owner (company, else user) so other tenants' load stays hidden; ignores priority lanes, upgrade when the queue exposes per-lane positions
+export const QUEUE_POSITION = "(SELECT CASE WHEN me.at IS NULL THEN NULL ELSE (SELECT count(*)::int FROM chat_jobs p "
+  + "JOIN conversations pc ON pc.id = p.conversation_id "
+  + "WHERE p.status = 'PENDING' AND p.created_at < me.at "
+  + "AND (CASE WHEN c.company_id IS NOT NULL THEN pc.company_id = c.company_id ELSE pc.user_id = c.user_id AND pc.company_id IS NULL END)) "
+  + "END FROM (SELECT min(j.created_at) AS at FROM chat_jobs j "
+  + "WHERE j.conversation_id = c.id AND j.status = 'PENDING') me) AS queue_position";
+
 export const LIST_SQL = AUTH_RATE_PREFIX
   + ", page AS ("
   + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at, "
@@ -151,7 +159,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
   + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
   + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-  + "ELSE 'DONE' END AS status, " + LAST_LINE + " "
+  + "ELSE 'DONE' END AS status, " + LAST_LINE + ", " + QUEUE_POSITION + " "
   + "FROM conversations c JOIN live ON live.id = c.user_id "
   + "LEFT JOIN users cu ON cu.id = c.user_id "
   + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
@@ -168,7 +176,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "'updated_at', " + tsText("page.updated_at") + ", "
   + "'posting_id', page.posting_id, 'display_name', page.display_name, "
   + "'last_message_preview', page.last_message_preview, 'status', page.status, "
-  + "'last_line', page.last_line"
+  + "'last_line', page.last_line, 'queue_position', page.queue_position"
   + ") ORDER BY page.updated_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 /** A `page` CTE of messages as one JSON array column, newest first. */

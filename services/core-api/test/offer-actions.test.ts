@@ -246,5 +246,83 @@ test("listing messages and deciding an offer ignore blocks", async () => {
   assert.equal((await w.call("GET", `/api/v1/me/offers/${OFFER}/messages`)).status, 200);
   resetLimits();
   assert.equal((await w.call("POST", `/api/v1/me/offers/${OFFER}/decline`)).status, 200);
-  assert.equal(w.seen.some((c) => c.sql.includes("FROM user_blocks")), false);
+  assert.equal(w.seen.some((c) => c.sql.startsWith("SELECT 1 AS blocked FROM user_blocks")), false);
+});
+
+const detailWorld = (row: Row) => world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [row] : undefined));
+
+test("offer detail reports respondedAt and predicts the message POST in canSend", async () => {
+  const cases: [Row, boolean][] = [
+    [{ status: "ACCEPTED", blocked_me: false }, true],
+    [{ status: "ACCEPTED", blocked_me: true }, false],
+    [{ status: "READ", blocked_me: false }, false],
+    [{ status: "DECLINED", blocked_me: false }, false],
+    [{ status: "ACCEPTED" }, true],
+  ];
+  for (const [extra, canSend] of cases) {
+    resetLimits();
+    const w = detailWorld(offerRow({ responded_at: "2026-10-21T01:02:03Z", ...extra }));
+    const res = await w.call("GET", `/api/v1/me/offers/${OFFER}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.data.canSend, canSend, JSON.stringify(extra));
+    assert.equal(res.body.data.respondedAt, "2026-10-21T01:02:03Z");
+    const select = w.seen.find((c) => c.sql.startsWith("SELECT oa.archived_at, o.id"))!;
+    assert.match(select.sql, /to_jsonb\(o\)->>'responded_at' AS responded_at/);
+    assert.match(select.sql, /bm\.blocked_id = \$2 AND bm\.blocker_id = CASE WHEN o\.sender_id = \$2 THEN o\.profile_user_id ELSE o\.sender_id END/);
+  }
+});
+
+test("offer lists compute canSend per caller in the same query and give a null respondedAt when never answered", async () => {
+  const w = world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [offerRow({ status: "ACCEPTED", blocked_me: true }), offerRow({ id: STRANGER, status: "ACCEPTED", blocked_me: false })] : undefined));
+  const res = await w.call("GET", "/api/v1/me/offers?box=received");
+  assert.deepEqual(res.body.data.map((o) => [o.canSend, o.respondedAt]), [[false, null], [true, null]]);
+  const list = w.seen.filter((c) => c.sql.startsWith("SELECT oa.archived_at, o.id"));
+  assert.equal(list.length, 1);
+  assert.match(list[0].sql, /bm\.blocked_id = \$1/);
+});
+
+test("accepting or declining stamps responded_at with the request time", async () => {
+  for (const [action, status, canSend] of [["accept", "ACCEPTED", true], ["decline", "DECLINED", false]] as const) {
+    resetLimits();
+    const w = world((sql) => {
+      if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ blocked_me: false })];
+      if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+      return undefined;
+    });
+    const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/${action}`);
+    assert.equal(res.status, 200, action);
+    assert.equal(res.body.data.status, status);
+    assert.equal(res.body.data.respondedAt, "2026-10-22T00:00:00Z");
+    assert.equal(res.body.data.canSend, canSend);
+    const update = w.seen.find((c) => c.sql.startsWith("UPDATE offers SET status"))!;
+    assert.match(update.sql, /^UPDATE offers SET status = \$2, responded_at = \$3 WHERE id = \$1 AND status IN \('SENT', 'READ'\) RETURNING id$/);
+    assert.deepEqual(update.params, [OFFER, status, NOW.toISOString()]);
+  }
+});
+
+test("accepting an offer from a user who blocked the caller answers canSend false", async () => {
+  const w = world((sql) => {
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ blocked_me: true })];
+    if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+    return undefined;
+  });
+  const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/accept`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.canSend, false);
+});
+
+test("deciding an offer before migration 0040 falls back to the update without responded_at", async () => {
+  const missing = Object.assign(new Error('column "responded_at" of relation "offers" does not exist'), { code: "42703" });
+  const w = world((sql) => {
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow()];
+    if (sql.includes("responded_at = $3")) return missing;
+    if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+    return undefined;
+  });
+  const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/decline`);
+  assert.equal(res.status, 200);
+  const updates = w.seen.filter((c) => c.sql.startsWith("UPDATE offers SET status"));
+  assert.equal(updates.length, 2);
+  assert.equal(updates[1].sql.includes("responded_at"), false);
+  assert.deepEqual(updates[1].params, [OFFER, "DECLINED"]);
 });

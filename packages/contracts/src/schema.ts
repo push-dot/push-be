@@ -384,9 +384,29 @@ export interface paths {
         put?: never;
         /**
          * Set new password with reset token
-         * @description Revokes every session of the user.
+         * @description Revokes every session of the user. 410 TOKEN_EXPIRED (details.email, the account email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailPasswordResetConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/password-reset/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up a password reset link
+         * @description Read-only: does not consume the token. Returns the account email for the reset form. 410 TOKEN_EXPIRED (details.email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
+         */
+        get: operations["getAuthEmailPasswordResetByToken"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -424,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Verify email and create the account
-         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email.
+         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
         delete?: never;
@@ -521,7 +541,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a phone code and sign in
-         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
          */
         post: operations["postAuthPhoneVerify"];
         delete?: never;
@@ -839,7 +859,7 @@ export interface paths {
         };
         /**
          * Preview an invite
-         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion.
+         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.
          */
         get: operations["getCompaniesInvitesByToken"];
         put?: never;
@@ -861,7 +881,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an invite
-         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
          */
         post: operations["postCompaniesInvitesByTokenAccept"];
         delete?: never;
@@ -909,6 +929,46 @@ export interface paths {
          * @description ADMIN only. Re-inviting a pending email resends the link. 403 SEAT_LIMIT when seats are full. 409 CONFLICT if already a member. 502 PROVIDER_ERROR when invite mail fails. A failed resend leaves the old token in place.
          */
         post: operations["postCompaniesMeInvites"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/invites/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a pending invite
+         * @description ADMIN only. Frees the seat. 404 NOT_FOUND when the invite is unknown, accepted or another company's.
+         */
+        delete: operations["deleteCompaniesMeInvitesById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/companies/me/invites/{id}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend an invite
+         * @description ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full (checked in the same statement that rotates the token, so concurrent resends cannot overfill). 429 RATE_LIMITED with details.retryAfterSec when the invite was sent less than 60 seconds ago. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.
+         */
+        post: operations["postCompaniesMeInvitesByIdResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -987,7 +1047,7 @@ export interface paths {
         put?: never;
         /**
          * Verify business registration and create company
-         * @description EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.
+         * @description EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.
          */
         post: operations["postCompaniesVerify"];
         delete?: never;
@@ -1183,7 +1243,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message (queue a chat job)
-         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec.
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's).
          */
         post: operations["postConversationsByIdMessages"];
         delete?: never;
@@ -1483,7 +1543,7 @@ export interface paths {
         put?: never;
         /**
          * Queue AI generation of a document
-         * @description Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.
+         * @description Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs) when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.
          */
         post: operations["postDocumentsByIdGenerate"];
         delete?: never;
@@ -2799,7 +2859,7 @@ export interface paths {
         put?: never;
         /**
          * Create a posting
-         * @description Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).
+         * @description Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy, draftSource).
          */
         post: operations["postPostings"];
         delete?: never;
@@ -2817,7 +2877,7 @@ export interface paths {
         };
         /**
          * Filter facet counts for open postings
-         * @description Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.
+         * @description Each facet ignores its own filter (career ignores careerYears, category ignores category, employmentType ignores employmentType, skills ignores skills); location ignores location. category and employmentType list every value including zero counts, location and skills only non-zero ones.
          */
         get: operations["getPostingsFacets"];
         put?: never;
@@ -2835,7 +2895,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Open posting counts by location */
+        /**
+         * Open posting counts by location
+         * @description level=city groups by the first whitespace-separated token of location ("서울 강남구" counts under "서울") with summed counts, ordered by count desc then name. Omitted or level=district lists each full location. Any other level is 400.
+         */
         get: operations["getPostingsLocations"];
         put?: never;
         post?: never;
@@ -3025,7 +3088,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a posting fit analysis
-         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.
+         * @description Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec, details.ahead: the caller's own queued jobs) under backpressure.
          */
         post: operations["postPostingsByIdFit"];
         delete?: never;
@@ -3458,7 +3521,7 @@ export interface paths {
         };
         /**
          * List the file library
-         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored.
+         * @description Merges uploaded sources and AI documents, newest first. AI documents appear with origin AI, mimeType application/json and size 0. Omits a file whose name ends in .md or whose mimeType is text/markdown. GET /sources/{id} and GET /sources/{id}/content still return that file. The query kind filters origin. Each item's kind is the document kind stored at upload, or the AI document's kind, and is null when that was not stored. An AI row also carries the company and posting title of the application its document belongs to; upload rows carry null for both.
          */
         get: operations["getSources"];
         put?: never;
@@ -3491,7 +3554,11 @@ export interface paths {
         delete: operations["deleteSourcesById"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Rename an uploaded source
+         * @description Sets the file name of an upload the caller owns (trimmed, 1-200 characters, else 400 VALIDATION_ERROR). Returns the GET /sources item. An AI document id (or any id that is not the caller's upload) is 404 NOT_FOUND; rename an AI document through PATCH /documents/{id} title, which needs expectedRevision.
+         */
+        patch: operations["patchSourcesById"];
         trace?: never;
     };
     "/api/v1/sources/{id}/content": {
@@ -3663,6 +3730,8 @@ export interface components {
             applicationId: string;
             /** Format: date-time */
             appliedAt: string;
+            /** @description Distinct kinds in fixed order: PROFILE (a hub profile snapshot), PDF (an attached PDF), FILE (any other attached file) */
+            documentKinds: ("PROFILE" | "PDF" | "FILE")[];
             documents: {
                 pages: number | null;
                 title: string;
@@ -3676,6 +3745,8 @@ export interface components {
                 displayName: string;
                 email: string;
                 headline: string;
+                /** @description The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null */
+                hubProfileId: string | null;
                 skills: string[];
             };
             application: components["schemas"]["PostingsApplicantApplication"];
@@ -3684,6 +3755,15 @@ export interface components {
                 /** Format: uuid */
                 id: string;
                 title: string;
+            }[];
+            /** @description Files attached at apply time. Download with GET postings/{id}/applicants/{applicationId}/files/{fileId} */
+            files: {
+                fileName: string;
+                /** Format: uuid */
+                id: string;
+                mimeType: string;
+                pageCount: number | null;
+                size: number;
             }[];
         };
         Application: {
@@ -4015,6 +4095,7 @@ export interface components {
             id: string;
             industry?: string | null;
             intro?: string | null;
+            legalName?: string | null;
             logoKey?: string | null;
             logoUrl?: string | null;
             name: string;
@@ -4036,6 +4117,11 @@ export interface components {
             expiresAt: string;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: date-time
+             * @description Last send: expiresAt minus the 7 day invite TTL
+             */
+            invitedAt: string;
         };
         CompanyMember: {
             displayName: string;
@@ -4640,6 +4726,8 @@ export interface components {
             lastMessagePreview: string;
             pinned: boolean;
             postingId: string | null;
+            /** @description Pending chat jobs of the same owner (the company for employer conversations, else the user) queued before this conversation's pending job. 0 means none of the owner's jobs is ahead. Null when it has none. */
+            queuePosition?: number | null;
             revision: number;
             /** @enum {string} */
             status: "NEEDS_APPROVAL" | "RUNNING" | "DONE";
@@ -4649,7 +4737,11 @@ export interface components {
         };
         ConversationsMessageAttachment: {
             documentId?: string;
+            /** @description Uploaded PDF name, present when id is an attachment of this conversation */
+            fileName?: string;
             id: string;
+            /** @description Uploaded PDF size in bytes, present with fileName */
+            size?: number;
             title?: string;
             /** @description e.g. DOCUMENT_VERSION, EVIDENCE */
             type: string;
@@ -4793,6 +4885,8 @@ export interface components {
             };
         };
         DocumentsLibraryItem: {
+            /** @description Company of the application the AI document belongs to. Null for uploads. */
+            company: string | null;
             /** Format: date-time */
             createdAt: string;
             fileName: string;
@@ -4804,6 +4898,8 @@ export interface components {
             /** @description UPLOAD, AI, or the stored source origin */
             origin: string;
             pageCount: number | null;
+            /** @description Title of the application the AI document belongs to. Null for uploads. */
+            postingTitle: string | null;
             size: number;
         };
         DocumentsProfileDraft: {
@@ -4994,6 +5090,8 @@ export interface components {
         Offer: {
             /** @description When the caller archived this offer. Null when not archived. Per caller. */
             archivedAt?: string | null;
+            /** @description Whether POST /me/offers/{id}/messages would succeed for the caller: status ACCEPTED and the other party has not blocked the caller. */
+            canSend: boolean;
             /** Format: date-time */
             createdAt: string;
             /** Format: uuid */
@@ -5020,6 +5118,8 @@ export interface components {
                 /** @enum {string} */
                 kind: "PERSON" | "COMPANY";
             };
+            /** @description When the recipient accepted or declined. Null while open, and for offers answered before this was recorded. */
+            respondedAt: string | null;
             sender: {
                 avatarUrl: string | null;
                 companyName: string | null;
@@ -5129,6 +5229,8 @@ export interface components {
                 displayName: string;
             } | null;
             description: string;
+            /** @description Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed. */
+            draftSource?: ("AGENT" | "MANUAL") | null;
             /** @description Applicants the company has not opened yet */
             newApplicantCount?: number;
             preferred: string[];
@@ -5163,6 +5265,8 @@ export interface components {
             createdBy: {
                 displayName: string;
             } | null;
+            /** @description Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed. */
+            draftSource: ("AGENT" | "MANUAL") | null;
             /** @description Applicants the company has not opened yet */
             newApplicantCount: number;
             /** @enum {string} */
@@ -6161,6 +6265,34 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getAuthEmailPasswordResetByToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: email */
+                            email: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postAuthEmailSignup: {
         parameters: {
             query?: never;
@@ -7085,6 +7217,7 @@ export interface operations {
                 "application/json": {
                     industry?: string | null;
                     intro?: string | null;
+                    legalName?: string | null;
                     logoKey?: string | null;
                     representativeName?: string | null;
                     website?: string | null;
@@ -7158,6 +7291,55 @@ export interface operations {
                         data: {
                             email: string;
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteCompaniesMeInvitesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postCompaniesMeInvitesByIdResend: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CompanyInvite"];
                     };
                 };
             };
@@ -7283,6 +7465,8 @@ export interface operations {
                     bNm: string;
                     /** @description Business registration number */
                     bNo: string;
+                    /** @description Optional registered company name. Trimmed; empty is ignored */
+                    legalName: string;
                     /** @description Representative name */
                     pNm: string;
                     /** @description Opening date YYYYMMDD */
@@ -7657,6 +7841,8 @@ export interface operations {
                             id: string;
                             /** @enum {string} */
                             mimeType: "application/pdf";
+                            /** @description Stored PDF size in bytes */
+                            size?: number;
                         };
                     };
                 };
@@ -11042,6 +11228,8 @@ export interface operations {
                     company?: string;
                     deadline?: string | null;
                     description: string;
+                    /** @description Who wrote the draft. Create only; null or omitted stores null. Anything else is 400. */
+                    draftSource?: ("AGENT" | "MANUAL") | null;
                     /** @enum {string} */
                     employmentType: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
                     /** @description Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .. */
@@ -11114,6 +11302,10 @@ export interface operations {
                                 count: number;
                                 id: string;
                             }[];
+                            employmentType: {
+                                count: number;
+                                id: string;
+                            }[];
                             location: {
                                 count: number;
                                 id: string;
@@ -11138,6 +11330,8 @@ export interface operations {
                 skills?: string;
                 careerYears?: string;
                 employmentType?: string;
+                /** @description Grouping level; default district */
+                level?: "district" | "city";
             };
             header?: never;
             path?: never;
@@ -11206,6 +11400,8 @@ export interface operations {
                     company?: string;
                     deadline?: string | null;
                     description?: string;
+                    /** @description Who wrote the draft. Create only; null or omitted stores null. Anything else is 400. */
+                    draftSource?: ("AGENT" | "MANUAL") | null;
                     /** @enum {string} */
                     employmentType?: "full_time" | "contract" | "intern" | "freelance" | "dispatch";
                     expectedRevision: number;
@@ -12518,6 +12714,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchSourcesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    fileName: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DocumentsLibraryItem"];
+                    };
+                };
             };
             default: components["responses"]["Error"];
         };

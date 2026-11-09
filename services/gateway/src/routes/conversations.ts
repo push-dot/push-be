@@ -6,7 +6,7 @@ import {
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LAST_LINE, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import { LAST_LINE, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, QUEUE_POSITION, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -34,7 +34,7 @@ const CONVERSATION_SELECT = "SELECT c.id, c.revision, c.application_id, c.title,
     + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
     + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
     + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-    + "ELSE 'DONE' END AS status, " + LAST_LINE + " "
+    + "ELSE 'DONE' END AS status, " + LAST_LINE + ", " + QUEUE_POSITION + " "
     + "FROM conversations c "
     + "LEFT JOIN users cu ON cu.id = c.user_id "
     + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
@@ -163,6 +163,7 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
     createdAt: formatJsonTimestamp(row.created_at),
     updatedAt: formatJsonTimestamp(row.updated_at),
     status: row.status == null || row.status === "" ? "DONE" : String(row.status),
+    queuePosition: row.queue_position == null ? null : Number(row.queue_position),
     lastLine: row.last_line == null || row.last_line === "" ? null : String(row.last_line),
     lastMessagePreview: String(row.last_message_preview ?? "").slice(0, 140),
     createdBy: { displayName: String(row.display_name ?? "") },
@@ -206,7 +207,8 @@ const present = (value: unknown): boolean => value != null && value !== "";
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
   if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  return jsonResponse(200, pageBody(jsonRows(rows[0].rows), limit, messageJson), rid);
+  const page = jsonRows(rows[0].rows);
+  return jsonResponse(200, pageBody(page, limit, messageJson(await storedFiles(deps, id, page))), rid);
 }
 
 export async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -249,7 +251,8 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     if (conversationId == null || conversationId === "") {
       return errorResponse(404, "NOT_FOUND", "resource not found", rid);
     }
-    const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, messageJson));
+    const messages = jsonRows(rows[0]?.rows);
+    const text = pyJson(pageBody(messages, page.limit, messageJson(await storedFiles(deps, String(conversationId), messages))));
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
@@ -262,26 +265,51 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
   }
 }
 
-function messageJson(row: Record<string, unknown>): Record<string, unknown> {
-  let attachments = row.attachments ?? [];
+type StoredFiles = Map<string, { fileName: string; size: number }>;
+
+function attachmentList(raw: unknown): unknown[] {
+  let attachments = raw ?? [];
   if (typeof attachments === "string") {
     try { attachments = JSON.parse(attachments); } catch { attachments = []; }
   }
-  const cleaned = Array.isArray(attachments)
-    ? attachments.map(attachmentJson).filter((item): item is Record<string, unknown> => item !== null)
-    : [];
-  return {
-    id: String(row.id),
-    conversationId: String(row.conversation_id),
-    role: String(row.role),
-    text: String(row.text ?? ""),
-    attachments: cleaned,
-    operationId: row.operation_id == null ? null : String(row.operation_id),
-    createdAt: formatJsonTimestamp(row.created_at),
-  };
+  return Array.isArray(attachments) ? attachments : [];
 }
 
-function attachmentJson(raw: unknown): Record<string, unknown> | null {
+async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredFiles> {
+  const files: StoredFiles = new Map();
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const raw of attachmentList(message.attachments)) {
+      const id = raw && typeof raw === "object" ? parseUuid(String((raw as Record<string, unknown>).id ?? "")) : null;
+      if (id) ids.add(id);
+    }
+  }
+  if (!ids.size) return files;
+  try {
+    const rows = await deps.query(
+      "SELECT id, file_name, octet_length(content) AS size FROM conversation_attachments WHERE conversation_id = $1::uuid AND id = ANY($2::uuid[])",
+      [conversationId, [...ids]],
+    );
+    for (const row of rows) files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });
+  } catch {
+    // names and sizes are extras; the page is still served without them
+  }
+  return files;
+}
+
+const messageJson = (files: StoredFiles) => (row: Record<string, unknown>): Record<string, unknown> => ({
+  id: String(row.id),
+  conversationId: String(row.conversation_id),
+  role: String(row.role),
+  text: String(row.text ?? ""),
+  attachments: attachmentList(row.attachments)
+    .map((raw) => attachmentJson(raw, files))
+    .filter((item): item is Record<string, unknown> => item !== null),
+  operationId: row.operation_id == null ? null : String(row.operation_id),
+  createdAt: formatJsonTimestamp(row.created_at),
+});
+
+function attachmentJson(raw: unknown, files: StoredFiles): Record<string, unknown> | null {
   const a = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
   const title = a.title == null ? "" : String(a.title);
   const name = String(a.name ?? a.fileName ?? "");
@@ -292,6 +320,8 @@ function attachmentJson(raw: unknown): Record<string, unknown> | null {
   const out: Record<string, unknown> = { type: String(a.type ?? ""), id: String(a.id ?? "") };
   if (a.documentId != null) out.documentId = String(a.documentId);
   if (a.title != null) out.title = String(a.title);
+  const file = files.get(parseUuid(String(out.id)) ?? "");
+  if (file) Object.assign(out, file);
   return out;
 }
 

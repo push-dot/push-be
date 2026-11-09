@@ -455,7 +455,11 @@ export const schemas: Record<string, Schema> = {
     description: text(0, 500),
   }, ["company", "role"]),
   Profile: obj(profileProps),
-  ProfileDetail: obj({ ...profileProps, following: bool, offered: bool }),
+  ProfileDetail: obj({
+    ...profileProps,
+    following: bool,
+    offered: bool,
+  }),
   Offer: obj({
     id: uuid,
     sender: offerParty,
@@ -473,9 +477,11 @@ export const schemas: Record<string, Schema> = {
     })),
     status: enumOf("SENT", "READ", "ACCEPTED", "DECLINED"),
     readAt: nullable(dateTime),
+    respondedAt: { ...nullable(dateTime), description: "When the recipient accepted or declined. Null while open, and for offers answered before this was recorded." },
+    canSend: { ...bool, description: "Whether POST /me/offers/{id}/messages would succeed for the caller: status ACCEPTED and the other party has not blocked the caller." },
     createdAt: dateTime,
     archivedAt: { ...nullable(dateTime), description: "When the caller archived this offer. Null when not archived. Per caller." },
-  }, ["id", "sender", "recipient", "message", "posting", "status", "readAt", "createdAt"]),
+  }, ["id", "sender", "recipient", "message", "posting", "status", "readAt", "respondedAt", "canSend", "createdAt"]),
   BlockedUser: obj({ user: person, createdAt: dateTime }),
   OfferMessage: obj({ id: uuid, offerId: uuid, sender: person, body: str, createdAt: dateTime }),
   ProfileLink: obj({

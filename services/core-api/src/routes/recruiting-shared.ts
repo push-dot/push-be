@@ -172,6 +172,7 @@ export function postingDto(row: Record<string, unknown>, detail: boolean, member
     dto.newApplicantCount = Number(row.new_applicant_count ?? 0);
     const createdName = row.created_by_name == null || row.created_by_name === "" ? "" : String(row.created_by_name);
     dto.createdBy = createdName ? { displayName: createdName } : null;
+    dto.draftSource = row.draft_source == null || row.draft_source === "" ? null : String(row.draft_source);
   } else if (row.status != null && row.status !== "") {
     dto.status = String(row.status);
   }
@@ -290,16 +291,20 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
     },
     status: String(row.status ?? "SENT"),
     readAt: ts(row.read_at),
+    respondedAt: ts(row.responded_at),
+    canSend: String(row.status) === "ACCEPTED" && !asBool(row.blocked_me),
     createdAt: ts(row.created_at),
     archivedAt: ts(row.archived_at),
   };
 }
 
-export const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
+export const OFFER_COLS = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
   o.message, o.posting_id, jp.title AS posting_title, jp.company AS posting_company, jp.image_key AS posting_image,
   jp.location AS posting_location, jp.career_min AS posting_career_min, jp.career_max AS posting_career_max, jp.deadline AS posting_deadline,
-  o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company,
-  rp.headline AS recipient_headline, rp.avatar_key AS recipient_avatar, rc.name AS recipient_company
+  o.status, o.read_at, to_jsonb(o)->>'responded_at' AS responded_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company,
+  rp.headline AS recipient_headline, rp.avatar_key AS recipient_avatar, rc.name AS recipient_company`;
+
+export const OFFER_FROM = `
   FROM offers o
   JOIN users su ON su.id = o.sender_id
   JOIN users ru ON ru.id = o.profile_user_id
@@ -310,6 +315,8 @@ export const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.p
   LEFT JOIN company_members rm ON rm.user_id = o.profile_user_id
   LEFT JOIN companies rc ON rc.id = rm.company_id
   LEFT JOIN job_postings jp ON jp.id = o.posting_id`;
+
+export const OFFER_SQL = OFFER_COLS + OFFER_FROM;
 
 export async function notify(ctx: Ctx, userId: string, type: string, title: string, body: string, target: Record<string, unknown>): Promise<void> {
   if (userId === ctx.user.id) return;

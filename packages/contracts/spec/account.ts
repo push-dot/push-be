@@ -15,6 +15,7 @@ const password: Schema = { type: "string", minLength: 8, maxLength: 128, descrip
 const providerParam = pathParam("provider", enumOf("google", "github", "apple"));
 const tokenParam = pathParam("token", str);
 const userIdParam = pathParam("userId");
+const inviteIdParam = pathParam("id");
 const imageTypes = ["image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
 export const routes: Route[] = [
@@ -137,7 +138,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Verify email and create the account",
     auth: "public",
-    description: "409 EMAIL_TAKEN (details.accountType) if a user already has that email.",
+    description: "409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
     body: body(obj({ token: str })),
     responses: { 200: ok(ref("AuthTokens")) },
   }),
@@ -161,9 +162,17 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Set new password with reset token",
     auth: "public",
-    description: "Revokes every session of the user.",
+    description: "Revokes every session of the user. 410 TOKEN_EXPIRED (details.email, the account email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
     body: body(obj({ token: str, password })),
     responses: { 204: noContent },
+  }),
+  get("core", "/api/v1/auth/email/password-reset/{token}", {
+    tag: "auth",
+    summary: "Look up a password reset link",
+    auth: "public",
+    description: "Read-only: does not consume the token. Returns the account email for the reset form. 410 TOKEN_EXPIRED (details.email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
+    params: [tokenParam],
+    responses: { 200: ok(obj({ email })) },
   }),
   post("core", "/api/v1/auth/phone/send", {
     tag: "auth",
@@ -177,7 +186,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Verify a phone code and sign in",
     auth: "optional",
-    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 429 RATE_LIMITED, 409 PHONE_TAKEN if that identity belongs to another account. Signup terms are not stored here.",
+    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
     body: body(obj({
       phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" },
       code: { type: "string", pattern: "^\\d{6}$" },
@@ -275,7 +284,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/fit", {
     tag: "ai",
     summary: "Queue a posting fit analysis",
-    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec) under backpressure.",
+    description: "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec, details.ahead: the caller's own queued jobs) under backpressure.",
     params: [pathParam("id")],
     body: body(obj({ documentId: uuid })),
     responses: { 202: ok(obj({ jobId: uuid }), "Accepted") },
@@ -295,12 +304,13 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/verify", {
     tag: "companies",
     summary: "Verify business registration and create company",
-    description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Profile fields are absent in this response.",
+    description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.",
     body: body(obj({
       bNo: { type: "string", pattern: "^\\d{10}$", description: "Business registration number" },
       startDt: { type: "string", pattern: "^\\d{8}$", description: "Opening date YYYYMMDD" },
       pNm: { type: "string", minLength: 1, description: "Representative name" },
       bNm: { type: "string", minLength: 1, description: "Business name" },
+      legalName: { type: "string", maxLength: 120, description: "Optional registered company name. Trimmed; empty is ignored" },
     })),
     responses: { 201: ok(ref("Company"), "Created") },
   }),
@@ -322,6 +332,7 @@ export const routes: Route[] = [
         website: nullable({ type: "string", format: "uri", maxLength: 2000, description: "http or https URL with no username or password" }),
         intro: nullable({ type: "string", minLength: 1, maxLength: 2000 }),
         representativeName: nullable({ type: "string", minLength: 1, maxLength: 80 }),
+        legalName: nullable({ type: "string", maxLength: 120, description: "Registered company name. Trimmed; empty clears it. name stays the brand name" }),
       },
     }),
     responses: { 200: ok(ref("Company")) },
@@ -352,6 +363,20 @@ export const routes: Route[] = [
     description: "ADMIN only.",
     responses: { 200: okList(ref("CompanyInvite")) },
   }),
+  post("core", "/api/v1/companies/me/invites/{id}/resend", {
+    tag: "companies",
+    summary: "Resend an invite",
+    description: "ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full (checked in the same statement that rotates the token, so concurrent resends cannot overfill). 429 RATE_LIMITED with details.retryAfterSec when the invite was sent less than 60 seconds ago. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.",
+    params: [inviteIdParam],
+    responses: { 200: ok(ref("CompanyInvite")) },
+  }),
+  del("core", "/api/v1/companies/me/invites/{id}", {
+    tag: "companies",
+    summary: "Cancel a pending invite",
+    description: "ADMIN only. Frees the seat. 404 NOT_FOUND when the invite is unknown, accepted or another company's.",
+    params: [inviteIdParam],
+    responses: { 204: noContent },
+  }),
   post("core", "/api/v1/companies/me/invites", {
     tag: "companies",
     summary: "Invite a member by email",
@@ -363,7 +388,7 @@ export const routes: Route[] = [
     tag: "companies",
     summary: "Preview an invite",
     auth: "public",
-    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion.",
+    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.",
     params: [tokenParam],
     responses: {
       200: ok(obj({ companyName: str, inviterName: str, inviterRole: companyRole, email: str, expiresAt: dateTime })),
@@ -372,7 +397,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/invites/{token}/accept", {
     tag: "companies",
     summary: "Accept an invite",
-    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company.",
+    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).",
     params: [tokenParam],
     responses: { 204: noContent },
   }),
@@ -516,6 +541,7 @@ export const schemas: Record<string, Schema> = {
     website: nullable(str),
     intro: nullable(str),
     representativeName: nullable(str),
+    legalName: nullable(str),
   }, ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats"]),
   CompanyMember: obj({
     userId: uuid,
@@ -528,6 +554,7 @@ export const schemas: Record<string, Schema> = {
     id: uuid,
     email: str,
     expiresAt: dateTime,
+    invitedAt: { ...dateTime, description: "Last send: expiresAt minus the 7 day invite TTL" },
   }),
   Consents: obj({
     referenceData: bool,

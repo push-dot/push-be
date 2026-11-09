@@ -354,9 +354,9 @@ const enqueueChatMessage = async (
   const type = companyId ? "employer_ai" : "chat";
   const audience = companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(type, plan, audience);
-  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id, companyId });
   if (!pressure.ok) {
-    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }
   const headerKey = (ctx.request.headers.get("idempotency-key") || "").trim();
   const { jobId } = await enqueueJob(ctx.deps.query, {
@@ -507,7 +507,7 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   await query(ctx.deps.query,
     "INSERT INTO conversation_attachments (id, conversation_id, company_id, file_name, mime_type, content) VALUES ($1,$2,$3,$4,$5,$6)",
     [id, conversationId, String(row.company_id), file.name, file.type, content]);
-  return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
+  return data(201, { id, fileName: file.name, mimeType: file.type, size: content.byteLength }, ctx.rid);
 };
 
 const cardOptionIds = (raw: unknown): string[] => {
