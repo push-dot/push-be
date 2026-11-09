@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, ensureMonthlyGrant, grantedThisMonth, grantMicro, iapTopupMicro } from "../billing/credits.ts";
+import { DISPLAY_MICRO, carryInto, companyKey, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -83,7 +83,18 @@ const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
 const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
 const TOPUP_DESCRIPTION = "크레딧 구매";
 const REFUND_DESCRIPTION = "요금제 변경 환급";
-const CANCEL_FAILED_DESCRIPTION = "이전 구독 해지 실패";
+
+// Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
+const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED", referenceId: string, detail: string): Promise<void> => {
+  console.error(JSON.stringify({ billingAlert: kind, companyId, referenceId, detail }));
+  await query(ctx.deps.query,
+    "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
+    [crypto.randomUUID(), companyId, kind, referenceId, detail, ctx.now.toISOString()]);
+};
+
+const resolveCancelAlert = (ctx: Ctx, subscriptionId: string): Promise<unknown> => query(ctx.deps.query,
+  "UPDATE billing_alerts SET resolved_at = $2 WHERE kind = 'CANCEL_FAILED' AND reference_id = $1 AND resolved_at IS NULL",
+  [subscriptionId, ctx.now.toISOString()]);
 
 // Allowlist, never echo the Origin header: success_url must not carry an attacker-chosen origin.
 const returnOrigin = (ctx: Ctx): string => {
@@ -389,22 +400,30 @@ const usdCents = (obj: Record<string, unknown>, cents: number | null): number | 
   return null;
 };
 
-const priceOf = (sub: Record<string, unknown>): string =>
-  ((sub.items as { data?: { price?: { id?: string } }[] } | undefined)?.data?.[0]?.price?.id) || "";
+type Item = { price?: { id?: string }; current_period_start?: number; current_period_end?: number };
+const itemOf = (sub: Record<string, unknown>): Item | undefined => (sub.items as { data?: Item[] } | undefined)?.data?.[0];
+const priceOf = (sub: Record<string, unknown>): string => itemOf(sub)?.price?.id || "";
+
+// Subscriptions are ordered by (created, id), so two created in the same second still have one survivor.
+const olderThan = (sub: Record<string, unknown>, keep: { id: string; created: number }): boolean =>
+  Number(sub.created) < keep.created || (Number(sub.created) === keep.created && String(sub.id) < keep.id);
 
 // A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
-async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number }, refund: boolean): Promise<void> {
+// Unused time is refunded only while the replaced period's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }): Promise<void> {
   for (const customer of customers) {
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
     for (const sub of subscriptionsOf(list)) {
-      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !(Number(sub.created) < keep.created)) continue;
+      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
+      const id = String(sub.id);
+      const refund = await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now) <= grantMicro("EMPLOYER", keep.plan);
       try {
-        await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)) + (refund ? "?prorate=true&invoice_now=true" : ""));
+        await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(id) + (refund ? "?prorate=true&invoice_now=true" : ""));
       } catch (err) {
-        console.error(`billing: company ${companyId} still has replaced subscription ${String(sub.id)}, cancel failed`);
-        await companyLedger(ctx, companyId, 0, "cancel_failed:" + String(sub.id), { description: CANCEL_FAILED_DESCRIPTION, amountUsdCents: null, receiptUrl: null });
+        await raiseAlert(ctx, companyId, "CANCEL_FAILED", id, `replaced subscription still billing, kept ${keep.id}`);
         throw err;
       }
+      await resolveCancelAlert(ctx, id);
     }
   }
 }
@@ -416,53 +435,79 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
   const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
   if (!LIVE.has(String(sub.status)) || priceOf(sub) !== employerPrice(ctx.env, planId) || sub.customer !== customer) {
     console.error(`billing: company ${companyId} checkout subscription ${subscriptionId} not adopted (${String(sub.status)})`);
+    if (LIVE.has(String(sub.status))) {
+      await raiseAlert(ctx, companyId, "NOT_ADOPTED", subscriptionId, `paid ${planId}, subscription price ${priceOf(sub)} customer ${String(sub.customer)}`);
+    }
     return;
   }
-  const before = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [companyId]);
-  await query(ctx.deps.query,
-    "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz WHERE id = $1 AND (stripe_subscription_created_at IS NULL OR stripe_subscription_created_at <= $5::timestamptz)",
-    [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString()]);
-  const kept = await one(ctx.deps.query, "SELECT plan, stripe_subscription_id, stripe_subscription_created_at FROM companies WHERE id = $1", [companyId]);
+  const q = ctx.deps.query;
+  const start = new Date(Number(itemOf(sub)?.current_period_start ?? sub.created) * 1000);
+  const before = await one(q, "SELECT stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1", [companyId]);
+  const current = String(before?.stripe_subscription_id ?? "");
+  const switching = current !== subscriptionId && !(current && olderThan(sub, { id: current, created: Number(before?.created_unix) }));
+  const previousKey = companyKey(before, ctx.now);
+  // An upgrade or same-plan swap keeps the tiers the replaced period granted; a downgrade starts the lower plan fresh.
+  const carry = async (): Promise<number> => {
+    const level = await keyLevel(q, companyId, previousKey);
+    return switching && level <= grantMicro("EMPLOYER", planId) ? level : 0;
+  };
+  // Written before the switch so a retry after a crash still finds them.
+  if (switching) await carryInto(q, { companyId, key: periodKey(subscriptionId, start), level: await carry(), now: ctx.now });
+  await query(q,
+    "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = CASE WHEN stripe_subscription_id IS DISTINCT FROM $4 THEN $6::timestamptz ELSE credit_period_start END WHERE id = $1 AND (stripe_subscription_created_at IS NULL OR stripe_subscription_created_at < $5::timestamptz OR (stripe_subscription_created_at = $5::timestamptz AND stripe_subscription_id COLLATE \"C\" <= $4))",
+    [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
+  const kept = await one(q, "SELECT plan, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1", [companyId]);
   const keepPlan = employerPlanOf(kept?.plan);
   const keepId = String(kept?.stripe_subscription_id ?? "");
   if (!keepPlan || !keepId) return;
-  if (keepId === subscriptionId) await ensureMonthlyGrant(ctx.deps.query, { audience: "EMPLOYER", plan: planId, ownerId: companyId, now: ctx.now });
-  // Unused time is refunded only while this month's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
-  const refund = await grantedThisMonth(ctx.deps.query, companyId, ctx.now) <= grantMicro("EMPLOYER", keepPlan);
+  if (keepId === subscriptionId && kept?.period_unix != null) {
+    await grantPeriod(q, { companyId, subscriptionId, periodStart: new Date(Number(kept.period_unix) * 1000), plan: planId, carry: await carry(), now: ctx.now });
+  }
   const previous = before?.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
   const customers = previous && previous !== customer ? [customer, previous] : [customer];
-  const keepCreated = new Date(kept?.stripe_subscription_created_at as string).getTime() / 1000;
-  await cancelReplaced(ctx, companyId, customers, { id: keepId, created: keepCreated }, refund);
+  await cancelReplaced(ctx, companyId, customers, { id: keepId, created: Number(kept?.created_unix), plan: keepPlan });
 }
 
-const linePlan = (env: CoreEnv, obj: Record<string, unknown>): "BASIC" | "PRO" | "ULTRA" | null => {
-  type Line = { amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } } };
+const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
+  type Line = { amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number } };
   const lines = ((obj.lines as { data?: Line[] } | undefined)?.data) || [];
   for (const line of lines) {
     if (!(Number(line.amount) > 0)) continue;
     const plan = employerPlanByPrice(env, line.price?.id || line.pricing?.price_details?.price || "");
-    if (plan) return plan;
+    if (plan) return { plan, start: positiveInt(line.period?.start) };
   }
   return null;
 };
 
-// Renewals and plan-change refunds are payment rows only: the month's credits come from ensureMonthlyGrant.
+// A paid renewal of the company's current subscription opens its next credit period; past_due never reaches here.
+// The total, not amount_paid, is the charge: a renewal paid from the Stripe balance has amount_paid 0.
 // The first invoice is the checkout row. A replaced subscription's final invoice is negative and becomes Stripe balance.
 async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
   if (obj.billing_reason !== "subscription_cycle") return;
   const total = Number(obj.total);
-  const refund = Number.isSafeInteger(total) && total < 0;
-  const amount = refund ? total : positiveInt(obj.amount_paid);
   const customer = String(obj.customer || "");
-  if (amount == null || !customer || !obj.id) return;
-  const company = await one(ctx.deps.query, "SELECT id, plan FROM companies WHERE stripe_customer_id = $1", [customer]);
+  if (!Number.isSafeInteger(total) || !customer || !obj.id) return;
+  const company = await one(ctx.deps.query, "SELECT id, plan, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1", [customer]);
   if (!company) return;
-  const plan = linePlan(ctx.env, obj) ?? employerPlanOf(company.plan);
-  await companyLedger(ctx, String(company.id), 0, String(obj.id), {
-    description: refund ? REFUND_DESCRIPTION : plan ? planDescription(plan) : null,
-    amountUsdCents: usdCents(obj, amount),
+  const companyId = String(company.id);
+  const line = planLine(ctx.env, obj);
+  const plan = line?.plan ?? employerPlanOf(company.plan);
+  await companyLedger(ctx, companyId, 0, String(obj.id), {
+    description: total < 0 ? REFUND_DESCRIPTION : plan ? planDescription(plan) : null,
+    amountUsdCents: usdCents(obj, total),
     receiptUrl: httpsUrl(obj.hosted_invoice_url),
   });
+  const subscriptionId = String((obj.parent as { subscription_details?: { subscription?: unknown } } | null | undefined)?.subscription_details?.subscription ?? "");
+  if (total < 0 || !subscriptionId || subscriptionId !== String(company.stripe_subscription_id ?? "")) return;
+  if (!line?.start) {
+    await raiseAlert(ctx, companyId, "NOT_GRANTED", String(obj.id), `paid renewal of ${subscriptionId} has no employer plan line`);
+    return;
+  }
+  const periodStart = new Date(line.start * 1000);
+  await query(ctx.deps.query,
+    "UPDATE companies SET credit_period_start = $2::timestamptz WHERE id = $1 AND stripe_subscription_id = $3 AND (credit_period_start IS NULL OR credit_period_start < $2::timestamptz)",
+    [companyId, periodStart.toISOString(), subscriptionId]);
+  await grantPeriod(ctx.deps.query, { companyId, subscriptionId, periodStart, plan: line.plan, carry: 0, now: ctx.now });
 }
 
 async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
@@ -512,18 +557,19 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
   const customer = String(obj.customer || "");
   if (!customer) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
   const canceled = type === "customer.subscription.deleted" || ENDED.has(String(obj.status ?? ""));
-  const items = ((obj.items as { data?: { price?: { id?: string } }[] } | undefined)?.data) || [];
-  const priceId = items[0]?.price?.id || "";
+  const priceId = priceOf(obj);
   const current = "stripe_customer_id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)";
   const company = await one(ctx.deps.query,
     canceled
       ? `UPDATE companies SET plan = NULL WHERE ${current} RETURNING id`
       : `UPDATE companies SET plan = COALESCE($3, plan) WHERE ${current} RETURNING id`,
     canceled ? [customer, String(obj.id || "")] : [customer, String(obj.id || ""), priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
+  if (canceled) await resolveCancelAlert(ctx, String(obj.id || ""));
   if (company) return;
   const replaced = await one(ctx.deps.query, "SELECT id FROM companies WHERE stripe_customer_id = $1", [customer]);
   if (replaced) return;
-  const period = obj.current_period_end ? new Date(Number(obj.current_period_end) * 1000).toISOString() : null;
+  const end = itemOf(obj)?.current_period_end;
+  const period = end ? new Date(Number(end) * 1000).toISOString() : null;
   const status = canceled ? "CANCELED" : "ACTIVE";
   const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
   const updated = await one(ctx.deps.query,

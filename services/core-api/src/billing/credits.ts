@@ -27,18 +27,31 @@ export const iapTopupMicro = (raw: string | undefined): number => {
 };
 
 const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
+const COMPANY_INSERT = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, c.id, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = c.id AND user_id IS NULL) + $3::bigint, $4, $5 FROM ";
+const COMPANY_CONFLICT = " ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
+// The company row lock orders every grant against a subscription switch, so no grant lands on a key the company has left.
 // A legacy `monthly:YYYY-MM` row (one row of the whole plan amount) already covers every tier up to its amount.
-const COMPANY_STEP = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, $2, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id = $6 AND amount_micro_credits >= $7::bigint) ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
-const COMPANY_GRANTED = "SELECT COALESCE(SUM(amount_micro_credits), 0) AS granted FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id LIKE $2";
+const MONTH_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND credit_period_start IS NULL FOR SHARE) c WHERE NOT EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id = $6 AND amount_micro_credits >= $7::bigint)" + COMPANY_CONFLICT;
+const PERIOD_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND stripe_subscription_id = $6 AND credit_period_start = $7::timestamptz FOR SHARE) c" + COMPANY_CONFLICT;
+const CARRY_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFLICT;
+const COMPANY_GRANTS = "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3)";
 
 const EMPLOYER_TIERS = ["BASIC", "PRO", "ULTRA"];
-const monthOf = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
+const tiersUpTo = (plan: string): string[] => EMPLOYER_TIERS.slice(0, EMPLOYER_TIERS.indexOf(plan) + 1);
+export const monthKey = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
+export const periodKey = (subscriptionId: string, start: Date): string => `period:${subscriptionId}:${Math.floor(start.getTime() / 1000)}`;
+
+/** The key the company's plan credits are written under now: its paid Stripe period, or the calendar month before it has one. */
+export const companyKey = (row: Record<string, unknown> | null, now: Date): string =>
+  row?.stripe_subscription_id && row.period_unix != null
+    ? periodKey(String(row.stripe_subscription_id), new Date(Number(row.period_unix) * 1000))
+    : monthKey(now);
 
 /**
- * Writes this month's plan credits once. Personal: one `monthly:YYYY-MM` row. Employer: one row per tier up to the plan
- * (`monthly:YYYY-MM:BASIC|PRO|ULTRA`), each worth the gap to the tier below, so upgrades add only the difference and
- * a month never grants more than its highest plan, whatever the order or concurrency of the calls.
- * Safe to call on every billing read, enqueue, and plan checkout.
+ * Writes this month's plan credits once. Personal: one `monthly:YYYY-MM` row. Employer, only while the company has no
+ * Stripe period (`companies.credit_period_start` is NULL): one row per tier up to the plan (`monthly:YYYY-MM:BASIC|PRO|ULTRA`),
+ * each worth the gap to the tier below, so upgrades add only the difference whatever the order or concurrency of the calls.
+ * Employer credits of a paid Stripe period come from `grantPeriod`. Safe to call on every billing read and enqueue.
  */
 export const ensureMonthlyGrant = async (
   q: Query,
@@ -47,21 +60,60 @@ export const ensureMonthlyGrant = async (
   const plan = input.plan?.trim() || (input.audience === "PERSONAL" ? "FREE" : "");
   const amount = grantMicro(input.audience, plan);
   if (amount <= 0) return;
-  const month = monthOf(input.now);
+  const month = monthKey(input.now);
   if (input.audience === "PERSONAL") {
     await q(USER_GRANT, [crypto.randomUUID(), input.ownerId, amount, month, input.now.toISOString()]);
     return;
   }
   let below = 0;
-  for (const tier of EMPLOYER_TIERS.slice(0, EMPLOYER_TIERS.indexOf(plan) + 1)) {
+  for (const tier of tiersUpTo(plan)) {
     const total = EMPLOYER[tier] ?? 0;
-    await q(COMPANY_STEP, [crypto.randomUUID(), input.ownerId, total - below, month + ":" + tier, input.now.toISOString(), month, total]);
+    await q(MONTH_STEP, [crypto.randomUUID(), input.ownerId, total - below, month + ":" + tier, input.now.toISOString(), month, total]);
     below = total;
   }
 };
 
-/** Plan credits the company got in the month of `now`, legacy and tier rows together. */
-export const grantedThisMonth = async (q: Query, companyId: string, now: Date): Promise<number> => {
-  const result = await q(COMPANY_GRANTED, [companyId, monthOf(now) + "%"]);
-  return Number(result.rows[0]?.granted ?? 0);
+/**
+ * Writes the plan credits of one paid period (`period:<sub>:<start>:TIER`) once, and only while the company is on that
+ * subscription and period. Tiers within `carry` (what the replaced period already granted) are 0-credit rows.
+ */
+export const grantPeriod = async (
+  q: Query,
+  input: { companyId: string; subscriptionId: string; periodStart: Date; plan: string; carry: number; now: Date },
+): Promise<void> => {
+  const key = periodKey(input.subscriptionId, input.periodStart);
+  let below = 0;
+  for (const tier of tiersUpTo(input.plan)) {
+    const total = EMPLOYER[tier] ?? 0;
+    const amount = total <= input.carry ? 0 : total - Math.max(below, input.carry);
+    await q(PERIOD_STEP, [crypto.randomUUID(), input.companyId, amount, key + ":" + tier, input.now.toISOString(), input.subscriptionId, input.periodStart.toISOString()]);
+    below = total;
+  }
+};
+
+/** Marks the tiers within `level` as already granted in `key`, before the company switches to it. */
+export const carryInto = async (q: Query, input: { companyId: string; key: string; level: number; now: Date }): Promise<void> => {
+  for (const tier of EMPLOYER_TIERS) {
+    if ((EMPLOYER[tier] ?? 0) > input.level) return;
+    await q(CARRY_STEP, [crypto.randomUUID(), input.companyId, 0, input.key + ":" + tier, input.now.toISOString()]);
+  }
+};
+
+const levelOf = (rows: Record<string, unknown>[], key: string): number => rows.reduce<number>((max, row) => {
+  const ref = String(row.reference_id);
+  const level = ref === key ? Number(row.amount_micro_credits) : EMPLOYER[ref.slice(key.length + 1)] ?? 0;
+  return Math.max(max, level);
+}, 0);
+
+/** The highest plan amount `key` has granted (its top tier row, or a legacy whole-month row). */
+export const keyLevel = async (q: Query, companyId: string, key: string): Promise<number> =>
+  levelOf((await q(COMPANY_GRANTS, [companyId, key, key + ":%"])).rows, key);
+
+/** The plan amount a subscription's latest period granted. A subscription with no period rows predates 0042: its credits are this month's. */
+export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date): Promise<number> => {
+  const rows = (await q(COMPANY_GRANTS, [companyId, "", `period:${subscriptionId}:%`])).rows;
+  if (rows.length === 0) return keyLevel(q, companyId, monthKey(now));
+  const latest = Math.max(...rows.map((row) => Number(String(row.reference_id).split(":")[2])));
+  const key = `period:${subscriptionId}:${latest}`;
+  return levelOf(rows.filter((row) => String(row.reference_id).startsWith(key + ":")), key);
 };

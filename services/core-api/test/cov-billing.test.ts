@@ -165,7 +165,7 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
     });
     const res = await handle(await signed({
       id: "evt_1", type: "customer.subscription.updated",
-      data: { object: { customer: "cus_1", status: "active", current_period_end: 1767225600, items: { data: [{ price: { id: price } }] } } },
+      data: { object: { customer: "cus_1", status: "active", items: { data: [{ price: { id: price }, current_period_end: 1767225600 }] } } },
     }), envOf(), { query: w.query, now: () => NOW });
     assert.equal(res.status, 200);
     const update = w.seen.find((c) => c.sql.startsWith("UPDATE users"))!;

@@ -66,6 +66,9 @@ class MemoryDB:
     async def neon_stats(self):
         return {"dbSizeBytes": 0, "ragNodes": 0}
 
+    async def open_billing_alerts(self):
+        return 0
+
 
 def opener(holder, jobs, outbox):
     async def open_db():

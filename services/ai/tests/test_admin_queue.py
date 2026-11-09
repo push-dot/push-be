@@ -45,6 +45,9 @@ class FakeAdminDb:
     async def neon_stats(self):
         return {"dbSizeBytes": 10, "ragNodes": 2}
 
+    async def open_billing_alerts(self):
+        return 0
+
     async def pending_outbox(self):
         return []
 
@@ -128,6 +131,26 @@ class Sent:
 def alerts(sent, client_):
     return Alerts(client_, discord_url="https://discord.example/api/webhooks/x",
                   resend_key="re_test", email_from="alerts@push.example", email_to="ops@push.example")
+
+
+@pytest.mark.asyncio
+async def test_open_billing_alerts_fire_until_resolved():
+    from types import SimpleNamespace
+
+    from app.queue.admin import AdminJobs
+    from app.queue.alerts import db_conditions
+
+    class Conn:
+        async def fetchval(self, sql, *args):
+            assert "FROM billing_alerts WHERE resolved_at IS NULL" in sql
+            return 2
+
+    assert await AdminJobs(Conn()).open_billing_alerts() == 2
+    stats = SimpleNamespace(requeued=0)
+    neon = {"dbSizeBytes": 0}
+    firing, detail = db_conditions(stats, neon, 2)["billing_alert"]
+    assert firing and detail.startswith("2 open rows in billing_alerts")
+    assert db_conditions(stats, neon, 0)["billing_alert"][0] is False
 
 
 @pytest.mark.asyncio

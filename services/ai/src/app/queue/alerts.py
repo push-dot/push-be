@@ -25,12 +25,15 @@ async def redis_conditions(queue, now) -> dict:
     }
 
 
-def db_conditions(stats, neon: dict) -> dict:
+def db_conditions(stats, neon: dict, billing_alerts: int) -> dict:
     limit = int(os.environ.get("NEON_STORAGE_LIMIT_BYTES", "") or DB_LIMIT_BYTES)
     size = neon["dbSizeBytes"]
     return {
         "heartbeat_lost": (stats.requeued > 0, f"{stats.requeued} running jobs lost their worker"),
         "db_size": (size >= limit * DB_ALERT_RATIO, f"{size} of {limit} bytes"),
+        "billing_alert": (billing_alerts > 0,
+                          f"{billing_alerts} open rows in billing_alerts "
+                          "(set resolved_at once handled)"),
     }
 
 
