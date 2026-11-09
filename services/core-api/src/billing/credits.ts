@@ -43,8 +43,9 @@ export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: 
 const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY seq DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
 const COMPANY_INSERT = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, c.id, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = c.id AND user_id IS NULL) + $3::bigint, $4, $5 FROM ";
 const COMPANY_CONFLICT = " ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
-// A month grant runs outside the webhook transaction: the share lock waits for a subscription switch in flight, then sees it.
-// A legacy `monthly:YYYY-MM` row (one row of the whole plan amount) already covers every tier up to its amount.
+// Callers hold the company row lock (lockOwner), so a webhook switching the company to a Stripe period has committed before this
+// reads credit_period_start; FOR SHARE adds no wait under that lock. A legacy `monthly:YYYY-MM` row (one row of the whole plan
+// amount) already covers every tier up to its amount.
 const MONTH_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND credit_period_start IS NULL FOR SHARE) c WHERE NOT EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id = $6 AND amount_micro_credits >= $7::bigint)" + COMPANY_CONFLICT;
 const PERIOD_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFLICT;
 const COMPANY_GRANTS = "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3)";
@@ -58,7 +59,7 @@ export const periodKey = (subscriptionId: string, start: Date): string => `perio
  * Writes this month's plan credits once. Personal: one `monthly:YYYY-MM` row. Employer, only while the company has no
  * Stripe period (`companies.credit_period_start` is NULL): one row per tier up to the plan (`monthly:YYYY-MM:BASIC|PRO|ULTRA`),
  * each worth the gap to the tier below, so upgrades add only the difference whatever the order or concurrency of the calls.
- * Employer credits of a paid Stripe period come from `grantPeriod`. Safe to call on every billing read and enqueue.
+ * Employer credits of a paid Stripe period come from `grantPeriod`. Call it under the owner row lock (`lockOwner`).
  */
 export const ensureMonthlyGrant = async (
   q: Query,
