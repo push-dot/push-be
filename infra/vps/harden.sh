@@ -428,22 +428,31 @@ done
 # then delete every rotated file. v2: hosts purged by v1 kept their live files.
 # purge_pre_14d_logs <root>; test/run.sh runs it against a fake root.
 purge_pre_14d_logs() {
-  local marker="$1/var/lib/push/retention-14d-v2" f confs=()
+  local marker="$1/var/lib/push/retention-14d-v2" f confs=() su_conf rotated=
   [ -e "$marker" ] && return 0
   for f in rsyslog fail2ban wtmp btmp; do
     if [ -f "$1/etc/logrotate.d/$f" ]; then confs+=("$1/etc/logrotate.d/$f"); fi
   done
-  [ "${#confs[@]}" -eq 0 ] || logrotate -f "${confs[@]}"
+  if [ "${#confs[@]}" -gt 0 ]; then
+    # Ubuntu keeps `su root adm` only in /etc/logrotate.conf. Without it logrotate skips every
+    # file in the group-writable /var/log (rsyslog sets root:syslog 0775) and exits 1.
+    su_conf="$(mktemp)"
+    echo "su root adm" >"$su_conf"
+    logrotate -f "$su_conf" "${confs[@]}" || { rm -f "$su_conf"; die "logrotate -f failed; rerun harden.sh"; }
+    rm -f "$su_conf"
+  fi
   if systemctl is-active --quiet auditd.service; then
     # USR1 rotates asynchronously: clear the old archives so a new audit.log.1 means it is done.
     rm -f "$1"/var/log/audit/audit.log.[0-9]*
     systemctl kill --kill-whom=main --signal=USR1 auditd.service
     for _ in {1..20}; do
-      if [ -e "$1/var/log/audit/audit.log.1" ]; then break; fi
+      if [ -e "$1/var/log/audit/audit.log.1" ]; then rotated=1; break; fi
       sleep 0.5
     done
+    # A late rotation would leave an old audit.log.1 behind the marker, which stops any retry.
+    [ -n "$rotated" ] || die "auditd did not rotate within 10s; rerun harden.sh"
   fi
-  rm -f "$1"/var/log/{syslog,kern.log,auth.log,mail.log,user.log,cron.log,fail2ban.log,wtmp,btmp}.[0-9]* \
+  rm -f "$1"/var/log/{syslog,kern.log,auth.log,mail.log,mail.info,mail.warn,mail.err,user.log,cron.log,daemon.log,debug,messages,lpr.log,fail2ban.log,wtmp,btmp}.[0-9]* \
     "$1"/var/log/audit/audit.log.[0-9]*
   mkdir -p "${marker%/*}"
   date -u +%FT%TZ >"$marker"
