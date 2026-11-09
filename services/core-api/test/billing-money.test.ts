@@ -1373,3 +1373,24 @@ test("a webhook waits out a company row held for 11 s (lock_timeout 15 s), inste
   const rows = (await pg!.query("SELECT amount_micro_credits FROM billing_ledger WHERE company_id = $1", [co.id])).rows;
   assert.deepEqual(rows.map((row) => Number(row.amount_micro_credits)), [micro]);
 });
+
+test("GET /billing/ledger lists rows in commit order (seq), across pages, even when a later row has the earlier created_at", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  // Committed first to last; the last one waited for the owner lock and carries the earliest created_at.
+  const stamps = [START, START + 2000, START - DAY];
+  for (const [i, at] of stamps.entries()) {
+    await pg!.query("INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) VALUES ($1, $2, 'PURCHASE', 1, $3, $4, $5)",
+      [crypto.randomUUID(), userId, i + 1, "row-" + i, new Date(at).toISOString()]);
+  }
+  const page = async (cursor?: string) => {
+    resetLimits();
+    const res = await handle(new Request("https://core.example/api/v1/billing/ledger?limit=2" + (cursor ? "&cursor=" + cursor : ""), { headers: { authorization: "Bearer t" } }), env,
+      { query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(START) });
+    return await res.json() as { data: { referenceId: string; balanceAfter: number }[]; page: { nextCursor: string | null } };
+  };
+  const first = await page();
+  const second = await page(first.page.nextCursor!);
+  assert.deepEqual([...first.data, ...second.data].map((row) => row.referenceId), ["row-2", "row-1", "row-0"]);
+  assert.equal(first.data[0]!.balanceAfter, 3);
+});

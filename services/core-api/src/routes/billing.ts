@@ -324,12 +324,14 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
   let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
+  // Commit order (seq), as balance_after runs: a row that waited for the owner lock can carry an earlier created_at.
+  // The cursor keeps its (createdAt, id) shape; only its id is used.
   if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (created_at, id) < ($${params.length - 1}, $${params.length})`;
+    params.push(page.cursor.id);
+    sql += ` AND seq < (SELECT seq FROM billing_ledger WHERE id = $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  sql += ` ORDER BY seq DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({
     item: {
