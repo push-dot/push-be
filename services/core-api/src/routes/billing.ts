@@ -766,12 +766,14 @@ const grantNote = async (
   const upper = notificationType.toUpperCase();
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
     const row = await one(ctx.deps.query,
-      "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
+      "SELECT user_id, product_id FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = 'CANCELED', expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
     if (!row?.user_id) return;
+    // A refunded credit top-up is not the subscription: the plan stays.
+    if (productKind(ctx.env, String(row.product_id ?? productId)) === "TOPUP") return;
     await query(ctx.deps.query,
       "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
       [String(row.user_id), expiresAt]);

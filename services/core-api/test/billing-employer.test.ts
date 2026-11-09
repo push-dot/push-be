@@ -1277,7 +1277,7 @@ test("a store expiration drops the personal plan", async () => {
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("SELECT user_id FROM iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (sql.includes("SELECT user_id, product_id FROM iap_subscriptions")) return { rows: [{ user_id: USER, product_id: "ios.pro" }], rowCount: 1 };
     if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
   };
@@ -1445,4 +1445,27 @@ test("a top-up above the cap is rejected before stripe is called", async () => {
   );
   assert.equal(res.status, 400);
   assert.equal(calls.length, 0);
+});
+
+test("a refunded credit top-up keeps the plan; a refunded subscription still ends it", async () => {
+  const chain = await appleChain();
+  const env = envOf({ APPLE_ROOT_PEM: chain.rootPem, IAP_PRODUCT_PRO: "ios.pro", IAP_PRODUCT_TOPUP: "ios.topup" });
+  const refund = async (id: string, productId: string) => {
+    const inner = await jws({ originalTransactionId: id, productId, environment: "Production" }, chain.privateKey);
+    return jws({ notificationType: "REFUND", data: { environment: "Production", signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
+  };
+  for (const [id, productId, downgrades] of [["tx-topup", "ios.topup", false], ["tx-pro", "ios.pro", true]] as const) {
+    resetLimits();
+    const seen: Call[] = [];
+    const query: Deps["query"] = async (sql, params = []) => {
+      seen.push({ sql, params });
+      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("FROM iap_subscriptions")) return { rows: [{ user_id: USER, product_id: productId }], rowCount: 1 };
+      return empty;
+    };
+    const res = await handle(storeHook("/api/v1/billing/webhook/app-store", await refund(id, productId)), env, { query, now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.ok(seen.some((call) => call.sql.includes("UPDATE iap_subscriptions SET status = 'CANCELED'") && call.params[0] === id), id);
+    assert.equal(seen.some((call) => call.sql.includes("UPDATE users SET plan = 'FREE'")), downgrades, id);
+  }
 });
