@@ -14,11 +14,12 @@ from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.framework.fit_judge import judge_fit
+from app.harness.approval import approval_id_for
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
-from app.harness.policy import Decision, Tier, decide
+from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
 from app.jsonutil import to_jsonable
@@ -158,6 +159,7 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
             company_id=ctx.company_id,
             json=body or None,
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
+            approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
 
     return ToolSpec(name, tier, model, run, lambda _args: summary)

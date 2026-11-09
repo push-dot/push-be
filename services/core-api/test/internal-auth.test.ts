@@ -119,3 +119,66 @@ test("act-as may apply chat edits to a document but not touch its other writes",
     assert.equal(actAsAllowed("POST", `/api/v1/documents/${doc}/${sub}`), false, sub);
   }
 });
+
+test("act-as apply, offer accept and stage change need the approved card for that target", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const offer = "31313131-3131-4131-8131-313131313131";
+  const application = "41414141-4141-4141-8141-414141414141";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const cases = [
+    ["POST", `/api/v1/postings/${posting}/apply`, "apply_to_posting", { posting_id: posting }],
+    ["POST", `/api/v1/me/offers/${offer}/accept`, "accept_offer", { offer_id: offer }],
+    ["PATCH", `/api/v1/postings/${posting}/applicants/${application}`, "change_applicant_stage",
+      { posting_id: posting, application_id: application, stage: "REJECTED" }],
+  ] as const;
+  for (const [method, path, tool, target] of cases) {
+    const asked: unknown[][] = [];
+    const query = (approved: boolean) => async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM approvals")) {
+        asked.push(params);
+        return approved ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
+      }
+      return queryFor(COMPANY)(sql, params);
+    };
+    const call = (headers: Record<string, string>, approved: boolean) => {
+      resetLimits();
+      return handle(new Request(`https://core.example${path}`, {
+        method,
+        headers: {
+          "content-type": "application/json", "idempotency-key": "61616161-6161-4161-8161-616161616161",
+          "x-push-internal-secret": SECRET, "x-push-act-as": USER, ...headers,
+        },
+        body: JSON.stringify(method === "PATCH" ? { stage: "REJECTED" } : {}),
+      }), env(), deps(query(approved)));
+    };
+    const code = async (res: Response) => (await res.json() as { error?: { code: string } }).error?.code;
+
+    const bare = await call({}, true);
+    assert.equal(bare.status, 403, `${tool} without a card`);
+    assert.equal(await code(bare), "APPROVAL_REQUIRED");
+    assert.equal(asked.length, 0);
+
+    const unapproved = await call({ "x-push-approval": approval }, false);
+    assert.equal(unapproved.status, 403, `${tool} with a card that is not approved for this target`);
+    assert.equal(await code(unapproved), "APPROVAL_REQUIRED");
+    assert.deepEqual(asked[0], [approval, USER, tool, JSON.stringify(target)]);
+
+    const approved = await call({ "x-push-approval": approval }, true);
+    assert.notEqual(await code(approved), "APPROVAL_REQUIRED", `${tool} with the approved card`);
+  }
+});
+
+test("act-as writes outside the approval list need no card", async () => {
+  resetLimits();
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const asked: string[] = [];
+  const res = await handle(new Request(`https://core.example/api/v1/postings/${posting}/bookmark`, {
+    method: "POST",
+    headers: { "idempotency-key": "71717171-7171-4171-8171-717171717171", "x-push-internal-secret": SECRET, "x-push-act-as": USER },
+  }), env(), deps(async (sql, params) => {
+    if (sql.includes("FROM approvals")) asked.push(sql);
+    return queryFor(null)(sql, params);
+  }));
+  assert.notEqual((await res.json() as { error?: { code: string } }).error?.code, "APPROVAL_REQUIRED");
+  assert.deepEqual(asked, []);
+});

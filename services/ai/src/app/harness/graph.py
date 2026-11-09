@@ -130,11 +130,11 @@ def _tier_name(tier) -> str:
     return str(tier)
 
 
-def write_needs_approval(mode, tier, quick_start) -> bool:
+def write_needs_approval(mode, tier, quick_start, tool: str | None = None) -> bool:
     if isinstance(quick_start, dict) and _tier_name(tier) != Tier.READ:
         return True
     resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
-    return decide(mode, resolved).value == "ASK"
+    return decide(mode, resolved, tool).value == "ASK"
 
 
 def leave_flow(summary: str, **update) -> Command:
@@ -381,7 +381,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         summary = meta["summary"](args)
         tier = meta["tier"].value
         if (
-            write_needs_approval(mode, meta["tier"], state.get("quick_start"))
+            write_needs_approval(mode, meta["tier"], state.get("quick_start"), tool.name)
             and meta["approval_kind"] != "DOCUMENT_EDIT"
         ):
             event, created = await create_tool_approval(

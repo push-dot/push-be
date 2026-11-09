@@ -43,6 +43,7 @@ class CoreClient:
         company_id: str | None = None,
         json: dict | None = None,
         idempotency_key: str | None = None,
+        approval_id: str | None = None,
     ) -> dict:
         _assert_plain_path(path)
         headers = {
@@ -53,6 +54,8 @@ class CoreClient:
             headers["x-push-company"] = company_id
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if approval_id:
+            headers["x-push-approval"] = approval_id
         async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as client:
             response = await client.request(method, self.origin + path, headers=headers, json=json)
         if response.status_code == 204:
