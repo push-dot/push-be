@@ -19,6 +19,12 @@ export function isUndefinedColumn(err: unknown): boolean {
   return e?.code === "42703" || /42703|column .* does not exist/i.test(`${e?.message || ""} ${String(err)}`);
 }
 
+/** 55P03: lock_timeout ran out while waiting for a row lock. */
+export const isLockTimeout = (err: unknown): boolean => {
+  const e = err as { code?: string; message?: string };
+  return e?.code === "55P03" || /55P03|lock timeout/i.test(`${e?.message || ""} ${String(err)}`);
+};
+
 export const isMissingRelation = (err: unknown): boolean => {
   const e = err as { code?: string; message?: string };
   return e?.code === "42P01" || /42P01|relation .* does not exist/i.test(`${e?.message || ""} ${String(err)}`);

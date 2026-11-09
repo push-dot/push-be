@@ -6,6 +6,7 @@ import { after, before, test, type TestContext } from "node:test";
 import { hmacSha256Hex } from "../src/crypto.ts";
 import type { Query } from "../src/db.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { availableMicro } from "../src/jobs/credits.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 import { livePg, type LivePg } from "./parity/pg.ts";
 
@@ -51,6 +52,7 @@ before(async () => { if (URL_) pg = await livePg(URL_); });
 after(async () => { await pg?.close(); });
 
 const rand = () => crypto.randomUUID().replaceAll("-", "").slice(0, 14);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // Auth, rate limits and idempotency are not under test: they answer from memory, everything else hits Postgres.
@@ -956,13 +958,14 @@ const storeUser = async (t: TestContext): Promise<string | null> => {
 };
 
 const userLedgerOf = async (userId: string) => (await pg!.query(
-  "SELECT type, reference_id, amount_micro_credits, balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at, id", [userId])).rows
+  "SELECT type, reference_id, amount_micro_credits, balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY seq", [userId])).rows
   .map((row) => [row.type, row.reference_id, Number(row.amount_micro_credits), Number(row.balance_after)]);
 
-const storeRefund = async (userId: string, tx: string, at: number, note: { platform: "APP_STORE" | "GOOGLE_PLAY"; type: string }) => {
+const storeRefund = async (userId: string, tx: string, at: number, note: { platform: "APP_STORE" | "GOOGLE_PLAY"; type: string }, wrap: (q: Query) => Query = (q) => q) => {
   let clock = at;
   const deps: Deps = {
-    query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(clock),
+    query: wrap(dbFor({ userId, companyId: null, plan: "PRO" })), now: () => new Date(clock),
+    transaction: (work) => pg!.transaction!((q) => work(wrap(q))),
     stores: {
       verifyApple: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
       verifyGoogle: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
@@ -1017,8 +1020,179 @@ test("D18: a top-up refunded after part of it was spent takes back only what is 
     [crypto.randomUUID(), userId, spent]);
   assert.equal(await flow.refund(), 200);
   assert.deepEqual((await userLedgerOf(userId)).at(-1), ["REFUND", tx, spent - pack, spent]);
-  const left = await pg!.query("SELECT (SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1) - $2::bigint AS left", [userId, spent]);
+  const left = await pg!.query("SELECT (SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY seq DESC LIMIT 1) - $2::bigint AS left", [userId, spent]);
   assert.equal(Number(left.rows[0]!.left), 0);
+});
+
+// A job enqueued while a top-up refund runs: the refund and the job's reservation both read the balance, so the user row lock must
+// order them. `wrap` of each side sees its own statements.
+const refundAndEnqueue = async (t: TestContext, monthGranted: boolean, hold: (side: "refund" | "enqueue", sql: string) => Promise<void> | undefined) => {
+  const userId = await storeUser(t);
+  if (!userId) return null;
+  const tx = "tx-" + rand();
+  const documentId = crypto.randomUUID();
+  await pg!.query("INSERT INTO documents (id, user_id, title, kind, template) VALUES ($1, $2, 't', 'RESUME', 'basic')", [documentId, userId]);
+  const hooked = (side: "refund" | "enqueue") => (q: Query): Query => async (sql, params) => {
+    await hold(side, sql);
+    return q(sql, params);
+  };
+  const flow = await storeRefund(userId, tx, START, { platform: "APP_STORE", type: "REFUND" });
+  assert.equal(await flow.buy(), 200);
+  if (monthGranted) {
+    // This month's plan credits are granted and spent, so only the pack is left to spend.
+    await pg!.query("INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', 27000000, balance_after + 27000000, $3, now() FROM billing_ledger WHERE user_id = $2",
+      [crypto.randomUUID(), userId, "monthly:" + new Date().toISOString().slice(0, 7)]);
+    await pg!.query("INSERT INTO ai_usage (id, user_id, provider, model, managed, input_tokens, output_tokens, cost_micro_credits, status) VALUES ($1, $2, 'openrouter', 'm', true, 1, 1, 27000000, 'SETTLED')",
+      [crypto.randomUUID(), userId]);
+  }
+  // The refund and the job's month grant stamp their rows with today, as in production.
+  const refunding = await storeRefund(userId, tx, Date.now() - DAY, { platform: "APP_STORE", type: "REFUND" }, hooked("refund"));
+  const enqueue = async () => {
+    resetLimits();
+    const deps: Deps = {
+      query: hooked("enqueue")(dbFor({ userId, companyId: null, plan: "PRO" })), now: () => new Date(START + DAY),
+      transaction: (work) => pg!.transaction!((q) => work(hooked("enqueue")(q))),
+    };
+    return (await handle(new Request(`https://core.example/api/v1/documents/${documentId}/generate`, {
+      method: "POST", headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ expectedRevision: 1 }),
+    }), env, deps)).status;
+  };
+  return { userId, refund: refunding.refund, enqueue };
+};
+
+const moneyOf = async (userId: string) => (await pg!.query(
+  "SELECT (SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY seq DESC LIMIT 1) AS last, (SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $1) AS total, (SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage WHERE user_id = $1 AND status = 'SETTLED') AS settled, (SELECT COALESCE(SUM(amount_micro), 0) FROM credit_reservations WHERE user_id = $1 AND status = 'RESERVED') AS reserved",
+  [userId])).rows.map((row) => ({ last: Number(row.last), total: Number(row.total), available: Number(row.last) - Number(row.settled) - Number(row.reserved) }))[0]!;
+
+test("audit: a job enqueued after a top-up refund read the balance waits for the refund, so the available balance never goes below 0", async (t) => {
+  let enqueued: Promise<number> | undefined;
+  let job: () => Promise<number> = async () => 0;
+  const race = await refundAndEnqueue(t, true, async (side, sql) => {
+    // The refund has read what is left and is about to write it back: a job starts now and gets up to 300 ms to finish.
+    if (side !== "refund" || enqueued || !sql.startsWith("INSERT INTO billing_ledger")) return;
+    enqueued = job();
+    await Promise.race([enqueued, sleep(300)]);
+  });
+  if (!race) return;
+  job = race.enqueue;
+  assert.equal(await race.refund(), 200);
+  assert.ok(enqueued, "the refund reached its ledger write");
+  const status = await enqueued;
+  const money = await moneyOf(race.userId);
+  assert.equal(money.available, 0);
+  assert.equal(money.last, money.total);
+  assert.equal(status, 402);
+});
+
+test("audit: a top-up refund and the month grant of a job enqueued at the same moment keep balance_after equal to the ledger sum", async (t) => {
+  let lost = 0;
+  for (let round = 0; round < 5; round++) {
+    // Both sides send their ledger write at once; with the user row lock the job's grant waits for the refund instead.
+    const arrived = new Set<string>();
+    let meet!: () => void;
+    const met = new Promise<void>((resolve) => { meet = resolve; });
+    const race = await refundAndEnqueue(t, false, async (side, sql) => {
+      if (arrived.has(side) || !sql.startsWith("INSERT INTO billing_ledger")) return;
+      arrived.add(side);
+      if (arrived.size === 2) meet();
+      await Promise.race([met, sleep(300)]);
+    });
+    if (!race) return;
+    const [refunded, enqueued] = await Promise.all([race.refund(), race.enqueue()]);
+    assert.equal(refunded, 200);
+    assert.equal(enqueued, 202);
+    const money = await moneyOf(race.userId);
+    if (money.last !== money.total) lost++;
+    assert.ok(money.available >= 0, `round ${round}: available ${money.available}`);
+  }
+  assert.equal(lost, 0, `${lost} of 5 rounds lost a balance_after update`);
+});
+
+// The balance the app reads (its own latest ledger row) against the ledger sum: a lost or misordered balance_after leaves a gap.
+const balanceGap = async (userId: string) => {
+  const sums = (await pg!.query(
+    "SELECT (SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $1) AS total, (SELECT COALESCE(SUM(cost_micro_credits), 0) FROM ai_usage WHERE user_id = $1 AND status = 'SETTLED') AS settled, (SELECT COALESCE(SUM(amount_micro), 0) FROM credit_reservations WHERE user_id = $1 AND status = 'RESERVED') AS reserved",
+    [userId])).rows[0]!;
+  return Number(await availableMicro(pg!.query, userId)) - (Number(sums.total) - Number(sums.settled) - Number(sums.reserved));
+};
+
+// Holds each side's first ledger INSERT until every side reaches its own (or 300 ms pass): writers without the lock read one balance.
+const atLedgerWrite = (sides: number) => {
+  const arrived = new Set<string>();
+  let meet!: () => void;
+  const met = new Promise<void>((resolve) => { meet = resolve; });
+  return (side: string) => (q: Query): Query => async (sql, params) => {
+    if (!arrived.has(side) && sql.startsWith("INSERT INTO billing_ledger")) {
+      arrived.add(side);
+      if (arrived.size === sides) meet();
+      await Promise.race([met, sleep(300)]);
+    }
+    return q(sql, params);
+  };
+};
+
+test("audit: a top-up refund and the month grant of a GET /billing at the same moment keep the balance the app reads equal to the ledger sum", async (t) => {
+  let gaps = 0;
+  for (let round = 0; round < 5; round++) {
+    const userId = await storeUser(t);
+    if (!userId) return;
+    const tx = "tx-" + rand();
+    assert.equal(await (await storeRefund(userId, tx, START, { platform: "APP_STORE", type: "REFUND" })).buy(), 200);
+    const hooked = atLedgerWrite(2);
+    const refunding = await storeRefund(userId, tx, Date.now() - DAY, { platform: "APP_STORE", type: "REFUND" }, hooked("refund"));
+    const read = async () => {
+      resetLimits();
+      const deps: Deps = {
+        query: hooked("read")(dbFor({ userId, companyId: null, plan: "PRO" })), now: () => new Date(),
+        transaction: (work) => pg!.transaction!((q) => work(hooked("read")(q))),
+      };
+      return (await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps)).status;
+    };
+    assert.deepEqual(await Promise.all([refunding.refund(), read()]), [200, 200]);
+    if (await balanceGap(userId) !== 0) gaps++;
+  }
+  assert.equal(gaps, 0, `${gaps} of 5 rounds left the balance off the ledger sum`);
+});
+
+test("audit: a top-up verified while another top-up is refunded keeps the balance the app reads equal to the ledger sum", async (t) => {
+  let gaps = 0;
+  for (let round = 0; round < 5; round++) {
+    const userId = await storeUser(t);
+    if (!userId) return;
+    const [first, second] = ["tx-" + rand(), "tx-" + rand()];
+    assert.equal(await (await storeRefund(userId, first, START, { platform: "APP_STORE", type: "REFUND" })).buy(), 200);
+    const hooked = atLedgerWrite(2);
+    const refunding = await storeRefund(userId, first, Date.now() - DAY, { platform: "APP_STORE", type: "REFUND" }, hooked("refund"));
+    const buying = await storeRefund(userId, second, Date.now(), { platform: "APP_STORE", type: "REFUND" }, hooked("verify"));
+    assert.deepEqual(await Promise.all([refunding.refund(), buying.buy()]), [200, 200]);
+    if (await balanceGap(userId) !== 0) gaps++;
+  }
+  assert.equal(gaps, 0, `${gaps} of 5 rounds left the balance off the ledger sum`);
+});
+
+test("audit: a refund that waited for another refund's lock stamps the earlier created_at, and the app still reads its row as the latest", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  const [late, early] = ["tx-" + rand(), "tx-" + rand()];
+  for (const tx of [late, early]) assert.equal(await (await storeRefund(userId, tx, START, { platform: "APP_STORE", type: "REFUND" })).buy(), 200);
+  let waiting: Promise<number> | undefined;
+  let second: () => Promise<number> = async () => 0;
+  // The first refund holds the user row lock at its ledger write; the second, whose request is stamped days earlier, waits for it.
+  const first = await storeRefund(userId, late, Date.now() - DAY, { platform: "APP_STORE", type: "REFUND" }, (q) => async (sql, params) => {
+    if (!waiting && sql.startsWith("INSERT INTO billing_ledger")) {
+      waiting = second();
+      await sleep(300);
+    }
+    return q(sql, params);
+  });
+  second = (await storeRefund(userId, early, START, { platform: "APP_STORE", type: "REFUND" })).refund;
+  assert.equal(await first.refund(), 200);
+  assert.equal(await waiting, 200);
+  const rows = (await pg!.query("SELECT reference_id, created_at FROM billing_ledger WHERE user_id = $1 AND type = 'REFUND' ORDER BY seq", [userId])).rows;
+  assert.deepEqual(rows.map((row) => row.reference_id), [late, early]);
+  assert.ok(new Date(String(rows[1]!.created_at)) < new Date(String(rows[0]!.created_at)), "the refund that committed last has the earlier created_at");
+  assert.equal(await balanceGap(userId), 0);
+  assert.equal(Number(await availableMicro(pg!.query, userId)), 0);
 });
 
 test("D18: a fully refunded Stripe top-up checkout takes its credits back once; a partial refund changes nothing", async (t) => {
@@ -1049,4 +1223,50 @@ test("D18: a fully refunded Stripe top-up checkout takes its credits back once; 
   const rows = (await pg!.query("SELECT type, amount_micro_credits, description FROM billing_ledger WHERE company_id = $1 ORDER BY created_at, id", [co.id])).rows
     .map((row) => [row.type, Number(row.amount_micro_credits), row.description]);
   assert.deepEqual(rows, [["PURCHASE", micro, "크레딧 구매"], ["PURCHASE", micro, "크레딧 구매"], ["REFUND", -micro, "크레딧 구매 환불"]]);
+});
+
+test("while a webhook holds the user row, a charged send gives up after 3 s with a retryable 429 and GET /billing still answers", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  const documentId = crypto.randomUUID();
+  await pg!.query("INSERT INTO documents (id, user_id, title, kind, template) VALUES ($1, $2, 't', 'RESUME', 'basic')", [documentId, userId]);
+  const deps = (): Deps => ({
+    query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(START + DAY), transaction: (work) => pg!.transaction!(work),
+  });
+  const generate = async () => {
+    resetLimits();
+    return handle(new Request(`https://core.example/api/v1/documents/${documentId}/generate`, {
+      method: "POST", headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ expectedRevision: 1 }),
+    }), env, deps());
+  };
+  let release = () => {};
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let locked = () => {};
+  const holding = new Promise<void>((resolve) => { locked = resolve; });
+  const webhook = pg!.transaction!(async (q) => {
+    await q("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [userId]);
+    locked();
+    await released;
+  });
+  await holding;
+  try {
+    const started = Date.now();
+    const busy = await generate();
+    assert.equal(busy.status, 429);
+    assert.equal(busy.headers.get("retry-after"), "5");
+    const body = await busy.json() as { error: { code: string; details: { reason: string } } };
+    assert.equal(body.error.code, "QUEUE_BUSY");
+    assert.equal(body.error.details.reason, "BILLING_LOCKED");
+    assert.ok(Date.now() - started < 8000);
+    resetLimits();
+    const read = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps());
+    assert.equal(read.status, 200);
+    const rows = await pg!.query("SELECT 1 FROM credit_reservations WHERE user_id = $1 UNION ALL SELECT 1 FROM billing_ledger WHERE user_id = $1 AND reference_id LIKE 'monthly:%'", [userId]);
+    assert.equal(rows.rowCount, 0);
+  } finally {
+    release();
+    await webhook;
+  }
+  const retried = await generate();
+  assert.ok(retried.status < 300, String(retried.status));
 });
