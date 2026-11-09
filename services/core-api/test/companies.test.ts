@@ -1434,6 +1434,7 @@ test("verify stores an optional trimmed legalName and returns it", async () => {
 const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 const SENT_LONG_AGO = "2026-10-15T00:00:00.000Z";
+const LIVE_SENT_DAYS_AGO = "2026-10-25T00:00:00.000Z";
 
 test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one UPDATE, then mails the new link", async () => {
   resetLimits();
@@ -1507,7 +1508,7 @@ test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one
   const race = gate(raceSeen, employer(), async (sql) => {
     if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
     if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: LIVE_SENT_DAYS_AGO }], rowCount: 1 };
     return empty;
   });
   const raced = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f17"), env(), deps(race, undefined, { send: async () => {} }));
