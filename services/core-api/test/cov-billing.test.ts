@@ -202,10 +202,13 @@ test("payments stay closed unless PAYMENTS_ENABLED is 1, and nothing reaches str
       assert.ok(!w.seen.some((call) => /billing_ledger|UPDATE users|UPDATE companies/.test(call.sql)), path);
     }
   }
-  resetLimits();
-  const status = await handle(request("GET", "/api/v1/billing"), envOf({ PAYMENTS_ENABLED: undefined }),
-    { query: world().query, now: () => NOW, fetch: noFetch });
-  assert.equal(status.status, 200);
+  for (const [flag, shown] of [[undefined, false], ["true", false], ["1", true]] as const) {
+    resetLimits();
+    const status = await read(await handle(request("GET", "/api/v1/billing"), envOf({ PAYMENTS_ENABLED: flag }),
+      { query: world().query, now: () => NOW, fetch: noFetch }));
+    assert.equal(status.status, 200);
+    assert.equal((status.body.data as { paymentsEnabled?: boolean }).paymentsEnabled, shown, String(flag));
+  }
   for (const [path, body] of paths) {
     resetLimits();
     const open = await read(await handle(request("POST", path, body), envOf(),
