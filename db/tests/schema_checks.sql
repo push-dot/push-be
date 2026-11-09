@@ -22,6 +22,24 @@ BEGIN
     END IF;
 END $$;
 
+-- The company purge (services/ai account_purge.py) deletes companies rows the same way.
+DO $$
+DECLARE bad text;
+BEGIN
+    WITH RECURSIVE owned(rel) AS (
+        SELECT 'companies'::regclass
+        UNION
+        SELECT c.conrelid::regclass FROM pg_constraint c JOIN owned o ON c.confrelid = o.rel
+        WHERE c.contype = 'f'
+    )
+    SELECT string_agg(format('%s.%s', c.conrelid::regclass, c.conname), ', ') INTO bad
+    FROM pg_constraint c
+    WHERE c.contype = 'f' AND c.confrelid IN (SELECT rel FROM owned) AND c.confdeltype IN ('a', 'r');
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'FKs block the company purge (need CASCADE or SET NULL): %', bad;
+    END IF;
+END $$;
+
 -- Deleting a row one user owns must not delete rows another user (or company) owns.
 INSERT INTO users (id, provider, provider_subject, display_name)
 VALUES ('00000000-0000-4000-8000-0000000000a1', 'test', 'a1', 'candidate'),

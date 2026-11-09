@@ -233,6 +233,12 @@ jobs:
           (cd services/core-api && node --expose-gc --experimental-strip-types --import "$register" --test 'test/**/*.ts')
           (cd services/gateway && node --experimental-strip-types --import "$register" --test 'test/**/*.ts')
           (cd services/ai && PYTHONPATH="$GITHUB_WORKSPACE/scripts/sql-check" uv run --no-sync pytest -q -p sql_capture)
+      # The retention purge on the migrated schema (skipped elsewhere); -rs prints a skip if the URL is lost.
+      - name: Retention purge tests
+        working-directory: services/ai
+        env:
+          RETENTION_PG_URL: postgres://push:push@localhost:5432/push
+        run: uv run --no-sync python -m pytest -q -rs tests/test_retention_pg.py
       # Constant SQL is checked without a test. Every runtime-built call site and every
       # SQL-looking string must land in a checked statement, or the job fails.
       - name: Extract constant SQL and check coverage
