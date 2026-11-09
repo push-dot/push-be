@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+import { TERMS_VERSION } from "../src/routes/consents.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = "2026-10-21T00:00:00.000Z";
@@ -185,7 +188,7 @@ test("signup terms store the version and marketing, and the default version is u
   const omitted = await handle(termsPut({ age14: true, serviceTerms: true, privacy: true }), env(), deps(authed(again, async () => empty)));
   assert.equal(omitted.status, 200);
   const fallback = again.find((call) => call.sql.includes("INSERT INTO user_consents"));
-  assert.deepEqual(fallback?.params, [USER, NOW, true, "2026-10-29", false, false]);
+  assert.deepEqual(fallback?.params, [USER, NOW, true, TERMS_VERSION, false, false]);
 });
 
 test("required terms cannot be turned off or agreed one at a time", async () => {
@@ -219,4 +222,21 @@ test("marketing can change without restating the required terms", async () => {
   assert.equal(body.data.terms.version, null);
   const upsert = seen.find((call) => call.sql.includes("INSERT INTO user_consents"));
   assert.deepEqual(upsert?.params, [USER, NOW, false, null, true, false]);
+});
+
+test("the terms version is defined once and every consumer reads the same value", () => {
+  const root = new URL("../../../", import.meta.url);
+  const read = (path: string) => readFileSync(new URL(path, root), "utf8");
+  assert.equal(TERMS_VERSION, "1.0");
+  // Only consents.ts may declare it, and no source or contract file may hard-code another version.
+  const declared = readdirSync(new URL("services/core-api/src/", root), { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".ts"))
+    .filter((file) => /\bTERMS_VERSION\s*=/.test(read(`services/core-api/src/${file}`)));
+  assert.deepEqual(declared, [join("routes", "consents.ts")]);
+  for (const file of ["services/core-api/src/routes/consents.ts", "packages/contracts/spec/account.ts", "packages/contracts/openapi.json", "packages/contracts/src/schema.ts"]) {
+    assert.doesNotMatch(read(file), /2026-10-29/, file);
+  }
+  for (const file of ["packages/contracts/spec/account.ts", "packages/contracts/openapi.json", "packages/contracts/src/schema.ts"]) {
+    assert.match(read(file), new RegExp(`Omitted version is ${TERMS_VERSION.replace(".", "\\.")}\\.`), file);
+  }
 });

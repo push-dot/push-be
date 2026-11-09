@@ -177,8 +177,9 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | `volume-init` | 배포할 때 한 번 돌고 끝난다. `traefik-acme`, `tei-models` 볼륨의 최상위 디렉터리 소유자를 non-root 사용자로 바꾼다. `CHOWN` 권한 하나만 있고 네트워크가 없다 | — |
 | 합계 | | 5,184 MB |
 
-- `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔 `embed`를 멈추거나 VPS를 올린 뒤 `--profile rerank`로 `rerank`를 띄우고 `RERANK_PROVIDER=tei`를 넣는다.
+- `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔(아래 경고 참고) `embed`를 멈추거나 VPS를 올린 뒤 `--profile rerank`로 `rerank`를 띄우고 `RERANK_PROVIDER=tei`를 넣는다.
 - `embed`가 메모리 부족으로 재시작되면 `EMBEDDING_PROVIDER=api`로 바꾸고 `embed`를 멈춘다. 그러면 합계가 2,368 MB로 줄어든다.
+  > **경고:** `EMBEDDING_PROVIDER=api`는 서류 조각 텍스트를 OpenRouter를 거쳐 OpenAI로 보낸다. 개인정보 처리방침의 국외 이전 표(7·8항)에 OpenAI를 먼저 추가하고 문서를 새로 시행한 뒤에만 켠다. 그 전에 켜면 처리방침이 사실과 달라진다.
 
 배포한 뒤 `docker stats`로 실제 사용량을 확인한다.
 
@@ -187,7 +188,7 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | 변수 | 값 | 되돌리기 |
 | --- | --- | --- |
 | `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
-| `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다 |
+| `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다. 처리방침 국외 이전 표에 OpenAI를 먼저 올린 뒤에만 켠다 |
 | `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
 
 기존 업로드를 `rag_nodes`에 다시 색인하려면 `q:ingest`에 `{"reindex": true}`를 넣는다. 그다음 `run_eval.py`로 검색 품질을 본다.
@@ -201,7 +202,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml exec ingest-worker python eval/rag/run_eval.py --engine llamaindex
 ```
 
-`meetsTarget`이 `false`면 VPS를 올리거나 `EMBEDDING_PROVIDER=api`를 기본으로 둔다.
+`meetsTarget`이 `false`면 VPS를 올리거나 `EMBEDDING_PROVIDER=api`를 기본으로 둔다. `api`는 처리방침 국외 이전 표(7·8항)에 OpenAI를 올리고 문서를 시행한 뒤에만 쓴다.
 
 ## 관리 엔드포인트
 

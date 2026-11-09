@@ -418,7 +418,7 @@ export const routes: Route[] = [
   put("core", "/api/v1/me/consents/terms", {
     tag: "consents",
     summary: "Store signup terms",
-    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.",
     body: body({
       ...obj({
         age14: bool,
