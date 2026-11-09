@@ -450,14 +450,15 @@ const currentPeriodPaid = (env: CoreEnv, sub: Record<string, unknown>): boolean 
 // also an active subscription that just renewed: Stripe keeps the renewal invoice a draft for about an hour before it charges it.
 // Any other cancel voids the open invoices first, so a late payment cannot land on a subscription the company left. Stripe itself turns off
 // auto_advance on the open and draft invoices of a canceled subscription, so the draft is never finalized or charged.
-async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }): Promise<void> {
+// `calendar` is the company's subscription from before credit periods, whose credits are the month's.
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }, calendar: string): Promise<void> {
   for (const customer of customers) {
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&expand[]=data.latest_invoice&customer=" + encodeURIComponent(customer));
     for (const sub of subscriptionsOf(list)) {
       if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
       const id = String(sub.id);
       const refund = LIVE.has(String(sub.status)) && currentPeriodPaid(ctx.env, sub)
-        && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now) <= grantMicro("EMPLOYER", keep.plan);
+        && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
       const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
         if (refund) {
@@ -508,7 +509,7 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
       [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
   }
   const previous = before.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
-  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan });
+  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan }, before.period_unix == null ? current : "");
   if (!switching) return;
   // An upgrade or same-plan swap keeps the tiers of the period whose unused time was just refunded; a downgrade, or a replaced
   // subscription that was not refunded, starts the new plan fresh. A company on calendar months carries the month its period starts in.

@@ -379,6 +379,20 @@ test("a company on calendar months that upgrades carries this month's tiers into
   assert.equal((await billingRead(co.id, START + DAY + PERIOD + 7_200_000)).balanceMicroCredits, 60_000 * MICRO);
 });
 
+test("a company on calendar months whose later Basic checkout lands first refunds the earlier, never adopted Basic instead of dropping it", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  await pg!.query("UPDATE companies SET plan = 'ULTRA' WHERE id = $1", [co.id]);
+  await billingRead(co.id, START);
+  const first = stripe.subscribe("BASIC", START + 1000);
+  const second = stripe.subscribe("BASIC", START + 300_000);
+  assert.equal(await deliver(stripe, checkout(co.id, second, "BASIC", START + 300_000), START + 300_000), 200);
+  assert.equal(await deliver(stripe, checkout(co.id, first, "BASIC", START + 1000), START + 301_000), 200);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${first.id}${REFUND}`]);
+  assert.deepEqual(await companyRow(co.id), { plan: "BASIC", stripe_subscription_id: second.id });
+});
+
 // Starts `side` when the webhook reaches the plan switch, then fails the transaction on its next statement, as a dropped connection would.
 const failAfterSwitch = (side: () => Promise<unknown> = async () => {}) => {
   let step: "switch" | "fail" | "done" = "switch";

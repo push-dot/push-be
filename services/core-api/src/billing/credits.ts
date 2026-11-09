@@ -94,10 +94,13 @@ const levelOf = (rows: Record<string, unknown>[], key: string): number => rows.r
 export const keyLevel = async (q: Query, companyId: string, key: string): Promise<number> =>
   levelOf((await q(COMPANY_GRANTS, [companyId, key, key + ":%"])).rows, key);
 
-/** The plan amount a subscription's latest period granted. A subscription with no period rows predates 0042: its credits are this month's. */
-export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date): Promise<number> => {
+/**
+ * The plan amount a subscription's latest period granted. With no period rows, the company's subscription from before 0042
+ * (`calendar`) had this month's credits; any other one was never adopted and granted nothing.
+ */
+export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date, calendar: boolean): Promise<number> => {
   const rows = (await q(COMPANY_GRANTS, [companyId, "", `period:${subscriptionId}:%`])).rows;
-  if (rows.length === 0) return keyLevel(q, companyId, monthKey(now));
+  if (rows.length === 0) return calendar ? keyLevel(q, companyId, monthKey(now)) : 0;
   const latest = Math.max(...rows.map((row) => Number(String(row.reference_id).split(":")[2])));
   const key = `period:${subscriptionId}:${latest}`;
   return levelOf(rows.filter((row) => String(row.reference_id).startsWith(key + ":")), key);
