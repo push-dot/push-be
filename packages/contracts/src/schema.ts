@@ -3864,7 +3864,7 @@ export interface components {
             plan: ("FREE" | "PRO" | "ULTRA" | "BASIC") | null;
             reservedMicroCredits: number;
             source: ("STRIPE" | "APP_STORE" | "GOOGLE_PLAY") | null;
-            /** @description Settled usage this UTC month */
+            /** @description Settled usage this UTC month, less what was written off (WRITE_OFF rows), so what was charged */
             spentMicroCredits: number;
             /** @enum {string} */
             subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
@@ -5060,7 +5060,7 @@ export interface components {
             /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
             receiptUrl: string | null;
             referenceId: string | null;
-            /** @description PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>). */
+            /** @description PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>, then writeoff:<jobId>:<n> for a retried job written off again). Not a payment: amountUsd is null. */
             type: string;
         };
         Message: {

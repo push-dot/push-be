@@ -365,7 +365,7 @@ async def test_ai_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
     assert not any(c[0] == "serve_api" for c in calls)
     await w.kwargs["settle"](w.db, JOB)
     await w.kwargs["release"](w.db, JOB)
-    assert calls[-2:] == [("settle", ai_env["db_conn"], JOB, NOW), ("release", ai_env["db_pool"], JOB, NOW)]
+    assert calls[-2:] == [("settle", ai_env["db_conn"], JOB, NOW), ("release", ai_env["db_conn"], JOB, NOW)]
     assert ai_env["redis"].closed
 
 

@@ -124,6 +124,19 @@ def test_retry_short_of_credits_is_402():
     assert (res.status_code, res.json()["detail"]) == (402, "INSUFFICIENT_CREDITS")
 
 
+def test_retry_while_the_owner_row_is_locked_is_503():
+    class Busy(Exception):
+        sqlstate = "55P03"
+
+    class Locked(FakeAdminDb):
+        async def retry(self, job_id, now):
+            raise Busy("canceling statement due to lock timeout")
+
+    http, _ = client(FakeRedis(decode_responses=True), db=Locked())
+    res = http.post(f"/admin/jobs/{uuid4()}/retry", headers={"authorization": "Bearer admin-secret"})
+    assert (res.status_code, res.json()["detail"]) == (503, "BILLING_BUSY")
+
+
 class Sent:
     def __init__(self, discord_ok=True):
         self.discord = []
