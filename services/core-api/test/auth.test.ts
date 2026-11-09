@@ -162,3 +162,27 @@ test("login still works before migration 0018 is applied", async () => {
   );
   assert.equal(res.status, 302);
 });
+
+test("logout deletes the caller's push token, or all of the user's when none is sent", async () => {
+  const seen: { sql: string; params: unknown[] }[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+  const logout = (body: Record<string, unknown>) => handle(
+    new Request("https://core.example/api/v1/auth/logout", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }),
+    { APP_ENV: "production" } as CoreEnv,
+    { query, now: () => NOW },
+  );
+  resetLimits();
+  assert.equal((await logout({ refreshToken: "r1", pushToken: "ExponentPushToken[a]" })).status, 204);
+  assert.equal((await logout({ refreshToken: "r1" })).status, 204);
+  const calls = seen.filter((c) => c.sql.includes("DELETE FROM user_devices"));
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /user_id IN \(SELECT user_id FROM target\) AND \(\$3::text IS NULL OR token = \$3::text\)/);
+  assert.equal(calls[0].params[2], "ExponentPushToken[a]");
+  assert.equal(calls[1].params[2], null);
+});

@@ -9677,12 +9677,16 @@
     },
     "/api/v1/auth/logout": {
       "post": {
+        "description": "Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.",
         "operationId": "postAuthLogout",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
                 "properties": {
+                  "pushToken": {
+                    "type": "string"
+                  },
                   "refreshToken": {
                     "type": "string"
                   }

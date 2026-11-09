@@ -34,7 +34,10 @@ def make_notify(query, push):
             datetime.fromisoformat(payload["createdAt"].replace("Z", "+00:00")))
         if inserted is None:
             return {"notificationId": str(note_id), "pushed": 0}
-        rows = await query().fetch("SELECT token FROM user_devices WHERE user_id = $1", user_id)
+        # No push during the 30-day deletion grace period.
+        rows = await query().fetch(
+            "SELECT d.token FROM user_devices d JOIN users u ON u.id = d.user_id "
+            "WHERE d.user_id = $1 AND u.deletion_requested_at IS NULL", user_id)
         messages = [{"to": row["token"], "title": title, "body": body, "data": target} for row in rows]
         pushed = await push(messages) if messages else 0
         return {"notificationId": str(note_id), "pushed": pushed}

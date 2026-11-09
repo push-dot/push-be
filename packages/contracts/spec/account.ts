@@ -112,7 +112,8 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Log out (revoke refresh token)",
     auth: "public",
-    body: body(obj({ refreshToken: str })),
+    description: "Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.",
+    body: body(obj({ refreshToken: str, pushToken: str }, ["refreshToken"])),
     responses: { 204: noContent },
   }),
   get("gateway", "/api/v1/auth/me", {
