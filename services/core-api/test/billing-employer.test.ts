@@ -17,7 +17,7 @@ type Err = { error: { code: string; message: string; details: { field?: string }
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_pro",

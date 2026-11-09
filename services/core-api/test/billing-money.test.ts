@@ -27,7 +27,7 @@ type Item = { price: { id: string }; current_period_start: number; current_perio
 type Sub = { id: string; object: "subscription"; customer: string; status: string; created: number; currency: "usd"; items: { object: "list"; data: Item[] }; metadata: Record<string, string> };
 
 const env: CoreEnv = {
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_personal_pro",
