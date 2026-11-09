@@ -67,23 +67,36 @@ const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
   return null;
 };
 
-const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId: string): Promise<void> => {
+const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId: string, type = "PURCHASE"): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING",
-    [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString()]);
+    "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, $6::text, $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING",
+    [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString(), type]);
 };
 
 type Payment = { description: string | null; amountUsdCents: number | null; receiptUrl: string | null };
 
-const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment): Promise<void> => {
+const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment, type = "PURCHASE"): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
-    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl]);
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, $9::text, $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
+    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl, type]);
 };
 
 const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
 const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
 const TOPUP_DESCRIPTION = "크레딧 구매";
+const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
+
+// A refunded top-up takes its credits back, at most what is still unspent, so the balance stops at 0 (D18).
+// The REFUND row's reference is the purchase's, so a repeated refund notice writes nothing.
+const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: string }, micro: number, referenceId: string): Promise<void> => {
+  const companyId = "companyId" in owner ? owner.companyId : undefined;
+  const left = await availableMicro(ctx.deps.query, "userId" in owner ? owner.userId : "", companyId);
+  const amount = -Number(left <= 0n ? 0n : left < BigInt(micro) ? left : BigInt(micro));
+  if (companyId) {
+    await companyLedger(ctx, companyId, amount, referenceId, { description: TOPUP_REFUND_DESCRIPTION, amountUsdCents: null, receiptUrl: null }, "REFUND");
+  }
+  else await userLedger(ctx, (owner as { userId: string }).userId, amount, referenceId, "REFUND");
+};
 const REFUND_DESCRIPTION = "요금제 변경 환급";
 
 // Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
@@ -134,6 +147,9 @@ const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: s
   await ensureMonthlyGrant(ctx.deps.query, { audience, plan, ownerId, now: ctx.now });
 };
 
+// Same switch as the payment gate in handler.ts: apps hide buy buttons while it is off, since a store charges before verify.
+const paymentsEnabled = (ctx: Ctx): boolean => ctx.env.PAYMENTS_ENABLED === "1";
+
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
     if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
@@ -157,6 +173,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       spentMicroCredits,
       audience: "EMPLOYER",
       source: plan ? "STRIPE" : null,
+      paymentsEnabled: paymentsEnabled(ctx),
     }, ctx.rid);
   }
   const plan = ctx.user.plan || null;
@@ -182,6 +199,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     spentMicroCredits,
     audience: "PERSONAL",
     source,
+    paymentsEnabled: paymentsEnabled(ctx),
   }, ctx.rid);
 }
 
@@ -381,6 +399,7 @@ export async function webhook(ctx: Ctx): Promise<Response> {
         await subscriptionChanged(tx, String(event.type), obj);
       }
       else if (event.type === "invoice.paid") await invoicePaid(tx, obj);
+      else if (event.type === "charge.refunded") await chargeRefunded(tx, obj);
     });
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
@@ -566,6 +585,27 @@ async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void
     "UPDATE companies SET credit_period_start = $2::timestamptz WHERE id = $1 AND stripe_subscription_id = $3 AND (credit_period_start IS NULL OR credit_period_start < $2::timestamptz)",
     [companyId, periodStart.toISOString(), subscriptionId]);
   await grantPeriod(ctx.deps.query, { companyId, subscriptionId, periodStart, plan: line.plan, carry: 0, now: ctx.now });
+}
+
+// A fully refunded top-up checkout takes its credits back. Subscription refunds keep their credits (the replaced-period refund
+// in checkout carries them). shortcut: a partial refund changes nothing; the operator adjusts by hand until partial refunds are offered.
+async function chargeRefunded(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
+  if (obj.refunded !== true || typeof obj.payment_intent !== "string" || !obj.payment_intent) return;
+  const list = await stripe(ctx, "GET", "/v1/checkout/sessions?payment_intent=" + encodeURIComponent(obj.payment_intent));
+  const session = (Array.isArray(list.data) ? list.data[0] : null) as Record<string, unknown> | null;
+  const meta = session ? metaOf(session) : {};
+  const micro = positiveInt(meta.amountMicroCredits);
+  if (!session || micro == null) return;
+  const ownerId = String(meta.ownerId || session.client_reference_id || "");
+  if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+  if (String(meta.audience || "") === "EMPLOYER") {
+    await one(ctx.deps.query, "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);
+    await takeBack(ctx, { companyId: ownerId }, micro, String(session.id));
+  }
+  else {
+    await one(ctx.deps.query, "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);
+    await takeBack(ctx, { userId: ownerId }, micro, String(session.id));
+  }
 }
 
 async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
@@ -792,13 +832,19 @@ const grantNote = async (
 ): Promise<void> => {
   const upper = notificationType.toUpperCase();
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
+    // A top-up row is CONSUMED from verify (REFUNDED once refunded), whatever the product id is configured as today.
     const row = await one(ctx.deps.query,
-      "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
+      "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
     await query(ctx.deps.query,
-      "UPDATE iap_subscriptions SET status = 'CANCELED', expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
+      "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
     if (!row?.user_id) return;
+    // A refunded credit top-up is not the subscription: the plan stays and the pack's credits go.
+    if (row.topup === true) {
+      await takeBack(ctx, { userId: String(row.user_id) }, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
+      return;
+    }
     await query(ctx.deps.query,
       "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
       [String(row.user_id), expiresAt]);
