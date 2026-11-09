@@ -55,7 +55,9 @@ fi
 # The one-time purge in harden.sh: force-rotates the live IP-bearing logs (fake logrotate and
 # systemctl below record their calls and leave the files a real rotation would), then drops every
 # rotated file, keeps live files and other logs, writes no marker if a step fails, and does
-# nothing once its marker exists.
+# nothing once its marker exists. A rotation that never lands (no new audit.log.1 in time) stops it
+# before the marker too, and an inactive auditd is not signalled.
+die() { echo "harden.sh: $*" >&2; exit 1; }
 eval "$(sed -n '/^purge_pre_14d_logs() {$/,/^}$/p' harden.sh)"
 root="$(mktemp -d)"
 fake="$(mktemp -d)"
@@ -66,27 +68,35 @@ echo "logrotate $*" >>"$FAKE_ROOT/calls"
 [ -z "$FAKE_LOGROTATE_FAIL" ] || exit 1
 touch "$FAKE_ROOT/var/log/auth.log.1" "$FAKE_ROOT/var/log/wtmp.1"
 EOF
+# Real auditd renames audit.log to .1 after the signal, so an old archive still on disk at USR1
+# time would be indistinguishable from the new one.
 cat >"$fake/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >>"$FAKE_ROOT/calls"
-[ "$1" != kill ] || touch "$FAKE_ROOT/var/log/audit/audit.log.1"
+[ -z "$FAKE_AUDIT_INACTIVE" ] || [ "$1" != is-active ] || exit 3
+[ "$1" = kill ] || exit 0
+ls "$FAKE_ROOT"/var/log/audit/audit.log.[0-9]* >/dev/null 2>&1 && touch "$FAKE_ROOT/stale"
+[ -n "$FAKE_AUDIT_NO_ROTATE" ] || touch "$FAKE_ROOT/var/log/audit/audit.log.1"
 EOF
-chmod +x "$fake/logrotate" "$fake/systemctl"
+printf '#!/bin/sh\n' >"$fake/sleep"
+chmod +x "$fake/logrotate" "$fake/systemctl" "$fake/sleep"
 export FAKE_ROOT="$root"
 PATH="$fake:$PATH"
 mkdir -p "$root/var/log/audit" "$root/etc/logrotate.d"
 touch "$root/etc/logrotate.d/rsyslog" "$root/etc/logrotate.d/wtmp"
 for f in syslog syslog.1 kern.log kern.log.2.gz auth.log.4.gz wtmp wtmp.1 btmp.1 fail2ban.log.1 \
+  daemon.log.1 debug.1 messages.2.gz mail.info.1 mail.warn.1 mail.err.1 lpr.log.1 \
   dpkg.log.1 audit/audit.log audit/audit.log.3; do
   touch "$root/var/log/$f"
 done
 fail() { echo "purge_pre_14d_logs: $*" >&2; exit 1; }
 # A failed rotation stops the purge before the marker, so the next harden.sh run retries it.
 set +e
-(set -e; FAKE_LOGROTATE_FAIL=1 purge_pre_14d_logs "$root")
+(set -e; FAKE_LOGROTATE_FAIL=1 purge_pre_14d_logs "$root") 2>"$root/err"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "returned 0 after logrotate failed"
+grep -q 'rerun harden.sh' "$root/err" || fail "no rerun hint: $(cat "$root/err")"
 [ ! -e "$root/var/lib/push/retention-14d-v2" ] || fail "wrote its marker after logrotate failed"
 [ -e "$root/var/log/kern.log.2.gz" ] || fail "deleted files after logrotate failed"
 rm "$root/calls"
@@ -98,8 +108,34 @@ systemctl kill --kill-whom=main --signal=USR1 auditd.service"
 left="$(cd "$root/var/log" && find . -type f | sort | tr '\n' ' ')"
 [ "$left" = "./audit/audit.log ./dpkg.log.1 ./kern.log ./syslog ./wtmp " ] || fail "left: $left"
 [ -s "$root/var/lib/push/retention-14d-v2" ] || fail "wrote no marker"
+[ ! -e "$root/stale" ] || fail "signalled auditd before deleting the old audit.log.N"
 touch "$root/var/log/kern.log.1"
 purge_pre_14d_logs "$root"
 [ -e "$root/var/log/kern.log.1" ] || fail "ran again after its marker"
 [ "$(cat "$root/calls")" = "$want" ] || fail "rotated again after its marker"
+
+# No new audit.log.1 within the wait: stop before the marker, with the old archives already gone.
+root="$(mktemp -d)"
+export FAKE_ROOT="$root"
+mkdir -p "$root/var/log/audit"
+touch "$root/var/log/audit/audit.log.2"
+set +e
+(set -e; FAKE_AUDIT_NO_ROTATE=1 purge_pre_14d_logs "$root") 2>"$root/err"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "returned 0 though auditd never rotated"
+grep -q 'rerun harden.sh' "$root/err" || fail "no rerun hint: $(cat "$root/err")"
+[ ! -e "$root/var/lib/push/retention-14d-v2" ] || fail "wrote its marker though auditd never rotated"
+rm -rf "$root"
+
+# Inactive auditd: no signal, old archives still deleted.
+root="$(mktemp -d)"
+export FAKE_ROOT="$root"
+mkdir -p "$root/var/log/audit"
+touch "$root/var/log/audit/audit.log" "$root/var/log/audit/audit.log.2"
+FAKE_AUDIT_INACTIVE=1 purge_pre_14d_logs "$root"
+[ "$(cat "$root/calls")" = "systemctl is-active --quiet auditd.service" ] || fail "inactive calls: $(cat "$root/calls")"
+[ "$(cd "$root/var/log" && find . -type f)" = "./audit/audit.log" ] || fail "inactive left files"
+[ -s "$root/var/lib/push/retention-14d-v2" ] || fail "inactive: wrote no marker"
+rm -rf "$root"
 echo "infra/vps checks passed"

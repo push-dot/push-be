@@ -22,11 +22,22 @@
 | 무차별 대입 | fail2ban `sshd`(3회 실패 시 1시간, 반복하면 최대 1주), `recidive`. 방화벽에서도 SSH 새 연결을 출처당 분당 6개로 제한한다. 프록시 jail은 두지 않는다. 호출자가 Cloudflare Worker라서 공유 IP를 막으면 서비스가 멈춘다 | `harden.sh` |
 | 커널 | `rp_filter`, 리다이렉트 거부, `tcp_syncookies`, `kptr_restrict=2`, `dmesg_restrict`, `ptrace_scope=2`, 비특권 BPF 금지, `/dev/shm` `noexec` 등 | `harden.sh` |
 | 감사 | auditd가 `/etc/systemd`, `/etc/cron*`, `/etc/ssh`, `/root/.ssh`, `/home/*/.ssh`, `/usr/local/bin`, `/etc/docker`, 계정 파일, `/tmp`·`/dev/shm` 실행을 기록한다. `ausearch -k push-ssh`처럼 키로 찾는다 | `harden.sh` |
-| 로그 보관 | IP가 남는 로그는 14일까지만 둔다. journald는 `MaxRetentionSec=14day`, `MaxFileSec=1day`. `fail2ban.log`, rsyslog(`auth.log`, `kern.log` 등), `wtmp`, `btmp`는 빈 날에도 매일 회전하고(`ifempty`) 13개만 남긴다. 처음 실행할 때 한 번, 지금 쓰는 파일까지 강제로 회전한 뒤 회전된 파일을 모두 지운다(마커 `/var/lib/push/retention-14d-v2`). 마지막 접속 IP가 남는 `lastlog`는 매일 비운다. auditd는 매일 cron으로 회전하고 `num_logs = 14`. fail2ban 차단 DB는 `dbpurgeage = 1d`. 패키지 설정 파일을 직접 고치므로 업그레이드 때 로컬 값을 유지한다(`--force-confold`) | `harden.sh` |
+| 로그 보관 | IP가 남는 로그는 14일까지만 둔다. journald는 `MaxRetentionSec=14day`, `MaxFileSec=1day`. `fail2ban.log`, rsyslog(`auth.log`, `kern.log` 등), `wtmp`, `btmp`는 빈 날에도 매일 회전하고(`ifempty`) 13개만 남긴다. 처음 실행할 때 한 번, 지금 쓰는 파일까지 강제로 회전한 뒤 회전된 파일을 모두 지운다. 지우는 대상은 rsyslog 기본 설정이 쓰는 `syslog`, `auth.log`, `kern.log`, `mail.*`, `user.log`, `cron.log`, `daemon.log`, `debug`, `messages`, `lpr.log`와 `fail2ban.log`, `wtmp`, `btmp`, auditd의 `audit.log.N`이다. 회전이 끝나지 않으면(logrotate 실패, 10초 안에 새 `audit.log.1`이 없음) 마커 없이 멈추므로 `harden.sh`를 다시 돌린다(마커 `/var/lib/push/retention-14d-v2`). 마지막 접속 IP가 남는 `lastlog`는 매일 비운다. auditd는 매일 cron으로 회전하고 `num_logs = 14`. fail2ban 차단 DB는 `dbpurgeage = 1d`. 패키지 설정 파일을 직접 고치므로 업그레이드 때 로컬 값을 유지한다(`--force-confold`) | `harden.sh` |
 | 업데이트 | unattended-upgrades가 Ubuntu 보안 업데이트와 Docker CE를 매일 설치하고, 필요하면 04:30(UTC)에 재부팅한다 | `harden.sh` |
 | 감시 | `push-watchdog.timer`가 5분마다 확인한다. 아래 [경보 대응](#경보-대응)을 본다 | `bin/push-watchdog` |
 
 Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileges`, `live-restore`, `icc: false`, `userland-proxy: false`, 주소 풀 `172.30.0.0/16`, `local` 로그 드라이버(20 MB × 5)를 쓴다. snapd, cups, avahi, rpcbind, ModemManager, postfix, exim4 등 쓰지 않는 서비스는 끄고 mask한다.
+
+`harden.sh`를 다시 돌린 뒤 root 콘솔에서 아래를 확인한다. 하나라도 어긋나면 `harden.sh`가 중간에 멈춘 것이니 출력의 마지막 오류를 보고 다시 돌린다.
+
+```bash
+ls -l /var/log/audit/                                   # audit.log, 방금 생긴 audit.log.1만 있다
+ls /var/log/{syslog,kern.log,auth.log,mail.*,user.log,cron.log,daemon.log,debug,messages,lpr.log,fail2ban.log,wtmp,btmp}.[0-9]* 2>&1   # 예전 회전 파일이 없다 (No such file)
+stat -c '%n %a %U:%G' /var/log/wtmp /var/log/btmp       # 664 root:utmp, 660 root:utmp
+journalctl | head -1                                    # 가장 오래된 줄이 14일 안이다
+ls /var/lib/push/retention-14d-v2 && systemctl is-active rsyslog fail2ban auditd   # 마커가 있고 모두 active
+systemctl status push-watchdog.timer --no-pager | head -3   # active (waiting)
+```
 
 `deploy`는 `docker` 그룹이라 사실상 root와 같다. 그래서 CI 키는 강제 명령에 묶었고, 관리자 키는 따로 둔다.
 
