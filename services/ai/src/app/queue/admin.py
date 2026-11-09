@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from app.queue.credits import release_job
+from app.queue.credits import ShortBalance, available_micro, lock_owner, release_job
 
 FINISHED = ("DONE", "FAILED", "DEAD", "CANCELLED")
 RETENTION = timedelta(days=30)
@@ -26,16 +26,28 @@ class AdminJobs:
                  "attempts": r["attempts"], "updatedAt": _iso(r["updated_at"])} for r in rows]
 
     async def retry(self, job_id, now) -> bool:
+        """Requeue a DEAD or FAILED job. Its released hold is reserved again under the owner row lock, like a charged
+        enqueue, and only when the available balance covers it (ShortBalance otherwise, nothing changed)."""
         async with self.conn.transaction():
+            hold = await self.conn.fetchrow(
+                "SELECT user_id, company_id, amount_micro FROM credit_reservations "
+                "WHERE job_id = $1 AND status = 'RELEASED'", job_id)
+            if hold is not None:
+                await lock_owner(self.conn, hold["user_id"], hold["company_id"])
             row = await self.conn.fetchrow(
                 "UPDATE ai_jobs SET status = 'QUEUED', attempts = 0, error = NULL, heartbeat_at = NULL, "
                 "run_after = $2, updated_at = $2 WHERE id = $1 AND status IN ('DEAD', 'FAILED') RETURNING queue",
                 job_id, now)
             if row is None:
                 return False
-            await self.conn.execute(
-                "UPDATE credit_reservations SET status = 'RESERVED', settled_micro = NULL, updated_at = $2 "
-                "WHERE job_id = $1 AND status = 'RELEASED'", job_id, now)
+            if hold is not None:
+                # shortcut: no month grant here (core-api owns the tier rules), so a retry in a month the owner has not
+                # used yet can be short until their next billing read or send.
+                if await available_micro(self.conn, hold["user_id"], hold["company_id"]) < int(hold["amount_micro"]):
+                    raise ShortBalance()
+                await self.conn.execute(
+                    "UPDATE credit_reservations SET status = 'RESERVED', settled_micro = NULL, updated_at = $2 "
+                    "WHERE job_id = $1 AND status = 'RELEASED'", job_id, now)
             await self.conn.execute("INSERT INTO outbox (job_id, queue) VALUES ($1, $2)", job_id, row["queue"])
         return True
 

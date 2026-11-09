@@ -254,6 +254,9 @@ async def test_pg_settle_and_release_round_trip():
     await maint.execute(f'CREATE DATABASE "{name}"')
     conn = await asyncpg.connect(user="cyjoon", database=name, host="/tmp")
     try:
+        # settle_job takes the owner row lock first.
+        await conn.execute("CREATE TABLE users (id uuid PRIMARY KEY)")
+        await conn.execute("INSERT INTO users (id) VALUES ($1)", USER)
         await conn.execute(
             "CREATE TABLE credit_reservations ("
             "job_id uuid PRIMARY KEY, user_id uuid NOT NULL, company_id uuid NULL, "

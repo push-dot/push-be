@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.account_purge import purge_deleted
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
+from app.queue.credits import settle_job
 from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
 from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
@@ -74,20 +75,17 @@ class PgJobs(AdminJobs):
 
     async def reconcile_credits(self, now) -> int:
         """Close reservations left RESERVED when a worker died between finish and settle."""
-        row = await self.conn.fetchrow(
-            "WITH settled AS ("
-            "UPDATE credit_reservations r SET status = 'SETTLED', updated_at = $1, settled_micro = "
-            "(SELECT COALESCE(SUM(u.cost_micro_credits), 0) FROM ai_usage u "
-            "WHERE u.job_id = r.job_id AND u.status = 'SETTLED') "
-            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' AND j.status = 'DONE' "
-            "AND j.updated_at < $2 RETURNING 1), "
-            "released AS ("
+        before = now - timedelta(seconds=RECONCILE_AFTER_S)
+        done = await self.conn.fetch(
+            "SELECT r.job_id FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
+            "WHERE r.status = 'RESERVED' AND j.status = 'DONE' AND j.updated_at < $1", before)
+        for row in done:
+            await settle_job(self.conn, row["job_id"], now)
+        tag = await self.conn.execute(
             "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 "
             "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' "
-            "AND j.status IN ('FAILED', 'DEAD', 'CANCELLED') AND j.updated_at < $2 RETURNING 1) "
-            "SELECT (SELECT count(*) FROM settled) + (SELECT count(*) FROM released) AS n",
-            now, now - timedelta(seconds=RECONCILE_AFTER_S))
-        return int(row["n"]) if row else 0
+            "AND j.status IN ('FAILED', 'DEAD', 'CANCELLED') AND j.updated_at < $2", now, before)
+        return len(done) + int(tag.split()[-1])
 
 
 def _row(row, *keys):
