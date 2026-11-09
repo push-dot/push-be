@@ -482,7 +482,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Log out (revoke refresh token) */
+        /**
+         * Log out (revoke refresh token)
+         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.
+         */
         post: operations["postAuthLogout"];
         delete?: never;
         options?: never;
@@ -6410,6 +6413,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    pushToken?: string;
                     refreshToken: string;
                 };
             };

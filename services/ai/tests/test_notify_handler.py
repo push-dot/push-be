@@ -75,3 +75,24 @@ async def test_expo_push_is_skipped_without_token_and_sends_bearer_with_one():
     assert len(seen) == 1
     assert str(seen[0].url) == EXPO_PUSH
     assert seen[0].headers["authorization"] == "Bearer expo-secret"
+
+
+@pytest.mark.asyncio
+async def test_notify_reads_tokens_only_for_users_not_being_deleted():
+    seen = []
+
+    class Query(NotifyQuery):
+        async def fetch(self, sql, *args):
+            seen.append(sql)
+            return []
+
+    pushed = []
+
+    async def push(messages):
+        pushed.append(messages)
+        return len(messages)
+
+    handler = make_notify(lambda: Query(), push)
+    result = await handler(type("Ctx", (), {"job": notify_job(FIRST)})())
+    assert "u.deletion_requested_at IS NULL" in seen[0]
+    assert pushed == [] and result["pushed"] == 0

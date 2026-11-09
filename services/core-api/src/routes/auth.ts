@@ -18,7 +18,8 @@ const USER_BY_TOKEN = "SELECT u.id, u.display_name, u.locale, u.plan, u.subscrip
 
 const REVOKE_ALL = "WITH refreshed AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL) UPDATE access_tokens SET expires_at = $2 WHERE user_id = $1";
 const ROTATE_REFRESH = "WITH revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id), expired AS (UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM revoked)) SELECT id FROM revoked";
-const LOGOUT = "WITH target AS (SELECT id FROM refresh_tokens WHERE token_hash = $1), revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id IN (SELECT id FROM target) AND revoked_at IS NULL) UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM target)";
+// Logout deletes the device's push token ($3); without one it deletes all of the user's, since the device is unknown.
+const LOGOUT = "WITH target AS (SELECT id, user_id FROM refresh_tokens WHERE token_hash = $1), revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id IN (SELECT id FROM target) AND revoked_at IS NULL), devices AS (DELETE FROM user_devices WHERE user_id IN (SELECT user_id FROM target) AND ($3::text IS NULL OR token = $3::text)) UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM target)";
 
 const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: unknown[]): Promise<Record<string, unknown> | null> => {
   try {
@@ -459,7 +460,8 @@ export async function refresh(ctx: Ctx): Promise<Response> {
 export async function logout(ctx: Ctx): Promise<Response> {
   const body = await readJson(ctx.request);
   const token = requireString(body, "refreshToken");
-  if (token) await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString()]);
+  const pushToken = typeof body.pushToken === "string" && body.pushToken ? body.pushToken : null;
+  if (token) await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString(), pushToken]);
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }
 

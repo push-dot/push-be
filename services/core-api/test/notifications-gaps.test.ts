@@ -281,3 +281,25 @@ test("the notification job claims and filters in two statements, not per row", a
   assert.ok(picks.every((call) => call.sql.includes("COALESCE(s.notify_deadline, true)")));
   assert.equal(seen.some((call) => call.sql.startsWith("SELECT notify_deadline")), false);
 });
+
+test("push skips users in the deletion grace period", async () => {
+  const { deliverPush } = await import("../src/push/notifier.ts");
+  const seen: string[] = [];
+  const sent: string[] = [];
+  const ctx = {
+    env: { EXPO_ACCESS_TOKEN: "expo-secret" },
+    deps: {
+      query: async (sql: string) => {
+        seen.push(sql);
+        return { rows: [], rowCount: 0 };
+      },
+      fetch: async (input: RequestInfo | URL) => {
+        sent.push(String(input));
+        return new Response("{}");
+      },
+    },
+  } as unknown as Parameters<typeof deliverPush>[0];
+  await deliverPush(ctx, USER, "t", "b", {});
+  assert.match(seen[0], /JOIN users u ON u\.id = d\.user_id WHERE d\.user_id = \$1 AND u\.deletion_requested_at IS NULL/);
+  assert.equal(sent.length, 0);
+});
