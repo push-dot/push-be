@@ -41,5 +41,16 @@ api:
 log:
   level: INFO
 
-# Client IPs in the access log feed rate limiting and incident review (stdout, rotated by Docker).
-accessLog: {}
+# Access log on stdout, rotated by Docker (harden.sh: 5 x 20 MB per container).
+# The privacy policy says these logs keep no user IP: client address fields and all
+# headers (cf-connecting-ip, x-forwarded-for) are dropped; Traefik drops fields only in json format.
+# Rate limiting reads the rate_limits table, not this log.
+accessLog:
+  format: json
+  fields:
+    names:
+      ClientAddr: drop
+      ClientHost: drop
+      ClientPort: drop
+    headers:
+      defaultMode: drop

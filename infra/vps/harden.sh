@@ -380,6 +380,8 @@ cat >/etc/systemd/journald.conf.d/push.conf <<'EOF'
 [Journal]
 Storage=persistent
 SystemMaxUse=1G
+# Firewall and sshd lines carry IPs; the privacy policy states 14 days.
+MaxRetentionSec=14day
 EOF
 systemctl restart systemd-journald
 

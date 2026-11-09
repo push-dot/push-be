@@ -223,9 +223,11 @@ jobs:
       - name: Install workers
         run: npm ci
       # BILLING_PG_URL: the billing money tests (test/billing-money.test.ts) run on this migrated schema here and skip elsewhere.
+      # RETENTION_PG_URL: the same for the retention purge tests (services/ai/tests/test_retention_pg.py).
       - name: Capture SQL from the core, gateway and ai tests
         env:
           SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
+          RETENTION_PG_URL: postgres://push:push@localhost:5432/push
           BILLING_PG_URL: postgres://push:push@localhost:5432/push
         run: |
           set -euo pipefail
