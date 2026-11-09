@@ -67,7 +67,8 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
   const invoices = new Map<string, Invoice>();
   const refunds: Refund[] = [];
   const events: Row[] = [];
-  const next = (prefix: string) => `${prefix}_${String(++serial).padStart(4, "0")}${crypto.randomUUID().slice(0, 6)}`;
+  // The full UUID: event ids are global in stripe_events, and a short suffix collides across thousands of seeds in one database.
+  const next = (prefix: string) => `${prefix}_${String(++serial).padStart(4, "0")}${crypto.randomUUID().replaceAll("-", "")}`;
   const line = (invoice: Invoice, amount: number) => ({
     amount, period: { start: unix(invoice.start), end: unix(invoice.start + PERIOD) }, pricing: { price_details: { price: PRICE[invoice.plan] }, type: "price_details" },
   });
