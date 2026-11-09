@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -100,7 +100,7 @@ const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: strin
 const REFUND_DESCRIPTION = "요금제 변경 환급";
 
 // Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
-const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED", referenceId: string, detail: string): Promise<void> => {
+const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED", referenceId: string, detail: string): Promise<void> => {
   console.error(JSON.stringify({ billingAlert: kind, companyId, referenceId, detail }));
   await query(ctx.deps.query,
     "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
@@ -142,8 +142,9 @@ const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, st
   return { success_url: plans + success + "&session_id={CHECKOUT_SESSION_ID}", cancel_url: plans + "canceled" };
 };
 
+// Most reads find the month already granted and skip the owner lock, so they never wait on a webhook.
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
-  if (!plan) return;
+  if (!plan || await monthGranted(ctx.deps.query, { audience, plan, ownerId, now: ctx.now })) return;
   try {
     await inTransactionOf(ctx)(async (q) => {
       await boundTransaction(q, "3s");
@@ -323,12 +324,14 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
   let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
+  // Commit order (seq), as balance_after runs: a row that waited for the owner lock can carry an earlier created_at.
+  // The cursor keeps its (createdAt, id) shape; only its id is used.
   if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (created_at, id) < ($${params.length - 1}, $${params.length})`;
+    params.push(page.cursor.id);
+    sql += ` AND seq < (SELECT seq FROM billing_ledger WHERE id = $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  sql += ` ORDER BY seq DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({
     item: {
@@ -484,8 +487,11 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
     for (const sub of subscriptionsOf(list)) {
       if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
       const id = String(sub.id);
-      const refund = LIVE.has(String(sub.status)) && currentPeriodPaid(ctx.env, sub)
+      const refundable = LIVE.has(String(sub.status))
         && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
+      const refund = refundable && currentPeriodPaid(ctx.env, sub);
+      // Fail closed: with no readable invoice the period may be paid, so an operator checks it and refunds by hand.
+      const unread = refundable && (sub.latest_invoice == null || typeof sub.latest_invoice !== "object");
       const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
         if (refund) {
@@ -499,6 +505,7 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
         throw new AlertingError({ companyId, kind: "CANCEL_FAILED", referenceId: id, detail: `replaced subscription still billing, kept ${keep.id}` });
       }
       await resolveCancelAlert(ctx, id);
+      if (unread) await raiseAlert(ctx, companyId, "REFUND_SKIPPED", id, `latest_invoice unreadable (${typeof sub.latest_invoice}), canceled without refund, kept ${keep.id}`);
     }
   }
 }

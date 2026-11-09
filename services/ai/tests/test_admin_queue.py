@@ -112,6 +112,18 @@ def test_pause_resume_and_cancel_endpoints():
     assert [str(j) for j in db.cancelled] == [job_id]
 
 
+def test_retry_short_of_credits_is_402():
+    from app.queue.credits import ShortBalance
+
+    class Short(FakeAdminDb):
+        async def retry(self, job_id, now):
+            raise ShortBalance()
+
+    http, _ = client(FakeRedis(decode_responses=True), db=Short())
+    res = http.post(f"/admin/jobs/{uuid4()}/retry", headers={"authorization": "Bearer admin-secret"})
+    assert (res.status_code, res.json()["detail"]) == (402, "INSUFFICIENT_CREDITS")
+
+
 class Sent:
     def __init__(self, discord_ok=True):
         self.discord = []
@@ -240,6 +252,10 @@ async def test_retry_dead_job_requeues_and_reserves_again():
         await conn.execute(
             "INSERT INTO credit_reservations (job_id, user_id, amount_micro, status) VALUES ($1, $2, 500, 'RELEASED')",
             job, user)
+        # retry holds the 500 again only when the balance covers it.
+        await conn.execute(
+            "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id) "
+            "VALUES ($1, $2, 'PURCHASE', 500, 500, 'grant')", uuid4(), user)
         admin = AdminJobs(conn)
         assert await admin.retry(job, NOW) is True
         row = await conn.fetchrow("SELECT status, attempts, error FROM ai_jobs WHERE id = $1", job)
@@ -252,6 +268,7 @@ async def test_retry_dead_job_requeues_and_reserves_again():
         dead = await admin.dead_jobs("CANCELLED", 10)
         assert [d["id"] for d in dead] == [str(job)]
     finally:
+        await conn.execute("DELETE FROM billing_ledger WHERE user_id = $1", user)
         await conn.execute("DELETE FROM users WHERE id = $1", user)
         await conn.close()
 

@@ -5060,7 +5060,7 @@ export interface components {
             /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
             receiptUrl: string | null;
             referenceId: string | null;
-            /** @description PURCHASE, or REFUND: a refunded credit top-up, negative, at most the credits still unspent. Its referenceId is the purchase's. */
+            /** @description PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>). */
             type: string;
         };
         Message: {

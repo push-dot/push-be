@@ -502,7 +502,7 @@ export const schemas: Record<string, Schema> = {
   }),
   LedgerEntry: obj({
     id: uuid,
-    type: { type: "string", description: "PURCHASE, or REFUND: a refunded credit top-up, negative, at most the credits still unspent. Its referenceId is the purchase's." },
+    type: { type: "string", description: "PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>)." },
     amountMicroCredits: int,
     balanceAfter: int,
     referenceId: nullable(str),

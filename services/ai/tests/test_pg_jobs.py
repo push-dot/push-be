@@ -7,6 +7,8 @@ import pytest
 from app.queue.dispatcher import PgJobs
 from tests.test_queue_dispatcher import CHAT, NOW
 
+OWNER = UUID(int=9)
+
 
 @pytest.mark.asyncio
 async def test_pg_jobs_sql_round_trip():
@@ -26,9 +28,13 @@ async def test_pg_jobs_sql_round_trip():
             "status text NOT NULL, run_after timestamptz NOT NULL, "
             "attempts int NOT NULL DEFAULT 0, max_attempts int NOT NULL DEFAULT 2, "
             "heartbeat_at timestamptz NULL, updated_at timestamptz NOT NULL)")
+        # settle_job takes the owner row lock first.
+        await conn.execute("CREATE TABLE users (id uuid PRIMARY KEY)")
+        await conn.execute("INSERT INTO users (id) VALUES ($1)", OWNER)
         await conn.execute(
             "CREATE TABLE credit_reservations ("
-            "job_id uuid PRIMARY KEY, amount_micro bigint NOT NULL, status text NOT NULL, "
+            "job_id uuid PRIMARY KEY, user_id uuid NOT NULL, company_id uuid NULL, "
+            "amount_micro bigint NOT NULL, status text NOT NULL, "
             "settled_micro bigint NULL, updated_at timestamptz NULL)")
         await conn.execute(
             "CREATE TABLE ai_usage (id uuid PRIMARY KEY, job_id uuid NULL, "
@@ -57,7 +63,8 @@ async def test_pg_jobs_sql_round_trip():
         running = await db.running_jobs()
         assert running[0]["type"] == "chat"
         await conn.execute(
-            "INSERT INTO credit_reservations (job_id, amount_micro, status) VALUES ($1, 80, 'RESERVED')", CHAT)
+            "INSERT INTO credit_reservations (job_id, user_id, amount_micro, status) VALUES ($1, $2, 80, 'RESERVED')",
+            CHAT, OWNER)
         assert await db.mark_retry([CHAT], NOW) == [{"id": CHAT, "queue": "q:chat", "status": "RETRY"}]
         again = await db.pending_jobs(NOW)
         assert [row["id"] for row in again] == [CHAT]

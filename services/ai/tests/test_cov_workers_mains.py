@@ -1,4 +1,5 @@
 """Process entrypoints (infra/vps/compose.yaml) wired with fakes: no Redis, Postgres or network."""
+import contextlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -319,7 +320,8 @@ def ai_env(env, monkeypatch):
     import app.queue.credits
 
     svc = Svc()
-    pool = object()
+    conn = object()
+    pool = SimpleNamespace(acquire=lambda: contextlib.nullcontext(conn))
     state = SimpleNamespace(deps=SimpleNamespace(conversations=svc, documents=object()),
                             db=SimpleNamespace(pool=pool, q=lambda: None))
     fake_app = SimpleNamespace(state=state)
@@ -347,7 +349,7 @@ def ai_env(env, monkeypatch):
     monkeypatch.setattr(app.queue.credits, "settle_job", settle_job)
     monkeypatch.setattr(app.queue.credits, "release_job", release_job)
     monkeypatch.setattr(app.clock, "utcnow", lambda: NOW)
-    env.update(app=fake_app, svc=svc, db_pool=pool, calls=calls)
+    env.update(app=fake_app, svc=svc, db_pool=pool, db_conn=conn, calls=calls)
     return env
 
 
@@ -363,7 +365,7 @@ async def test_ai_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
     assert not any(c[0] == "serve_api" for c in calls)
     await w.kwargs["settle"](w.db, JOB)
     await w.kwargs["release"](w.db, JOB)
-    assert calls[-2:] == [("settle", ai_env["db_pool"], JOB, NOW), ("release", ai_env["db_pool"], JOB, NOW)]
+    assert calls[-2:] == [("settle", ai_env["db_conn"], JOB, NOW), ("release", ai_env["db_pool"], JOB, NOW)]
     assert ai_env["redis"].closed
 
 

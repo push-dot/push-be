@@ -78,6 +78,8 @@ function stripeWorld(customer: string) {
   // The latest invoice bills the current period and is paid, unless the subscription is listed here: renewed, its invoice still a draft.
   const sessions: Row[] = [];
   const drafts = new Set<string>();
+  // Listed with latest_invoice as a bare id, as if the expand did not apply.
+  const unexpanded = new Set<string>();
   const latestInvoice = (sub: Sub) => {
     const item = sub.items.data[0]!;
     return {
@@ -126,7 +128,7 @@ function stripeWorld(customer: string) {
       const owner = url.searchParams.get("customer");
       const expand = url.searchParams.getAll("expand[]").includes("data.latest_invoice");
       const listed = [...subs.values()].filter((sub) => sub.customer === owner && sub.status !== "canceled");
-      return json({ object: "list", data: expand ? listed.map((sub) => ({ ...sub, latest_invoice: latestInvoice(sub) })) : listed, has_more: false });
+      return json({ object: "list", data: expand ? listed.map((sub) => ({ ...sub, latest_invoice: unexpanded.has(sub.id) ? "in_latest_" + sub.id : latestInvoice(sub) })) : listed, has_more: false });
     }
     if (url.pathname.startsWith("/v1/invoices/")) return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: RECEIPT });
     if (url.pathname === "/v1/checkout/sessions" && method === "GET") {
@@ -135,7 +137,7 @@ function stripeWorld(customer: string) {
     }
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
-  return { subs, calls, fail, open, drafts, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
+  return { subs, calls, fail, open, drafts, unexpanded, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
 }
 
 type World = ReturnType<typeof stripeWorld>;
@@ -811,6 +813,25 @@ test("audit draft window: an upgrade while the renewal invoice is still a draft 
   assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
 });
 
+test("an upgrade whose replaced live subscription has no readable latest_invoice cancels without a refund and opens a REFUND_SKIPPED alert", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  stripe.unexpanded.add(pro.id);
+  const at = START + DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", at), at), 200);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
+  assert.deepEqual(await alertsOf(co.id), [{ kind: "REFUND_SKIPPED", reference_id: pro.id, resolved: false }]);
+  // A downgrade refunds nothing anyway, so an unreadable invoice there opens no alert.
+  stripe.unexpanded.add(ultra.id);
+  const basic = stripe.subscribe("BASIC", at + DAY);
+  assert.equal(await deliver(stripe, checkout(co.id, basic, "BASIC", at + DAY), at + DAY), 200);
+  assert.equal((await alertsOf(co.id)).length, 1);
+});
+
 test("a subscription event of a customer the company has left is accepted and changes nothing", async (t) => {
   const co = await company(t);
   if (!co) return;
@@ -1269,4 +1290,107 @@ test("while a webhook holds the user row, a charged send gives up after 3 s with
   }
   const retried = await generate();
   assert.ok(retried.status < 300, String(retried.status));
+  const months = await pg!.query("SELECT 1 FROM billing_ledger WHERE user_id = $1 AND reference_id LIKE 'monthly:%'", [userId]);
+  assert.equal(months.rowCount, 1);
+  // With the month granted, a read takes no lock: it answers at once while a webhook holds the row.
+  await holdWhile(pg!, "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", userId, async () => {
+    const started = Date.now();
+    resetLimits();
+    const read = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps());
+    assert.equal(read.status, 200);
+    assert.ok(Date.now() - started < 1000, `GET /billing waited ${Date.now() - started} ms on the user row`);
+  });
+});
+
+const holdWhile = async (db: NonNullable<typeof pg>, lock: string, id: string, work: () => Promise<void>): Promise<void> => {
+  let release = () => {};
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let locked = () => {};
+  const holding = new Promise<void>((resolve) => { locked = resolve; });
+  const webhook = db.transaction!(async (q) => {
+    await q(lock, [id]);
+    locked();
+    await released;
+  });
+  await holding;
+  try {
+    await work();
+  } finally {
+    release();
+    await webhook;
+  }
+};
+
+test("employer GET /billing: under a held company row it answers after 3 s without the grant, grants each tier once later, then reads without the lock", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  await pg!.query("UPDATE companies SET plan = 'PRO' WHERE id = $1", [co.id]);
+  const read = async () => {
+    resetLimits();
+    const started = Date.now();
+    const res = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env,
+      { query: dbFor({ userId: crypto.randomUUID(), companyId: co.id }), now: () => new Date(START), transaction: (work) => pg!.transaction!(work) });
+    assert.equal(res.status, 200);
+    return { ms: Date.now() - started, balance: (await res.json() as { data: Row }).data.balanceMicroCredits };
+  };
+  const lock = "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE";
+  await holdWhile(pg!, lock, co.id, async () => {
+    const blocked = await read();
+    assert.equal(blocked.balance, 0);
+    assert.ok(blocked.ms >= 2500 && blocked.ms < 8000, `waited ${blocked.ms} ms`);
+  });
+  assert.equal((await read()).balance, 15_000 * MICRO);
+  assert.equal((await read()).balance, 15_000 * MICRO);
+  assert.deepEqual(grantRows(await ledgerOf(co.id)), [["monthly:2026-11:BASIC", 3000], ["monthly:2026-11:PRO", 12000]]);
+  await holdWhile(pg!, lock, co.id, async () => {
+    const free = await read();
+    assert.equal(free.balance, 15_000 * MICRO);
+    assert.ok(free.ms < 1000, `GET /billing waited ${free.ms} ms on the company row`);
+  });
+});
+
+test("a webhook waits out a company row held for 11 s (lock_timeout 15 s), instead of statement_timeout cutting it at 10 s", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const micro = 1500 * MICRO;
+  const session = {
+    id: "cs_test_" + rand(), object: "checkout.session", mode: "payment", status: "complete", payment_status: "paid", amount_total: 1000,
+    currency: "usd", customer: co.customer, payment_intent: "pi_" + rand(), client_reference_id: co.id,
+    metadata: { amountMicroCredits: String(micro), audience: "EMPLOYER", ownerId: co.id },
+  };
+  stripe.sessions.push(session);
+  const event = { id: "evt_" + rand(), object: "event", type: "checkout.session.completed", data: { object: session } };
+  let status = 0;
+  let delivering = Promise.resolve();
+  await holdWhile(pg!, "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE", co.id, async () => {
+    delivering = deliver(stripe, event, START).then((s) => { status = s; });
+    await sleep(11_000);
+    assert.equal(status, 0, "the webhook gave up while the row was held");
+  });
+  await delivering;
+  assert.equal(status, 200);
+  const rows = (await pg!.query("SELECT amount_micro_credits FROM billing_ledger WHERE company_id = $1", [co.id])).rows;
+  assert.deepEqual(rows.map((row) => Number(row.amount_micro_credits)), [micro]);
+});
+
+test("GET /billing/ledger lists rows in commit order (seq), across pages, even when a later row has the earlier created_at", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  // Committed first to last; the last one waited for the owner lock and carries the earliest created_at.
+  const stamps = [START, START + 2000, START - DAY];
+  for (const [i, at] of stamps.entries()) {
+    await pg!.query("INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) VALUES ($1, $2, 'PURCHASE', 1, $3, $4, $5)",
+      [crypto.randomUUID(), userId, i + 1, "row-" + i, new Date(at).toISOString()]);
+  }
+  const page = async (cursor?: string) => {
+    resetLimits();
+    const res = await handle(new Request("https://core.example/api/v1/billing/ledger?limit=2" + (cursor ? "&cursor=" + cursor : ""), { headers: { authorization: "Bearer t" } }), env,
+      { query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(START) });
+    return await res.json() as { data: { referenceId: string; balanceAfter: number }[]; page: { nextCursor: string | null } };
+  };
+  const first = await page();
+  const second = await page(first.page.nextCursor!);
+  assert.deepEqual([...first.data, ...second.data].map((row) => row.referenceId), ["row-2", "row-1", "row-0"]);
+  assert.equal(first.data[0]!.balanceAfter, 3);
 });

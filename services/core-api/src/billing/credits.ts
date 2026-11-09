@@ -30,11 +30,12 @@ export const iapTopupMicro = (raw: string | undefined): number => {
 // Every ledger write runs in a transaction that takes its owner's row lock first: writes of one owner commit one at a time, so
 // each reads the balance the last one left, and `seq` (0044) numbers them in commit order. NO KEY UPDATE, not UPDATE: it must
 // not block the FK KEY SHARE locks of ai_jobs and credit_reservations inserts (#239). A transaction locks one owner only.
-// Bounds a transaction that takes the owner row lock, which a Stripe webhook holds across its Stripe calls. A webhook waits
-// up to 15 s (Stripe retries it); a user request waits 3 s and then gives up instead of hanging a chat send.
+// Bounds a transaction that takes the owner row lock, which a Stripe webhook holds across its Stripe calls (10 s each). A webhook
+// waits up to 15 s, past one slow Stripe call of the holder, then fails and Stripe retries it; a user request waits 3 s and then
+// gives up instead of hanging a chat send. statement_timeout stays above lock_timeout, or it would cut the lock wait first (57014).
 export const boundTransaction = (q: Query, lockTimeout: "3s" | "15s"): Promise<unknown> => q(
-  "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', '10s', true), set_config('idle_in_transaction_session_timeout', '30s', true)",
-  [lockTimeout]);
+  "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true), set_config('idle_in_transaction_session_timeout', '30s', true)",
+  [lockTimeout, lockTimeout === "15s" ? "20s" : "10s"]);
 
 export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: string): Promise<Record<string, unknown> | null> =>
   one(q, audience === "EMPLOYER" ? "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE" : "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);
@@ -42,8 +43,9 @@ export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: 
 const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY seq DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
 const COMPANY_INSERT = "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, c.id, 'PURCHASE', $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = c.id AND user_id IS NULL) + $3::bigint, $4, $5 FROM ";
 const COMPANY_CONFLICT = " ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING";
-// A month grant runs outside the webhook transaction: the share lock waits for a subscription switch in flight, then sees it.
-// A legacy `monthly:YYYY-MM` row (one row of the whole plan amount) already covers every tier up to its amount.
+// Callers hold the company row lock (lockOwner), so a webhook switching the company to a Stripe period has committed before this
+// reads credit_period_start; FOR SHARE adds no wait under that lock. A legacy `monthly:YYYY-MM` row (one row of the whole plan
+// amount) already covers every tier up to its amount.
 const MONTH_STEP = COMPANY_INSERT + "(SELECT id FROM companies WHERE id = $2 AND credit_period_start IS NULL FOR SHARE) c WHERE NOT EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL AND type = 'PURCHASE' AND reference_id = $6 AND amount_micro_credits >= $7::bigint)" + COMPANY_CONFLICT;
 const PERIOD_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFLICT;
 const COMPANY_GRANTS = "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3)";
@@ -57,7 +59,7 @@ export const periodKey = (subscriptionId: string, start: Date): string => `perio
  * Writes this month's plan credits once. Personal: one `monthly:YYYY-MM` row. Employer, only while the company has no
  * Stripe period (`companies.credit_period_start` is NULL): one row per tier up to the plan (`monthly:YYYY-MM:BASIC|PRO|ULTRA`),
  * each worth the gap to the tier below, so upgrades add only the difference whatever the order or concurrency of the calls.
- * Employer credits of a paid Stripe period come from `grantPeriod`. Safe to call on every billing read and enqueue.
+ * Employer credits of a paid Stripe period come from `grantPeriod`. Call it under the owner row lock (`lockOwner`).
  */
 export const ensureMonthlyGrant = async (
   q: Query,
@@ -77,6 +79,23 @@ export const ensureMonthlyGrant = async (
     await q(MONTH_STEP, [crypto.randomUUID(), input.ownerId, total - below, month + ":" + tier, input.now.toISOString(), month, total]);
     below = total;
   }
+};
+
+const USER_MONTH_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND reference_id = $2";
+// A company on Stripe periods gets no month grant; otherwise its plan's top tier row (written last) or a legacy whole-month row.
+const COMPANY_MONTH_GRANTED = "SELECT 1 FROM companies WHERE id = $1 AND (credit_period_start IS NOT NULL OR EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR (reference_id = $3 AND amount_micro_credits >= $4::bigint))))";
+
+/** True when `ensureMonthlyGrant` has nothing left to write this month. A lock-free read, so a caller can skip the owner lock. */
+export const monthGranted = async (
+  q: Query,
+  input: { audience: "PERSONAL" | "EMPLOYER"; plan: string | null; ownerId: string; now: Date },
+): Promise<boolean> => {
+  const plan = input.plan?.trim() || (input.audience === "PERSONAL" ? "FREE" : "");
+  const amount = grantMicro(input.audience, plan);
+  if (amount <= 0) return true;
+  const month = monthKey(input.now);
+  if (input.audience === "PERSONAL") return (await one(q, USER_MONTH_GRANTED, [input.ownerId, month])) != null;
+  return (await one(q, COMPANY_MONTH_GRANTED, [input.ownerId, month + ":" + plan, month, amount])) != null;
 };
 
 /**

@@ -100,12 +100,12 @@ test("billing ledger: personal ledger is scoped to the caller and paginated", as
   ]);
   assert.equal(first.body.page?.hasMore, true);
   const sql = w.seen.at(-1)!;
-  assert.match(sql.sql, /WHERE user_id = \$1 ORDER BY created_at DESC, id DESC LIMIT \$2$/);
+  assert.match(sql.sql, /WHERE user_id = \$1 ORDER BY seq DESC LIMIT \$2$/);
   assert.deepEqual(sql.params, [USER, 3]);
 
   await handle(request("GET", `/api/v1/billing/ledger?cursor=${first.body.page!.nextCursor}`), envOf(), { query: w.query, now: () => NOW });
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND \(created_at, id\) < \(\$2, \$3\)/);
-  assert.deepEqual(w.seen.at(-1)!.params, [USER, "2026-10-02T00:00:00Z", "f1000000-0000-4000-8000-000000000002", 51]);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND seq < \(SELECT seq FROM billing_ledger WHERE id = \$2\)/);
+  assert.deepEqual(w.seen.at(-1)!.params, [USER, "f1000000-0000-4000-8000-000000000002", 51]);
 });
 
 test("billing ledger: employer ledger reads the company rows only; no company is 404", async () => {
