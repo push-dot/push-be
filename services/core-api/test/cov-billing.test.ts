@@ -160,24 +160,23 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
   test(`billing webhook: a personal subscription update on ${price} sets plan ${plan}`, async () => {
     const w = world({}, (sql) => {
       if (sql.startsWith("INSERT INTO stripe_events")) return [{ event_id: "evt_1" }];
-      if (sql.startsWith("UPDATE users")) return [{ id: USER }];
+      if (sql.includes("UPDATE users")) return [{ id: USER }];
       return undefined;
     });
-    const res = await handle(await signed({
-      id: "evt_1", type: "customer.subscription.updated",
-      data: { object: { customer: "cus_1", status: "active", items: { data: [{ price: { id: price }, current_period_end: 1767225600 }] } } },
-    }), envOf(), { query: w.query, now: () => NOW });
+    const sub = { id: "sub_1", customer: "cus_1", status: "active", items: { data: [{ price: { id: price }, current_period_end: 1767225600 }] } };
+    const res = await handle(await signed({ id: "evt_1", type: "customer.subscription.updated", data: { object: { ...sub, status: "past_due" } } }),
+      envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json(sub)) });
     assert.equal(res.status, 200);
-    const update = w.seen.find((c) => c.sql.startsWith("UPDATE users"))!;
-    assert.deepEqual(update.params, ["cus_1", "ACTIVE", "2026-01-01T00:00:00.000Z", plan]);
+    const update = w.seen.find((c) => c.sql.includes("UPDATE users"))!;
+    assert.deepEqual(update.params, ["cus_1", "ACTIVE", "2026-01-01T00:00:00.000Z", plan, "sub_1", false]);
   });
 }
 
 test("billing webhook: an update for an unknown customer fails and forgets the event so Stripe retries", async () => {
   const w = world({}, (sql) => sql.startsWith("INSERT INTO stripe_events") ? [{ event_id: "evt_2" }] : undefined);
   const res = await read(await handle(await signed({
-    id: "evt_2", type: "customer.subscription.updated", data: { object: { customer: "cus_ghost", status: "active" } },
-  }), envOf(), { query: w.query, now: () => NOW }));
+    id: "evt_2", type: "customer.subscription.updated", data: { object: { id: "sub_ghost", customer: "cus_ghost", status: "active" } },
+  }), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json({ id: "sub_ghost", customer: "cus_ghost", status: "active" })) }));
   assert.equal(res.status, 500);
   const forget = w.seen.find((c) => c.sql.startsWith("DELETE FROM stripe_events"));
   assert.deepEqual(forget?.params, ["evt_2"]);
