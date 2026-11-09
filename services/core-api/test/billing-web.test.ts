@@ -257,7 +257,7 @@ test("deleting the subscription a plan change replaced leaves the company plan a
   assert.equal(res.status, 200);
   const update = w.seen.find((call) => call.sql.startsWith("UPDATE companies SET plan = NULL"));
   assert.match(update?.sql ?? "", /stripe_subscription_id IS NULL OR stripe_subscription_id = \$2/);
-  assert.deepEqual(update?.params, [COMPANY, "sub_1UZkaj0iRL0sMmznl3T10Y1Q", true]);
+  assert.deepEqual(update?.params, [COMPANY, "sub_1UZkaj0iRL0sMmznl3T10Y1Q"]);
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE users")), false);
 });
 
