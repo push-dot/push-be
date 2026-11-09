@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, carryInto, companyKey, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, periodKey, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, carryInto, companyKey, ensureMonthlyGrant, firstPeriod, grantMicro, grantPeriod, iapTopupMicro, keyLevel, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -445,14 +445,15 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
   const before = await one(q, "SELECT stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1", [companyId]);
   const current = String(before?.stripe_subscription_id ?? "");
   const switching = current !== subscriptionId && !(current && olderThan(sub, { id: current, created: Number(before?.created_unix) }));
-  const previousKey = companyKey(before, ctx.now);
+  // A company on calendar months leaves the month its new period starts in, the same month on the first delivery and on every retry.
+  const previousKey = companyKey(before, start);
   // An upgrade or same-plan swap keeps the tiers the replaced period granted; a downgrade starts the lower plan fresh.
-  const carry = async (): Promise<number> => {
-    const level = await keyLevel(q, companyId, previousKey);
-    return switching && level <= grantMicro("EMPLOYER", planId) ? level : 0;
+  const carry = async (key: string): Promise<number> => {
+    const level = await keyLevel(q, companyId, key);
+    return level <= grantMicro("EMPLOYER", planId) ? level : 0;
   };
   // Written before the switch so a retry after a crash still finds them.
-  if (switching) await carryInto(q, { companyId, key: periodKey(subscriptionId, start), level: await carry(), now: ctx.now });
+  if (switching) await carryInto(q, { companyId, key: periodKey(subscriptionId, start), level: await carry(previousKey), now: ctx.now });
   await query(q,
     "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = CASE WHEN stripe_subscription_id IS DISTINCT FROM $4 THEN $6::timestamptz ELSE credit_period_start END WHERE id = $1 AND (stripe_subscription_created_at IS NULL OR stripe_subscription_created_at < $5::timestamptz OR (stripe_subscription_created_at = $5::timestamptz AND stripe_subscription_id COLLATE \"C\" <= $4))",
     [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
@@ -461,7 +462,11 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
   const keepId = String(kept?.stripe_subscription_id ?? "");
   if (!keepPlan || !keepId) return;
   if (keepId === subscriptionId && kept?.period_unix != null) {
-    await grantPeriod(q, { companyId, subscriptionId, periodStart: new Date(Number(kept.period_unix) * 1000), plan: planId, carry: await carry(), now: ctx.now });
+    const periodStart = new Date(Number(kept.period_unix) * 1000);
+    // The month's grant can land after the carry rows were written and before the switch, so it is carried here, also on a retry
+    // that no longer sees the switch. A replaced Stripe period cannot grant after the switch: its carry rows are complete.
+    const from = switching ? previousKey : periodStart.getTime() === start.getTime() && await firstPeriod(q, companyId, subscriptionId) ? monthKey(start) : null;
+    await grantPeriod(q, { companyId, subscriptionId, periodStart, plan: planId, carry: from ? await carry(from) : 0, now: ctx.now });
   }
   const previous = before?.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
   const customers = previous && previous !== customer ? [customer, previous] : [customer];
@@ -469,10 +474,14 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
 }
 
 const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
-  type Line = { amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number } };
+  type Line = {
+    amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number };
+    parent?: { subscription_item_details?: { proration?: boolean } | null } | null;
+  };
   const lines = ((obj.lines as { data?: Line[] } | undefined)?.data) || [];
   for (const line of lines) {
-    if (!(Number(line.amount) > 0)) continue;
+    // A proration line starts mid-period, so it never names the period the renewal opens.
+    if (!(Number(line.amount) > 0) || line.parent?.subscription_item_details?.proration) continue;
     const plan = employerPlanByPrice(env, line.price?.id || line.pricing?.price_details?.price || "");
     if (plan) return { plan, start: positiveInt(line.period?.start) };
   }
@@ -553,21 +562,33 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     [userId, planId, String(obj.customer || ""), id, credits, String(obj.id || ""), ctx.now.toISOString()]);
 }
 
+// Subscription events arrive late and out of order. A delete is final; an update is read back from Stripe and applied only to
+// the company's current subscription, so a stale copy can neither revive the plan of an ended one nor end a live one.
+async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: string, currentId: string, subscriptionId: string): Promise<void> {
+  if (type !== "customer.subscription.deleted") {
+    if (!subscriptionId || subscriptionId !== currentId) return;
+    const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+    if (!ENDED.has(String(sub.status))) {
+      const plan = LIVE.has(String(sub.status)) ? employerPlanByPrice(ctx.env, priceOf(sub)) : null;
+      if (plan) await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2", [companyId, subscriptionId, plan]);
+      return;
+    }
+  }
+  await query(ctx.deps.query,
+    "UPDATE companies SET plan = NULL WHERE id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)", [companyId, subscriptionId]);
+  await resolveCancelAlert(ctx, subscriptionId);
+}
+
 async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
   const customer = String(obj.customer || "");
   if (!customer) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
   const canceled = type === "customer.subscription.deleted" || ENDED.has(String(obj.status ?? ""));
   const priceId = priceOf(obj);
-  const current = "stripe_customer_id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)";
-  const company = await one(ctx.deps.query,
-    canceled
-      ? `UPDATE companies SET plan = NULL WHERE ${current} RETURNING id`
-      : `UPDATE companies SET plan = COALESCE($3, plan) WHERE ${current} RETURNING id`,
-    canceled ? [customer, String(obj.id || "")] : [customer, String(obj.id || ""), priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
-  if (canceled) await resolveCancelAlert(ctx, String(obj.id || ""));
-  if (company) return;
-  const replaced = await one(ctx.deps.query, "SELECT id FROM companies WHERE stripe_customer_id = $1", [customer]);
-  if (replaced) return;
+  const company = await one(ctx.deps.query, "SELECT id, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1", [customer]);
+  if (company) {
+    await companySubscriptionChanged(ctx, type, String(company.id), String(company.stripe_subscription_id ?? ""), String(obj.id || ""));
+    return;
+  }
   const end = itemOf(obj)?.current_period_end;
   const period = end ? new Date(Number(end) * 1000).toISOString() : null;
   const status = canceled ? "CANCELED" : "ACTIVE";

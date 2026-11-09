@@ -248,7 +248,7 @@ test("first invoices and personal customers add no payment row", async () => {
 });
 
 test("deleting the subscription a plan change replaced leaves the company plan alone", async () => {
-  const w = world((sql) => sql.startsWith("SELECT id FROM companies") ? [{ id: COMPANY }] : undefined);
+  const w = world((sql) => sql.startsWith("SELECT id, stripe_subscription_id FROM companies") ? [{ id: COMPANY, stripe_subscription_id: "sub_1UZkat0iRL0sMmznsruv4T1R" }] : undefined);
   const res = await handle(await signed({
     id: "evt_old_deleted",
     type: "customer.subscription.deleted",
@@ -257,7 +257,7 @@ test("deleting the subscription a plan change replaced leaves the company plan a
   assert.equal(res.status, 200);
   const update = w.seen.find((call) => call.sql.startsWith("UPDATE companies SET plan = NULL"));
   assert.match(update?.sql ?? "", /stripe_subscription_id IS NULL OR stripe_subscription_id = \$2/);
-  assert.deepEqual(update?.params, ["cus_VawTPdFMM1vGO3", "sub_1UZkaj0iRL0sMmznl3T10Y1Q"]);
+  assert.deepEqual(update?.params, [COMPANY, "sub_1UZkaj0iRL0sMmznl3T10Y1Q"]);
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE users")), false);
 });
 
