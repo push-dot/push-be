@@ -36,3 +36,25 @@ export async function one(q: Query, text: string, params: unknown[] = []): Promi
   const result = await query(q, text, params);
   return result.rows[0] ?? null;
 }
+
+/** Runs `work` in one interactive transaction; a throw rolls it back. */
+export interface Transaction {
+  <T>(work: (q: Query) => Promise<T>): Promise<T>;
+}
+
+type Session = { query(text: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount: number | null }> };
+
+export const inTransaction = async <T>(session: Session, work: (q: Query) => Promise<T>): Promise<T> => {
+  await session.query("BEGIN");
+  try {
+    const out = await work(async (text, params = []) => {
+      const result = await session.query(text, params);
+      return { rows: result.rows as Record<string, unknown>[], rowCount: result.rowCount ?? result.rows.length };
+    });
+    await session.query("COMMIT");
+    return out;
+  } catch (err) {
+    await session.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
+};

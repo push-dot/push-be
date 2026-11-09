@@ -1,5 +1,5 @@
 import type { StoreReceipts } from "./billing/stores.ts";
-import type { Query } from "./db.ts";
+import type { Query, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 import type { SmsSender } from "./sms/sender.ts";
 
@@ -14,6 +14,7 @@ export interface CoreEnv {
   /** Same value as the VPS AI_SHARED_SECRET. Sent on the wake request. */
   AI_SHARED_SECRET?: string;
   APP_ENV?: string;
+  PAYMENTS_ENABLED?: string;
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
@@ -70,6 +71,7 @@ export interface CoreEnv {
 
 export interface Deps {
   query: Query;
+  transaction?: Transaction;
   now?: () => Date;
   fetch?: typeof fetch;
   waitUntil?: (promise: Promise<unknown>) => void;
