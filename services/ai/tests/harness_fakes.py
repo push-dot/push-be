@@ -53,7 +53,7 @@ class Gate:
         self.reserved: list = []
 
     async def check(self, user_id, ai):
-        ai.model = "gate-model"
+        ai.model = "anthropic/claude-sonnet-5-5"
 
     async def _route(self, user_id, ai):
         return SimpleNamespace(base_url="http://llm.test"), "key", ai.model, None

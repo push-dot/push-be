@@ -9,7 +9,7 @@ const OTHER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const NOW = new Date("2026-10-18T00:00:00Z");
 
 function env(): CoreEnv {
-  return { APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" };
+  return { APP_ENV: "production", MANAGED_AI: "1" };
 }
 
 function deps(query: Deps["query"]): Deps {

@@ -267,14 +267,12 @@ async def test_provider_failure_releases_reservation_even_if_release_fails():
 
 
 async def test_web_search_needs_managed_router_key():
-    go = StubChatCompleter(text="go")
-    g = AIGate(FakeDB(), "", StubChatCompleter(), go_chat=go,
-               go_key="sk-go",
-               config=Config(model_free="opencode-go/deepseek-v4.1-flash"))
+    chat = StubChatCompleter(text="answer")
+    g = AIGate(FakeDB(), "", chat, config=Config())
     g.users = StubUserStore(_user("FREE"))
     g.usage = StubAiUsageStore()
     err = await _code(g.complete(uuid4(), _ai(web_search=True), "", "hi"))
-    assert err.code == "NOT_CONFIGURED" and go.got == {}
+    assert err.code == "NOT_CONFIGURED" and chat.got == {}
 
 
 @pytest.mark.parametrize("err,code", [

@@ -16,6 +16,8 @@ from app.infrastructure.openai_client import (
 KEY = "sk-test-not-a-real-key"
 BASE = "https://llm.example.test/v1"
 FREE = "deepseek/deepseek-v4.1-flash"
+EMBED = "openai/text-embedding-3-small"
+PIN = {"allow_fallbacks": False, "data_collection": "deny"}
 
 
 def _client(handler, config=None):
@@ -40,16 +42,16 @@ def _sse(*lines: str) -> httpx.Response:
 
 # ---------- request bodies ----------
 
-def test_completion_body_only_includes_optional_fields_when_set():
+def test_completion_body_pins_providers_and_adds_reasoning_only_when_set():
     msgs = [{"role": "user", "content": "hi"}]
-    assert completion_body("m", msgs) == {"model": "m", "messages": msgs}
-    assert completion_body("m", msgs, "high", {"order": ["A"]}) == {
-        "model": "m", "messages": msgs, "reasoning": {"effort": "high"},
-        "provider": {"order": ["A"]}}
+    provider = {"only": ["together", "fireworks", "novita"], **PIN}
+    assert completion_body(FREE, msgs) == {"model": FREE, "messages": msgs, "provider": provider}
+    assert completion_body(FREE, msgs, "high") == {
+        "model": FREE, "messages": msgs, "reasoning": {"effort": "high"}, "provider": provider}
 
 
 def test_stream_body_requests_usage_and_large_budget():
-    b = stream_body("m", [], "")
+    b = stream_body(FREE, [], "")
     assert b["stream"] is True
     assert b["stream_options"] == {"include_usage": True}
     assert b["max_tokens"] == 65536
@@ -63,7 +65,7 @@ async def test_chat_sends_auth_messages_and_parses_usage():
         "choices": [{"message": {"content": "hello"}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7}}))
     c = _client(handler)
-    out = await c.chat(KEY, "openai/gpt", "be brief", "hi", "low",
+    out = await c.chat(KEY, "anthropic/claude-sonnet-5-5", "be brief", "hi", "low",
                        {"X-Title": "push"})
     assert isinstance(out, ent.AICompletion)
     assert (out.text, out.input_tokens, out.output_tokens) == ("hello", 11, 7)
@@ -72,7 +74,8 @@ async def test_chat_sends_auth_messages_and_parses_usage():
     assert req.headers["authorization"] == "Bearer " + KEY
     assert req.headers["x-title"] == "push"
     body = json.loads(req.content)
-    assert body == {"model": "openai/gpt", "reasoning": {"effort": "low"},
+    assert body == {"model": "anthropic/claude-sonnet-5-5", "reasoning": {"effort": "low"},
+                    "provider": {"only": ["anthropic"], **PIN},
                     "messages": [{"role": "system", "content": "be brief"},
                                  {"role": "user", "content": "hi"}]}
     await c.aclose()
@@ -81,23 +84,30 @@ async def test_chat_sends_auth_messages_and_parses_usage():
 async def test_chat_omits_empty_system_and_defaults_usage_to_zero():
     handler, seen = _capture(httpx.Response(200, json={
         "choices": [{"message": {"content": "x"}}]}))
-    out = await _client(handler).chat(KEY, "m", "", "hi")
+    out = await _client(handler).chat(KEY, FREE, "", "hi")
     assert json.loads(seen[0].content)["messages"] == [
         {"role": "user", "content": "hi"}]
     assert (out.input_tokens, out.output_tokens) == (0, 0)
 
 
-async def test_chat_routes_free_model_providers_from_config():
-    cfg = SimpleNamespace(model_free=FREE,
-                          openrouter_deepseek_providers="Together, Novita")
+async def test_chat_pins_us_providers_and_exa_search_on_every_request():
     handler, seen = _capture(httpx.Response(200, json={
         "choices": [{"message": {"content": "x"}}]}))
-    c = _client(handler, cfg)
+    c = _client(handler)
     await c.chat(KEY, FREE + ":online", "", "hi")
-    await c.chat(KEY, "openai/gpt", "", "hi")
-    assert json.loads(seen[0].content)["provider"] == {
-        "ignore": ["DeepSeek"], "order": ["Together", "Novita"]}
-    assert "provider" not in json.loads(seen[1].content)
+    await c.chat(KEY, "anthropic/claude-opus-5-5", "", "hi")
+    first, second = (json.loads(r.content) for r in seen)
+    assert first["provider"] == {"only": ["together", "fireworks", "novita"], **PIN}
+    assert first["plugins"] == [{"id": "web", "engine": "exa"}]
+    assert second["provider"] == {"only": ["anthropic"], **PIN}
+    assert "plugins" not in second
+
+
+async def test_chat_refuses_a_model_without_pinned_providers_before_sending():
+    handler, seen = _capture(httpx.Response(200, json={}))
+    with pytest.raises(Exception, match="no approved provider"):
+        await _client(handler).chat(KEY, "openai/gpt-5.6-luna", "", "hi")
+    assert seen == []
 
 
 @pytest.mark.parametrize("status,body,msg", [
@@ -108,26 +118,26 @@ async def test_chat_routes_free_model_providers_from_config():
 async def test_chat_maps_error_status_to_value_error(status, body, msg):
     handler, _ = _capture(httpx.Response(status, json=body))
     with pytest.raises(ValueError, match=msg):
-        await _client(handler).chat(KEY, "m", "", "hi")
+        await _client(handler).chat(KEY, FREE, "", "hi")
 
 
 async def test_chat_without_choices_is_an_error():
     handler, _ = _capture(httpx.Response(200, json={"choices": []}))
     with pytest.raises(ValueError, match="no choices"):
-        await _client(handler).chat(KEY, "m", "", "hi")
+        await _client(handler).chat(KEY, FREE, "", "hi")
 
 
 async def test_chat_non_json_gateway_page_raises_value_error():
     handler, _ = _capture(httpx.Response(502, content=b"<html>bad gateway"))
     with pytest.raises(ValueError):
-        await _client(handler).chat(KEY, "m", "", "hi")
+        await _client(handler).chat(KEY, FREE, "", "hi")
 
 
 async def test_chat_timeout_propagates_to_caller():
     def handler(req):
         raise httpx.ReadTimeout("slow", request=req)
     with pytest.raises(httpx.TimeoutException):
-        await _client(handler).chat(KEY, "m", "", "hi")
+        await _client(handler).chat(KEY, FREE, "", "hi")
 
 
 # ---------- chat_stream ----------
@@ -145,7 +155,7 @@ async def test_chat_stream_yields_deltas_and_records_usage_and_finish():
     ))
     usage: dict = {}
     c = _client(handler)
-    toks = [t async for t in c.chat_stream(KEY, "m", "sys", "hi", usage, "high")]
+    toks = [t async for t in c.chat_stream(KEY, FREE, "sys", "hi", usage, "high")]
     assert toks == ["Hel", "lo"]
     assert usage == {"input_tokens": 5, "output_tokens": 2, "finish": "stop"}
     body = json.loads(seen[0].content)
@@ -158,7 +168,7 @@ async def test_chat_stream_continuation_appends_prefix_and_resume_turn():
     handler, seen = _capture(_sse("data: [DONE]"))
     usage: dict = {}
     toks = [t async for t in _client(handler).chat_stream(
-        KEY, "m", "", "write", usage, assistant_prefix="half")]
+        KEY, FREE, "", "write", usage, assistant_prefix="half")]
     assert toks == [] and usage == {}
     msgs = json.loads(seen[0].content)["messages"]
     assert msgs[0] == {"role": "user", "content": "write"}
@@ -171,7 +181,7 @@ async def test_chat_stream_records_length_cutoff():
     handler, _ = _capture(_sse(
         'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}'))
     usage: dict = {}
-    toks = [t async for t in _client(handler).chat_stream(KEY, "m", "", "u", usage)]
+    toks = [t async for t in _client(handler).chat_stream(KEY, FREE, "", "u", usage)]
     assert toks == ["x"] and usage["finish"] == "length"
 
 
@@ -181,7 +191,7 @@ async def test_chat_stream_records_length_cutoff():
 ])
 async def test_chat_stream_error_status_raises_before_yielding(status, body, msg):
     handler, _ = _capture(httpx.Response(status, json=body))
-    gen = _client(handler).chat_stream(KEY, "m", "", "u", {})
+    gen = _client(handler).chat_stream(KEY, FREE, "", "u", {})
     with pytest.raises(ValueError, match=msg):
         await gen.__anext__()
 
@@ -198,12 +208,13 @@ async def test_embed_posts_inputs_and_restores_input_order():
     assert str(req.url) == BASE + "/embeddings"
     assert req.headers["authorization"] == "Bearer " + KEY
     assert json.loads(req.content) == {
-        "model": "openai/text-embedding-3-small", "input": ["a", "b"]}
+        "model": "openai/text-embedding-3-small", "input": ["a", "b"],
+        "provider": {"only": ["openai"], **PIN}}
 
 
 async def test_embed_empty_data_returns_empty_list():
     handler, _ = _capture(httpx.Response(200, json={"data": None}))
-    assert await _client(handler).embed(KEY, "m", ["a"]) == []
+    assert await _client(handler).embed(KEY, EMBED, ["a"]) == []
 
 
 @pytest.mark.parametrize("status,body,msg", [
@@ -213,4 +224,4 @@ async def test_embed_empty_data_returns_empty_list():
 async def test_embed_error_status(status, body, msg):
     handler, _ = _capture(httpx.Response(status, json=body))
     with pytest.raises(ValueError, match=msg):
-        await _client(handler).embed(KEY, "m", ["a"])
+        await _client(handler).embed(KEY, EMBED, ["a"])

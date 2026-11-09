@@ -22,7 +22,6 @@ from app.infrastructure.store_operations import OperationStore
 
 
 _SEARCH_MODEL = "deepseek/deepseek-v4.1-flash"
-_GO_PREFIX = "opencode-go/"
 _USAGE_NS = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 
 
@@ -49,15 +48,12 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
 
 
 class AIGate:
-    def __init__(self, db: DB, managed_key: str, chat,
-                 go_chat=None, go_key: str = "", config=None):
+    def __init__(self, db: DB, managed_key: str, chat, config=None):
         self.db = db
         self.users = UserStore(db)
         self.usage = AiUsageStore(db)
         self.managed_key = managed_key
         self.chat = chat
-        self.go_chat = go_chat
-        self.go_key = go_key
         self.config = config
 
     def _levers_config(self):
@@ -153,10 +149,7 @@ class AIGate:
         if spent >= managed_allowance(u.plan):
             raise feature_disabled(
                 "monthly managed AI usage limit reached for plan " + (u.plan or ent.PLAN_FREE))
-        if ai.model.startswith(_GO_PREFIX):
-            if not self.go_key or self.go_chat is None:
-                raise not_configured("OpenCode Go is not configured")
-        elif not self.managed_key:
+        if not self.managed_key:
             raise not_configured("managed AI is not configured")
 
     async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
@@ -250,9 +243,6 @@ class AIGate:
 
     async def _route(self, user_id: UUID, ai: ent.AiOptions):
         model = ai.model
-        if model.startswith(_GO_PREFIX):
-            return (self.go_chat, self.go_key, model[len(_GO_PREFIX):],
-                    {"x-opencode-session": str(user_id)})
         if ai.web_search:
             model += ":online"
         return self.chat, self.managed_key, model, None
@@ -263,8 +253,6 @@ class AIGate:
         updates = {}
         if not getattr(config, "managed_ai_key", "") and self.managed_key:
             updates["managed_ai_key"] = self.managed_key
-        if not getattr(config, "opencode_go_key", "") and self.go_key:
-            updates["opencode_go_key"] = self.go_key
         if self.config is None:
             base = getattr(chat, "base_url", "") or getattr(config, "ai_base_url", "")
             if base:
@@ -273,11 +261,10 @@ class AIGate:
 
     def _factory_call(self, ai: ent.AiOptions, user_id, job_id, usage_id, chat):
         from app.framework.llm import AiUsageCallback
-        web = bool(ai.web_search) and not ai.model.startswith(_GO_PREFIX)
+        web = bool(ai.web_search)
         return {
             "levers": PlanLevers(ai.model, ai.effort, "", "", "", 0),
             "web_search": web,
-            "session_id": str(user_id),
             "app_config": self._factory_config(chat),
             "callback": AiUsageCallback(self.usage, user_id, job_id, usage_id),
         }
@@ -293,7 +280,7 @@ class AIGate:
             return await complete_langchain(
                 self.chat, self.managed_key, model_name, system, user, "low", None,
                 levers=PlanLevers(model_name, "LOW", "", "", "", 0),
-                web_search=web_search, session_id=str(user_id or ""),
+                web_search=web_search,
                 app_config=self._factory_config(self.chat),
                 callback=AiUsageCallback(self.usage, user_id, job_id, None))
         except ImportError:

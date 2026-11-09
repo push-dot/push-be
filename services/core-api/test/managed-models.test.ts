@@ -7,7 +7,7 @@ import { resetLimits } from "../src/ratelimit.ts";
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 
 const deps = (): Deps => ({

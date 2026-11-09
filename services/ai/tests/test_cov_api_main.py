@@ -66,7 +66,7 @@ async def test_bootstrap_dev_seeds_user_migrates_and_starts_local_worker(boot, m
     assert any(s.startswith("INSERT INTO experiments") for s in sqls)
     deps = fa.state.deps
     assert deps.cfg.managed_ai and deps.cfg.stripe_configured
-    assert not deps.cfg.google_configured and not deps.cfg.managed_go
+    assert not deps.cfg.google_configured
     assert fa.state.db.pool is pool
     assert deps.conversations._checkpointer is not None
     assert boot["workers"] == ["start"]
@@ -157,7 +157,7 @@ async def test_failed_seed_after_clients_closes_clients_and_pool(boot, monkeypat
     with pytest.raises(RuntimeError):
         await main._bootstrap(FastAPI(), Config(database_url="d"))
     assert sorted(closed) == sorted(
-        ["OAuthClient", "OpenAIClient", "OpenAIClient", "GoogleClient", "StripeClient"])
+        ["OAuthClient", "OpenAIClient", "GoogleClient", "StripeClient"])
     assert boot["pool"].closed
 
 

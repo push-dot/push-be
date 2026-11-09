@@ -12,7 +12,7 @@ const GUEST = "00000000-0000-0000-0000-000000000000";
 
 type Call = { sql: string; params: unknown[] };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
 const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {

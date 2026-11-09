@@ -125,7 +125,7 @@ class _Recording:
         self.kwargs = kwargs
 
 
-def test_free_plan_request_carries_deepseek_provider_order_and_ignore():
+def test_langchain_requests_pin_us_providers_and_exa_search():
     from app.config import Config
     from app.framework.llm import chat_model_for
 
@@ -135,12 +135,15 @@ def test_free_plan_request_carries_deepseek_provider_order_and_ignore():
     body = model.kwargs["extra_body"]
     assert model.kwargs["model"] == "deepseek/deepseek-v4.1-flash:online"
     assert body["provider"] == {
-        "ignore": ["DeepSeek"],
-        "order": ["Together", "Fireworks", "Novita"],
+        "only": ["together", "fireworks", "novita"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
     }
+    assert body["plugins"] == [{"id": "web", "engine": "exa"}]
     assert body["reasoning"] == {"effort": "low"}
     assert model.kwargs["timeout"] == 60
     assert model.kwargs["max_retries"] == 1
     assert model.kwargs["base_url"] == "https://openrouter.ai/api/v1"
     pro = chat_model_for(levers_for("PERSONAL", "PRO", config), config=config, cls=_Recording)
-    assert "provider" not in (pro.kwargs.get("extra_body") or {})
+    assert pro.kwargs["extra_body"]["provider"]["only"] == ["anthropic"]
+    assert "plugins" not in pro.kwargs["extra_body"]

@@ -8,7 +8,7 @@ import { resetLimits } from "../src/ratelimit.ts";
 const NIL = "00000000-0000-0000-0000-000000000000";
 const POSTING = "11111111-1111-4111-8111-111111111111";
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
 type Call = { sql: string; params: unknown[] };
 

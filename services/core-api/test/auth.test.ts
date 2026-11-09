@@ -11,7 +11,7 @@ const NOW = new Date("2026-10-21T00:00:00Z");
 test("github callback sends a User-Agent when fetching the user", async () => {
   resetLimits();
   const env = {
-    APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0",
+    APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
   const query: Deps["query"] = async (sql) => {
@@ -136,7 +136,7 @@ test("clearDeletion ignores a missing companies table", async () => {
 test("login still works before migration 0018 is applied", async () => {
   resetLimits();
   const env = {
-    APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0",
+    APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
   const query: Deps["query"] = async (sql) => {

@@ -2,6 +2,8 @@ import math
 
 import httpx
 
+from app.domain.plan_levers import provider_for
+
 from app.embedding.port import EmbeddingPort, batches
 
 
@@ -19,7 +21,8 @@ class ApiEmbedder:
         for chunk in batches(texts):
             resp = await self.client.post(
                 self.base_url + "/embeddings",
-                json={"model": self.model, "input": chunk, "dimensions": self.dim},
+                json={"model": self.model, "input": chunk, "dimensions": self.dim,
+                      "provider": provider_for(self.model)},
                 headers={"authorization": "Bearer " + self.api_key})
             resp.raise_for_status()
             data = sorted(resp.json().get("data") or [], key=lambda d: d["index"])

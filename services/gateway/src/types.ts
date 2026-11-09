@@ -14,7 +14,6 @@ export interface FrontEnv {
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
-  MANAGED_GO?: string;
   SSE_MAX_POLLS?: string;
   MODEL_CACHE_TTL?: string;
   JOB_SITES_CACHE_TTL?: string;

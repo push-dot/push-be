@@ -16,7 +16,7 @@ from app.domain.errors import DomainError, feature_disabled
 from tests.test_cov_svc2_routers import AI, USER, _AsUser, _Recorder
 
 
-def _client(user=USER, err=None, managed_ai=True, managed_go=False):
+def _client(user=USER, err=None, managed_ai=True):
     app = FastAPI()
     app.add_exception_handler(DomainError, domain_error_handler)
     app.include_router(ai.router, prefix="/api/v1")
@@ -24,7 +24,7 @@ def _client(user=USER, err=None, managed_ai=True, managed_go=False):
     rec = _Recorder(err)
     app.state.deps = SimpleNamespace(
         ai=rec, jobs=rec,
-        cfg=SimpleNamespace(managed_ai=managed_ai, managed_go=managed_go))
+        cfg=SimpleNamespace(managed_ai=managed_ai))
     return TestClient(_AsUser(app, user)), rec
 
 
@@ -35,7 +35,7 @@ def _avail(r):
 
 
 def test_models_lists_every_managed_model_with_availability():
-    c, _ = _client(managed_ai=True, managed_go=False)
+    c, _ = _client(managed_ai=True)
     r = c.get("/api/v1/ai/models")
     assert r.status_code == 200
     data = r.json()["data"]
@@ -43,15 +43,8 @@ def test_models_lists_every_managed_model_with_availability():
     assert all(m["provider"] == "OPENAI" and
                m["supportedEfforts"] == ["LOW", "MEDIUM", "HIGH"] for m in data)
     avail = _avail(r)
-    assert avail["opencode-go/deepseek-v4.1-flash"] is False
+    assert "opencode-go/deepseek-v4.1-flash" not in avail
     assert avail["openai/gpt-5.6-sol"] is True
-
-
-def test_models_go_availability_follows_its_own_key():
-    c, _ = _client(managed_ai=False, managed_go=True)
-    avail = _avail(c.get("/api/v1/ai/models"))
-    assert avail["opencode-go/deepseek-v4.1-flash"] is True
-    assert avail["deepseek/deepseek-v4.1-flash"] is False
 
 
 def test_models_filtered_by_another_provider_is_empty():

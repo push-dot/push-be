@@ -58,7 +58,6 @@ class ConfigView:
     google_configured: bool = False
     gmail_beta: bool = False
     managed_ai: bool = False
-    managed_go: bool = False
     stripe_configured: bool = False
     job_site_adapters: dict[str, Any] = field(default_factory=dict)
 
@@ -124,15 +123,12 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         stack.push_async_callback(oauth.aclose)
         openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)
         stack.push_async_callback(openai.aclose)
-        openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
-        stack.push_async_callback(openai_go.aclose)
         gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
         stack.push_async_callback(gapi.aclose)
         stripe = StripeClient(cfg.stripe_secret)
         stack.push_async_callback(stripe.aclose)
 
-        gate = AIGate(db, cfg.managed_ai_key, openai,
-                      go_chat=openai_go, go_key=cfg.opencode_go_key, config=cfg)
+        gate = AIGate(db, cfg.managed_ai_key, openai, config=cfg)
         auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
                             cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
@@ -169,7 +165,6 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
             google_configured=bool(cfg.google.client_id
                                    and cfg.google.client_secret),
             gmail_beta=cfg.gmail_beta, managed_ai=bool(cfg.managed_ai_key),
-            managed_go=bool(cfg.opencode_go_key),
             stripe_configured=bool(cfg.stripe_secret),
             job_site_adapters=cfg.job_site_adapters)
         app.state.deps = Deps(
