@@ -11,11 +11,9 @@ async def lock_source(db, key: str) -> None:
 
 # A source archived while it was being embedded keeps no nodes: FOR SHARE waits for an
 # uncommitted archive, and the archive trigger cannot run before this insert commits.
-_LIVE = {
-    "document": "SELECT 1 FROM documents WHERE id = $1 AND status <> 'ARCHIVED' FOR SHARE",
-    "evidence": "SELECT 1 FROM career_evidence WHERE id = $1 AND NOT archived FOR SHARE",
-    "job": "SELECT 1 FROM jobs WHERE id = $1 AND NOT archived FOR SHARE",
-}
+_LIVE_DOCUMENT = "SELECT 1 FROM documents WHERE id = $1 AND status <> 'ARCHIVED' FOR SHARE"
+_LIVE_EVIDENCE = "SELECT 1 FROM career_evidence WHERE id = $1 AND NOT archived FOR SHARE"
+_LIVE_JOB = "SELECT 1 FROM jobs WHERE id = $1 AND NOT archived FOR SHARE"
 
 
 class RagNodeStore:
@@ -27,7 +25,10 @@ class RagNodeStore:
             nonlocal rows
             q = self.db.q()
             await lock_source(self.db, f"{source_type}:{source_id}")
-            if source_type in _LIVE and await q.fetchval(_LIVE[source_type], source_id) is None:
+            if source_type in ("document", "evidence", "job") and await q.fetchval(
+                _LIVE_DOCUMENT if source_type == "document" else _LIVE_EVIDENCE if source_type == "evidence" else _LIVE_JOB,
+                source_id,
+            ) is None:
                 rows = []
             user_id = rows[0]["user_id"] if rows else None
             company_id = rows[0]["company_id"] if rows else None
