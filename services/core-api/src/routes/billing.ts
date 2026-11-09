@@ -1,8 +1,8 @@
-import { DISPLAY_MICRO, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
-import { isMissingRelation, one, query, type Transaction } from "../db.ts";
+import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "../db.ts";
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
@@ -144,10 +144,16 @@ const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, st
 
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
   if (!plan) return;
-  await inTransactionOf(ctx)(async (q) => {
-    await lockOwner(q, audience, ownerId);
-    await ensureMonthlyGrant(q, { audience, plan, ownerId, now: ctx.now });
-  });
+  try {
+    await inTransactionOf(ctx)(async (q) => {
+      await boundTransaction(q, "3s");
+      await lockOwner(q, audience, ownerId);
+      await ensureMonthlyGrant(q, { audience, plan, ownerId, now: ctx.now });
+    });
+  } catch (err) {
+    // A webhook holds the owner row: show the balance now, the month's grant lands on the next read or enqueue.
+    if (!isLockTimeout(err)) throw err;
+  }
 };
 
 // In-memory test fakes have no transactions.
@@ -209,6 +215,9 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   }, ctx.rid);
 }
 
+// A webhook calls Stripe while it holds the company row lock, so a hung call must fail the event (Stripe retries it) rather than hold the lock.
+const STRIPE_TIMEOUT_MS = 10_000;
+
 async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchParams): Promise<Record<string, unknown>> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const secret = ctx.env.STRIPE_SECRET_KEY || "";
@@ -219,6 +228,7 @@ async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchPa
       "content-type": "application/x-www-form-urlencoded",
     },
     body: form,
+    signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
   });
   const body = await res.json() as Record<string, unknown>;
   if (!res.ok) throw new Error("stripe");
@@ -383,6 +393,8 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   // at a time and a failure rolls back the event row with the rest.
   try {
     await inTransactionOf(ctx)(async (q) => {
+      // A timeout fails the event and Stripe retries it.
+      await boundTransaction(q, "15s");
       const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
       const fresh = await one(q,
         "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
@@ -451,17 +463,29 @@ const priceOf = (sub: Record<string, unknown>): string => itemOf(sub)?.price?.id
 const olderThan = (sub: Record<string, unknown>, keep: { id: string; created: number }): boolean =>
   Number(sub.created) < keep.created || (Number(sub.created) === keep.created && String(sub.id) < keep.id);
 
+// The expanded latest invoice is paid and bills the period the subscription is in now.
+const currentPeriodPaid = (env: CoreEnv, sub: Record<string, unknown>): boolean => {
+  const invoice = sub.latest_invoice;
+  if (!invoice || typeof invoice !== "object" || (invoice as Record<string, unknown>).status !== "paid") return false;
+  const start = planLine(env, invoice as Record<string, unknown>)?.start;
+  return start != null && start === positiveInt(itemOf(sub)?.current_period_start);
+};
+
 // A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
 // Unused time is refunded only while the replaced period's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
-// A past_due or unpaid subscription is never refunded: Stripe would credit unused time of a period whose invoice was never paid. Its open
-// invoices are voided first, so a late payment cannot land on a subscription the company left.
-async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }): Promise<void> {
+// Only a period whose invoice is paid is refunded: Stripe would credit unused time of an unpaid one. That rules out past_due and unpaid, and
+// also an active subscription that just renewed: Stripe keeps the renewal invoice a draft for about an hour before it charges it.
+// Any other cancel voids the open invoices first, so a late payment cannot land on a subscription the company left. Stripe itself turns off
+// auto_advance on the open and draft invoices of a canceled subscription, so the draft is never finalized or charged.
+// `calendar` is the company's subscription from before credit periods, whose credits are the month's.
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }, calendar: string): Promise<void> {
   for (const customer of customers) {
-    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
+    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&expand[]=data.latest_invoice&customer=" + encodeURIComponent(customer));
     for (const sub of subscriptionsOf(list)) {
       if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
       const id = String(sub.id);
-      const refund = LIVE.has(String(sub.status)) && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now) <= grantMicro("EMPLOYER", keep.plan);
+      const refund = LIVE.has(String(sub.status)) && currentPeriodPaid(ctx.env, sub)
+        && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
       const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
         if (refund) {
@@ -512,7 +536,7 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
       [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
   }
   const previous = before.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
-  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan });
+  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan }, before.period_unix == null ? current : "");
   if (!switching) return;
   // An upgrade or same-plan swap keeps the tiers of the period whose unused time was just refunded; a downgrade, or a replaced
   // subscription that was not refunded, starts the new plan fresh. A company on calendar months carries the month its period starts in.
@@ -660,7 +684,8 @@ async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: str
 }
 
 // Personal Stripe subscriptions are legacy; they follow the employer rules: an update is read back from Stripe, a delete is final.
-// An active App Store or Google Play subscription owns the user's plan, so a late Stripe event leaves it alone.
+// An active, unexpired App Store or Google Play subscription owns the user's plan, so a late Stripe event leaves it alone. A store row
+// whose EXPIRED notification never arrived stops guarding at its expires_at.
 async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
   const customer = String(obj.customer || "");
   const subscriptionId = String(obj.id || "");
@@ -671,7 +696,12 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
     return;
   }
   const user = await one(ctx.deps.query, "SELECT id FROM users WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
-  if (!user) throw new HttpError(500, "INTERNAL", "internal error");
+  if (!user) {
+    // An employer subscription whose customer no company holds: its checkout is not adopted yet (adoption reads the subscription
+    // itself), or the company moved to a newer customer and left it. Neither needs the event, and a retry would never find an owner.
+    if (employerPlanByPrice(ctx.env, priceOf(obj))) return;
+    throw new HttpError(500, "INTERNAL", "internal error");
+  }
   const deleted = type === "customer.subscription.deleted";
   const sub = deleted ? obj : await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
   const canceled = deleted || ENDED.has(String(sub.status ?? ""));
@@ -680,8 +710,8 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
   const period = end ? new Date(Number(end) * 1000).toISOString() : null;
   const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
   await query(ctx.deps.query,
-    "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE')",
-    [String(user.id), canceled ? "CANCELED" : "ACTIVE", period, plan]);
+    "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' AND (expires_at IS NULL OR expires_at > $5::timestamptz))",
+    [String(user.id), canceled ? "CANCELED" : "ACTIVE", period, plan, ctx.now.toISOString()]);
 }
 
 const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {

@@ -168,7 +168,7 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
       envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json(sub)) });
     assert.equal(res.status, 200);
     const update = w.seen.find((c) => c.sql.includes("UPDATE users"))!;
-    assert.deepEqual(update.params, [USER, "ACTIVE", "2026-01-01T00:00:00.000Z", plan]);
+    assert.deepEqual(update.params, [USER, "ACTIVE", "2026-01-01T00:00:00.000Z", plan, NOW.toISOString()]);
   });
 }
 

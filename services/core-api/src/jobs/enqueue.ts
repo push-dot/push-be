@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Query, Transaction } from "../db.ts";
-import { isUnique, one } from "../db.ts";
+import { isLockTimeout, isUnique, one } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { reserveCredits } from "./credits.ts";
 import {
@@ -14,7 +14,7 @@ import {
   type QueueName,
 } from "./config.ts";
 
-import { ensureMonthlyGrant, lockOwner } from "../billing/credits.ts";
+import { boundTransaction, ensureMonthlyGrant, lockOwner } from "../billing/credits.ts";
 
 export { availableMicro } from "./credits.ts";
 
@@ -133,6 +133,7 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
   const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
     const row = !hold ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
+      await boundTransaction(tx, "3s");
       await lockOwner(tx, audience, input.companyId ?? input.userId);
       await ensureMonthlyGrant(tx, {
         audience,
@@ -150,6 +151,8 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
     if (!row?.id) throw new HttpError(500, "INTERNAL", "internal error");
     return queued(row);
   } catch (err) {
+    // A Stripe webhook holds the owner row longer than a send should wait; nothing was written, so the client retries.
+    if (isLockTimeout(err)) throw new HttpError(429, "QUEUE_BUSY", "billing is busy", { retryAfterSec: 5, ahead: 0, reason: "BILLING_LOCKED" });
     if (!isUnique(err) || !input.idempotencyKey) throw err;
     const existing = await one(db, EXISTING, [input.userId, input.idempotencyKey]);
     if (!existing) throw err;
