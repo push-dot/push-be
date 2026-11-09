@@ -42,7 +42,7 @@ async def test_turn_uses_gate_model_and_persists_reply():
     operation = items[-1][1]["operation"]
     assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
     assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
-    assert svc.ai.settled == [("gate-model", 10, 5)]
+    assert svc.ai.settled == [("anthropic/claude-sonnet-5-5", 10, 5)]
     tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
     assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
 
@@ -395,7 +395,9 @@ async def test_gate_model_sends_openrouter_provider_routing_for_the_free_model()
             return chat, "key", ai.model, None
 
     await _gate_model(FreeGate(), Recording).ainvoke([HumanMessage("hi")])
-    assert built[0]["extra_body"]["provider"]["ignore"] == ["DeepSeek"]
+    assert built[0]["extra_body"]["provider"] == {
+        "only": ["together", "fireworks", "novita"], "allow_fallbacks": False,
+        "data_collection": "deny"}
 
 
 class _JobCtx:

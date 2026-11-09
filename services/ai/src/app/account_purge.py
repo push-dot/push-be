@@ -1,4 +1,8 @@
-"""Hard-delete accounts whose 30-day deletion grace period ended."""
+"""Deletes what the privacy policy says is deleted, once its retention period ends.
+
+Called from the dispatcher maintenance loop. Every statement deletes by a time
+condition, so running it again deletes nothing new.
+"""
 
 import asyncio
 import logging
@@ -9,12 +13,26 @@ from app.infrastructure.images import image_dir
 
 logger = logging.getLogger(__name__)
 
+# Retention periods, one row per line of the 개인정보처리방침 보관 기간 table.
+# Change the policy text in the same change. Values are Postgres interval text.
+RETENTION = {
+    "account": "30 days",        # users: after DELETE /me (deletion_requested_at)
+    "company": "30 days",        # companies: after the sole admin deletes the account
+    "phone_code": "30 days",     # phone_codes: after the SMS was sent
+    "expired_token": "1 day",    # login, OAuth, email and invite tokens: after expires_at
+    "idempotency_key": "1 day",  # idempotency_keys and their cached responses: after created_at
+    "search_query": "30 days",   # search_queries (term only, no user): after created_at
+    "email_signup": "1 day",     # unverified email signups with no live verify mail left
+    "payment": "5 years",        # billing_ledger rows whose owner was purged (전자상거래법)
+    "report": "3 years",         # offer_reports (전자상거래법 불만·분쟁 기록)
+}
+
 # Foreign keys cascade from users (migration 0018). workspace_files has no
 # foreign key, so it is cleared through the user's conversations first.
 # Returns the image keys (post images, avatar) the deleted users owned.
 PURGE_SQL = (
     "WITH gone AS (SELECT id FROM users "
-    "WHERE deletion_requested_at < now() - interval '30 days' LIMIT 50), "
+    "WHERE deletion_requested_at < now() - $1::text::interval LIMIT 50), "
     "images AS (SELECT jsonb_array_elements_text(image_keys) AS key FROM posts "
     "WHERE user_id IN (SELECT id FROM gone) AND jsonb_typeof(image_keys) = 'array' "
     "UNION SELECT avatar_key FROM profiles "
@@ -24,6 +42,52 @@ PURGE_SQL = (
     "users_deleted AS (DELETE FROM users WHERE id IN (SELECT id FROM gone)) "
     "SELECT key FROM images"
 )
+
+# Company rows cascade from companies (migrations 0019, 0028): members, invites,
+# postings and their views and bookmarks, employer conversations with their messages
+# and attachments, reviews, interview kits and rag_nodes. Payment rows keep their
+# amounts with company_id NULL. The rows without a foreign key go first:
+# conversation files, fit caches of the postings and the logo upload.
+# Returns the logo keys.
+COMPANY_PURGE_SQL = (
+    "WITH gone AS (SELECT id, logo_key FROM companies "
+    "WHERE deletion_requested_at < now() - $1::text::interval LIMIT 50), "
+    "files AS (DELETE FROM workspace_files WHERE conversation_id IN "
+    "(SELECT id FROM conversations WHERE company_id IN (SELECT id FROM gone))), "
+    "fits AS (DELETE FROM posting_fit_cache WHERE posting_id IN "
+    "(SELECT id FROM job_postings WHERE company_id IN (SELECT id FROM gone))), "
+    "logos AS (DELETE FROM upload_images WHERE key IN (SELECT logo_key FROM gone)), "
+    "companies_deleted AS (DELETE FROM companies WHERE id IN (SELECT id FROM gone)) "
+    "SELECT logo_key AS key FROM gone WHERE logo_key IS NOT NULL"
+)
+
+PHONE_CODES_SQL = "DELETE FROM phone_codes WHERE sent_at < now() - $1::text::interval"
+# A refresh token's access tokens cascade with it; the cascade skips rows already deleted here.
+TOKENS_SQL = (
+    "WITH oauth AS (DELETE FROM oauth_states WHERE expires_at < now() - $1::text::interval), "
+    "exchange AS (DELETE FROM exchange_codes WHERE expires_at < now() - $1::text::interval), "
+    "integration AS (DELETE FROM integration_codes WHERE expires_at < now() - $1::text::interval), "
+    "email AS (DELETE FROM email_tokens WHERE expires_at < now() - $1::text::interval), "
+    "invites AS (DELETE FROM company_invites WHERE expires_at < now() - $1::text::interval), "
+    "refresh AS (DELETE FROM refresh_tokens WHERE expires_at < now() - $1::text::interval) "
+    "DELETE FROM access_tokens WHERE expires_at < now() - $1::text::interval"
+)
+# Idempotent replays only matter while a client retries.
+IDEMPOTENCY_SQL = "DELETE FROM idempotency_keys WHERE created_at < now() - $1::text::interval"
+# Trending searches read the last 7 days (core-api routes/search.ts).
+SEARCHES_SQL = "DELETE FROM search_queries WHERE created_at < now() - $1::text::interval"
+# A resend issues a new verify token, so a signup with a live token is kept.
+EMAIL_SIGNUPS_SQL = (
+    "DELETE FROM email_signups s WHERE s.created_at < now() - $1::text::interval "
+    "AND NOT EXISTS (SELECT 1 FROM email_tokens t "
+    "WHERE t.signup_id = s.id AND t.expires_at > now())"
+)
+# Balances are read from the ledger, so rows of a live account or company stay.
+PAYMENTS_SQL = (
+    "DELETE FROM billing_ledger WHERE user_id IS NULL AND company_id IS NULL "
+    "AND created_at < now() - $1::text::interval"
+)
+REPORTS_SQL = "DELETE FROM offer_reports WHERE created_at < now() - $1::text::interval"
 
 
 def remove_images(storage_dir: str, keys) -> None:
@@ -38,16 +102,37 @@ def remove_images(storage_dir: str, keys) -> None:
             pass
 
 
+async def _purge(pool, sql: str, period: str) -> list[str]:
+    try:
+        rows = await pool.fetch(sql, RETENTION[period])
+    except Exception as exc:
+        logger.warning("%s purge failed; are the migrations applied? err=%s", period,
+                       redact(f"{type(exc).__name__}: {exc}")[:400])
+        return []
+    return [r["key"] for r in rows]
+
+
+async def _sweep(pool, sql: str, period: str) -> None:
+    try:
+        await pool.execute(sql, RETENTION[period])
+    except Exception as exc:
+        logger.warning("%s sweep failed; are the migrations applied? err=%s", period,
+                       redact(f"{type(exc).__name__}: {exc}")[:400])
+
+
 async def purge_deleted(pool, storage_dir: str | None) -> None:
     """Called from the existing cron."""
     if pool is None:
         return
-    try:
-        rows = await pool.fetch(PURGE_SQL)
-    except Exception as exc:
-        logger.warning("account purge failed; is migration 0018 applied? err=%s",
-                       redact(f"{type(exc).__name__}: {exc}")[:400])
-        return
-    if storage_dir:
+    keys = await _purge(pool, PURGE_SQL, "account")
+    keys += await _purge(pool, COMPANY_PURGE_SQL, "company")
+    await _sweep(pool, PHONE_CODES_SQL, "phone_code")
+    await _sweep(pool, TOKENS_SQL, "expired_token")
+    await _sweep(pool, IDEMPOTENCY_SQL, "idempotency_key")
+    await _sweep(pool, SEARCHES_SQL, "search_query")
+    await _sweep(pool, EMAIL_SIGNUPS_SQL, "email_signup")
+    await _sweep(pool, PAYMENTS_SQL, "payment")
+    await _sweep(pool, REPORTS_SQL, "report")
+    if storage_dir and keys:
         # Up to 50 users' files: keep the unlinks off the event loop.
-        await asyncio.to_thread(remove_images, storage_dir, [r["key"] for r in rows])
+        await asyncio.to_thread(remove_images, storage_dir, keys)

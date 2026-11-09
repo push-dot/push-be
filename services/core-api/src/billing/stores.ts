@@ -304,9 +304,11 @@ const readStore = async (res: Response): Promise<Record<string, unknown>> => {
   return body as Record<string, unknown>;
 };
 
+// Google RTDN codes (developer.android.com/google/play/billing/rtdn-reference). One-time 2 is ONE_TIME_PRODUCT_CANCELED, a pending
+// purchase that never paid, so nothing to take back; a paid one-time refund comes as voidedPurchaseNotification.
 const googleType = (value: unknown, consumable: boolean): string => {
   const code = typeof value === "number" ? value : Number(value);
-  if (consumable) return code === 2 ? "REFUND" : "PURCHASE";
+  if (consumable) return code === 1 ? "PURCHASE" : code === 2 ? "CANCELED" : String(value ?? "");
   if (code === 2) return "RENEWAL";
   if (code === 4 || code === 1) return "PURCHASE";
   if (code === 12) return "REFUND";
@@ -513,6 +515,19 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       ? pushed.subscriptionNotification as Record<string, unknown> : null;
     const oneTime = pushed.oneTimeProductNotification && typeof pushed.oneTimeProductNotification === "object"
       ? pushed.oneTimeProductNotification as Record<string, unknown> : null;
+    const voided = pushed.voidedPurchaseNotification && typeof pushed.voidedPurchaseNotification === "object"
+      ? pushed.voidedPurchaseNotification as Record<string, unknown> : null;
+    if (voided) {
+      // productType 2 is a one-time purchase (a top-up). A voided subscription order keeps its access until Google sends
+      // SUBSCRIPTION_REVOKED (12), which is the REFUND above. shortcut: a quantity-based partial refund (refundType 2) takes the
+      // whole pack back; top-ups are sold one per purchase until multi-quantity is turned on.
+      return {
+        notificationType: Number(voided.productType) === 2 ? "REFUND" : "VOIDED_SUBSCRIPTION",
+        purchaseToken: String(voided.purchaseToken ?? ""),
+        productId: "",
+        expiresAt: null,
+      };
+    }
     const note = sub ?? oneTime ?? {};
     return {
       notificationType: googleType(note.notificationType, Boolean(oneTime)),

@@ -8,7 +8,6 @@ _DEFAULT_FREE = "deepseek/deepseek-v4.1-flash"
 _DEFAULT_PRO = "anthropic/claude-sonnet-5-5"
 _DEFAULT_ULTRA = "anthropic/claude-opus-5-5"
 _DEFAULT_EMPLOYER_ULTRA = "anthropic/claude-fable-5-1"
-_DEFAULT_PROVIDERS = "Together,Fireworks,Novita"
 
 _ROWS = {
     ("PERSONAL", "FREE"): ("model_free", _DEFAULT_FREE, "LOW", "basic", "same", "same", PLAN_CREDITS_MICRO[PLAN_FREE]),
@@ -54,15 +53,29 @@ def levers_for(audience: str, plan: str | None, config: object) -> PlanLevers:
     )
 
 
-def deepseek_provider(config: object) -> dict:
-    raw = _cfg(config, "openrouter_deepseek_providers", _DEFAULT_PROVIDERS)
-    order = [part.strip() for part in raw.split(",") if part.strip()]
-    return {"ignore": ["DeepSeek"], "order": order}
+# OpenRouter provider pins, the 개인정보처리방침 국외 이전 list: US providers that do not train
+# on requests. Checked 2026-11-09 against openrouter.ai/api/v1/models/<model>/endpoints and
+# /api/v1/providers (headquarters US); see decisions.tsv. A prefix ending in "/" covers its family.
+_US_PROVIDERS = (
+    ("deepseek/deepseek-v4.1-flash", ("together", "fireworks", "novita")),
+    ("anthropic/", ("anthropic",)),
+    ("openai/text-embedding-3-small", ("openai",)),
+)
 
 
-def provider_for(model: str, config: object) -> dict | None:
-    free = _cfg(config, "model_free", _DEFAULT_FREE)
-    base = model[:-len(":online")] if model.endswith(":online") else model
-    if base != free:
-        return None
-    return deepseek_provider(config)
+def provider_for(model: str) -> dict:
+    """OpenRouter provider preferences; a model without a pinned list is refused before any call."""
+    base = model.removesuffix(":online")
+    for name, only in _US_PROVIDERS:
+        if base == name or (name.endswith("/") and base.startswith(name)):
+            return {"only": list(only), "allow_fallbacks": False, "data_collection": "deny"}
+    from app.domain.errors import not_configured
+    raise not_configured("model " + base + " has no approved provider")
+
+
+def openrouter_route(model: str) -> dict:
+    """Request fields every OpenRouter chat call carries. Web search always runs on Exa."""
+    route: dict = {"provider": provider_for(model)}
+    if model.endswith(":online"):
+        route["plugins"] = [{"id": "web", "engine": "exa"}]
+    return route

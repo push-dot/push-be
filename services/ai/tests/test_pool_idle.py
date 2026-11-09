@@ -122,4 +122,4 @@ async def test_shutdown_stops_the_worker_first_and_closes_the_pool_last(monkeypa
     fa = FastAPI()
     await main._bootstrap(fa, Config(database_url="d"))
     await main._shutdown(fa)
-    assert closed == ["worker", "checkpointer"] + ["client"] * 5 + ["pool"]
+    assert closed == ["worker", "checkpointer"] + ["client"] * 4 + ["pool"]

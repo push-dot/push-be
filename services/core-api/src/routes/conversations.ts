@@ -367,7 +367,7 @@ const enqueueChatMessage = async (
     payload,
     idempotencyKey: headerKey || undefined,
     conversationId,
-  });
+  }, ctx.deps.transaction);
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",

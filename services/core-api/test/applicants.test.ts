@@ -18,7 +18,7 @@ const NOW = "2026-10-21T00:00:00.000Z";
 type Call = { sql: string; params: unknown[] };
 type Err = { error: { code: string; details: { currentRevision?: unknown } } };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 

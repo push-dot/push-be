@@ -20,7 +20,6 @@ type Session = { data: { accessToken: string; refreshToken: string; expiresIn: n
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   GOOGLE_CLIENT_ID: "gid",
   GOOGLE_CLIENT_SECRET: "gsec",
   GITHUB_CLIENT_ID: "hid",

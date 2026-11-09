@@ -16,7 +16,6 @@
     // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
     "PAYMENTS_ENABLED": "0",
     "MANAGED_AI": "1",
-    "MANAGED_GO": "0",
     // Web origins Stripe Checkout may return employers to (comma list, first is the default).
     "STRIPE_RETURN_ORIGINS": "https://push.devcyjoon.tech",
     "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
@@ -42,7 +41,6 @@
         "DEV_USER_ID": "00000000-0000-4000-8000-000000000001",
         "PHONE_SMS_MODE": "log",
         "MANAGED_AI": "1",
-        "MANAGED_GO": "0",
         "STRIPE_RETURN_ORIGINS": "http://localhost:5174,http://localhost:5175",
         "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
         "QUEUE_BACKEND": "redis",

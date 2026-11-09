@@ -11,7 +11,6 @@ function env(extra: Partial<CoreEnv> = {}): CoreEnv {
   return {
     APP_ENV: "production",
     MANAGED_AI: "1",
-    MANAGED_GO: "0",
     TOKEN_ENCRYPTION_KEY: "test-master-key",
     ...extra,
   };

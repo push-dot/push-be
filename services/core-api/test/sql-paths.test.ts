@@ -15,7 +15,7 @@ const CONV = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const POST = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const CURSOR = encodeCursor(NOW, "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
 const get = (path: string): Request => new Request("https://core.example" + path, {

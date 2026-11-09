@@ -13,7 +13,6 @@ const env = (): FrontEnv => ({
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   SSE_MAX_POLLS: "3",
 });
 

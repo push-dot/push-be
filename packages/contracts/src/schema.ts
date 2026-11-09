@@ -482,7 +482,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Log out (revoke refresh token) */
+        /**
+         * Log out (revoke refresh token)
+         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.
+         */
         post: operations["postAuthLogout"];
         delete?: never;
         options?: never;
@@ -2270,7 +2273,7 @@ export interface paths {
         get?: never;
         /**
          * Store signup terms
-         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.
+         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.
          */
         put: operations["putMeConsentsTerms"];
         post?: never;
@@ -3855,6 +3858,8 @@ export interface components {
             audience: "PERSONAL" | "EMPLOYER";
             balanceMicroCredits: number;
             monthlyMicroCredits: number;
+            /** @description False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it. */
+            paymentsEnabled: boolean;
             periodEndsAt: string | null;
             plan: ("FREE" | "PRO" | "ULTRA" | "BASIC") | null;
             reservedMicroCredits: number;
@@ -5048,14 +5053,14 @@ export interface components {
             balanceAfter: number;
             /** Format: date-time */
             createdAt: string;
-            /** @description Payment label: {Plan} 월 구독, 크레딧 구매, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11. */
+            /** @description Payment label: {Plan} 월 구독, 크레딧 구매, 크레딧 구매 환불, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11. */
             description: string | null;
             /** Format: uuid */
             id: string;
             /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
             receiptUrl: string | null;
             referenceId: string | null;
-            /** @description Currently PURCHASE */
+            /** @description PURCHASE, or REFUND: a refunded credit top-up, negative, at most the credits still unspent. Its referenceId is the purchase's. */
             type: string;
         };
         Message: {
@@ -6415,6 +6420,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    pushToken?: string;
                     refreshToken: string;
                 };
             };

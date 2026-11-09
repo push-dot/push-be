@@ -112,7 +112,8 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Log out (revoke refresh token)",
     auth: "public",
-    body: body(obj({ refreshToken: str })),
+    description: "Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.",
+    body: body(obj({ refreshToken: str, pushToken: str }, ["refreshToken"])),
     responses: { 204: noContent },
   }),
   get("gateway", "/api/v1/auth/me", {
@@ -418,7 +419,7 @@ export const routes: Route[] = [
   put("core", "/api/v1/me/consents/terms", {
     tag: "consents",
     summary: "Store signup terms",
-    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 2026-10-29.",
+    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.",
     body: body({
       ...obj({
         age14: bool,
@@ -497,15 +498,16 @@ export const schemas: Record<string, Schema> = {
     spentMicroCredits: { type: "integer", description: "Settled usage this UTC month" },
     audience: accountType,
     source: nullable(enumOf("STRIPE", "APP_STORE", "GOOGLE_PLAY")),
+    paymentsEnabled: { type: "boolean", description: "False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it." },
   }),
   LedgerEntry: obj({
     id: uuid,
-    type: { type: "string", description: "Currently PURCHASE" },
+    type: { type: "string", description: "PURCHASE, or REFUND: a refunded credit top-up, negative, at most the credits still unspent. Its referenceId is the purchase's." },
     amountMicroCredits: int,
     balanceAfter: int,
     referenceId: nullable(str),
     createdAt: dateTime,
-    description: { ...nullable(str), description: "Payment label: {Plan} 월 구독, 크레딧 구매, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11." },
+    description: { ...nullable(str), description: "Payment label: {Plan} 월 구독, 크레딧 구매, 크레딧 구매 환불, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11." },
     amountUsd: { ...nullable({ type: "number" }), description: "Amount in USD (cents / 100), negative for a refund to the Stripe balance. Null when the row is not a Stripe payment or the payment was not in USD." },
     receiptUrl: { ...nullable(str), description: "Stripe hosted invoice or charge receipt. Null when unknown." },
   }),

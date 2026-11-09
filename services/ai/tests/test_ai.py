@@ -104,12 +104,10 @@ async def test_gate_managed_monthly_limit():
     assert e.value.code == "FEATURE_DISABLED"
 
 
-async def test_gate_routes_go_model_to_go_client():
+async def test_gate_ignores_a_client_sent_model():
     user_id = uuid4()
     managed_chat = StubChatCompleter(text="router")
-    go_chat = StubChatCompleter(text="go")
-    g = AIGate(FakeDB(), "sk-managed", managed_chat,
-               go_chat=go_chat, go_key="sk-go")
+    g = AIGate(FakeDB(), "sk-managed", managed_chat)
     g.users = StubUserStore(_user())
     g.usage = StubAiUsageStore()
     ai = ent.AiOptions(provider="OPENAI",
@@ -118,39 +116,6 @@ async def test_gate_routes_go_model_to_go_client():
     c = await g.complete(user_id, ai, "", "hi")
     assert c.text == "router"
     assert managed_chat.got["model"] == "anthropic/claude-opus-5-5"
-    assert go_chat.got == {}
-
-
-async def test_managed_plan_go_model_routes_to_go_client():
-    from app.config import Config
-    user_id = uuid4()
-    managed_chat = StubChatCompleter(text="router")
-    go_chat = StubChatCompleter(text="go")
-    g = AIGate(FakeDB(), "sk-managed", managed_chat,
-               go_chat=go_chat, go_key="sk-go",
-               config=Config(model_ultra="opencode-go/deepseek-v4.1-flash"))
-    g.users = StubUserStore(_user("ULTRA"))
-    g.usage = StubAiUsageStore()
-    ai = ent.AiOptions(provider="OPENAI", model="client-model",
-                       effort="LOW")
-    c = await g.complete(user_id, ai, "", "hi")
-    assert c.text == "go"
-    assert go_chat.got["key"] == "sk-go"
-    assert go_chat.got["model"] == "deepseek-v4.1-flash"
-    assert managed_chat.got == {}
-
-
-async def test_gate_go_model_requires_go_key():
-    from app.config import Config
-    g = AIGate(FakeDB(), "sk-managed", StubChatCompleter(),
-               config=Config(model_ultra="opencode-go/deepseek-v4.1-flash"))
-    g.users = StubUserStore(_user())
-    g.usage = StubAiUsageStore()
-    ai = ent.AiOptions(provider="OPENAI", model="client-model",
-                       effort="LOW")
-    with pytest.raises(DomainError) as e:
-        await g.check(uuid4(), ai)
-    assert e.value.code == "NOT_CONFIGURED"
 
 
 async def test_gate_web_search_managed_uses_online_suffix():

@@ -7,7 +7,6 @@ test("listModels supportedEfforts includes MAX and the lower efforts", () => {
   const rows = listModels({
     provider: "",
     managedAi: true,
-    managedGo: false,
   });
   assert.ok(rows.length > 0);
   for (const row of rows) {
