@@ -79,8 +79,9 @@ HOLD = {"user_id": USER, "company_id": None, "amount_micro": 500}
 async def test_retry_requeues_rereserves_credits_and_writes_outbox_atomically():
     conn = Conn(row=[HOLD, {"queue": "q:document"}], vals=[500])
     assert await AdminJobs(conn).retry(JOB, NOW) is True
-    hold, lock, update, available, credits, outbox = conn.log
+    hold, timeout, lock, update, available, credits, outbox = conn.log
     assert "status = 'RELEASED'" in hold[1] and hold[2] == (JOB,)
+    assert "set_config('lock_timeout'" in timeout[1] and timeout[2] == ("3s",)
     assert "FROM users WHERE id = $1 FOR NO KEY UPDATE" in lock[1] and lock[2] == (USER,)
     assert "SET status = 'QUEUED', attempts = 0, error = NULL" in update[1]
     assert "status IN ('DEAD', 'FAILED')" in update[1]
@@ -98,7 +99,7 @@ async def test_retry_short_of_credits_raises_before_the_hold_or_outbox():
     conn = Conn(row=[HOLD, {"queue": "q:document"}], vals=[499])
     with pytest.raises(ShortBalance):
         await AdminJobs(conn).retry(JOB, NOW)
-    assert [entry[0] for entry in conn.log] == ["fetchrow", "execute", "fetchrow", "fetchval"]
+    assert [entry[0] for entry in conn.log] == ["fetchrow", "execute", "execute", "fetchrow", "fetchval"]
 
 
 async def test_retry_of_a_job_that_is_not_dead_or_failed_changes_nothing():
@@ -108,13 +109,29 @@ async def test_retry_of_a_job_that_is_not_dead_or_failed_changes_nothing():
 
 
 async def test_cancel_marks_cancelled_and_releases_reserved_credits():
-    conn = Conn(tags=["UPDATE 1"])
+    conn = Conn(tags=["UPDATE 1"], row=[{"user_id": USER, "company_id": None},
+                                        {"amount_micro": 500, "settled_micro": 0}])
     assert await AdminJobs(conn).cancel(JOB, NOW) is True
-    (_, cancel, cargs, _), (_, release, rargs, _) = conn.log
+    (_, cancel, cargs, _), _, _, _, (_, release, rargs, in_tx) = conn.log
     assert "SET status = 'CANCELLED'" in cancel and "('QUEUED', 'RETRY', 'RUNNING')" in cancel
     assert cargs == (JOB, NOW)
-    assert "credit_reservations SET status = 'RELEASED'" in release and "status = 'RESERVED'" in release
-    assert rargs == (JOB, NOW)
+    assert "credit_reservations SET status = $3" in release and "status = 'RESERVED'" in release
+    assert rargs == (JOB, NOW, "RELEASED") and in_tx
+
+
+class Busy(Exception):
+    sqlstate = "55P03"
+
+
+async def test_cancel_leaves_the_hold_to_reconcile_while_the_owner_row_is_busy():
+    class BusyConn(Conn):
+        async def execute(self, sql, *args):
+            if "FOR NO KEY UPDATE" in sql:
+                raise Busy("lock timeout")
+            return await super().execute(sql, *args)
+
+    conn = BusyConn(tags=["UPDATE 1"], row=[{"user_id": USER, "company_id": None}])
+    assert await AdminJobs(conn).cancel(JOB, NOW) is True
 
 
 async def test_cancel_of_a_finished_job_does_not_release_credits():

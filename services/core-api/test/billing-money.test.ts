@@ -75,6 +75,8 @@ function stripeWorld(customer: string) {
   const ended: string[] = [];
   const open = new Map<string, string[]>();
   const fail = { get: 0, delete: 0 };
+  // A GET of one of these subscriptions fails once.
+  const failGet = new Set<string>();
   // The latest invoice bills the current period and is paid, unless the subscription is listed here: renewed, its invoice still a draft.
   const sessions: Row[] = [];
   const drafts = new Set<string>();
@@ -102,7 +104,7 @@ function stripeWorld(customer: string) {
     calls.push(`${method} ${url.pathname}${url.search}`);
     const one = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname)?.[1];
     if (one && method === "GET") {
-      if (fail.get-- > 0) return json({ error: { type: "api_error" } }, 500);
+      if (fail.get-- > 0 || failGet.delete(decodeURIComponent(one))) return json({ error: { type: "api_error" } }, 500);
       const sub = subs.get(decodeURIComponent(one));
       return sub ? json(sub) : json({ error: { code: "resource_missing" } }, 404);
     }
@@ -137,7 +139,7 @@ function stripeWorld(customer: string) {
     }
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
-  return { subs, calls, fail, open, drafts, unexpanded, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
+  return { subs, calls, fail, failGet, open, drafts, unexpanded, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
 }
 
 type World = ReturnType<typeof stripeWorld>;
@@ -830,6 +832,42 @@ test("an upgrade whose replaced live subscription has no readable latest_invoice
   const basic = stripe.subscribe("BASIC", at + DAY);
   assert.equal(await deliver(stripe, checkout(co.id, basic, "BASIC", at + DAY), at + DAY), 200);
   assert.equal((await alertsOf(co.id)).length, 1);
+});
+
+test("a REFUND_SKIPPED alert outlives a failure later in the same event, though the retry no longer lists the canceled subscription", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  stripe.unexpanded.add(pro.id);
+  const at = START + DAY;
+  const ultra = stripe.subscribe("ULTRA", at);
+  const event = checkout(co.id, ultra, "ULTRA", at);
+  // The read of the replaced subscription after its cancel fails, so the event rolls back with Stripe's cancel already done.
+  stripe.failGet.add(pro.id);
+  assert.equal(await deliver(stripe, event, at), 500);
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
+  assert.deepEqual(await alertsOf(co.id), [{ kind: "REFUND_SKIPPED", reference_id: pro.id, resolved: false }]);
+  assert.equal(await deliver(stripe, event, at + 60_000), 200);
+  assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+  assert.deepEqual(await alertsOf(co.id), [{ kind: "REFUND_SKIPPED", reference_id: pro.id, resolved: false }]);
+});
+
+test("the month's spend leaves out usage that was written off", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const member = crypto.randomUUID();
+  await pg!.query("INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'email', $2, 'a')", [member, member]);
+  await pg!.query("INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'ADMIN')", [co.id, member]);
+  const at = new Date(START).toISOString();
+  await pg!.query(
+    "INSERT INTO ai_usage (id, user_id, provider, model, managed, input_tokens, output_tokens, cost_micro_credits, status, created_at) VALUES ($1, $2, 'OPENAI', 'm', true, 1, 1, $3, 'SETTLED', $4)",
+    [crypto.randomUUID(), member, 1050 * MICRO, at]);
+  await pg!.query(
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) VALUES ($1, NULL, $2, 'WRITE_OFF', $3, $3, $4, $5)",
+    [crypto.randomUUID(), co.id, 50 * MICRO, "writeoff:" + crypto.randomUUID(), at]);
+  assert.equal((await billingRead(co.id, START + DAY)).spentMicroCredits, 1000 * MICRO);
 });
 
 test("a subscription event of a customer the company has left is accepted and changes nothing", async (t) => {

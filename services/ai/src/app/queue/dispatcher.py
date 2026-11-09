@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from app.account_purge import purge_deleted
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
-from app.queue.credits import settle_job
+from app.queue.credits import release_job, settle_job, unless_busy
 from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
 from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
@@ -55,15 +55,13 @@ class PgJobs(AdminJobs):
         """Requeue jobs whose worker died; a lost heartbeat costs an attempt, so a job
         that keeps killing its worker ends DEAD (reservation released) instead of looping."""
         rows = await self.conn.fetch(
-            "WITH stale AS ("
             "UPDATE ai_jobs SET attempts = attempts + 1, run_after = $1, updated_at = $1, "
             "status = CASE WHEN attempts + 1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
-            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) RETURNING id, queue, status), "
-            "released AS ("
-            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 FROM stale s "
-            "WHERE r.job_id = s.id AND s.status = 'DEAD' AND r.status = 'RESERVED') "
-            "SELECT id, queue, status FROM stale",
+            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) RETURNING id, queue, status",
             now, list(ids))
+        for row in rows:
+            if row["status"] == "DEAD":
+                await unless_busy(release_job(self.conn, row["id"], now))
         return [_row(row, "id", "queue", "status") for row in rows]
 
     async def pending_jobs(self, now):
@@ -76,16 +74,15 @@ class PgJobs(AdminJobs):
     async def reconcile_credits(self, now) -> int:
         """Close reservations left RESERVED when a worker died between finish and settle."""
         before = now - timedelta(seconds=RECONCILE_AFTER_S)
-        done = await self.conn.fetch(
-            "SELECT r.job_id FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
-            "WHERE r.status = 'RESERVED' AND j.status = 'DONE' AND j.updated_at < $1", before)
-        for row in done:
-            await settle_job(self.conn, row["job_id"], now)
-        tag = await self.conn.execute(
-            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 "
-            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' "
-            "AND j.status IN ('FAILED', 'DEAD', 'CANCELLED') AND j.updated_at < $2", now, before)
-        return len(done) + int(tag.split()[-1])
+        rows = await self.conn.fetch(
+            "SELECT r.job_id, j.status FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
+            "WHERE r.status = 'RESERVED' AND j.status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') "
+            "AND j.updated_at < $1", before)
+        closed = 0
+        for row in rows:
+            close = settle_job if row["status"] == "DONE" else release_job
+            closed += await unless_busy(close(self.conn, row["job_id"], now))
+        return closed
 
 
 def _row(row, *keys):

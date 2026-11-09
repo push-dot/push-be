@@ -222,7 +222,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install workers
         run: npm ci
-      # BILLING_PG_URL: the billing money tests (test/billing-money.test.ts) run on this migrated schema here and skip elsewhere.
+      # BILLING_PG_URL: the billing money tests (core-api test/billing-money.test.ts, ai tests/test_credits_settle_pg.py) run on
+      # this migrated schema here and skip elsewhere; -rs lists every ai skip, so a lost URL shows.
       - name: Capture SQL from the core, gateway and ai tests
         env:
           SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
@@ -232,7 +233,7 @@ jobs:
           register="$GITHUB_WORKSPACE/scripts/sql-check/register.mjs"
           (cd services/core-api && node --expose-gc --experimental-strip-types --import "$register" --test 'test/**/*.ts')
           (cd services/gateway && node --experimental-strip-types --import "$register" --test 'test/**/*.ts')
-          (cd services/ai && PYTHONPATH="$GITHUB_WORKSPACE/scripts/sql-check" uv run --no-sync pytest -q -p sql_capture)
+          (cd services/ai && PYTHONPATH="$GITHUB_WORKSPACE/scripts/sql-check" uv run --no-sync pytest -q -rs -p sql_capture)
       # The retention purge on the migrated schema (skipped elsewhere); -rs prints a skip if the URL is lost.
       - name: Retention purge tests
         working-directory: services/ai

@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from app.queue.credits import ShortBalance, available_micro, lock_owner, release_job
+from app.queue.credits import ShortBalance, available_micro, lock_owner, release_job, unless_busy
 
 FINISHED = ("DONE", "FAILED", "DEAD", "CANCELLED")
 RETENTION = timedelta(days=30)
@@ -57,7 +57,7 @@ class AdminJobs:
             "WHERE id = $1 AND status IN ('QUEUED', 'RETRY', 'RUNNING')", job_id, now)
         if tag.endswith(" 0"):
             return False
-        await release_job(self.conn, job_id, now)
+        await unless_busy(release_job(self.conn, job_id, now))
         return True
 
     async def type_stats(self, now) -> dict:

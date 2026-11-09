@@ -892,7 +892,7 @@
             ]
           },
           "spentMicroCredits": {
-            "description": "Settled usage this UTC month",
+            "description": "Settled usage this UTC month, less what was written off (WRITE_OFF rows), so what was charged",
             "type": "integer"
           },
           "subscriptionStatus": {
@@ -5639,7 +5639,7 @@
             ]
           },
           "type": {
-            "description": "PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>).",
+            "description": "PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>, then writeoff:<jobId>:<n> for a retried job written off again). Not a payment: amountUsd is null.",
             "type": "string"
           }
         },

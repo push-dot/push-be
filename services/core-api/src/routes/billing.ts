@@ -48,8 +48,9 @@ const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): n
   return grantMicro(audience, named);
 };
 
-const EMPLOYER_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)";
-const PERSONAL_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3";
+// Usage written off (WRITE_OFF rows) was never charged, so the month's spend leaves it out.
+const EMPLOYER_SPEND = "SELECT COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE company_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0) AS spent";
+const PERSONAL_SPEND = "SELECT COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0) AS spent";
 
 const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<number> => {
   try {
@@ -99,16 +100,20 @@ const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: strin
 };
 const REFUND_DESCRIPTION = "요금제 변경 환급";
 
+type Alert = { companyId: string; kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED"; referenceId: string; detail: string };
+// A webhook's transaction ctx carries `alerts`: what it raised is raised again outside the transaction if that rolls back.
+type AlertCtx = Ctx & { alerts?: Alert[] };
+
 // Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
-const raiseAlert = async (ctx: Ctx, companyId: string, kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED", referenceId: string, detail: string): Promise<void> => {
+const raiseAlert = async (ctx: AlertCtx, companyId: string, kind: Alert["kind"], referenceId: string, detail: string): Promise<void> => {
   console.error(JSON.stringify({ billingAlert: kind, companyId, referenceId, detail }));
+  ctx.alerts?.push({ companyId, kind, referenceId, detail });
   await query(ctx.deps.query,
     "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
     [crypto.randomUUID(), companyId, kind, referenceId, detail, ctx.now.toISOString()]);
 };
 
 // Thrown to fail a webhook with an alert that must outlive the rolled-back transaction.
-type Alert = { companyId: string; kind: "CANCEL_FAILED"; referenceId: string; detail: string };
 class AlertingError extends Error {
   readonly alert: Alert;
   constructor(alert: Alert) {
@@ -394,11 +399,12 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   const obj = ((event.data as { object?: Record<string, unknown> } | undefined)?.object) || {};
   // One transaction per event: each handler locks the company (or user) row first, so the billing changes of one owner run one
   // at a time and a failure rolls back the event row with the rest.
+  const alerts: Alert[] = [];
   try {
     await inTransactionOf(ctx)(async (q) => {
       // A timeout fails the event and Stripe retries it.
       await boundTransaction(q, "15s");
-      const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
+      const tx: AlertCtx = { ...ctx, deps: { ...ctx.deps, query: q }, alerts };
       const fresh = await one(q,
         "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
         [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
@@ -414,7 +420,10 @@ export async function webhook(ctx: Ctx): Promise<Response> {
     });
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
-    if (err instanceof AlertingError) await raiseAlert(ctx, err.alert.companyId, err.alert.kind, err.alert.referenceId, err.alert.detail);
+    // A retry may not raise them again: a replaced subscription canceled before the failure is no longer listed.
+    for (const alert of err instanceof AlertingError ? [...alerts, err.alert] : alerts) {
+      await raiseAlert(ctx, alert.companyId, alert.kind, alert.referenceId, alert.detail);
+    }
     throw err;
   }
   return data(200, { received: true }, ctx.rid);
