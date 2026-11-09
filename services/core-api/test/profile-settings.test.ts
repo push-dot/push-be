@@ -213,30 +213,3 @@ test("profile contact follows the visibility setting", async () => {
   const acceptedSql = "";
   assert.equal(acceptedSql, "");
 });
-
-test("profile detail reports blockedMe from the owner's block in one query, and false for the own profile", async () => {
-  for (const [blocked, expected] of [[true, true], [false, false], [undefined, false]] as const) {
-    resetLimits();
-    const seen: Call[] = [];
-    const res = await handle(get(`/api/v1/profiles/${OTHER}`), env(), deps(authed(seen, async (sql) => {
-      if (sql.includes("SELECT email FROM users")) return empty;
-      if (sql.includes("FROM profiles")) {
-        return { rows: [{ user_id: OTHER, display_name: "Bea", updated_at: NOW, profile_public: true, blocked_me: blocked }], rowCount: 1 };
-      }
-      return empty;
-    })));
-    assert.equal(res.status, 200);
-    assert.equal((await res.json() as { data: { blockedMe: boolean } }).data.blockedMe, expected);
-    const select = seen.filter((c) => c.sql.includes("AS blocked_me"));
-    assert.equal(select.length, 1);
-    assert.match(select[0].sql, /bb\.blocker_id = p\.user_id AND bb\.blocked_id = \$1\) AS blocked_me/);
-    assert.deepEqual(select[0].params, [USER, OTHER]);
-  }
-  resetLimits();
-  const mine = await handle(get("/api/v1/me/profile"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return empty;
-    if (sql.includes("FROM profiles")) return { rows: [{ user_id: USER, display_name: "Ada", updated_at: NOW, profile_public: true }], rowCount: 1 };
-    return empty;
-  })));
-  assert.equal((await mine.json() as { data: { blockedMe: boolean } }).data.blockedMe, false);
-});

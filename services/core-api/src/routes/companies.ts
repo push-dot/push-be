@@ -10,10 +10,10 @@ const MINE = "SELECT c.id, c.b_no, c.name, c.plan, c.verified_at, m.role, (SELEC
 const MINE_PROFILE = "SELECT c.id, c.b_no, c.name, c.plan, c.verified_at, c.logo_key, c.industry, c.website, c.intro, c.representative_name, to_jsonb(c)->>'legal_name' AS legal_name, m.role, (SELECT count(*) FROM company_members mm WHERE mm.company_id = c.id AND mm.role = 'MEMBER') AS member_count, (SELECT count(*) FROM company_invites i WHERE i.company_id = c.id AND i.accepted_at IS NULL AND i.expires_at > $2) AS invite_count FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1";
 const IMAGE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const PROFILE_KEYS = new Set(["logoKey", "industry", "website", "intro", "representativeName", "legalName"]);
-const INVITE_SEAT = `WHERE (
-       (SELECT count(*) FROM company_members WHERE company_id = $2 AND role = 'MEMBER')
-       + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)
-     ) < $7`;
+const SEATS_USED = `(SELECT count(*) FROM company_members WHERE company_id = $2 AND role = 'MEMBER')
+       + (SELECT count(*) FROM company_invites WHERE company_id = $2 AND accepted_at IS NULL AND expires_at > $6)`;
+const INVITE_SEAT = `WHERE (${SEATS_USED}) < $7`;
+const RESEND_COOLDOWN_MS = 60 * 1000;
 
 const TRANSFER_ADMIN = "UPDATE company_members SET role = CASE WHEN user_id = $2 THEN 'ADMIN' ELSE 'MEMBER' END WHERE company_id = $1 AND (user_id = $2 OR role = 'ADMIN')";
 const ACCEPT_INVITE = "WITH claimed AS (UPDATE company_invites SET accepted_at = $3 WHERE id = $1 AND accepted_at IS NULL RETURNING company_id) INSERT INTO company_members (company_id, user_id, role, created_at) SELECT company_id, $2, 'MEMBER', $3 FROM claimed RETURNING company_id";
@@ -375,6 +375,31 @@ const updateInviteToken = async (ctx: Ctx, id: string, hash: string, expires: st
   }
 };
 
+const restoreInvite = async (ctx: Ctx, id: string, row: Record<string, unknown>): Promise<void> => {
+  await query(ctx.deps.query,
+    "UPDATE company_invites SET token_hash = $2, expires_at = $3 WHERE id = $1",
+    [id, row.token_hash, row.expires_at]);
+};
+
+// A live invite already holds its seat; a lapsed one must win a seat again, and the cooldown reads the last send off expires_at.
+const RESEND_GUARD = `WHERE id = $1 AND company_id = $2 AND accepted_at IS NULL AND expires_at <= $5
+       AND (expires_at > $6 OR (${SEATS_USED}) < $7)`;
+
+const claimResend = async (ctx: Ctx, id: string, companyId: string, hash: string, expires: string, limit: number): Promise<boolean> => {
+  const cutoff = new Date(ctx.now.getTime() + INVITE_MS - RESEND_COOLDOWN_MS).toISOString();
+  const params = [id, companyId, hash, expires, cutoff, ctx.now.toISOString(), limit];
+  let claimed;
+  try {
+    claimed = await query(ctx.deps.query,
+      `UPDATE company_invites SET token_hash = $3, expires_at = $4, inviter_user_id = $8 ${RESEND_GUARD}`,
+      [...params, ctx.user.id]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    claimed = await query(ctx.deps.query, `UPDATE company_invites SET token_hash = $3, expires_at = $4 ${RESEND_GUARD}`, params);
+  }
+  return (claimed.rowCount ?? 0) > 0;
+};
+
 // shortcut: there is no created_at column, and re-sending rotates the expiry, so this is the last send. Add a column if sends need a history.
 const inviteJson = (row: Record<string, unknown>) => ({
   id: String(row.id),
@@ -462,20 +487,27 @@ const listInvites = async (ctx: Ctx): Promise<Response> => {
 const resendInvite = async (ctx: Ctx, id: string): Promise<Response> => {
   const mine = await requireAdmin(ctx);
   const row = await one(ctx.deps.query,
-    "SELECT id, email, expires_at FROM company_invites WHERE id = $1::uuid AND company_id = $2::uuid AND accepted_at IS NULL",
+    "SELECT id, email, token_hash, expires_at FROM company_invites WHERE id = $1::uuid AND company_id = $2::uuid AND accepted_at IS NULL",
     [id, String(mine.id)]);
   if (!row) throw notFound();
   const lapsed = Date.parse(String(row.expires_at)) <= ctx.now.getTime();
-  if (lapsed && usedOf(mine) >= seatLimit(planOf(mine.plan))) throw new HttpError(403, "SEAT_LIMIT", "seat limit reached");
+  const wait = Math.ceil((Date.parse(String(row.expires_at)) - INVITE_MS + RESEND_COOLDOWN_MS - ctx.now.getTime()) / 1000);
+  if (wait > 0) throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: wait });
+  const limit = seatLimit(planOf(mine.plan));
   const email = row.email == null ? "" : String(row.email);
   const raw = randomToken();
   const expires = new Date(ctx.now.getTime() + INVITE_MS).toISOString();
+  // The claim comes first so two concurrent resends cannot both win the last seat or double-mail.
+  if (!await claimResend(ctx, id, String(mine.id), await sha256Hex(raw), expires, limit)) {
+    if (lapsed) throw new HttpError(403, "SEAT_LIMIT", "seat limit reached");
+    throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: RESEND_COOLDOWN_MS / 1000 });
+  }
   try {
     await sendInvite(ctx, email, raw);
   } catch {
+    await restoreInvite(ctx, id, row);
     throw new HttpError(502, "PROVIDER_ERROR", "invite mail failed");
   }
-  await updateInviteToken(ctx, id, await sha256Hex(raw), expires);
   return data(200, inviteJson({ id, email, expires_at: expires }), ctx.rid);
 };
 

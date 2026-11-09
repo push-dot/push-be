@@ -24,7 +24,7 @@ const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not 
 const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknown>): Promise<Response> => {
   const plan = planTier(ctx.user.plan);
   const queue = queueFor(type, plan, "PERSONAL");
-  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id });
   if (!pressure.ok) {
     throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }

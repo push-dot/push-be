@@ -459,7 +459,6 @@ export const schemas: Record<string, Schema> = {
     ...profileProps,
     following: bool,
     offered: bool,
-    blockedMe: { ...bool, description: "The profile owner has blocked the caller. False for the caller's own profile. POST /profiles/{id}/offer is then 403 BLOCKED." },
   }),
   Offer: obj({
     id: uuid,

@@ -1433,18 +1433,20 @@ test("verify stores an optional trimmed legalName and returns it", async () => {
 
 const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
-test("POST /companies/me/invites/{id}/resend rotates the token, mails it and returns the invite", async () => {
+const SENT_LONG_AGO = "2026-10-15T00:00:00.000Z";
+
+test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one UPDATE, then mails the new link", async () => {
   resetLimits();
   const seen: Call[] = [];
   const sent: Mail[] = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.startsWith("UPDATE company_invites")) {
-      assert.equal(sent.length, 1);
+      assert.equal(sent.length, 0);
       return { rows: [], rowCount: 1 };
     }
     if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.startsWith("SELECT id, email, expires_at FROM company_invites")) {
-      return { rows: [{ id: INVITE_ID, email: "m@push.app", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
+    if (sql.startsWith("SELECT id, email, token_hash, expires_at FROM company_invites")) {
+      return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
     }
     return empty;
   });
@@ -1455,20 +1457,24 @@ test("POST /companies/me/invites/{id}/resend rotates the token, mails it and ret
   );
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { data: { id: INVITE_ID, email: "m@push.app", expiresAt: WEEK.replace(".000Z", "Z"), invitedAt: "2026-10-21T00:00:00Z" } });
-  const lookup = seen.find((call) => call.sql.startsWith("SELECT id, email, expires_at FROM company_invites"));
+  const lookup = seen.find((call) => call.sql.startsWith("SELECT id, email, token_hash, expires_at FROM company_invites"));
   assert.ok(lookup);
   assert.match(lookup.sql, /accepted_at IS NULL/);
   assert.deepEqual(lookup.params, [INVITE_ID, COMPANY]);
   const token = sent[0].text.slice("http://localhost:5174/invites/".length);
   const update = seen.find((call) => call.sql.startsWith("UPDATE company_invites"));
   assert.ok(update);
-  assert.deepEqual(update.params, [INVITE_ID, await sha256Hex(token), WEEK, USER]);
+  assert.match(update.sql, /accepted_at IS NULL AND expires_at <= \$5\s+AND \(expires_at > \$6 OR \(/);
+  assert.match(update.sql, /\) < \$7\)/);
+  const cutoff = new Date(NOW.getTime() + 7 * 24 * 60 * 60 * 1000 - 60 * 1000).toISOString();
+  assert.deepEqual(update.params, [INVITE_ID, COMPANY, await sha256Hex(token), WEEK, cutoff, NOW.toISOString(), 2, USER]);
 
   resetLimits();
   const failSeen: Call[] = [];
   const failQuery = gate(failSeen, employer(), async (sql) => {
     if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", expires_at: WEEK }], rowCount: 1 };
+    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
     return empty;
   });
   const failed = await handle(
@@ -1477,18 +1483,64 @@ test("POST /companies/me/invites/{id}/resend rotates the token, mails it and ret
     deps(failQuery, undefined, { send: async () => { throw new Error("smtp down"); } }),
   );
   assert.equal(failed.status, 502);
-  assert.equal(failSeen.some((call) => call.sql.startsWith("UPDATE company_invites")), false);
+  const updates = failSeen.filter((call) => call.sql.startsWith("UPDATE company_invites"));
+  assert.equal(updates.length, 2);
+  assert.deepEqual(updates[1].params, [INVITE_ID, "old", SENT_LONG_AGO]);
 
   resetLimits();
   const fullSeen: Call[] = [];
   const full = gate(fullSeen, employer(), async (sql) => {
     if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
+    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
     return empty;
   });
-  const limited = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f13"), env(), deps(full, undefined, { send: async () => {} }));
+  const sentFull: Mail[] = [];
+  const limited = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f13"), env(), deps(full, undefined, { send: async (mail) => { sentFull.push(mail); } }));
   assert.equal(limited.status, 403);
   assert.equal((await limited.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal(sentFull.length, 0);
+  assert.equal(fullSeen.filter((call) => call.sql.startsWith("UPDATE company_invites")).length, 1);
+
+  resetLimits();
+  const raceSeen: Call[] = [];
+  const race = gate(raceSeen, employer(), async (sql) => {
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
+    return empty;
+  });
+  const raced = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f17"), env(), deps(race, undefined, { send: async () => {} }));
+  assert.equal(raced.status, 429);
+  assert.deepEqual((await raced.json() as Err).error.details, { retryAfterSec: 60 });
+
+  resetLimits();
+  const coolSeen: Call[] = [];
+  const justSent = new Date(NOW.getTime() + 7 * 24 * 60 * 60 * 1000 - 20 * 1000).toISOString();
+  const cool = gate(coolSeen, employer(), async (sql) => {
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: justSent }], rowCount: 1 };
+    return empty;
+  });
+  const hot = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f18"), env(), deps(cool, undefined, { send: async () => { throw new Error("must not mail"); } }));
+  assert.equal(hot.status, 429);
+  assert.equal(hot.headers.get("retry-after"), "40");
+  assert.deepEqual((await hot.json() as Err).error.details, { retryAfterSec: 40 });
+  assert.equal(coolSeen.some((call) => call.sql.startsWith("UPDATE company_invites")), false);
+
+  resetLimits();
+  const oldSeen: Call[] = [];
+  const old = gate(oldSeen, employer(), async (sql) => {
+    if (sql.startsWith("UPDATE company_invites") && sql.includes("inviter_user_id")) throw undefinedColumn("inviter_user_id");
+    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
+    return empty;
+  });
+  const legacy = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f19"), env(), deps(old, undefined, { send: async () => {} }));
+  assert.equal(legacy.status, 200);
+  const fallbackUpdate = oldSeen.filter((call) => call.sql.startsWith("UPDATE company_invites"))[1];
+  assert.equal(fallbackUpdate.params.length, 7);
 
   resetLimits();
   const gone = gate([], employer(), async (sql) => sql.includes("AS member_count") ? { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 } : empty);

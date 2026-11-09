@@ -354,7 +354,7 @@ const enqueueChatMessage = async (
   const type = companyId ? "employer_ai" : "chat";
   const audience = companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(type, plan, audience);
-  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id, companyId });
   if (!pressure.ok) {
     throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }

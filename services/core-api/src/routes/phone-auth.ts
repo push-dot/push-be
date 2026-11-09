@@ -21,7 +21,6 @@ const ACTIVE_CODE = "SELECT id, code_hash, expires_at, attempts FROM phone_codes
 const BUMP = "UPDATE phone_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts";
 const CONSUME_ONE = "UPDATE phone_codes SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL";
 const BY_PHONE = "SELECT id FROM users WHERE phone = $1 AND is_employer = false";
-const OWNER_BY_PHONE = "SELECT id, provider FROM users WHERE phone = $1 AND is_employer = false";
 const INSERT_USER = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,'phone',$2,'user','ko',$3,NULL,NULL,false,NULL,$2)";
 const INSERT_SOCIAL = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,$2,$3,'user','ko',$4,$5,$6,false,NULL,$7)";
 const SET_SOCIAL = "UPDATE users SET provider = $2, provider_subject = $3 WHERE id = $1 AND provider = 'phone'";
@@ -79,12 +78,16 @@ const callerOf = async (ctx: Ctx): Promise<UserRow | null> => {
   return user;
 };
 
+// conflict names what is already linked elsewhere: the phone itself, or the pending social identity.
+const taken = (provider: string): HttpError =>
+  new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account", { conflict: provider === "phone" ? "PHONE" : "IDENTITY", provider });
+
 const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject: string): Promise<void> => {
   if (!provider || !subject) return;
   const existing = await one(ctx.deps.query, IDENTITY, [provider, subject]);
   if (existing) {
     if (String(existing.user_id) === userId) return;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(provider);
   }
   try {
     await query(ctx.deps.query, INSERT_IDENTITY, [userId, provider, subject, ctx.now.toISOString()]);
@@ -92,7 +95,7 @@ const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject:
     if (!isUnique(err)) throw err;
     const again = await one(ctx.deps.query, IDENTITY, [provider, subject]);
     if (again && String(again.user_id) === userId) return;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(provider);
   }
 };
 
@@ -161,15 +164,15 @@ const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, pho
   if (existing.length > 0) {
     throw new HttpError(409, "PHONE_ALREADY_REGISTERED", "phone is already registered", { existingProviders: existing });
   }
-  const taken = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
-  if (taken && String(taken.user_id) !== userId) {
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+  const holder = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
+  if (holder && String(holder.user_id) !== userId) {
+    throw taken(pending.provider);
   }
   try {
     await query(ctx.deps.query, SET_SOCIAL, [userId, pending.provider, pending.subject]);
   } catch (err) {
     if (!isUnique(err)) throw err;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(pending.provider);
   }
   await bindIdentity(ctx, userId, pending.provider, pending.subject);
   await bindIdentity(ctx, userId, "phone", phone);
@@ -189,14 +192,14 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
     if (!isUnique(err)) throw err;
     const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (raced) return linkOrBlock(ctx, String(raced.id), pending, phone);
-    if (!pending.email) throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    if (!pending.email) throw taken(pending.provider);
     try {
       await insertSocial(ctx, userId, pending, phone, null);
     } catch (err2) {
       if (!isUnique(err2)) throw err2;
       const again = await one(ctx.deps.query, BY_PHONE, [phone]);
       if (again) return linkOrBlock(ctx, String(again.id), pending, phone);
-      throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+      throw taken(pending.provider);
     }
   }
   await bindIdentity(ctx, userId, pending.provider, pending.subject);
@@ -224,23 +227,6 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
   }
   const pending = await pendingOf(ctx, body);
   await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
-  try {
-    return await signIn(ctx, phone, pending);
-  } catch (err) {
-    if (!(err instanceof HttpError) || err.code !== "PHONE_TAKEN") throw err;
-    throw new HttpError(409, "PHONE_TAKEN", err.message, await ownerDetails(ctx, phone));
-  }
-};
-
-// The code is proven by now, so naming the owning provider leaks nothing the caller does not hold.
-const ownerDetails = async (ctx: Ctx, phone: string): Promise<{ provider: string } | null> => {
-  const owner = await one(ctx.deps.query, OWNER_BY_PHONE, [phone]);
-  if (!owner) return null;
-  const [social] = await socialProviders(ctx, String(owner.id));
-  return { provider: social ?? String(owner.provider) };
-};
-
-const signIn = async (ctx: Ctx, phone: string, pending: PendingSignup | null): Promise<Response> => {
   if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (owner) return linkOrBlock(ctx, String(owner.id), pending, phone);

@@ -295,7 +295,7 @@ test("the last wrong try reports no attempts left", async () => {
   assert.deepEqual((await res.json() as Err).error.details, { attemptsLeft: 0 });
 });
 
-test("PHONE_TAKEN on verify names the provider that owns the phone, and send reveals nothing", async () => {
+test("PHONE_TAKEN on a phone identity held elsewhere reports conflict PHONE, and send reveals nothing", async () => {
   const db = createDb();
   const sent: Sent[] = [];
   db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
@@ -306,10 +306,10 @@ test("PHONE_TAKEN on verify names the provider that owns the phone, and send rev
   assert.equal(taken.status, 409);
   const body = await taken.json() as Err;
   assert.equal(body.error.code, "PHONE_TAKEN");
-  assert.deepEqual(body.error.details, { provider: "google" });
+  assert.deepEqual(body.error.details, { conflict: "PHONE", provider: "phone" });
 });
 
-test("PHONE_TAKEN for a phone-only owner reports provider phone", async () => {
+test("PHONE_TAKEN for a pending identity held elsewhere reports conflict IDENTITY and that provider, not the phone owner's", async () => {
   const db = createDb();
   const sent: Sent[] = [];
   db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: PHONE, phone: PHONE }));
@@ -319,7 +319,7 @@ test("PHONE_TAKEN for a phone-only owner reports provider phone", async () => {
   assert.equal(taken.status, 409);
   const body = await taken.json() as Err;
   assert.equal(body.error.code, "PHONE_TAKEN");
-  assert.deepEqual(body.error.details, { provider: "phone" });
+  assert.deepEqual(body.error.details, { conflict: "IDENTITY", provider: "google" });
 });
 
 test("verify creates a personal account once, then logs into it", async () => {
