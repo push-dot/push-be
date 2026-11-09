@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy test/run.sh)
+scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy test/run.sh test/real-logrotate.sh)
 for s in "${scripts[@]}"; do bash -n "$s"; done
 if command -v shellcheck >/dev/null; then
   shellcheck -x "${scripts[@]}"
@@ -64,7 +64,9 @@ fake="$(mktemp -d)"
 trap 'rm -f "$env_file"; rm -rf "$root" "$fake"' EXIT
 cat >"$fake/logrotate" <<'EOF'
 #!/bin/sh
-echo "logrotate $*" >>"$FAKE_ROOT/calls"
+# $2 is the temporary global config: record its text and path, so the test can check both.
+echo "logrotate $1 [$(cat "$2")] $3 $4" >>"$FAKE_ROOT/calls"
+echo "$2" >"$FAKE_ROOT/su_conf"
 [ -z "$FAKE_LOGROTATE_FAIL" ] || exit 1
 touch "$FAKE_ROOT/var/log/auth.log.1" "$FAKE_ROOT/var/log/wtmp.1"
 EOF
@@ -99,12 +101,14 @@ set -e
 grep -q 'rerun harden.sh' "$root/err" || fail "no rerun hint: $(cat "$root/err")"
 [ ! -e "$root/var/lib/push/retention-14d-v2" ] || fail "wrote its marker after logrotate failed"
 [ -e "$root/var/log/kern.log.2.gz" ] || fail "deleted files after logrotate failed"
+[ ! -e "$(cat "$root/su_conf")" ] || fail "left its su config behind after logrotate failed"
 rm "$root/calls"
 purge_pre_14d_logs "$root"
-want="logrotate -f $root/etc/logrotate.d/rsyslog $root/etc/logrotate.d/wtmp
+want="logrotate -f [su root adm] $root/etc/logrotate.d/rsyslog $root/etc/logrotate.d/wtmp
 systemctl is-active --quiet auditd.service
 systemctl kill --kill-whom=main --signal=USR1 auditd.service"
 [ "$(cat "$root/calls")" = "$want" ] || fail "calls were: $(cat "$root/calls")"
+[ ! -e "$(cat "$root/su_conf")" ] || fail "left its su config behind"
 left="$(cd "$root/var/log" && find . -type f | sort | tr '\n' ' ')"
 [ "$left" = "./audit/audit.log ./dpkg.log.1 ./kern.log ./syslog ./wtmp " ] || fail "left: $left"
 [ -s "$root/var/lib/push/retention-14d-v2" ] || fail "wrote no marker"

@@ -428,12 +428,19 @@ done
 # then delete every rotated file. v2: hosts purged by v1 kept their live files.
 # purge_pre_14d_logs <root>; test/run.sh runs it against a fake root.
 purge_pre_14d_logs() {
-  local marker="$1/var/lib/push/retention-14d-v2" f confs=() rotated=
+  local marker="$1/var/lib/push/retention-14d-v2" f confs=() su_conf rotated=
   [ -e "$marker" ] && return 0
   for f in rsyslog fail2ban wtmp btmp; do
     if [ -f "$1/etc/logrotate.d/$f" ]; then confs+=("$1/etc/logrotate.d/$f"); fi
   done
-  [ "${#confs[@]}" -eq 0 ] || logrotate -f "${confs[@]}" || die "logrotate -f failed; rerun harden.sh"
+  if [ "${#confs[@]}" -gt 0 ]; then
+    # Ubuntu keeps `su root adm` only in /etc/logrotate.conf. Without it logrotate skips every
+    # file in the group-writable /var/log (rsyslog sets root:syslog 0775) and exits 1.
+    su_conf="$(mktemp)"
+    echo "su root adm" >"$su_conf"
+    logrotate -f "$su_conf" "${confs[@]}" || { rm -f "$su_conf"; die "logrotate -f failed; rerun harden.sh"; }
+    rm -f "$su_conf"
+  fi
   if systemctl is-active --quiet auditd.service; then
     # USR1 rotates asynchronously: clear the old archives so a new audit.log.1 means it is done.
     rm -f "$1"/var/log/audit/audit.log.[0-9]*

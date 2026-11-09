@@ -339,6 +339,33 @@ jobs:
       - name: Check infra/vps
         run: infra/vps/test/run.sh
 
+  # harden.sh's log purge against the real logrotate, rsyslog, fail2ban and auditd of the VPS's
+  # Ubuntu release. On a pull request the base's purge runs first and must fail if it lacks the fix.
+  test-vps-logs:
+    needs: changes
+    if: needs.changes.outputs.vps == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install the VPS log packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq rsyslog logrotate fail2ban auditd
+      - name: Purge logs with the real logrotate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          old=()
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git show HEAD^1:infra/vps/harden.sh >"$RUNNER_TEMP/base-harden.sh"
+            old=("$RUNNER_TEMP/base-harden.sh")
+          fi
+          sudo CI=true infra/vps/test/real-logrotate.sh "${old[@]}"
+
   deploy:
     needs: [changes, test-ai, test-gateway, test-core, test-db, test-vps, bundle-core, bundle-gateway]
     if: |
