@@ -6,7 +6,6 @@ Runs on a migrated Postgres (BILLING_PG_URL, set by the CI test-db job) and skip
 import asyncio
 import os
 import random
-import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
