@@ -528,3 +528,26 @@ def test_templates_mask_links_on_common_new_tlds():
         assert leaked not in text
     assert text.count("{링크}") == 5
     assert "README.md" in text and "Vue.js" in text
+
+
+def test_templates_mask_links_followed_by_korean_particles():
+    lines = templates_of(
+        "정리는 notion.so에 했고 코드는 github.com에서 받았다. "
+        "ada.vercel.app으로 배포하고 blog.ada.dev/post 로 옮겼다"
+    )
+    text = " ".join(lines)
+    for leaked in ("notion.so", "github.com", "vercel.app", "ada.dev"):
+        assert leaked not in text
+    assert text.count("{링크}") == 4
+    assert "에 했고" in text and "에서 받았다" in text
+
+
+def test_templates_keep_snake_case_and_versioned_names():
+    text = " ".join(templates_of("config.app_id 와 libc.so.6 은 링크가 아니다"))
+    assert "{링크}" not in text
+
+
+def test_templates_mask_file_names_shaped_like_domains():
+    # A file name and a host of the same shape cannot be told apart; masking both is the safe side.
+    text = " ".join(templates_of("libc.so 와 Express.app, package.info 를 썼다"))
+    assert text.count("{링크}") == 3
