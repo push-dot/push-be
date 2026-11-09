@@ -74,6 +74,11 @@ class AdminJobs:
             "(SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass('rag_nodes')) END")
         return {"dbSizeBytes": int(size or 0), "ragNodes": max(int(nodes or 0), 0)}
 
+    async def open_billing_alerts(self) -> int:
+        count = await self.conn.fetchval(
+            "SELECT count(*) FROM billing_alerts WHERE resolved_at IS NULL")
+        return int(count or 0)
+
     async def expire_approvals(self, now) -> None:
         await self.conn.execute(
             "UPDATE approvals SET status = 'EXPIRED', updated_at = $1 "

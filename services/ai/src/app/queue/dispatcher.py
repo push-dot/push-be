@@ -127,7 +127,8 @@ class Dispatcher:
                 storage = os.environ.get("STORAGE_DIR") or None
                 await sweep(pool)
                 await purge_deleted(pool, storage)
-                self.db_conditions = db_conditions(stats, await db.neon_stats())
+                self.db_conditions = db_conditions(
+                    stats, await db.neon_stats(), await db.open_billing_alerts())
             return stats
         finally:
             await db.close()
