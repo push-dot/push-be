@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 
+from app import account_purge
 from app.account_purge import purge_deleted
 
 asyncpg = pytest.importorskip("asyncpg")
@@ -405,3 +406,44 @@ async def test_sweeps_delete_only_rows_past_their_period(db):
 
     await purge_deleted(db, None)
     assert await counts() == after
+
+
+async def test_only_unaccepted_invites_are_deleted_once_expired(db):
+    company = uuid.uuid4()
+    await db.execute("INSERT INTO companies (id, name) VALUES ($1, 'co')", company)
+    invites = {}
+    for name, expires, accepted in (
+        ("expired", "now() - interval '25 hours'", "NULL"),
+        ("accepted", "now() - interval '25 hours'", "now() - interval '2 days'"),
+        ("recent", "now() - interval '23 hours'", "NULL"),
+    ):
+        invites[name] = uuid.uuid4()
+        await db.execute(
+            f"INSERT INTO company_invites (id, company_id, email, token_hash, expires_at, "
+            f"accepted_at) VALUES ($1, $2, 'a@b.c', md5(random()::text), {expires}, {accepted})",
+            invites[name],
+            company,
+        )
+
+    await purge_deleted(db, None)
+
+    left = {
+        r["id"]
+        for r in await db.fetch("SELECT id FROM company_invites WHERE company_id = $1", company)
+    }
+    assert left == {invites["accepted"], invites["recent"]}
+
+
+async def test_a_sweep_deletes_in_batches_and_leaves_the_rest_for_the_next_pass(db, monkeypatch):
+    monkeypatch.setattr(account_purge, "SWEEP_BATCH", 2)
+    monkeypatch.setattr(account_purge, "SWEEP_ROUNDS", 2)
+    await db.execute("DELETE FROM search_queries")
+    await db.execute(
+        "INSERT INTO search_queries (id, term, created_at) "
+        "SELECT gen_random_uuid(), 't', now() - interval '31 days' FROM generate_series(1, 5)"
+    )
+
+    await purge_deleted(db, None)
+    assert await db.fetchval("SELECT count(*) FROM search_queries") == 1
+    await purge_deleted(db, None)
+    assert await db.fetchval("SELECT count(*) FROM search_queries") == 0
