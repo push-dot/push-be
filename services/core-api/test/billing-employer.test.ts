@@ -26,6 +26,7 @@ const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   STRIPE_PRICE_EMPLOYER_PRO: "price_employer_pro",
   STRIPE_PRICE_EMPLOYER_ULTRA: "price_employer_ultra",
   STRIPE_PRICE_TOPUP: "price_topup",
+  STRIPE_RETURN_ORIGINS: "https://web.example,http://localhost:5174",
   IAP_PRODUCT_PRO: "ios.pro",
   IAP_PRODUCT_ULTRA: "ios.ultra",
   IAP_PRODUCT_TOPUP: "ios.topup",
@@ -291,7 +292,7 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
   assert.equal(oneOwner(ledger[0] as LedgerRow), true);
 });
 
-test("employer checkout completion grants the company and does not change the user plan", async () => {
+test("employer checkout with no subscription records the payment once and changes no plan", async () => {
   resetLimits();
   const ledger: LedgerRow[] = [];
   const capture = takeLedger(ledger);
@@ -331,12 +332,11 @@ test("employer checkout completion grants the company and does not change the us
   const second = await handle(await signedStripe(payload), envOf(), { query, now: () => NOW });
   assert.equal(second.status, 200);
   assert.equal(ledger.length, 1);
-  assert.equal(ledger[0]?.amount, 18_000_000);
+  assert.equal(ledger[0]?.amount, 0);
   assert.equal(ledger[0]?.reference, "cs_emp");
   assert.equal(ledger[0]?.companyId, COMPANY);
   assert.equal(ledger[0]?.userId, null);
-  assert.equal(updates.some((item) => item.includes("BASIC")), true);
-  assert.equal(updates.includes("user"), false);
+  assert.deepEqual(updates, []);
 });
 
 test("top-up completion inserts micro credits and does not change the plan", async () => {
@@ -428,7 +428,7 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
   const second = await handle(get("/api/v1/billing"), envOf(), deps);
   assert.equal(second.status, 200);
   assert.equal(ledger.length, 1);
-  assert.equal(ledger[0]?.reference, MONTH);
+  assert.equal(ledger[0]?.reference, MONTH + ":BASIC");
   assert.equal(ledger[0]?.amount, 18_000_000);
   assert.equal(ledger[0]?.companyId, COMPANY);
   assert.equal(ledger[0]?.userId, null);
@@ -756,7 +756,7 @@ test("personal top-up is forbidden", async () => {
   resetLimits();
   const calls: { url: string; body: string }[] = [];
   const res = await handle(
-    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777777"),
+    post("/api/v1/billing/topup", { packs: 3 }, "77777777-7777-4777-8777-777777777777"),
     envOf(),
     { query: authed([], false, null, async () => empty), now: () => NOW, fetch: stripeFetch(calls) },
   );
@@ -765,7 +765,7 @@ test("personal top-up is forbidden", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("employer top-up charges one price unit per displayed credit", async () => {
+test("employer top-up charges one $10 price unit per 1,500-credit pack", async () => {
   resetLimits();
   const calls: { url: string; body: string }[] = [];
   const seen: Call[] = [];
@@ -774,14 +774,14 @@ test("employer top-up charges one price unit per displayed credit", async () => 
     return empty;
   });
   const res = await handle(
-    post("/api/v1/billing/topup", { amount: 3 }, "77777777-7777-4777-8777-777777777779"),
+    post("/api/v1/billing/topup", { packs: 3 }, "77777777-7777-4777-8777-777777777779"),
     envOf(),
     { query, now: () => NOW, fetch: stripeFetch(calls) },
   );
   assert.equal(res.status, 200);
   const form = new URLSearchParams(calls[0]?.body);
   assert.equal(form.get("line_items[0][quantity]"), "3");
-  assert.equal(form.get("metadata[amountMicroCredits]"), "18000");
+  assert.equal(form.get("metadata[amountMicroCredits]"), String(3 * 1500 * 6000));
   assert.equal(form.get("metadata[audience]"), "EMPLOYER");
   assert.equal(form.get("customer"), "cus_co");
 });

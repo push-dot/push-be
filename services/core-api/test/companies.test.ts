@@ -882,7 +882,7 @@ test("sole admin delete cancels the company Stripe customer and marks the compan
     const url = String(input);
     const method = init?.method ?? "GET";
     stripe.push(`${method} ${url}`);
-    if (method === "GET") return Response.json({ data: [{ id: url.includes("cus_co") ? "sub_co" : "sub_user" }] });
+    if (method === "GET") return Response.json({ data: [{ id: url.includes("cus_co") ? "sub_co" : "sub_user", status: "active" }] });
     return Response.json({ id: "sub", status: "canceled" });
   }) as typeof fetch;
   const query = gate(seen, employer({ stripe_customer_id: "cus_user" }), async (sql) => {

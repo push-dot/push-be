@@ -36,8 +36,7 @@ export interface CoreEnv {
   STRIPE_PRICE_EMPLOYER_PRO?: string;
   STRIPE_PRICE_EMPLOYER_ULTRA?: string;
   STRIPE_PRICE_TOPUP?: string;
-  STRIPE_SUCCESS_URL?: string;
-  STRIPE_CANCEL_URL?: string;
+  STRIPE_RETURN_ORIGINS?: string;
   STRIPE_PORTAL_RETURN_URL?: string;
   MAIL_FROM?: string;
   RESEND_API_KEY?: string;

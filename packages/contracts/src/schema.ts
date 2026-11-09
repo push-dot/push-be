@@ -641,7 +641,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe subscription checkout session
-         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. 503 NOT_CONFIGURED when the Stripe key or the plan price is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.
+         * @description Employer company ADMIN only. planId is BASIC, PRO, or ULTRA. Anyone else gets 403. Personal plans are in-app only. Stripe returns the buyer to <origin>/employer/plans?checkout=success&session_id=<id>, or ?checkout=canceled. <origin> is the request Origin when it is in STRIPE_RETURN_ORIGINS, else the first entry. The webhook acts only on a live subscription of that plan's price and never moves the company to an older subscription than it has. A paid plan change ends every older subscription: with a prorated credit to the Stripe balance on an upgrade, without one when this month's plan credits already exceed the new plan (a downgrade). Plan credits are granted once per calendar month at the highest plan of the month: an upgrade adds only the difference, a downgrade adds nothing. 503 NOT_CONFIGURED when the Stripe key, the plan price, or the return origin is missing. 404 when the admin has no company. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingCheckout"];
         delete?: never;
@@ -679,7 +679,7 @@ export interface paths {
         };
         /**
          * Credit ledger
-         * @description EMPLOYER accounts see the company ledger.
+         * @description EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts and renewals (0 credits), credit purchases (the pack credits), and 요금제 변경 환급 refunds (negative amountUsd, credited to the Stripe balance). The month's plan credits are separate rows with referenceId monthly:YYYY-MM:BASIC|PRO|ULTRA. A 이전 구독 해지 실패 row (no amountUsd) means a replaced subscription could not be canceled yet.
          */
         get: operations["getBillingLedger"];
         put?: never;
@@ -721,7 +721,7 @@ export interface paths {
         put?: never;
         /**
          * Create Stripe credit top-up checkout session
-         * @description EMPLOYER: company ADMIN only, credits go to the company. 503 NOT_CONFIGURED when the Stripe key or the top-up price is missing. 502 PROVIDER_ERROR when Stripe fails.
+         * @description EMPLOYER: company ADMIN only, credits go to the company. Anyone else gets 403. One pack is 1,500 credits for $10 USD; buy 1 to 20 packs (400 VALIDATION_ERROR, field packs, otherwise). Returns to <origin>/employer/plans?checkout=credits&session_id=<id>, or ?checkout=canceled, with <origin> chosen as for checkout. 503 NOT_CONFIGURED when the Stripe key, the top-up price, or the return origin is missing. 502 PROVIDER_ERROR when Stripe fails.
          */
         post: operations["postBillingTopup"];
         delete?: never;
@@ -5043,11 +5043,17 @@ export interface components {
         };
         LedgerEntry: {
             amountMicroCredits: number;
+            /** @description Amount in USD (cents / 100), negative for a refund to the Stripe balance. Null when the row is not a Stripe payment or the payment was not in USD. */
+            amountUsd: number | null;
             balanceAfter: number;
             /** Format: date-time */
             createdAt: string;
+            /** @description Payment label: {Plan} 월 구독, 크레딧 구매, 요금제 변경 환급, or the 이전 구독 해지 실패 note. Null for credit grants and rows written before 2026-11. */
+            description: string | null;
             /** Format: uuid */
             id: string;
+            /** @description Stripe hosted invoice or charge receipt. Null when unknown. */
+            receiptUrl: string | null;
             referenceId: string | null;
             /** @description Currently PURCHASE */
             type: string;
@@ -6789,8 +6795,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description Credit units (quantity of the top-up price) */
-                    amount: number;
+                    /** @description Number of 1,500-credit packs ($10 each) */
+                    packs: number;
                 };
             };
         };
