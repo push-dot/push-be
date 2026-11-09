@@ -13,9 +13,6 @@ export interface ModelRow {
 
 export const OPENAI_MODELS: Array<{ provider: string; model: string; label: string }> = [
   { provider: "OPENAI", model: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash" },
-  { provider: "OPENAI", model: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna" },
-  { provider: "OPENAI", model: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra" },
-  { provider: "OPENAI", model: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol" },
 ];
 
 export function validProvider(value: string): boolean {

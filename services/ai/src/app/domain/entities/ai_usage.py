@@ -35,15 +35,10 @@ class AIModelInfo(BaseModel):
     label: str
 
 
+# Only models with a pinned provider in plan_levers.provider_for; anything else is refused.
 OPENAI_MODELS = [
     AIModelInfo(provider="OPENAI", model="deepseek/deepseek-v4.1-flash",
                 label="DeepSeek V4.1 Flash"),
-    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-luna",
-                label="GPT-5.6 Luna"),
-    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-terra",
-                label="GPT-5.6 Terra"),
-    AIModelInfo(provider="OPENAI", model="openai/gpt-5.6-sol",
-                label="GPT-5.6 Sol"),
 ]
 
 _DEFAULT_MICRO_PER_1M = (2_000_000, 8_000_000)

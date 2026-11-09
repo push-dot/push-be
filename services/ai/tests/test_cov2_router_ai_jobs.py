@@ -44,7 +44,13 @@ def test_models_lists_every_managed_model_with_availability():
                m["supportedEfforts"] == ["LOW", "MEDIUM", "HIGH"] for m in data)
     avail = _avail(r)
     assert "opencode-go/deepseek-v4.1-flash" not in avail
-    assert avail["openai/gpt-5.6-sol"] is True
+    assert avail["deepseek/deepseek-v4.1-flash"] is True
+
+
+def test_every_listed_model_has_a_pinned_provider():
+    from app.domain.plan_levers import provider_for
+    for m in ent.OPENAI_MODELS:
+        assert provider_for(m.model)["allow_fallbacks"] is False
 
 
 def test_models_filtered_by_another_provider_is_empty():
