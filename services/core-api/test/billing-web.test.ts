@@ -226,10 +226,16 @@ test("a renewal invoice adds a zero-credit payment row once", async () => {
   assert.equal(w.ledger().length, 1);
 });
 
-test("first invoices, fully covered invoices, and personal customers add no payment row", async () => {
+test("a renewal paid from the Stripe balance adds its payment row with the invoice total", async () => {
+  const w = world(companyRow);
+  const res = await handle(await signed(invoice({ amount_paid: 0 })), envOf(), { query: w.query, now: () => NOW });
+  assert.equal(res.status, 200);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_renewal", NOW.toISOString(), "Pro 월 구독", 10000, RECEIPT]);
+});
+
+test("first invoices and personal customers add no payment row", async () => {
   const cases: [Row, ((sql: string) => Row[] | undefined)][] = [
     [{ billing_reason: "subscription_create" }, companyRow],
-    [{ amount_paid: 0, total: 0 }, companyRow],
     [{}, () => undefined],
   ];
   for (const [extra, reply] of cases) {

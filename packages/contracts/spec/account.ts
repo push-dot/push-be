@@ -259,7 +259,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/billing/ledger", {
     tag: "billing",
     summary: "Credit ledger",
-    description: "EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts and renewals (0 credits), credit purchases (the pack credits), and 요금제 변경 환급 refunds (negative amountUsd, credited to the Stripe balance). The month's plan credits are separate rows with referenceId monthly:YYYY-MM:BASIC|PRO|ULTRA. A 이전 구독 해지 실패 row (no amountUsd) means a replaced subscription could not be canceled yet.",
+    description: "EMPLOYER accounts see the company ledger. Rows with amountUsd are Stripe payments: plan checkouts and renewals (0 credits), credit purchases (the pack credits), and 요금제 변경 환급 refunds (negative amountUsd, credited to the Stripe balance). Plan credits are separate rows, one per tier, written when a Stripe billing period is paid: referenceId period:<subscription>:<period start unix>:BASIC|PRO|ULTRA (a 0-credit tier row was already granted by the period a plan upgrade replaced). Companies with no paid Stripe period yet use calendar months, monthly:YYYY-MM:BASIC|PRO|ULTRA.",
     params: [...pageParams],
     responses: { 200: okPage(ref("LedgerEntry")) },
   }),
@@ -504,7 +504,7 @@ export const schemas: Record<string, Schema> = {
     balanceAfter: int,
     referenceId: nullable(str),
     createdAt: dateTime,
-    description: { ...nullable(str), description: "Payment label: {Plan} 월 구독, 크레딧 구매, 요금제 변경 환급, or the 이전 구독 해지 실패 note. Null for credit grants and rows written before 2026-11." },
+    description: { ...nullable(str), description: "Payment label: {Plan} 월 구독, 크레딧 구매, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11." },
     amountUsd: { ...nullable({ type: "number" }), description: "Amount in USD (cents / 100), negative for a refund to the Stripe balance. Null when the row is not a Stripe payment or the payment was not in USD." },
     receiptUrl: { ...nullable(str), description: "Stripe hosted invoice or charge receipt. Null when unknown." },
   }),
