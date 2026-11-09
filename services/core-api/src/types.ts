@@ -1,5 +1,5 @@
 import type { StoreReceipts } from "./billing/stores.ts";
-import type { Query } from "./db.ts";
+import type { Query, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 import type { SmsSender } from "./sms/sender.ts";
 
@@ -70,6 +70,7 @@ export interface CoreEnv {
 
 export interface Deps {
   query: Query;
+  transaction?: Transaction;
   now?: () => Date;
   fetch?: typeof fetch;
   waitUntil?: (promise: Promise<unknown>) => void;
