@@ -40,6 +40,7 @@ const signupBody = (extra: Record<string, unknown> = {}) => ({
   password: PASSWORD,
   accountType: "EMPLOYER",
   displayName: "Ada",
+  agreeTerms: true,
   ...extra,
 });
 
@@ -318,6 +319,14 @@ test("signup accepts an employer account and rejects a personal account", async 
   );
   assert.equal(personal.status, 400);
   assert.equal((await personal.json() as Err).error.details?.field, "accountType");
+  assert.equal(sent.length, 1);
+
+  for (const agreeTerms of [undefined, false, "true"]) {
+    resetLimits();
+    const unagreed = await handle(post("/api/v1/auth/email/signup", signupBody({ agreeTerms })), env(), deps(db, mailer));
+    assert.equal(unagreed.status, 400, String(agreeTerms));
+    assert.equal((await unagreed.json() as Err).error.details?.field, "agreeTerms");
+  }
   assert.equal(sent.length, 1);
 
   resetLimits();

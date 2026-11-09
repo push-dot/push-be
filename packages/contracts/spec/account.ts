@@ -131,7 +131,8 @@ export const routes: Route[] = [
       password,
       accountType: enumOf("EMPLOYER"),
       displayName: { type: "string", minLength: 1, maxLength: 80, description: "Trimmed. Blank after trim is rejected. Max 80 code points after trim." },
-    }, ["email", "password", "accountType", "displayName"])),
+      agreeTerms: { type: "boolean", enum: [true], description: "The user checked 이용약관·개인정보 처리방침. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores the agreement at the signup time." },
+    }, ["email", "password", "accountType", "displayName", "agreeTerms"])),
     responses: { 202: accepted },
   }),
   post("core", "/api/v1/auth/email/verify", {

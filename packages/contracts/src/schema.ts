@@ -6311,6 +6311,11 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     accountType: "EMPLOYER";
+                    /**
+                     * @description The user checked 이용약관·개인정보 처리방침. Anything but true is 400 VALIDATION_ERROR (details.field agreeTerms). Verify stores the agreement at the signup time.
+                     * @enum {boolean}
+                     */
+                    agreeTerms: true;
                     /** @description Trimmed. Blank after trim is rejected. Max 80 code points after trim. */
                     displayName: string;
                     /** Format: email */

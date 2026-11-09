@@ -128,6 +128,9 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const password = requirePassword(body.password);
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
+  // The agreement record (약관·처리방침) needs the client to say yes; a missing box is not a yes.
+  if (body.agreeTerms !== true) throw fieldError("agreeTerms", "must be true");
+  // Reference data is a personal feature; employer accounts never opt in.
   const consent = false;
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
@@ -170,8 +173,7 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     throw err;
   }
   await Promise.all([
-    // Email signup is employer-only and its form cannot be sent without the 이용약관·개인정보 처리방침
-    // box, so the signup request (its created_at) is the agreement.
+    // Signup refused a request without agreeTerms: true, so the signup request (its created_at) is the agreement.
     query(ctx.deps.query,
       "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz)",
       [userId, asBool(row.consent_reference), now, TERMS_VERSION, row.created_at]),
