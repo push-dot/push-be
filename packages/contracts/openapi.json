@@ -4279,7 +4279,7 @@
                 "type": "null"
               }
             ],
-            "description": "Pending chat jobs queued before this conversation's pending job (0 is next in line). Null when it has none."
+            "description": "Pending chat jobs of the same owner (the company for employer conversations, else the user) queued before this conversation's pending job. 0 means none of the owner's jobs is ahead. Null when it has none."
           },
           "revision": {
             "type": "integer"
@@ -6807,10 +6807,6 @@
               }
             ]
           },
-          "blockedMe": {
-            "description": "The profile owner has blocked the caller. False for the caller's own profile. POST /profiles/{id}/offer is then 403 BLOCKED.",
-            "type": "boolean"
-          },
           "careerStatus": {
             "anyOf": [
               {
@@ -6944,8 +6940,7 @@
           "contact",
           "updatedAt",
           "following",
-          "offered",
-          "blockedMe"
+          "offered"
         ],
         "type": "object"
       },
@@ -9787,7 +9782,7 @@
     },
     "/api/v1/auth/phone/verify": {
       "post": {
-        "description": "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if that identity belongs to another account (details.provider: the provider of the account that owns the phone, such as google, apple, github, email or phone; absent when no account owns it). A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
+        "description": "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
         "operationId": "postAuthPhoneVerify",
         "requestBody": {
           "content": {
@@ -11729,7 +11724,7 @@
     },
     "/api/v1/companies/me/invites/{id}/resend": {
       "post": {
-        "description": "ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.",
+        "description": "ADMIN only. Rotates the token and expiry (an expired invite is revived) and mails the new link. 404 NOT_FOUND when the invite is unknown, accepted or another company's. 403 SEAT_LIMIT when reviving an expired invite with seats full (checked in the same statement that rotates the token, so concurrent resends cannot overfill). 429 RATE_LIMITED with details.retryAfterSec when the invite was sent less than 60 seconds ago. 502 PROVIDER_ERROR when invite mail fails; the old token stays valid.",
         "operationId": "postCompaniesMeInvitesByIdResend",
         "parameters": [
           {
@@ -12928,7 +12923,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (queued jobs counted).",
+        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's).",
         "operationId": "postConversationsByIdMessages",
         "parameters": [
           {
@@ -18256,7 +18251,7 @@
     },
     "/api/v1/documents/{id}/generate": {
       "post": {
-        "description": "Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec and details.ahead when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
+        "description": "Enqueues a document generation job; poll the job for the result. A missing document is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs) when the queue is saturated. An empty evidenceIds list is accepted here and fails the job as VALIDATION_ERROR. The job also fails with 409 INVALID_TRANSITION when the document is archived, 409 APPROVAL_REQUIRED when cited evidence has no approved EVIDENCE_USE, and, when ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. Extra keys are accepted here and fail the job as VALIDATION_ERROR.",
         "operationId": "postDocumentsByIdGenerate",
         "parameters": [
           {
@@ -25446,7 +25441,7 @@
     },
     "/api/v1/postings/{id}/fit": {
       "post": {
-        "description": "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec, details.ahead) under backpressure.",
+        "description": "Enqueues a fit job for one of the user's documents against the posting; poll GET /api/v1/ai/jobs/{jobId}. The job result includes fitScore, parts, topGap, plan, and reachable (the score if the weakest part were 10). A missing document or posting is 404. 402 INSUFFICIENT_CREDITS when the balance cannot cover the reserve. 429 QUEUE_BUSY (details.retryAfterSec, details.ahead: the caller's own queued jobs) under backpressure.",
         "operationId": "postPostingsByIdFit",
         "parameters": [
           {

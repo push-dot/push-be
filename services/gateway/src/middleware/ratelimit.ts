@@ -144,9 +144,12 @@ export const LAST_LINE = "COALESCE("
   + "WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING') ORDER BY j.created_at DESC LIMIT 1) "
   + "AND e.type IN ('status', 'tool') ORDER BY e.id DESC LIMIT 1)) AS last_line";
 
-// shortcut: global PENDING order, ignores priority lanes; upgrade when the queue exposes per-lane positions
+// shortcut: PENDING order within the conversation's owner (company, else user) so other tenants' load stays hidden; ignores priority lanes, upgrade when the queue exposes per-lane positions
 export const QUEUE_POSITION = "(SELECT CASE WHEN me.at IS NULL THEN NULL ELSE (SELECT count(*)::int FROM chat_jobs p "
-  + "WHERE p.status = 'PENDING' AND p.created_at < me.at) END FROM (SELECT min(j.created_at) AS at FROM chat_jobs j "
+  + "JOIN conversations pc ON pc.id = p.conversation_id "
+  + "WHERE p.status = 'PENDING' AND p.created_at < me.at "
+  + "AND (CASE WHEN c.company_id IS NOT NULL THEN pc.company_id = c.company_id ELSE pc.user_id = c.user_id AND pc.company_id IS NULL END)) "
+  + "END FROM (SELECT min(j.created_at) AS at FROM chat_jobs j "
   + "WHERE j.conversation_id = c.id AND j.status = 'PENDING') me) AS queue_position";
 
 export const LIST_SQL = AUTH_RATE_PREFIX

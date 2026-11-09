@@ -149,7 +149,8 @@ const listQuery = (seen: Array<[string, unknown[]]>): Query => {
 
 const assertQueuePositionSql = (sql: string): void => {
   assert.ok(sql.includes(QUEUE_POSITION), "queue_position uses the shared fragment");
-  assert.match(sql, /CASE WHEN me\.at IS NULL THEN NULL ELSE \(SELECT count\(\*\)::int FROM chat_jobs p WHERE p\.status = 'PENDING' AND p\.created_at < me\.at\) END/);
+  assert.match(sql, /CASE WHEN me\.at IS NULL THEN NULL ELSE \(SELECT count\(\*\)::int FROM chat_jobs p JOIN conversations pc ON pc\.id = p\.conversation_id WHERE p\.status = 'PENDING' AND p\.created_at < me\.at /);
+  assert.match(sql, /AND \(CASE WHEN c\.company_id IS NOT NULL THEN pc\.company_id = c\.company_id ELSE pc\.user_id = c\.user_id AND pc\.company_id IS NULL END\)\) END/);
   assert.match(sql, /\(SELECT min\(j\.created_at\) AS at FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status = 'PENDING'\) me\) AS queue_position/);
   assert.doesNotMatch(sql, /status = 'RUNNING'\) me/);
 };
