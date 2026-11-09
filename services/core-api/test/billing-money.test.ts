@@ -31,7 +31,7 @@ type Sub = {
 };
 
 const env: CoreEnv = {
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_personal_pro",
@@ -73,6 +73,7 @@ function stripeWorld(customer: string) {
   const ended: string[] = [];
   const open = new Map<string, string[]>();
   const fail = { get: 0, delete: 0 };
+  const sessions: Row[] = [];
   const subscribe = (plan: Plan, at: number): Sub => {
     const sub: Sub = {
       id: "sub_" + rand(), object: "subscription", customer, status: "active", created: Math.floor(at / 1000), currency: "usd",
@@ -115,9 +116,13 @@ function stripeWorld(customer: string) {
       return json({ object: "list", data: [...subs.values()].filter((sub) => sub.customer === owner && sub.status !== "canceled"), has_more: false });
     }
     if (url.pathname.startsWith("/v1/invoices/")) return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: RECEIPT });
+    if (url.pathname === "/v1/checkout/sessions" && method === "GET") {
+      const intent = url.searchParams.get("payment_intent");
+      return json({ object: "list", data: sessions.filter((session) => session.payment_intent === intent), has_more: false });
+    }
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
-  return { subs, calls, fail, open, subscribe, fetchImpl, deletes: () => [...ended] };
+  return { subs, calls, fail, open, sessions, subscribe, fetchImpl, deletes: () => [...ended] };
 }
 
 type World = ReturnType<typeof stripeWorld>;
@@ -866,4 +871,111 @@ test("personal grants are unchanged: one full row per store purchase and one mon
   }
   const rows = (await pg.query("SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE user_id = $1 ORDER BY created_at", [userId])).rows;
   assert.deepEqual(rows.map((row) => [row.reference_id, Number(row.amount_micro_credits)]), [["tx-" + userId, 27_000_000], ["monthly:2026-11", 27_000_000]]);
+});
+
+// D18: a refunded top-up takes its credits back, never below 0, and keeps the plan.
+const storeUser = async (t: TestContext): Promise<string | null> => {
+  if (!pg) {
+    t.skip("set BILLING_PG_URL to a migrated Postgres");
+    return null;
+  }
+  const userId = crypto.randomUUID();
+  await pg.query("INSERT INTO users (id, provider, provider_subject, display_name, plan, subscription_status) VALUES ($1, 'apple', $2, 'fixture', 'PRO', 'ACTIVE')", [userId, userId]);
+  return userId;
+};
+
+const userLedgerOf = async (userId: string) => (await pg!.query(
+  "SELECT type, reference_id, amount_micro_credits, balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at, id", [userId])).rows
+  .map((row) => [row.type, row.reference_id, Number(row.amount_micro_credits), Number(row.balance_after)]);
+
+const storeRefund = async (userId: string, tx: string, at: number, note: { platform: "APP_STORE" | "GOOGLE_PLAY"; type: string }) => {
+  let clock = at;
+  const deps: Deps = {
+    query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(clock),
+    stores: {
+      verifyApple: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
+      verifyGoogle: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
+      decodeAppleNotification: async () => ({ notificationType: note.type, originalTransactionId: tx, productId: "ios.topup", expiresAt: null }),
+      decodeGoogleNotification: async () => ({ notificationType: note.type, purchaseToken: tx, productId: "", expiresAt: null }),
+    },
+  };
+  const buy = new Request("https://core.example/api/v1/billing/iap/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+    body: JSON.stringify(note.platform === "APP_STORE"
+      ? { platform: "APP_STORE", productId: "ios.topup", signedTransaction: "jws" }
+      : { platform: "GOOGLE_PLAY", productId: "ios.topup", purchaseToken: tx }),
+  });
+  const hook = () => new Request("https://core.example/api/v1/billing/webhook/" + (note.platform === "APP_STORE" ? "app-store" : "google-play"), {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  return { buy: async () => { resetLimits(); return (await handle(buy, env, deps)).status; }, refund: async () => {
+    resetLimits();
+    clock += DAY;
+    // The top-up product id was renamed since the purchase: the stored row, not the config, says it was a top-up.
+    return (await handle(hook(), { ...env, IAP_PRODUCT_TOPUP: "ios.topup.2027" }, deps)).status;
+  } };
+};
+
+test("D18: a refunded App Store or Play top-up takes its pack back, keeps the plan even after a product rename, and a repeated notice takes nothing more", async (t) => {
+  for (const platform of ["APP_STORE", "GOOGLE_PLAY"] as const) {
+    const userId = await storeUser(t);
+    if (!userId) return;
+    const tx = "tx-" + rand();
+    const flow = await storeRefund(userId, tx, START, { platform, type: "REFUND" });
+    assert.equal(await flow.buy(), 200);
+    const [[, , pack]] = await userLedgerOf(userId) as [[string, string, number, number]];
+    assert.ok(pack > 0);
+    assert.equal(await flow.refund(), 200);
+    assert.equal(await flow.refund(), 200);
+    assert.deepEqual(await userLedgerOf(userId), [["PURCHASE", tx, pack, pack], ["REFUND", tx, -pack, 0]], platform);
+    assert.deepEqual(await userRow(userId), { plan: "PRO", subscription_status: "ACTIVE" });
+    assert.equal((await pg!.query("SELECT status FROM iap_subscriptions WHERE original_transaction_id = $1", [tx])).rows[0]!.status, "REFUNDED");
+  }
+});
+
+test("D18: a top-up refunded after part of it was spent takes back only what is left, so the balance stops at 0", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  const tx = "tx-" + rand();
+  const flow = await storeRefund(userId, tx, START, { platform: "APP_STORE", type: "REFUND" });
+  assert.equal(await flow.buy(), 200);
+  const [[, , pack]] = await userLedgerOf(userId) as [[string, string, number, number]];
+  const spent = Math.floor(pack / 3);
+  await pg!.query("INSERT INTO ai_usage (id, user_id, provider, model, managed, input_tokens, output_tokens, cost_micro_credits, status) VALUES ($1, $2, 'openrouter', 'm', true, 1, 1, $3, 'SETTLED')",
+    [crypto.randomUUID(), userId, spent]);
+  assert.equal(await flow.refund(), 200);
+  assert.deepEqual((await userLedgerOf(userId)).at(-1), ["REFUND", tx, spent - pack, spent]);
+  const left = await pg!.query("SELECT (SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1) - $2::bigint AS left", [userId, spent]);
+  assert.equal(Number(left.rows[0]!.left), 0);
+});
+
+test("D18: a fully refunded Stripe top-up checkout takes its credits back once; a partial refund changes nothing", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const micro = 2 * 1500 * MICRO;
+  const topup = (intent: string) => {
+    const session = {
+      id: "cs_test_" + rand(), object: "checkout.session", mode: "payment", status: "complete", payment_status: "paid", amount_total: 4000,
+      currency: "usd", customer: co.customer, payment_intent: intent, client_reference_id: co.id,
+      metadata: { amountMicroCredits: String(micro), audience: "EMPLOYER", ownerId: co.id },
+    };
+    stripe.sessions.push(session);
+    return { id: "evt_" + rand(), object: "event", type: "checkout.session.completed", data: { object: session } };
+  };
+  const refunded = (intent: string, full: boolean) => ({
+    id: "evt_" + rand(), object: "event", type: "charge.refunded",
+    data: { object: { id: "ch_" + rand(), object: "charge", payment_intent: intent, amount: 4000, amount_refunded: full ? 4000 : 1000, refunded: full } },
+  });
+  const [kept, gone] = ["pi_" + rand(), "pi_" + rand()];
+  assert.equal(await deliver(stripe, topup(kept), START), 200);
+  assert.equal(await deliver(stripe, topup(gone), START + 1000), 200);
+  assert.equal(await deliver(stripe, refunded(kept, false), START + DAY), 200);
+  const full = refunded(gone, true);
+  assert.equal(await deliver(stripe, full, START + DAY + 1000), 200);
+  assert.equal(await deliver(stripe, { ...full, id: "evt_" + rand() }, START + DAY + 2000), 200);
+  const rows = (await pg!.query("SELECT type, amount_micro_credits, description FROM billing_ledger WHERE company_id = $1 ORDER BY created_at, id", [co.id])).rows
+    .map((row) => [row.type, Number(row.amount_micro_credits), row.description]);
+  assert.deepEqual(rows, [["PURCHASE", micro, "크레딧 구매"], ["PURCHASE", micro, "크레딧 구매"], ["REFUND", -micro, "크레딧 구매 환불"]]);
 });

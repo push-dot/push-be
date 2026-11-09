@@ -13,6 +13,8 @@
   "placement": { "mode": "targeted", "region": "aws:ap-southeast-1" },
   "vars": {
     "APP_ENV": "production",
+    // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
+    "PAYMENTS_ENABLED": "0",
     "MANAGED_AI": "1",
     // Web origins Stripe Checkout may return employers to (comma list, first is the default).
     "STRIPE_RETURN_ORIGINS": "https://push.devcyjoon.tech",
@@ -34,6 +36,7 @@
       "triggers": { "crons": ["15 * * * *"] },
       "vars": {
         "APP_ENV": "development",
+        "PAYMENTS_ENABLED": "1",
         // The AI service seeds this user at startup when DEV_AUTH_TOKEN is set.
         "DEV_USER_ID": "00000000-0000-4000-8000-000000000001",
         "PHONE_SMS_MODE": "log",

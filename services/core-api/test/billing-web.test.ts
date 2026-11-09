@@ -18,7 +18,7 @@ type Call = { sql: string; params: unknown[] };
 type StripeCall = { method: string; url: string; body: string };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_EMPLOYER_BASIC: "price_1UZkaG0iRL0sMmznUELNqD4P",
@@ -168,7 +168,7 @@ test("a receipt lookup failure still records the plan payment with a null receip
   const fetchImpl = stripeFetch([], (call) => call.url.includes("/v1/invoices/") ? json({ error: {} }, 500) : json({ id: "sub_1UZkat0iRL0sMmznsruv4T1R", status: "canceled" }));
   const res = await handle(await signed(planCompleted), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "cs_test_ultra", NOW.toISOString(), "Ultra 월 구독", 20000, null]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1, 8), [COMPANY, 0, "cs_test_ultra", NOW.toISOString(), "Ultra 월 구독", 20000, null]);
 });
 
 test("a payment in another currency keeps its row but stores no USD amount", async () => {
@@ -177,7 +177,7 @@ test("a payment in another currency keeps its row but stores no USD amount", asy
   const event = { ...planCompleted, id: "evt_krw", data: { object: { ...planCompleted.data.object, id: "cs_test_krw", currency: "krw", amount_total: 28000000, invoice: null } } };
   const res = await handle(await signed(event), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(5), ["Ultra 월 구독", null, null]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(5, 8), ["Ultra 월 구독", null, null]);
 });
 
 test("a credit purchase completion credits the company with 크레딧 구매, the paid amount, and the charge receipt", async () => {
@@ -195,7 +195,7 @@ test("a credit purchase completion credits the company with 크레딧 구매, th
   };
   const res = await handle(await signed(event), envOf(), { query: w.query, now: () => NOW, fetch: fetchImpl });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 18_000_000, "cs_test_topup", NOW.toISOString(), "크레딧 구매", 2000, "https://pay.stripe.com/receipts/payment/test_ch"]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1, 8), [COMPANY, 18_000_000, "cs_test_topup", NOW.toISOString(), "크레딧 구매", 2000, "https://pay.stripe.com/receipts/payment/test_ch"]);
   assert.equal(calls[0]?.url, "https://api.stripe.com/v1/payment_intents/pi_test?expand[]=latest_charge");
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE companies")), false);
 });
@@ -221,7 +221,7 @@ test("a renewal invoice adds a zero-credit payment row once", async () => {
   const w = world(companyRow);
   const first = await handle(await signed(invoice()), envOf(), { query: w.query, now: () => NOW });
   assert.equal(first.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_renewal", NOW.toISOString(), "Pro 월 구독", 10000, RECEIPT]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1, 8), [COMPANY, 0, "in_renewal", NOW.toISOString(), "Pro 월 구독", 10000, RECEIPT]);
   await handle(await signed(invoice()), envOf(), { query: w.query, now: () => NOW });
   assert.equal(w.ledger().length, 1);
 });
@@ -230,7 +230,7 @@ test("a renewal paid from the Stripe balance adds its payment row with the invoi
   const w = world(companyRow);
   const res = await handle(await signed(invoice({ amount_paid: 0 })), envOf(), { query: w.query, now: () => NOW });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_renewal", NOW.toISOString(), "Pro 월 구독", 10000, RECEIPT]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1, 8), [COMPANY, 0, "in_renewal", NOW.toISOString(), "Pro 월 구독", 10000, RECEIPT]);
 });
 
 test("first invoices and personal customers add no payment row", async () => {
@@ -268,7 +268,7 @@ test("a replaced subscription's negative final invoice adds a 요금제 변경 �
     lines: { data: [{ amount: -10000, description: "Unused time on Push Employer Pro after 09 Nov 2026", pricing: { price_details: { price: PRO_PRICE }, type: "price_details" } }] },
   }), id: "evt_1UZl9Q0iRL0sMmznDqgeuoxv" }), envOf(), { query: w.query, now: () => NOW });
   assert.equal(res.status, 200);
-  assert.deepEqual(w.ledger()[0]?.params.slice(1), [COMPANY, 0, "in_1UZkb80iRL0sMmznDmcpmzrV", NOW.toISOString(), "요금제 변경 환급", -10000, RECEIPT]);
+  assert.deepEqual(w.ledger()[0]?.params.slice(1, 8), [COMPANY, 0, "in_1UZkb80iRL0sMmznDmcpmzrV", NOW.toISOString(), "요금제 변경 환급", -10000, RECEIPT]);
 });
 
 test("credit packs outside 1 to 20, or the old amount field, are a 400 on packs and never reach Stripe", async () => {

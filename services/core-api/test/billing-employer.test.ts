@@ -17,7 +17,7 @@ type Err = { error: { code: string; message: string; details: { field?: string }
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production",
+  APP_ENV: "production", PAYMENTS_ENABLED: "1",
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_pro",
@@ -424,6 +424,7 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
       spentMicroCredits: 0,
       audience: "EMPLOYER",
       source: "STRIPE",
+      paymentsEnabled: true,
     },
   });
   const second = await handle(get("/api/v1/billing"), envOf(), deps);
@@ -1277,7 +1278,7 @@ test("a store expiration drops the personal plan", async () => {
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("SELECT user_id FROM iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
     if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
   };
@@ -1445,4 +1446,56 @@ test("a top-up above the cap is rejected before stripe is called", async () => {
   );
   assert.equal(res.status, 400);
   assert.equal(calls.length, 0);
+});
+
+test("a refunded credit top-up keeps the plan; a refunded subscription still ends it", async () => {
+  const chain = await appleChain();
+  const env = envOf({ APPLE_ROOT_PEM: chain.rootPem, IAP_PRODUCT_PRO: "ios.pro", IAP_PRODUCT_TOPUP: "ios.topup" });
+  const refund = async (id: string, productId: string) => {
+    const inner = await jws({ originalTransactionId: id, productId, environment: "Production" }, chain.privateKey);
+    return jws({ notificationType: "REFUND", data: { environment: "Production", signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
+  };
+  for (const [id, productId, downgrades] of [["tx-topup", "ios.topup", false], ["tx-pro", "ios.pro", true]] as const) {
+    resetLimits();
+    const seen: Call[] = [];
+    const query: Deps["query"] = async (sql, params = []) => {
+      seen.push({ sql, params });
+      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: productId === "ios.topup" }], rowCount: 1 };
+      return empty;
+    };
+    const res = await handle(storeHook("/api/v1/billing/webhook/app-store", await refund(id, productId)), env, { query, now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.ok(seen.some((call) => call.sql.includes("UPDATE iap_subscriptions SET status = CASE") && call.params[0] === id), id);
+    assert.equal(seen.some((call) => call.sql.includes("UPDATE users SET plan = 'FREE'")), downgrades, id);
+  }
+});
+
+test("google play: a voided one-time purchase is a refund; a canceled pending purchase and a voided subscription order are not", async () => {
+  const oidc = await rsaOidc("oidc-voided");
+  const audience = "push-google-webhook";
+  const env = envOf({ GOOGLE_OIDC_AUDIENCE: audience, GOOGLE_PLAY_PACKAGE: "app.push.mobile", IAP_PRODUCT_TOPUP: "play.topup" });
+  const jwt = await oidc.sign({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600 });
+  const cases = [
+    [{ voidedPurchaseNotification: { purchaseToken: "tok-void", orderId: "GPA.1", productType: 2, refundType: 1 } }, true],
+    [{ oneTimeProductNotification: { version: "1.0", notificationType: 2, purchaseToken: "tok-void", sku: "play.topup" } }, false],
+    [{ voidedPurchaseNotification: { purchaseToken: "tok-void", orderId: "GPA.2", productType: 1, refundType: 1 } }, false],
+  ] as const;
+  for (const [note, refunds] of cases) {
+    resetLimits();
+    const seen: Call[] = [];
+    const query: Deps["query"] = async (sql, params = []) => {
+      seen.push({ sql, params });
+      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: true }], rowCount: 1 };
+      return empty;
+    };
+    const body = JSON.stringify({ message: { data: btoa(JSON.stringify({ packageName: "app.push.mobile", ...note })) } });
+    const res = await handle(storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + jwt), env, { query, now: () => NOW, fetch: certsFetch([oidc.jwk]) });
+    assert.equal(res.status, 200);
+    const name = JSON.stringify(note);
+    assert.equal(seen.some((call) => call.sql.includes("UPDATE iap_subscriptions") && call.params[0] === "tok-void"), refunds, name);
+    assert.equal(seen.some((call) => call.sql.includes("INSERT INTO billing_ledger") && call.params.includes("REFUND")), refunds, name);
+    assert.equal(seen.some((call) => call.sql.includes("plan = 'FREE'")), false, name);
+  }
 });

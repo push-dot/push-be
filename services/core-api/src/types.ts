@@ -14,6 +14,7 @@ export interface CoreEnv {
   /** Same value as the VPS AI_SHARED_SECRET. Sent on the wake request. */
   AI_SHARED_SECRET?: string;
   APP_ENV?: string;
+  PAYMENTS_ENABLED?: string;
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
