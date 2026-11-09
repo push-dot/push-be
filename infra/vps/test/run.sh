@@ -51,5 +51,24 @@ if awk '
   echo "VPS deploy is still skipped unless the vps filter matches" >&2
   exit 1
 fi
+
+# The one-time purge in harden.sh: drops archives of the IP-bearing logs, keeps live files and
+# other logs, and does nothing once its marker exists.
+eval "$(sed -n '/^purge_pre_14d_logs() {$/,/^}$/p' harden.sh)"
+root="$(mktemp -d)"
+trap 'rm -f "$env_file"; rm -rf "$root"' EXIT
+mkdir -p "$root/var/log/audit"
+for f in syslog syslog.1 kern.log kern.log.2.gz auth.log.4.gz wtmp wtmp.1 btmp.1 fail2ban.log.1 \
+  dpkg.log.1 audit/audit.log audit/audit.log.3; do
+  touch "$root/var/log/$f"
+done
+purge_pre_14d_logs "$root"
+left="$(cd "$root/var/log" && find . -type f | sort | tr '\n' ' ')"
+[ "$left" = "./audit/audit.log ./dpkg.log.1 ./kern.log ./syslog ./wtmp " ] \
+  || { echo "purge_pre_14d_logs left: $left" >&2; exit 1; }
+[ -s "$root/var/lib/push/retention-14d-v1" ] || { echo "purge_pre_14d_logs wrote no marker" >&2; exit 1; }
+touch "$root/var/log/kern.log.1"
+purge_pre_14d_logs "$root"
+[ -e "$root/var/log/kern.log.1" ] || { echo "purge_pre_14d_logs ran again after its marker" >&2; exit 1; }
 echo "infra/vps checks passed"
 

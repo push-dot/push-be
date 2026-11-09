@@ -68,7 +68,7 @@ done
 log "packages"
 apt-get update -q
 apt-get install -y -q ca-certificates curl gnupg jq iptables conntrack fail2ban python3-systemd \
-  auditd unattended-upgrades apt-listchanges needrestart
+  auditd cron unattended-upgrades apt-listchanges needrestart
 
 # ---------------------------------------------------------------- firewall (before Docker starts containers)
 log "firewall"
@@ -407,7 +407,7 @@ MaxRetentionSec=14day
 MaxFileSec=1day
 EOF
 systemctl restart systemd-journald
-
+journalctl --vacuum-time=14d >/dev/null
 # ---------------------------------------------------------------- IP-bearing logs outside journald
 # The same 14 days for fail2ban.log, auth.log and kern.log (rsyslog), wtmp and btmp: rotate
 # daily, keep 13 old files. The package files are edited in place (kept on upgrade, see
@@ -415,10 +415,34 @@ systemctl restart systemd-journald
 log "log retention"
 for f in /etc/logrotate.d/fail2ban /etc/logrotate.d/rsyslog /etc/logrotate.d/wtmp /etc/logrotate.d/btmp; do
   [ -f "$f" ] || continue
-  # wtmp's minsize 1M would skip the daily rotation until the file reaches 1 MB.
-  sed -i -E 's/^(\s*)(daily|weekly|monthly|yearly)\s*$/\1daily/; s/^(\s*)rotate\s+[0-9]+\s*$/\1rotate 13/; /^\s*(min|max)?size\s/d' "$f"
-  { grep -qE '^\s*daily\s*$' "$f" && grep -qE '^\s*rotate 13\s*$' "$f"; } || die "$f: could not set daily, rotate 13"
+  # wtmp's minsize 1M would skip the daily rotation until the file reaches 1 MB, and
+  # notifempty would skip a quiet day and keep the oldest file one day longer.
+  sed -i -E 's/^(\s*)(daily|weekly|monthly|yearly)\s*$/\1daily/; s/^(\s*)rotate\s+[0-9]+\s*$/\1rotate 13/; s/^(\s*)notifempty\s*$/\1ifempty/; /^\s*(min|max)?size\s/d' "$f"
+  { grep -qE '^\s*daily\s*$' "$f" && grep -qE '^\s*rotate 13\s*$' "$f" && ! grep -qE '^\s*notifempty\s*$' "$f"; } \
+    || die "$f: could not set daily, rotate 13, ifempty"
 done
+
+# Once per host: files rotated under the old weekly, monthly and size rules hold lines far
+# older than 14 days and would take 13 more rotations to age out. Live files stay.
+# purge_pre_14d_logs <root>; test/run.sh runs it against a fake root.
+purge_pre_14d_logs() {
+  local marker="$1/var/lib/push/retention-14d-v1"
+  [ -e "$marker" ] && return 0
+  rm -f "$1"/var/log/{syslog,kern.log,auth.log,mail.log,user.log,cron.log,fail2ban.log,wtmp,btmp}.[0-9]* \
+    "$1"/var/log/audit/audit.log.[0-9]*
+  mkdir -p "${marker%/*}"
+  date -u +%FT%TZ >"$marker"
+}
+purge_pre_14d_logs ""
+
+# lastlog keeps each account's last login IP until its next login, with no age limit.
+cat >/etc/cron.daily/push-lastlog-clear <<'EOF'
+#!/bin/sh
+# Managed by infra/vps/harden.sh
+exec truncate -c -s 0 /var/log/lastlog
+EOF
+chmod 0755 /etc/cron.daily/push-lastlog-clear
+/etc/cron.daily/push-lastlog-clear
 
 # ---------------------------------------------------------------- watchdog
 log "watchdog"
