@@ -47,6 +47,7 @@ class DocumentStore(Store):
     async def list(self, user_id: UUID, application_id: Optional[UUID], kind: Optional[str], page) -> Page:
         c = Conds()
         c.add("user_id = {}", user_id)
+        c.add("status <> 'ARCHIVED'")
         if application_id:
             c.add("application_id = {}", application_id)
         if kind:

@@ -150,7 +150,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/apply", {
     tag: "postings",
     summary: "Apply to a posting",
-    description: "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.",
+    description: "Archived documents cannot be attached: they are 404 like an unknown documentId. Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.",
     params: [pathParam("id")],
     body: body(obj({ documentIds: arr(uuid), sourceIds: arr(uuid) }, [])),
     responses: { 201: ok(ref("Application"), "Created") },

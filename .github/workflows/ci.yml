@@ -222,7 +222,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install workers
         run: npm ci
-      # BILLING_PG_URL: the billing money tests (core-api test/billing-money.test.ts, ai tests/test_credits_settle_pg.py) run on
+      # BILLING_PG_URL: the billing money tests (core-api test/billing-money.test.ts, ai tests/test_credits_settle_pg.py) and the
+      # archived-document tests (core-api test/documents-archived-pg.test.ts, ai tests/test_archived_documents_pg.py) run on
       # this migrated schema here and skip elsewhere; -rs lists every ai skip, so a lost URL shows.
       - name: Capture SQL from the core, gateway and ai tests
         env:

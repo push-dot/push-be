@@ -30,7 +30,7 @@ async def load_document_markdown(db, state: dict) -> str:
         row = await db.q().fetchrow(
             "SELECT v.content FROM documents d "
             "JOIN document_versions v ON v.id = COALESCE(d.latest_version_id, d.finalized_version_id) "
-            "WHERE d.id = $1 AND d.user_id = $2",
+            "WHERE d.id = $1 AND d.user_id = $2 AND d.status <> 'ARCHIVED'",
             doc_id,
             user_id,
         )

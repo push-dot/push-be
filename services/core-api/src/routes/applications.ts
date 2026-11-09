@@ -3,6 +3,7 @@ import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
 import { listPage, pageOf, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { rejectArchived } from "./documents.ts";
 
 const STAGE_ORDER = ["DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED"];
 const TERMINAL = new Set(["ACCEPTED", "REJECTED", "WITHDRAWN"]);
@@ -397,13 +398,14 @@ export const createSubmissionDraft = async (ctx: Ctx, idRaw: string): Promise<Re
   const versionIds = uuids(values.documentVersionIds);
   if (!versionIds.length) throw fieldError("documentVersionIds", "at least one document version is required");
   const loaded = await query(ctx.deps.query,
-    "SELECT v.id, v.application_id, d.finalized_version_id FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.user_id = $1 AND v.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
+    "SELECT v.id, v.application_id, d.finalized_version_id, d.status FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.user_id = $1 AND v.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
     [ctx.user.id, JSON.stringify(versionIds)]);
   const versions = new Map(loaded.rows.map((row) => [String(row.id), row]));
   for (const vid of versionIds) {
     const version = versions.get(vid);
     if (!version) throw fieldError("documentVersionIds", "version " + vid + " not found");
     if (String(version.application_id) !== appId) throw fieldError("documentVersionIds", "version " + vid + " belongs to another application");
+    rejectArchived(version);
     if (version.finalized_version_id == null || String(version.finalized_version_id) !== vid) {
       throw new HttpError(422, "DOCUMENT_NOT_FINALIZED", "document version " + vid + " is not finalized");
     }

@@ -1,5 +1,6 @@
--- Parity seed shared by services/ai/scripts/record_parity.py and test/parity/harness.ts.
--- Clock for both sides: 2026-10-22T12:00:00Z. Token: "parity-token" for ME.
+-- Parity seed for test/parity/harness.ts (PARITY_PG_URL). The goldens were recorded from the Python API,
+-- which no longer serves these routes; core's answers on this seed are now the reference.
+-- Clock: 2026-10-22T12:00:00Z. Token: "parity-token" for ME.
 DO $$
 DECLARE names text;
 BEGIN
@@ -28,6 +29,8 @@ INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, 
     ('c0000000-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 1, 'b0000000-0000-4000-8000-000000000001', 'Acme', 'Platform Engineer', 'APPLIED', '', '2026-10-03T00:00:00Z', NULL, false, '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z'),
     ('c0000000-0000-4000-8000-000000000003', '22222222-2222-4222-8222-222222222222', 1, 'b0000000-0000-4000-8000-000000000002', 'Other Co', 'Designer', 'DISCOVERED', '', NULL, NULL, false, '2026-10-04T00:00:00Z', '2026-10-04T00:00:00Z'),
     ('c0000000-0000-4000-8000-000000000004', '11111111-1111-4111-8111-111111111111', 1, 'b0000000-0000-4000-8000-000000000001', 'Beta', 'Rejected Role', 'REJECTED', '', NULL, NULL, true, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');
+-- Same backfill migration 0036 ran on every application that existed before it.
+UPDATE applications SET stage_entered_at = jsonb_build_object(stage, created_at) WHERE stage_entered_at = '{}'::jsonb;
 
 INSERT INTO application_events (id, user_id, application_id, type, payload, created_at) VALUES
     ('c1000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'c0000000-0000-4000-8000-000000000001', 'STAGE_CHANGED', '{"from": "DISCOVERED", "to": "PREPARING"}', '2026-10-04T00:00:00Z'),

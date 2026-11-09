@@ -5,6 +5,7 @@ import { planTier, queueFor, type JobType } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { rejectArchived } from "./documents.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -67,10 +68,11 @@ export const enqueueFit = async (ctx: Ctx, postingIdRaw: string): Promise<Respon
   const documentId = requireUuid(String(body.documentId ?? ""), "documentId");
   const owned = await one(
     ctx.deps.query,
-    "SELECT d.id FROM documents d JOIN job_postings p ON p.id = $2 WHERE d.id = $1 AND d.user_id = $3",
+    "SELECT d.id, d.status FROM documents d JOIN job_postings p ON p.id = $2 WHERE d.id = $1 AND d.user_id = $3",
     [documentId, postingId, ctx.user.id],
   );
   if (!owned) throw notFound();
+  rejectArchived(owned);
   return acceptJob(ctx, "fit", { postingId, documentId });
 };
 
@@ -84,7 +86,8 @@ export const enqueueDocumentGenerate = async (ctx: Ctx, documentIdRaw: string): 
   if (!Array.isArray(evidence) || evidence.some((v) => typeof v !== "string" || !UUID_RE.test(v))) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be a list of UUIDs", { field: "evidenceIds" });
   }
-  const owned = await one(ctx.deps.query, "SELECT id FROM documents WHERE id = $1 AND user_id = $2", [documentId, ctx.user.id]);
+  const owned = await one(ctx.deps.query, "SELECT id, status FROM documents WHERE id = $1 AND user_id = $2", [documentId, ctx.user.id]);
   if (!owned) throw notFound();
+  rejectArchived(owned);
   return acceptJob(ctx, "document", { documentId, kind: "generate", body });
 };

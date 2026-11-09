@@ -74,7 +74,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/applications/{id}/submission-drafts", {
     tag: "applications",
     summary: "Create a submission draft",
-    description: "Only MANUAL_RECORD is enabled (ADAPTER returns 403 FEATURE_DISABLED). Every document version must belong to this application and be its document's finalized version (422 DOCUMENT_NOT_FINALIZED).",
+    description: "Only MANUAL_RECORD is enabled (ADAPTER returns 403 FEATURE_DISABLED). Every document version must belong to this application and be its document's finalized version (422 DOCUMENT_NOT_FINALIZED). A version of an archived document is 409 INVALID_TRANSITION.",
     params: [pathParam("id")],
     body: body(closed({
       expectedRevision: int,

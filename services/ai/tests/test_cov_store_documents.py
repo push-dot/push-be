@@ -31,6 +31,7 @@ async def test_document_create_get_list_update():
     p = await s.list(USER, app_id, "RESUME", page(1, Cursor(NOW, cid)))
     assert_scoped(conn.last, USER)
     assert "application_id = $2 AND kind = $3" in conn.last[1]
+    assert "status <> 'ARCHIVED'" in conn.last[1]
     assert conn.last[2] == (USER, app_id, "RESUME", NOW, cid, 2) and p.has_more
     await s.list(USER, None, None, page())
     assert conn.last[2] == (USER, 51)

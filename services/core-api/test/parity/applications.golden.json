@@ -814,7 +814,8 @@
     "createdAt": "2026-10-02T00:00:00Z",
     "updatedAt": "2026-10-22T12:00:00Z",
     "stageEnteredAt": {
-     "APPLIED": "2026-10-02T00:00:00Z"
+     "APPLIED": "2026-10-22T12:00:00Z",
+     "PREPARING": "2026-10-02T00:00:00Z"
     }
    }
   }
@@ -1028,7 +1029,8 @@
     "createdAt": "2026-10-03T00:00:00Z",
     "updatedAt": "2026-10-22T12:00:00Z",
     "stageEnteredAt": {
-     "SCREENING": "2026-10-03T00:00:00Z"
+     "APPLIED": "2026-10-03T00:00:00Z",
+     "SCREENING": "2026-10-22T12:00:00Z"
     }
    }
   }
@@ -1077,7 +1079,8 @@
     "createdAt": "2026-10-03T00:00:00Z",
     "updatedAt": "2026-10-22T12:00:00Z",
     "stageEnteredAt": {
-     "SCREENING": "2026-10-03T00:00:00Z",
+     "APPLIED": "2026-10-03T00:00:00Z",
+     "SCREENING": "2026-10-22T12:00:00Z",
      "WITHDRAWN": "2026-10-22T12:00:00Z"
     }
    }
@@ -1185,7 +1188,9 @@
      "createdAt": "2026-10-03T00:00:00Z",
      "updatedAt": "2026-10-22T12:00:00Z",
      "stageEnteredAt": {
-      "WITHDRAWN": "2026-10-03T00:00:00Z"
+      "APPLIED": "2026-10-03T00:00:00Z",
+      "SCREENING": "2026-10-22T12:00:00Z",
+      "WITHDRAWN": "2026-10-22T12:00:00Z"
      }
     },
     {
@@ -1203,7 +1208,8 @@
      "createdAt": "2026-10-02T00:00:00Z",
      "updatedAt": "2026-10-22T12:00:00Z",
      "stageEnteredAt": {
-      "APPLIED": "2026-10-02T00:00:00Z"
+      "APPLIED": "2026-10-22T12:00:00Z",
+      "PREPARING": "2026-10-02T00:00:00Z"
      }
     },
     {

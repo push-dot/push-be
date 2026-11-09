@@ -56,7 +56,8 @@ async def reindex_all(query, store, ingestor, heartbeat) -> int:
     async def one_document(row):
         item = await read_document(query(), row["id"])
         await ingestor.ingest_text(
-            Tenant(user_id=_uuid(row["user_id"])), "document", row["id"], item["text"] if item else "")
+            Tenant(user_id=_uuid(row["user_id"])), "document", row["id"], item["text"] if item else "",
+            document_id=row["id"])
 
     async def jobs(after):
         return await store.jobs_missing(model, after)
@@ -144,7 +145,8 @@ def make_ingest(query, store, ingestor, github_client):
             if document is None or _uuid(document["user_id"]) != user_id:
                 raise _missing()
             return {"nodes": await ingestor.ingest_text(
-                Tenant(user_id=user_id, company_id=company_id), "document", document_id, document["text"])}
+                Tenant(user_id=user_id, company_id=company_id), "document", document_id, document["text"],
+                document_id=document_id)}
         if payload.get("jobId"):
             job_id = UUID(payload["jobId"])
             saved = await read_job(query(), job_id)

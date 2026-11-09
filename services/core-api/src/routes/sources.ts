@@ -100,7 +100,7 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
     kind === "AI" ? null : query(ctx.deps.query,
       "SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind FROM sources WHERE user_id = $1" + tail(""), params),
     kind === "UPLOAD" ? null : query(ctx.deps.query,
-      "SELECT d.id, d.title, d.created_at, to_jsonb(d)->>'kind' AS kind, a.company, a.title AS posting_title FROM documents d LEFT JOIN applications a ON a.id = d.application_id WHERE d.user_id = $1" + tail("d."), params),
+      "SELECT d.id, d.title, d.created_at, to_jsonb(d)->>'kind' AS kind, a.company, a.title AS posting_title FROM documents d LEFT JOIN applications a ON a.id = d.application_id WHERE d.user_id = $1 AND d.status <> 'ARCHIVED'" + tail("d."), params),
   ]);
   const sourceRows = (uploads?.rows ?? []).filter((row) => {
     const name = String(row.file_name ?? "");

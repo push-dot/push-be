@@ -542,7 +542,7 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     documentIds.length ? query(ctx.deps.query,
       `SELECT DISTINCT ON (d.id) d.id, d.title, v.content FROM documents d
        JOIN document_versions v ON v.document_id = d.id
-       WHERE d.user_id = $1 AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
+       WHERE d.user_id = $1 AND d.status <> 'ARCHIVED' AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
        ORDER BY d.id, v.number DESC, v.created_at DESC, v.id DESC`,
       [ctx.user.id, JSON.stringify(documentIds)]) : null,
     sourceIds.length ? query(ctx.deps.query,

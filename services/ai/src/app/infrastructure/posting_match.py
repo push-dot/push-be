@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.domain.errors import invalid_transition, not_found
 from app.domain.posting_match import CANDIDATE_CAP
 
 # shortcut: LIMIT 60 trims the cross join, switch to ANN when open postings pass a few thousand.
@@ -20,9 +21,21 @@ POSTING_MATCH_SQL = (
 )
 
 _LATEST_DOCUMENT = (
-    "SELECT id FROM documents WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1")
+    "SELECT id FROM documents WHERE user_id = $1 AND status <> 'ARCHIVED' "
+    "ORDER BY updated_at DESC LIMIT 1")
+
+_DOCUMENT_STATUS = "SELECT status FROM documents WHERE id = $1 AND user_id = $2"
 
 _USER_KINDS = ["document", "evidence"]
+
+
+async def require_live_document(query, user_id, document_id) -> None:
+    """The caller's document, not archived: core-api rejects the same ids with the same codes."""
+    row = await query.fetchrow(_DOCUMENT_STATUS, document_id, user_id)
+    if row is None:
+        raise not_found()
+    if row["status"] == "ARCHIVED":
+        raise invalid_transition("document is archived")
 
 
 async def latest_document_id(query, user_id):

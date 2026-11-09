@@ -9,14 +9,27 @@ async def lock_source(db, key: str) -> None:
     await db.q().execute("SELECT pg_advisory_xact_lock(hashtext($1))", key)
 
 
+# A source archived while it was being embedded keeps no nodes: FOR SHARE waits for an
+# uncommitted archive, and the archive trigger cannot run before this insert commits.
+_LIVE_DOCUMENT = "SELECT 1 FROM documents WHERE id = $1 AND status <> 'ARCHIVED' FOR SHARE"
+_LIVE_EVIDENCE = "SELECT 1 FROM career_evidence WHERE id = $1 AND NOT archived FOR SHARE"
+_LIVE_JOB = "SELECT 1 FROM jobs WHERE id = $1 AND NOT archived FOR SHARE"
+
+
 class RagNodeStore:
     def __init__(self, db):
         self.db = db
 
     async def replace(self, source_type: str, source_id: UUID, model: str, rows: list[dict]) -> None:
         async def work():
+            nonlocal rows
             q = self.db.q()
             await lock_source(self.db, f"{source_type}:{source_id}")
+            if source_type in ("document", "evidence", "job") and await q.fetchval(
+                _LIVE_DOCUMENT if source_type == "document" else _LIVE_EVIDENCE if source_type == "evidence" else _LIVE_JOB,
+                source_id,
+            ) is None:
+                rows = []
             user_id = rows[0]["user_id"] if rows else None
             company_id = rows[0]["company_id"] if rows else None
             if rows and (user_id is not None or company_id is not None):
@@ -80,7 +93,7 @@ class RagNodeStore:
         return await self._missing(
             "SELECT d.id, d.user_id FROM documents d "
             "JOIN document_versions v ON v.id = COALESCE(d.finalized_version_id, d.latest_version_id) "
-            "WHERE NOT EXISTS (SELECT 1 FROM rag_nodes n WHERE n.source_type = 'document' "
+            "WHERE d.status <> 'ARCHIVED' AND NOT EXISTS (SELECT 1 FROM rag_nodes n WHERE n.source_type = 'document' "
             "AND n.source_id = d.id AND n.embedding_model = $1) "
             "AND ($2::uuid IS NULL OR d.id > $2) ORDER BY d.id LIMIT $3",
             model, after, limit)
