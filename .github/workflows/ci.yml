@@ -551,6 +551,10 @@ jobs:
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
           STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO }}
           STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA }}
+          STRIPE_PRICE_EMPLOYER_BASIC: ${{ vars.STRIPE_PRICE_EMPLOYER_BASIC }}
+          STRIPE_PRICE_EMPLOYER_PRO: ${{ vars.STRIPE_PRICE_EMPLOYER_PRO }}
+          STRIPE_PRICE_EMPLOYER_ULTRA: ${{ vars.STRIPE_PRICE_EMPLOYER_ULTRA }}
+          STRIPE_PRICE_TOPUP: ${{ vars.STRIPE_PRICE_TOPUP }}
         run: |
           set -euo pipefail
           umask 077
@@ -560,7 +564,8 @@ jobs:
                     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
                     GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA,
-                    DEV_AUTH_TOKEN}
+                    STRIPE_PRICE_EMPLOYER_BASIC, STRIPE_PRICE_EMPLOYER_PRO, STRIPE_PRICE_EMPLOYER_ULTRA,
+                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN}
                  | with_entries(select((.value // "") != ""))' >"$file"
           npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"
