@@ -222,9 +222,11 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install workers
         run: npm ci
+      # BILLING_PG_URL: the billing money tests (test/billing-money.test.ts) run on this migrated schema here and skip elsewhere.
       - name: Capture SQL from the core, gateway and ai tests
         env:
           SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
+          BILLING_PG_URL: postgres://push:push@localhost:5432/push
         run: |
           set -euo pipefail
           register="$GITHUB_WORKSPACE/scripts/sql-check/register.mjs"
