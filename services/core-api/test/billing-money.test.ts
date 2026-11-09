@@ -1269,6 +1269,8 @@ test("while a webhook holds the user row, a charged send gives up after 3 s with
   }
   const retried = await generate();
   assert.ok(retried.status < 300, String(retried.status));
+  const months = await pg!.query("SELECT 1 FROM billing_ledger WHERE user_id = $1 AND reference_id LIKE 'monthly:%'", [userId]);
+  assert.equal(months.rowCount, 1);
   // With the month granted, a read takes no lock: it answers at once while a webhook holds the row.
   await holdWhile(pg!, "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", userId, async () => {
     const started = Date.now();
@@ -1297,3 +1299,31 @@ const holdWhile = async (db: NonNullable<typeof pg>, lock: string, id: string, w
     await webhook;
   }
 };
+
+test("employer GET /billing: under a held company row it answers after 3 s without the grant, grants each tier once later, then reads without the lock", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  await pg!.query("UPDATE companies SET plan = 'PRO' WHERE id = $1", [co.id]);
+  const read = async () => {
+    resetLimits();
+    const started = Date.now();
+    const res = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env,
+      { query: dbFor({ userId: crypto.randomUUID(), companyId: co.id }), now: () => new Date(START), transaction: (work) => pg!.transaction!(work) });
+    assert.equal(res.status, 200);
+    return { ms: Date.now() - started, balance: (await res.json() as { data: Row }).data.balanceMicroCredits };
+  };
+  const lock = "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE";
+  await holdWhile(pg!, lock, co.id, async () => {
+    const blocked = await read();
+    assert.equal(blocked.balance, 0);
+    assert.ok(blocked.ms >= 2500 && blocked.ms < 8000, `waited ${blocked.ms} ms`);
+  });
+  assert.equal((await read()).balance, 15_000 * MICRO);
+  assert.equal((await read()).balance, 15_000 * MICRO);
+  assert.deepEqual(grantRows(await ledgerOf(co.id)), [["monthly:2026-11:BASIC", 3000], ["monthly:2026-11:PRO", 12000]]);
+  await holdWhile(pg!, lock, co.id, async () => {
+    const free = await read();
+    assert.equal(free.balance, 15_000 * MICRO);
+    assert.ok(free.ms < 1000, `GET /billing waited ${free.ms} ms on the company row`);
+  });
+});
