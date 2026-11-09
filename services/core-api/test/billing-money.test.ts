@@ -73,6 +73,15 @@ function stripeWorld(customer: string) {
   const ended: string[] = [];
   const open = new Map<string, string[]>();
   const fail = { get: 0, delete: 0 };
+  // The latest invoice bills the current period and is paid, unless the subscription is listed here: renewed, its invoice still a draft.
+  const drafts = new Set<string>();
+  const latestInvoice = (sub: Sub) => {
+    const item = sub.items.data[0]!;
+    return {
+      id: "in_latest_" + sub.id, object: "invoice", status: drafts.has(sub.id) ? "draft" : "paid",
+      lines: { object: "list", data: [{ amount: 100, period: { start: item.current_period_start, end: item.current_period_end }, pricing: { price_details: { price: item.price.id } } }] },
+    };
+  };
   const subscribe = (plan: Plan, at: number): Sub => {
     const sub: Sub = {
       id: "sub_" + rand(), object: "subscription", customer, status: "active", created: Math.floor(at / 1000), currency: "usd",
@@ -112,12 +121,14 @@ function stripeWorld(customer: string) {
     }
     if (url.pathname === "/v1/subscriptions") {
       const owner = url.searchParams.get("customer");
-      return json({ object: "list", data: [...subs.values()].filter((sub) => sub.customer === owner && sub.status !== "canceled"), has_more: false });
+      const expand = url.searchParams.getAll("expand[]").includes("data.latest_invoice");
+      const listed = [...subs.values()].filter((sub) => sub.customer === owner && sub.status !== "canceled");
+      return json({ object: "list", data: expand ? listed.map((sub) => ({ ...sub, latest_invoice: latestInvoice(sub) })) : listed, has_more: false });
     }
     if (url.pathname.startsWith("/v1/invoices/")) return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: RECEIPT });
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
-  return { subs, calls, fail, open, subscribe, fetchImpl, deletes: () => [...ended] };
+  return { subs, calls, fail, open, drafts, subscribe, fetchImpl, deletes: () => [...ended] };
 }
 
 type World = ReturnType<typeof stripeWorld>;
@@ -759,6 +770,39 @@ test("audit 5: replacing a past_due subscription voids its open invoice before t
   assert.equal(planCredits(await ledgerOf(co.id)), 45_000);
 });
 
+test("audit draft window: an upgrade while the renewal invoice is still a draft cancels without a refund and starts Ultra fresh", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const pro = stripe.subscribe("PRO", START);
+  assert.equal(await deliver(stripe, checkout(co.id, pro, "PRO", START), START), 200);
+  // Stripe renewed the subscription (still active) and holds the renewal invoice as a draft for about an hour.
+  const live = stripe.subs.get(pro.id)!;
+  live.items.data[0]!.current_period_start = Math.floor((START + PERIOD) / 1000);
+  live.items.data[0]!.current_period_end = Math.floor((START + 2 * PERIOD) / 1000);
+  stripe.drafts.add(pro.id);
+  const at = START + PERIOD + 20 * 60_000;
+  const ultra = stripe.subscribe("ULTRA", at);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", at), at), 200);
+  assert.ok(stripe.calls.some((call) => call.startsWith("GET /v1/subscriptions?") && call.includes("data.latest_invoice")));
+  assert.deepEqual(stripe.deletes(), [`DELETE /v1/subscriptions/${pro.id}`]);
+  assert.equal(planCredits(await ledgerOf(co.id)), 45_000);
+  assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+});
+
+test("a subscription event of a customer the company has left is accepted and changes nothing", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  const stripe = stripeWorld(co.customer);
+  const ultra = stripe.subscribe("ULTRA", START);
+  assert.equal(await deliver(stripe, checkout(co.id, ultra, "ULTRA", START), START), 200);
+  const left = stripeWorld("cus_" + rand());
+  const old = left.subscribe("PRO", START - DAY);
+  old.status = "canceled";
+  assert.equal(await deliver(left, subscriptionEvent("customer.subscription.deleted", old), START + 1000), 200);
+  assert.deepEqual(await companyRow(co.id), { plan: "ULTRA", stripe_subscription_id: ultra.id });
+});
+
 test("a renewal paid just before a downgrade still grants its period when it arrives after the downgrade", async (t) => {
   const co = await company(t);
   if (!co) return;
@@ -836,6 +880,19 @@ test("personal: a late Stripe delete leaves a user whose App Store subscription 
   sub.status = "canceled";
   assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", sub), START + DAY), 200);
   assert.deepEqual(await userRow(userId), { plan: "ULTRA", subscription_status: "ACTIVE" });
+});
+
+test("personal: an App Store row left ACTIVE past its expires_at no longer guards the plan from a Stripe delete", async (t) => {
+  const customer = "cus_" + rand();
+  const userId = await legacyUser(t, customer);
+  if (!userId) return;
+  await pg!.query("INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status) VALUES ($1, $2, 'APP_STORE', $3, 'ios.ultra', $4, 'ACTIVE')",
+    [crypto.randomUUID(), userId, "tx-" + userId, new Date(START).toISOString()]);
+  const stripe = stripeWorld(customer);
+  const sub = personalSub(stripe, START);
+  sub.status = "canceled";
+  assert.equal(await deliver(stripe, subscriptionEvent("customer.subscription.deleted", sub), START + DAY), 200);
+  assert.deepEqual(await userRow(userId), { plan: "FREE", subscription_status: "CANCELED" });
 });
 
 test("personal grants are unchanged: one full row per store purchase and one monthly row", async (t) => {

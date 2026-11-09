@@ -2,12 +2,15 @@
 // Each seed writes one company's Stripe history (checkouts that upgrade, downgrade or swap, renewals, failed renewals,
 // late payments, cancels) into a fake Stripe that answers after a random delay, fires the real webhook handlers for every
 // event concurrently with duplicate deliveries, Stripe retries, billing reads and the enqueue grant, then checks the money.
+// Some seeds start from a company on calendar months (a subscription from before credit periods) or open two checkouts
+// before either completes, so the company ends up with two Stripe customers. The draft test keeps every renewal invoice a
+// draft for a while, as Stripe does for about an hour, with the subscription active meanwhile.
 // BILLING_STRESS_SEEDS (default 20) and BILLING_STRESS_SEED (first seed, default 1) pick the runs; BILLING_STRESS_SERIAL=1
 // handles one delivery at a time, which separates rule bugs from interleaving bugs.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { ensureMonthlyGrant } from "../src/billing/credits.ts";
+import { ensureMonthlyGrant, monthKey } from "../src/billing/credits.ts";
 import { hmacSha256Hex } from "../src/crypto.ts";
 import type { Query } from "../src/db.ts";
 import { handle, type CoreEnv } from "../src/handler.ts";
@@ -20,6 +23,7 @@ const FIRST = Number(process.env.BILLING_STRESS_SEED ?? 1);
 const PRICE = { BASIC: "price_basic", PRO: "price_pro", ULTRA: "price_ultra" } as const;
 const CENTS = { BASIC: 2000, PRO: 10000, ULTRA: 20000 } as const;
 const CREDITS = { BASIC: 3000, PRO: 15000, ULTRA: 30000 } as const;
+const PLANS = ["BASIC", "PRO", "ULTRA"] as const;
 const MICRO = 6000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -28,8 +32,8 @@ const START = Date.parse("2026-11-02T09:00:00.000Z");
 
 type Plan = keyof typeof PRICE;
 type Row = Record<string, unknown>;
-type Sub = { id: string; plan: Plan; status: "active" | "past_due" | "canceled"; created: number; start: number; end: number; comment: string | null };
-type Invoice = { id: string; sub: string; plan: Plan; start: number; status: "open" | "paid" | "void"; reason: "subscription_create" | "subscription_cycle" };
+type Sub = { id: string; customer: string; plan: Plan; status: "active" | "past_due" | "canceled"; created: number; start: number; end: number; comment: string | null };
+type Invoice = { id: string; sub: string; customer: string; plan: Plan; start: number; status: "draft" | "open" | "paid" | "void"; reason: "subscription_create" | "subscription_cycle" };
 type Refund = { sub: string; plan: Plan; start: number; paid: boolean; newerLive: number };
 
 const env: CoreEnv = {
@@ -56,36 +60,59 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const unix = (ms: number) => Math.floor(ms / 1000);
 
-function stripeWorld(customer: string, latency: () => number, clock: () => number) {
+function stripeWorld(name: string, latency: () => number, clock: () => number) {
   let serial = 0;
+  const customers: string[] = [];
   const subs = new Map<string, Sub>();
   const invoices = new Map<string, Invoice>();
   const refunds: Refund[] = [];
   const events: Row[] = [];
   const next = (prefix: string) => `${prefix}_${String(++serial).padStart(4, "0")}${crypto.randomUUID().slice(0, 6)}`;
-  const view = (sub: Sub) => ({
-    id: sub.id, object: "subscription", customer, status: sub.status, created: unix(sub.created), currency: "usd",
+  const line = (invoice: Invoice, amount: number) => ({
+    amount, period: { start: unix(invoice.start), end: unix(invoice.start + PERIOD) }, pricing: { price_details: { price: PRICE[invoice.plan] }, type: "price_details" },
+  });
+  const invoiceView = (invoice: Invoice) => ({ id: invoice.id, object: "invoice", status: invoice.status, lines: { object: "list", data: [line(invoice, CENTS[invoice.plan])] } });
+  const latest = (sub: Sub) => [...invoices.values()].filter((inv) => inv.sub === sub.id).at(-1)!;
+  const view = (sub: Sub, expand = false) => ({
+    id: sub.id, object: "subscription", customer: sub.customer, status: sub.status, created: unix(sub.created), currency: "usd",
     items: { object: "list", data: [{ price: { id: PRICE[sub.plan] }, current_period_start: unix(sub.start), current_period_end: unix(sub.end) }] },
     metadata: { audience: "EMPLOYER", plan: sub.plan }, cancellation_details: { comment: sub.comment },
+    latest_invoice: expand ? invoiceView(latest(sub)) : latest(sub).id,
   });
   const event = (type: string, object: Row, at: number) => {
     events.push({ id: next("evt"), object: "event", type, created: unix(at), livemode: false, data: { object }, at });
   };
   const invoiceEvent = (invoice: Invoice, total: number, at: number) => event("invoice.paid", {
-    id: invoice.id, object: "invoice", billing_reason: invoice.reason, status: "paid", currency: "usd", customer,
+    id: invoice.id, object: "invoice", billing_reason: invoice.reason, status: "paid", currency: "usd", customer: invoice.customer,
     amount_paid: Math.max(total, 0), total, hosted_invoice_url: "https://invoice.stripe.com/i/" + invoice.id,
     parent: { type: "subscription_details", subscription_details: { subscription: invoice.sub } },
-    lines: { object: "list", data: [{ amount: total, period: { start: unix(invoice.start), end: unix(invoice.start + PERIOD) }, pricing: { price_details: { price: PRICE[invoice.plan] }, type: "price_details" } }] },
+    lines: { object: "list", data: [line(invoice, total)] },
   }, at);
-  const bill = (sub: Sub, reason: Invoice["reason"], paid: boolean, at: number): Invoice => {
-    const invoice: Invoice = { id: next("in"), sub: sub.id, plan: sub.plan, start: sub.start, status: paid ? "paid" : "open", reason };
+  const bill = (sub: Sub, reason: Invoice["reason"], status: Invoice["status"], at: number): Invoice => {
+    const invoice: Invoice = { id: next("in"), sub: sub.id, customer: sub.customer, plan: sub.plan, start: sub.start, status, reason };
     invoices.set(invoice.id, invoice);
-    if (paid) invoiceEvent(invoice, CENTS[sub.plan], at);
+    if (status === "paid") invoiceEvent(invoice, CENTS[sub.plan], at);
     return invoice;
   };
   const end = (sub: Sub, at: number) => {
     sub.status = "canceled";
     event("customer.subscription.deleted", view(sub), at);
+  };
+  const pay = (invoice: Invoice, at: number) => {
+    // A cancel that ran after this payment was scripted may have voided the invoice.
+    if (invoice.status !== "open") return;
+    invoice.status = "paid";
+    invoiceEvent(invoice, CENTS[invoice.plan], at);
+    const sub = subs.get(invoice.sub)!;
+    if (sub.status === "past_due" && sub.start === invoice.start) {
+      sub.status = "active";
+      event("customer.subscription.updated", view(sub), at);
+    }
+  };
+  const subscribe = (customer: string, plan: Plan, at: number): { sub: Sub; invoice: Invoice } => {
+    const sub: Sub = { id: next("sub"), customer, plan, status: "active", created: at, start: at, end: at + PERIOD, comment: null };
+    subs.set(sub.id, sub);
+    return { sub, invoice: bill(sub, "subscription_create", "paid", at) };
   };
 
   const fetchImpl = (async (input, init) => {
@@ -108,11 +135,15 @@ function stripeWorld(customer: string, latency: () => number, clock: () => numbe
       end(sub, clock());
       return json(view(sub));
     }
-    if (url.pathname === "/v1/subscriptions") return json({ object: "list", has_more: false, data: [...subs.values()].filter((s) => s.status !== "canceled").map(view) });
+    if (url.pathname === "/v1/subscriptions") {
+      const of = url.searchParams.get("customer");
+      const expand = url.searchParams.getAll("expand[]").includes("data.latest_invoice");
+      return json({ object: "list", has_more: false, data: [...subs.values()].filter((s) => s.status !== "canceled" && s.customer === of).map((s) => view(s, expand)) });
+    }
     if (url.pathname === "/v1/invoices" && method === "GET") {
       const of = url.searchParams.get("subscription");
       const status = url.searchParams.get("status");
-      return json({ object: "list", has_more: false, data: [...invoices.values()].filter((inv) => inv.sub === of && (!status || inv.status === status)).map((inv) => ({ id: inv.id, object: "invoice", status: inv.status })) });
+      return json({ object: "list", has_more: false, data: [...invoices.values()].filter((inv) => inv.sub === of && (!status || inv.status === status)).map(invoiceView) });
     }
     const voided = /^\/v1\/invoices\/([^/]+)\/void$/.exec(url.pathname)?.[1];
     if (voided && method === "POST") {
@@ -125,12 +156,19 @@ function stripeWorld(customer: string, latency: () => number, clock: () => numbe
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
 
+  const pending: { invoice: Invoice; paid: boolean }[] = [];
   return {
-    subs, invoices, refunds, events, fetchImpl,
-    checkout(companyId: string, plan: Plan, at: number): Sub {
-      const sub: Sub = { id: next("sub"), plan, status: "active", created: at, start: at, end: at + PERIOD, comment: null };
-      subs.set(sub.id, sub);
-      const invoice = bill(sub, "subscription_create", true, at);
+    subs, invoices, refunds, events, pending, fetchImpl, pay, end,
+    customer(): string {
+      customers.push(`cus_stress_${name}_${customers.length}`);
+      return customers.at(-1)!;
+    },
+    // A subscription from before credit periods: paid, no webhook of it reaches this code.
+    legacy(customer: string, plan: Plan, at: number): Sub {
+      return subscribe(customer, plan, at).sub;
+    },
+    checkout(companyId: string, customer: string, plan: Plan, at: number): Sub {
+      const { sub, invoice } = subscribe(customer, plan, at);
       event("checkout.session.completed", {
         id: next("cs_test"), object: "checkout.session", mode: "subscription", status: "complete", payment_status: "paid",
         amount_total: CENTS[plan], currency: "usd", customer, subscription: sub.id, invoice: invoice.id, payment_intent: null,
@@ -139,23 +177,32 @@ function stripeWorld(customer: string, latency: () => number, clock: () => numbe
       event("customer.subscription.updated", view(sub), at);
       return sub;
     },
-    renew(sub: Sub, paid: boolean, at: number) {
+    renew(sub: Sub, paid: boolean, draft: boolean, at: number) {
       sub.start = sub.end;
       sub.end += PERIOD;
-      sub.status = paid ? "active" : "past_due";
-      bill(sub, "subscription_cycle", paid, at);
+      if (draft) {
+        sub.status = "active";
+        pending.push({ invoice: bill(sub, "subscription_cycle", "draft", at), paid });
+      }
+      else {
+        sub.status = paid ? "active" : "past_due";
+        bill(sub, "subscription_cycle", paid ? "paid" : "open", at);
+      }
       event("customer.subscription.updated", view(sub), at);
     },
-    pay(invoice: Invoice, at: number) {
-      invoice.status = "paid";
-      invoiceEvent(invoice, CENTS[invoice.plan], at);
+    // Stripe finalizes a renewal draft and charges it, unless the subscription was canceled first: a cancel turns off
+    // auto_advance on its draft and open invoices.
+    finalize(at: number) {
+      const { invoice, paid } = pending.shift()!;
       const sub = subs.get(invoice.sub)!;
-      if (sub.status === "past_due" && sub.start === invoice.start) {
-        sub.status = "active";
+      if (invoice.status !== "draft" || sub.status === "canceled") return;
+      invoice.status = "open";
+      if (paid) pay(invoice, at);
+      else if (sub.status === "active" && sub.start === invoice.start) {
+        sub.status = "past_due";
         event("customer.subscription.updated", view(sub), at);
       }
     },
-    end,
   };
 }
 
@@ -193,15 +240,14 @@ const dbFor = (query: Query, who: { companyId: string | null }): Query => async 
 
 type Run = { violations: string[]; stats: { actions: string[]; deliveries: number; retries: number } };
 
-async function runSeed(seed: number): Promise<Run> {
+async function runSeed(seed: number, draft: boolean): Promise<Run> {
   const script = mulberry(seed);
   const timing = mulberry(seed * 7919 + 13);
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(script() * items.length)]!;
   const companyId = crypto.randomUUID();
-  const customer = "cus_stress_" + seed + "_" + companyId.slice(0, 8);
   await pg!.query("INSERT INTO companies (id, name) VALUES ($1, 'push-be stress company')", [companyId]);
   let clock = START;
-  const stripe: World = stripeWorld(customer, () => timing() * 12, () => clock);
+  const stripe: World = stripeWorld(seed + "_" + companyId.slice(0, 8), () => timing() * 12, () => clock);
   const query = jittered(pg!.query, () => timing() * 3);
   const transaction = pg!.transaction
     ? <T,>(work: (q: Query) => Promise<T>) => pg!.transaction!((q) => work(jittered(q, () => timing() * 3)))
@@ -265,11 +311,31 @@ async function runSeed(seed: number): Promise<Run> {
       await ensureMonthlyGrant(query, { audience: "EMPLOYER", plan: row?.plan == null ? null : String(row.plan), ownerId: companyId, now: new Date(at) });
     })());
   };
+  // Checkout sends the company's customer when it has one; a checkout opened before any completed makes a new customer.
+  const customerNow = async (): Promise<string> => {
+    const row = (await pg!.query("SELECT stripe_customer_id FROM companies WHERE id = $1", [companyId])).rows[0];
+    return row?.stripe_customer_id == null ? stripe.customer() : String(row.stripe_customer_id);
+  };
 
   const live = () => [...stripe.subs.values()].filter((sub) => sub.status !== "canceled");
   const newest = () => live().sort((a, b) => b.created - a.created)[0];
+  const legacy = script() < 0.25;
+  if (legacy) {
+    // On calendar months: a plan and subscription from before credit periods, and this month's grant already written.
+    const plan = pick(PLANS);
+    const sub = stripe.legacy(stripe.customer(), plan, START - 5 * DAY);
+    await pg!.query("UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5 WHERE id = $1",
+      [companyId, plan, sub.customer, sub.id, new Date(sub.created).toISOString()]);
+    await ensureMonthlyGrant(pg!.query, { audience: "EMPLOYER", plan, ownerId: companyId, now: new Date(START) });
+    stats.actions.push("legacy:" + plan);
+  }
   stats.actions.push("checkout");
-  stripe.checkout(companyId, pick(["BASIC", "PRO", "ULTRA"] as const), clock);
+  stripe.checkout(companyId, await customerNow(), pick(PLANS), clock);
+  if (!legacy && script() < 0.3) {
+    stats.actions.push("secondTab");
+    clock += 60_000;
+    stripe.checkout(companyId, stripe.customer(), pick(PLANS), clock);
+  }
   const steps = 3 + Math.floor(script() * 5);
   const soon = () => (1 + Math.floor(script() * 10)) * 60_000;
   for (let step = 0; step < steps; step++) {
@@ -283,6 +349,7 @@ async function runSeed(seed: number): Promise<Run> {
       ...(sub?.status === "active" ? ["renewFail", "cancel"] : []),
       ...(sub?.status === "past_due" ? ["dunningEnd"] : []),
       ...(open.length ? ["payOpen", "payOpen"] : []),
+      ...(stripe.pending.length ? ["finalize", "finalize"] : []),
     ];
     const action = pick(choices);
     stats.actions.push(action);
@@ -294,30 +361,33 @@ async function runSeed(seed: number): Promise<Run> {
     // Webhooks overlap the next Stripe change only when it comes within the hour; Stripe delivers within seconds.
     if (at - clock > HOUR) await settle();
     clock = at;
-    if (action === "change") stripe.checkout(companyId, pick(["BASIC", "PRO", "ULTRA"] as const), at);
-    else if (action === "renew" || action === "renewFail") stripe.renew(sub!, action === "renew", at);
+    if (action === "change") stripe.checkout(companyId, await customerNow(), pick(PLANS), at);
+    else if (action === "renew" || action === "renewFail") stripe.renew(sub!, action === "renew", draft, at);
     else if (action === "payOpen") stripe.pay(pick(open), at);
+    else if (action === "finalize") stripe.finalize(at);
     else stripe.end(sub!, at);
   }
+  while (stripe.pending.length) stripe.finalize(clock);
   await settle();
   reads(clock + DAY);
   await settle();
-  return { violations: [...violations, ...await check(companyId, stripe)], stats };
+  return { violations: [...violations, ...await check(companyId, stripe, legacy)], stats };
 }
 
-async function check(companyId: string, stripe: World): Promise<string[]> {
+async function check(companyId: string, stripe: World, legacy: boolean): Promise<string[]> {
   const out: string[] = [];
   const ledger = (await pg!.query(
     "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id LIKE 'period:%' OR reference_id LIKE 'monthly:%')",
     [companyId])).rows.map((row) => ({ ref: String(row.reference_id), credits: Number(row.amount_micro_credits) / MICRO }));
-  const alerted = new Set((await pg!.query("SELECT reference_id FROM billing_alerts WHERE company_id = $1 AND kind = 'NOT_GRANTED'", [companyId])).rows.map((row) => String(row.reference_id)));
+  const alerted = (await pg!.query("SELECT reference_id FROM billing_alerts WHERE company_id = $1 AND kind = 'NOT_GRANTED'", [companyId])).rows.map((row) => String(row.reference_id));
   const company = (await pg!.query("SELECT plan, stripe_subscription_id FROM companies WHERE id = $1", [companyId])).rows[0]!;
 
-  // Money: every paid invoice is worth its plan's credits, a prorated cancel takes back the refunded period's plan credits
-  // (the successor carried them), and a payment the code could not credit must be on the operator's NOT_GRANTED list.
+  // Money: every paid invoice is worth its plan's credits, and a prorated cancel takes back the refunded period's plan credits
+  // (the successor carried them). Every paid renewal here has a plan line, so none may be left to the operator's NOT_GRANTED list.
+  if (alerted.length) out.push(`NOT_GRANTED alerts for ${alerted.join(",")}`);
   let expected = 0;
   for (const invoice of stripe.invoices.values()) {
-    if (invoice.status === "paid" && !alerted.has(invoice.id)) expected += CREDITS[invoice.plan];
+    if (invoice.status === "paid") expected += CREDITS[invoice.plan];
   }
   for (const refund of stripe.refunds) {
     if (refund.paid) expected -= CREDITS[refund.plan];
@@ -328,14 +398,17 @@ async function check(companyId: string, stripe: World): Promise<string[]> {
   const granted = ledger.reduce((sum, row) => sum + row.credits, 0);
   if (granted !== expected) out.push(`granted ${granted} credits, paid for ${expected}`);
   if (out.length && process.env.BILLING_STRESS_VERBOSE) {
-    out.push(JSON.stringify({ ledger, invoices: [...stripe.invoices.values()], refunds: stripe.refunds, alerted: [...alerted], subs: [...stripe.subs.values()] }));
+    out.push(JSON.stringify({ ledger, invoices: [...stripe.invoices.values()], refunds: stripe.refunds, alerted, subs: [...stripe.subs.values()] }));
   }
 
-  // No grant without a paid period.
+  // No grant without a paid period. A company on calendar months was paid for the month it moved to credit periods in.
+  const legacyMonth = monthKey(new Date(START));
   for (const row of ledger) {
     if (row.credits <= 0) continue;
     const [kind, sub, start] = row.ref.split(":");
-    const paid = kind === "period" && [...stripe.invoices.values()].some((inv) => inv.sub === sub && unix(inv.start) === Number(start) && inv.status === "paid");
+    const paid = kind === "period"
+      ? [...stripe.invoices.values()].some((inv) => inv.sub === sub && unix(inv.start) === Number(start) && inv.status === "paid")
+      : legacy && row.ref.startsWith(legacyMonth + ":");
     if (!paid) out.push(`grant ${row.ref} (${row.credits}) has no paid period`);
   }
 
@@ -352,13 +425,13 @@ async function check(companyId: string, stripe: World): Promise<string[]> {
   return out;
 }
 
-test("billing stress: concurrent webhooks, retries, reads and enqueue keep the money invariants on every seed", { timeout: 600_000 }, async (t) => {
+const stress = (draft: boolean) => async (t: { skip: (message: string) => void; diagnostic: (message: string) => void }) => {
   if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
   const failed: string[] = [];
   let deliveries = 0;
   let retries = 0;
   for (let seed = FIRST; seed < FIRST + SEEDS; seed++) {
-    const run = await runSeed(seed);
+    const run = await runSeed(seed, draft);
     deliveries += run.stats.deliveries;
     retries += run.stats.retries;
     if (run.violations.length) {
@@ -368,4 +441,7 @@ test("billing stress: concurrent webhooks, retries, reads and enqueue keep the m
   }
   t.diagnostic(`${SEEDS} seeds from ${FIRST}, ${deliveries} deliveries, ${retries} retried, ${pg.transaction ? "with" : "without"} transactions`);
   assert.deepEqual(failed, [], `seeds with violations: ${failed.join(",")}`);
-});
+};
+
+test("billing stress: concurrent webhooks, retries, reads and enqueue keep the money invariants on every seed", { timeout: 600_000 }, stress(false));
+test("billing stress, draft window: a renewal invoice stays a draft for a while before Stripe charges it", { timeout: 600_000 }, stress(true));
