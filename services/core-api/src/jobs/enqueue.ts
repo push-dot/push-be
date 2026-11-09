@@ -14,7 +14,7 @@ import {
   type QueueName,
 } from "./config.ts";
 
-import { ensureMonthlyGrant } from "../billing/credits.ts";
+import { ensureMonthlyGrant, lockOwner } from "../billing/credits.ts";
 
 export { availableMicro } from "./credits.ts";
 
@@ -106,9 +106,6 @@ const queued = (row: Record<string, unknown>): { jobId: string; queue: QueueName
   queue: String(row.queue) as QueueName,
 });
 
-const LOCK_USER = "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE";
-const LOCK_COMPANY = "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE";
-
 // A charged job grants the month, reads the balance and reserves in one transaction that first locks the owner row, the lock
 // billing writes (store and Stripe refunds) take: a refund cannot land between the read and the reservation. Free jobs skip it.
 export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: Transaction): Promise<{ jobId: string; queue: QueueName }> => {
@@ -136,7 +133,7 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
   const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
     const row = !hold ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
-      await one(tx, input.companyId ? LOCK_COMPANY : LOCK_USER, [input.companyId ?? input.userId]);
+      await lockOwner(tx, audience, input.companyId ?? input.userId);
       await ensureMonthlyGrant(tx, {
         audience,
         plan: input.plan,
