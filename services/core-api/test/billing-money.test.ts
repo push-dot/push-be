@@ -1269,4 +1269,31 @@ test("while a webhook holds the user row, a charged send gives up after 3 s with
   }
   const retried = await generate();
   assert.ok(retried.status < 300, String(retried.status));
+  // With the month granted, a read takes no lock: it answers at once while a webhook holds the row.
+  await holdWhile(pg!, "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", userId, async () => {
+    const started = Date.now();
+    resetLimits();
+    const read = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps());
+    assert.equal(read.status, 200);
+    assert.ok(Date.now() - started < 1000, `GET /billing waited ${Date.now() - started} ms on the user row`);
+  });
 });
+
+const holdWhile = async (db: NonNullable<typeof pg>, lock: string, id: string, work: () => Promise<void>): Promise<void> => {
+  let release = () => {};
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let locked = () => {};
+  const holding = new Promise<void>((resolve) => { locked = resolve; });
+  const webhook = db.transaction!(async (q) => {
+    await q(lock, [id]);
+    locked();
+    await released;
+  });
+  await holding;
+  try {
+    await work();
+  } finally {
+    release();
+    await webhook;
+  }
+};

@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
@@ -142,8 +142,9 @@ const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, st
   return { success_url: plans + success + "&session_id={CHECKOUT_SESSION_ID}", cancel_url: plans + "canceled" };
 };
 
+// Most reads find the month already granted and skip the owner lock, so they never wait on a webhook.
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
-  if (!plan) return;
+  if (!plan || await monthGranted(ctx.deps.query, { audience, plan, ownerId, now: ctx.now })) return;
   try {
     await inTransactionOf(ctx)(async (q) => {
       await boundTransaction(q, "3s");

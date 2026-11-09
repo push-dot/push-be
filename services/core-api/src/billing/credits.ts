@@ -79,6 +79,23 @@ export const ensureMonthlyGrant = async (
   }
 };
 
+const USER_MONTH_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND reference_id = $2";
+// A company on Stripe periods gets no month grant; otherwise its plan's top tier row (written last) or a legacy whole-month row.
+const COMPANY_MONTH_GRANTED = "SELECT 1 FROM companies WHERE id = $1 AND (credit_period_start IS NOT NULL OR EXISTS (SELECT 1 FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR (reference_id = $3 AND amount_micro_credits >= $4::bigint))))";
+
+/** True when `ensureMonthlyGrant` has nothing left to write this month. A lock-free read, so a caller can skip the owner lock. */
+export const monthGranted = async (
+  q: Query,
+  input: { audience: "PERSONAL" | "EMPLOYER"; plan: string | null; ownerId: string; now: Date },
+): Promise<boolean> => {
+  const plan = input.plan?.trim() || (input.audience === "PERSONAL" ? "FREE" : "");
+  const amount = grantMicro(input.audience, plan);
+  if (amount <= 0) return true;
+  const month = monthKey(input.now);
+  if (input.audience === "PERSONAL") return (await one(q, USER_MONTH_GRANTED, [input.ownerId, month])) != null;
+  return (await one(q, COMPANY_MONTH_GRANTED, [input.ownerId, month + ":" + plan, month, amount])) != null;
+};
+
 /**
  * Writes the plan credits of one paid period (`period:<sub>:<start>:TIER`) once. Tiers within `carry` (what the replaced
  * period already granted) are 0-credit rows. Callers hold the company row lock of the webhook transaction.

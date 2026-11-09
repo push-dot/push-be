@@ -406,6 +406,7 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
   const query = authed(seen, true, "ADMIN", async (sql, params = []) => {
     const taken = capture(sql, params);
     if (taken) return taken;
+    if (sql.startsWith("SELECT 1 FROM companies")) return empty; // monthGranted: the fake ledger is not queried
     if (sql.includes("FROM companies")) return { rows: [{ plan: "BASIC" }], rowCount: 1 };
     if (sql.includes("balance_after")) return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };
     return empty;
