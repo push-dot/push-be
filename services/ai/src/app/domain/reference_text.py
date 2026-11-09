@@ -6,6 +6,11 @@ import re
 # unbounded `X+` before a suffix rescans the whole run from each start (O(n^2)).
 _W = r"[0-9A-Za-z가-힣.&+-]{1,64}"
 _EMAIL = re.compile(r"\S{1,64}@\S{1,255}")
+_URL = re.compile(
+    r"(?:https?://|www\.)\S{1,2048}"
+    # Lower-case only, so tech names like ASP.NET stay.
+    r"|[\w.-]{1,253}\.(?:com|io|dev|net|org|kr|me|co)(?![\w.-])(?:/\S{0,2048})?"
+)
 _PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,24}\d)(?!\d)")
 _QUOTED = re.compile(r"[\"“「『][^\"”」』]{1,500}[\"”」』]")
 _COMPANY = re.compile(
@@ -51,7 +56,8 @@ def features_of(text: str) -> dict:
 
 
 def templates_of(text: str) -> list[str]:
-    masked = _PHONE.sub("{연락처}", _EMAIL.sub("{연락처}", text or ""))
+    masked = _URL.sub("{링크}", text or "")
+    masked = _PHONE.sub("{연락처}", _EMAIL.sub("{연락처}", masked))
     out = []
     for part in _SENTENCE_SPLIT.split(masked):
         line = part.strip()

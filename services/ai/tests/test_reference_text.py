@@ -503,3 +503,16 @@ def test_long_single_tokens_scan_in_linear_time(text):
     templates_of(text)
     # Unbounded repeats took ~25s here; bounded ones take well under a second.
     assert time.perf_counter() - started < 2.0
+
+
+def test_templates_mask_links_but_keep_tech_names():
+    lines = templates_of(
+        "https://blog.ada.dev/post/1 에 정리했고 github.com/ada/push 와 "
+        "www.ada.kr, ada@naver.com 도 있다. ASP.NET 과 Node.js 로 만들었다"
+    )
+    text = " ".join(lines)
+    for leaked in ("blog.ada.dev", "github.com", "ada/push", "www.ada.kr", "naver.com"):
+        assert leaked not in text
+    assert text.count("{링크}") == 3
+    assert "{연락처}" in text
+    assert "ASP.NET" in text and "Node.js" in text
