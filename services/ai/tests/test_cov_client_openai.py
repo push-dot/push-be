@@ -106,7 +106,7 @@ async def test_chat_pins_us_providers_and_exa_search_on_every_request():
 async def test_chat_refuses_a_model_without_pinned_providers_before_sending():
     handler, seen = _capture(httpx.Response(200, json={}))
     with pytest.raises(Exception, match="no approved provider"):
-        await _client(handler).chat(KEY, "openai/gpt-5.6-luna", "", "hi")
+        await _client(handler).chat(KEY, "example/unpinned-model", "", "hi")
     assert seen == []
 
 

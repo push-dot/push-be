@@ -36,7 +36,7 @@ def _svc(convs, apps=None, docs=None, ev=None, ops=None, gate=None,
 
 
 def _managed_ai():
-    return ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-luna",
+    return ent.AiOptions(provider="OPENAI", model="deepseek/deepseek-v4.1-flash",
                          effort="LOW")
 
 

@@ -235,7 +235,7 @@ async def test_redis_reserve_records_usage_without_a_second_hold(monkeypatch):
 
     gate = AIGate.__new__(AIGate)
     gate.usage = Usage()
-    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", effort="low")
+    ai = ent.AiOptions(provider="OPENAI", model="deepseek/deepseek-v4.1-flash", effort="low")
     usage_id = await gate._reserve(USER, ai, "system", "user", JOB)
     assert usage_id is not None
     assert seen[0][1] == JOB
