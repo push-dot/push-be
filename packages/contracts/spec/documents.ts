@@ -31,8 +31,13 @@ export const routes: Route[] = [
   get("core", "/api/v1/documents", {
     tag: "documents",
     summary: "List documents",
-    description: "Archived documents are left out.",
-    params: [...pageParams, query("applicationId", uuid), query("kind", documentKind)],
+    description: "Archived documents are left out, unless archived=1. archived=1 lists the caller's documents archived within 30 days, newest by updatedAt. Each of those items adds archivedAt and purgeAt (updatedAt plus 30 days). Those two fields are absent on every other document response.",
+    params: [
+      ...pageParams,
+      query("applicationId", uuid),
+      query("kind", documentKind),
+      query("archived", enumOf("0", "1"), "1 lists documents archived within 30 days. 0 or omitted lists live documents."),
+    ],
     responses: { 200: okPage(ref("Document")) },
   }),
   post("core", "/api/v1/documents", {
@@ -70,6 +75,14 @@ export const routes: Route[] = [
     tag: "documents",
     summary: "Archive a document",
     description: "200 unchanged when already archived and expectedRevision matches. A mismatch is 409 REVISION_CONFLICT, including a repeat of the body that just archived it.",
+    params: [id],
+    body: body(strictRevision),
+    responses: { 200: ok(ref("Document")) },
+  }),
+  post("core", "/api/v1/documents/{id}/restore", {
+    tag: "documents",
+    summary: "Restore an archived document",
+    description: "Owner only. A document with finalizedVersionId returns to FINALIZED, otherwise DRAFT, and revision increases by 1. Enqueues ingest so the search nodes dropped on archive come back. 404 when the document is missing, not the caller's, or already purged. 409 REVISION_CONFLICT when expectedRevision does not match. 200 with the document unchanged when it is not archived.",
     params: [id],
     body: body(strictRevision),
     responses: { 200: ok(ref("Document")) },
@@ -331,7 +344,7 @@ export const routes: Route[] = [
   del("core", "/api/v1/sources/{id}", {
     tag: "sources",
     summary: "Delete a source",
-    description: "409 INVALID_TRANSITION when career evidence references the source. Unpins it from the profile resume.",
+    description: "409 INVALID_TRANSITION when career evidence references the source. details.reason is REFERENCED_BY_EVIDENCE and details.evidenceCount is how many evidence rows point at it. Unpins it from the profile resume.",
     params: [id],
     responses: { 204: noContent },
   }),
@@ -503,7 +516,12 @@ export const schemas: Record<string, Schema> = {
     finalizedVersionId: nullable(uuid),
     createdAt: dateTime,
     updatedAt: dateTime,
-  }),
+    archivedAt: { ...dateTime, description: "Archived list only. When the document was archived, equal to updatedAt." },
+    purgeAt: { ...dateTime, description: "Archived list only. updatedAt plus 30 days, when the row is purged." },
+  }, [
+    "id", "revision", "applicationId", "title", "kind", "template", "language", "status",
+    "latestVersionId", "finalizedVersionId", "createdAt", "updatedAt",
+  ]),
   DocumentsEvidenceRef: obj({ evidenceId: uuid, start: int, end: int }),
   DocumentsBlock: obj({
     id: str,

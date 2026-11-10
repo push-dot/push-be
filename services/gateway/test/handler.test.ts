@@ -1134,6 +1134,7 @@ test("email auth posts are owned by core", () => {
   for (const path of [
     "/api/v1/auth/email/signup",
     "/api/v1/auth/email/verify",
+    "/api/v1/auth/email/verify/resend",
     "/api/v1/auth/email/login",
     "/api/v1/auth/email/password-reset",
     "/api/v1/auth/email/password-reset/confirm",

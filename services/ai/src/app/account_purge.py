@@ -48,7 +48,10 @@ PURGE_SQL = (
 # postings and their views and bookmarks, employer conversations with their messages
 # and attachments, reviews, interview kits and rag_nodes. Payment rows keep their
 # amounts with company_id NULL. The rows without a foreign key go first:
-# conversation files, fit caches of the postings and the logo upload.
+# conversation files and the logo upload.
+# fits is redundant after 0048: posting_fit_cache.posting_id references job_postings
+# ON DELETE CASCADE, so deleting the company already removes those rows. Left in
+# place; deleting them first is harmless.
 # Returns the logo keys.
 COMPANY_PURGE_SQL = (
     "WITH gone AS (SELECT id, logo_key FROM companies "

@@ -88,6 +88,10 @@ async def test_lock_settle_release_expire_sql_args():
     assert conn.last[2] == (str(USER),)
     await s.settle(uid, 1, 2, 3)
     assert conn.last[2] == (uid, 1, 2, 3) and "status = 'SETTLED'" in conn.last[1]
+    assert "reservation_gen = $5" not in conn.last[1]
+    await s.settle(uid, 1, 2, 3, 9)
+    assert conn.last[2] == (uid, 1, 2, 3, 9)
+    assert "AND reservation_gen = $5" in conn.last[1]
     await s.release(uid)
     assert conn.last[2] == (uid,) and "'RELEASED'" in conn.last[1]
     await s.release(uid, 4)

@@ -364,7 +364,7 @@ export interface paths {
         put?: never;
         /**
          * Request password reset link
-         * @description 202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.
+         * @description 202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup and verification resend) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.
          */
         post: operations["postAuthEmailPasswordReset"];
         delete?: never;
@@ -424,7 +424,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -447,6 +447,26 @@ export interface paths {
          * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/verify/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend the verification mail
+         * @description 204 whether or not the email exists. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email, before the lookup, including an unknown email. The mail bucket is shared with signup and password reset. An unverified signup whose newest verification link was issued more than 60 seconds ago gets a new link and the previous unused link stops working. Inside that 60 seconds, or when the address is unknown or already verified, nothing is sent.
+         */
+        post: operations["postAuthEmailVerifyResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -862,7 +882,7 @@ export interface paths {
         };
         /**
          * Preview an invite
-         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.
+         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName, details.inviterName (empty when the inviter is gone) and details.expiresAt.
          */
         get: operations["getCompaniesInvitesByToken"];
         put?: never;
@@ -884,7 +904,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an invite
-         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName, details.inviterName and details.expiresAt), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
          */
         post: operations["postCompaniesInvitesByTokenAccept"];
         delete?: never;
@@ -923,7 +943,7 @@ export interface paths {
         };
         /**
          * List pending invites
-         * @description ADMIN only.
+         * @description Any company member. Pending invites only. Sending, resending and cancelling stay ADMIN only.
          */
         get: operations["getCompaniesMeInvites"];
         put?: never;
@@ -1384,7 +1404,7 @@ export interface paths {
         };
         /**
          * List documents
-         * @description Archived documents are left out.
+         * @description Archived documents are left out, unless archived=1. archived=1 lists the caller's documents archived within 30 days, newest by updatedAt. Each of those items adds archivedAt and purgeAt (updatedAt plus 30 days). Those two fields are absent on every other document response.
          */
         get: operations["getDocuments"];
         put?: never;
@@ -1572,6 +1592,26 @@ export interface paths {
          * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404. An archived document is 409 INVALID_TRANSITION.
          */
         post: operations["postDocumentsByIdProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore an archived document
+         * @description Owner only. A document with finalizedVersionId returns to FINALIZED, otherwise DRAFT, and revision increases by 1. Enqueues ingest so the search nodes dropped on archive come back. 404 when the document is missing, not the caller's, or already purged. 409 REVISION_CONFLICT when expectedRevision does not match. 200 with the document unchanged when it is not archived.
+         */
+        post: operations["postDocumentsByIdRestore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2276,7 +2316,7 @@ export interface paths {
         get?: never;
         /**
          * Store signup terms
-         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.
+         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement. The same version again keeps the stored version and timestamps. A different version copies the previous agreement into user_consent_history and then stores the new version and timestamps. Omitted version is 1.0.
          */
         put: operations["putMeConsentsTerms"];
         post?: never;
@@ -3555,7 +3595,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a source
-         * @description 409 INVALID_TRANSITION when career evidence references the source. Unpins it from the profile resume.
+         * @description 409 INVALID_TRANSITION when career evidence references the source. details.reason is REFERENCED_BY_EVIDENCE and details.evidenceCount is how many evidence rows point at it. Unpins it from the profile resume.
          */
         delete: operations["deleteSourcesById"];
         options?: never;
@@ -4809,6 +4849,11 @@ export interface components {
         };
         Document: {
             applicationId: string | null;
+            /**
+             * Format: date-time
+             * @description Archived list only. When the document was archived, equal to updatedAt.
+             */
+            archivedAt?: string;
             /** Format: date-time */
             createdAt: string;
             finalizedVersionId: string | null;
@@ -4818,6 +4863,11 @@ export interface components {
             kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
             language: string;
             latestVersionId: string | null;
+            /**
+             * Format: date-time
+             * @description Archived list only. updatedAt plus 30 days, when the row is purged.
+             */
+            purgeAt?: string;
             revision: number;
             /** @enum {string} */
             status: "DRAFT" | "FINALIZED" | "ARCHIVED";
@@ -6396,6 +6446,32 @@ export interface operations {
                         data: components["schemas"]["AuthTokens"];
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthEmailVerifyResend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
@@ -8246,6 +8322,8 @@ export interface operations {
                 cursor?: string;
                 applicationId?: string;
                 kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
+                /** @description 1 lists documents archived within 30 days. 0 or omitted lists live documents. */
+                archived?: "0" | "1";
             };
             header?: never;
             path?: never;
@@ -8734,6 +8812,40 @@ export interface operations {
                             /** @enum {string} */
                             target: "hub" | "application";
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
                     };
                 };
             };

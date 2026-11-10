@@ -54,7 +54,8 @@ function isCore(method: string, path: string): boolean {
   }
   if (method === "POST" && (
     path === "/api/v1/auth/email/signup"
-    || path === "/api/v1/auth/email/verify"
+    ||     path === "/api/v1/auth/email/verify"
+    || path === "/api/v1/auth/email/verify/resend"
     || path === "/api/v1/auth/email/login"
     || path === "/api/v1/auth/email/password-reset"
     || path === "/api/v1/auth/email/password-reset/confirm"
@@ -95,7 +96,7 @@ function isCore(method: string, path: string): boolean {
   if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
   if (/^\/api\/v1\/documents\/[^/]+\/share$/.test(path)) return method === "POST" || method === "DELETE";
   if (/^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+$/.test(path)) return method === "GET";
-  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive|restore)$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/exports\/[^/]+\/result$/.test(path)) return method === "POST";
   if (path === "/api/v1/sources") return method === "GET" || method === "POST";

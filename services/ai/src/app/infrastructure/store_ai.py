@@ -50,6 +50,17 @@ _SETTLE_SQL = (
     "AND (job_id IS NULL OR job_id IN (SELECT job_id FROM open_job)) RETURNING id) "
     "SELECT job_id IS NULL OR EXISTS (SELECT 1 FROM open_job) FROM ai_usage WHERE id = $1"
 )
+# generation is the reservation_gen this attempt reserved. A retry bumps the column,
+# so a stale settle matches nothing and the caller sees LostClaim, the same as a closed job.
+_SETTLE_GEN_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '(SELECT job_id FROM ai_usage WHERE id = $1)')}), upd AS ("
+    "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, cost_micro_credits = $4, status = 'SETTLED' "
+    "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED') AND reservation_gen = $5 "
+    "AND (job_id IS NULL OR job_id IN (SELECT job_id FROM open_job)) RETURNING id) "
+    "SELECT CASE WHEN (SELECT reservation_gen FROM ai_usage WHERE id = $1) IS DISTINCT FROM $5 "
+    "THEN false ELSE job_id IS NULL OR EXISTS (SELECT 1 FROM open_job) END "
+    "FROM ai_usage WHERE id = $1"
+)
 
 
 def _as_gen(raw: object) -> int | None:
@@ -123,10 +134,20 @@ class AiUsageStore(Store):
             "SELECT pg_advisory_xact_lock(hashtext($1::text))", str(user_id))
 
     async def settle(self, id_: UUID, input_tokens: int, output_tokens: int,
-                     cost_micro_credits: int) -> None:
-        """Raises LostClaim when the row belongs to a queue job that was closed meanwhile (see _OPEN_JOB)."""
-        if await self.q().fetchval(
-                _SETTLE_SQL, id_, input_tokens, output_tokens, cost_micro_credits) is False:
+                     cost_micro_credits: int, generation: int | None = None) -> None:
+        """Raises LostClaim when the row belongs to a queue job that was closed meanwhile (see _OPEN_JOB).
+
+        When generation is set, the update also requires reservation_gen = that value.
+        A mismatch raises LostClaim and leaves the newer reservation in place.
+        """
+        if generation is None:
+            matched = await self.q().fetchval(
+                _SETTLE_SQL, id_, input_tokens, output_tokens, cost_micro_credits)
+        else:
+            matched = await self.q().fetchval(
+                _SETTLE_GEN_SQL, id_, input_tokens, output_tokens,
+                cost_micro_credits, generation)
+        if matched is False:
             raise LostClaim()
 
     async def release(self, id_: UUID, generation: int | None = None) -> None:

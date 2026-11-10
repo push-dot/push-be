@@ -224,6 +224,56 @@ test("marketing can change without restating the required terms", async () => {
   assert.deepEqual(upsert?.params, [USER, NOW, false, null, true, false]);
 });
 
+test("the same terms version is idempotent and a new version archives the old agreement", async () => {
+  resetLimits();
+  const same: Call[] = [];
+  const sameRes = await handle(termsPut({
+    age14: true, serviceTerms: true, privacy: true, termsVersion: "1.0",
+  }), env(), deps(authed(same, async (sql) => {
+    if (sql.includes("FROM user_consents")) return { rows: [agreedRow("1.0", false)], rowCount: 1 };
+    return empty;
+  })));
+  assert.equal(sameRes.status, 200);
+  assert.equal((await read(sameRes)).data.terms.version, "1.0");
+  assert.equal(same.some((call) => call.sql.includes("user_consent_history")), false);
+  const kept = same.find((call) => call.sql.includes("INSERT INTO user_consents"));
+  assert.match(kept?.sql ?? "", /COALESCE\(user_consents\.terms_version/);
+  assert.deepEqual(kept?.params, [USER, NOW, true, "1.0", false, false]);
+
+  resetLimits();
+  const next: Call[] = [];
+  let stored = agreedRow("1.0", true);
+  const nextRes = await handle(termsPut({
+    age14: true, serviceTerms: true, privacy: true, termsVersion: "2.0",
+  }), env(), deps(authed(next, async (sql) => {
+    if (sql.includes("user_consent_history")) {
+      assert.match(sql, /INSERT INTO user_consent_history/);
+      assert.match(sql, /UPDATE user_consents SET terms_version/);
+      stored = agreedRow("2.0", true);
+      return empty;
+    }
+    if (sql.includes("FROM user_consents")) return { rows: [stored], rowCount: 1 };
+    return empty;
+  })));
+  assert.equal(nextRes.status, 200);
+  assert.equal((await read(nextRes)).data.terms.version, "2.0");
+  const archived = next.find((call) => call.sql.includes("user_consent_history"));
+  assert.ok(archived);
+  assert.equal(next.some((call) => call.sql.includes("COALESCE(user_consents.terms_version")), false);
+  assert.deepEqual(archived.params.slice(0, 5), [USER, NOW, "2.0", false, false]);
+  assert.equal(next.filter((call) => call.sql.includes("user_consent_history")).length, 1);
+
+  resetLimits();
+  const legacy: Call[] = [];
+  await handle(termsPut({
+    age14: true, serviceTerms: true, privacy: true, termsVersion: TERMS_VERSION,
+  }), env(), deps(authed(legacy, async (sql) => {
+    if (sql.includes("FROM user_consents")) return { rows: [agreedRow("2026-10-29", false)], rowCount: 1 };
+    return empty;
+  })));
+  assert.equal(legacy.filter((call) => call.sql.includes("user_consent_history")).length, 1);
+});
+
 test("the terms version is defined once and every consumer reads the same value", () => {
   const root = new URL("../../../", import.meta.url);
   const read = (path: string) => readFileSync(new URL(path, root), "utf8");

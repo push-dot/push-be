@@ -178,7 +178,12 @@ export const deleteSource = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, DELETE_SOURCE, [id, ctx.user.id]);
   if (!Number(row?.found)) throw notFound();
-  if (Number(row?.used) > 0) throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence");
+  if (Number(row?.used) > 0) {
+    throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
+      reason: "REFERENCED_BY_EVIDENCE",
+      evidenceCount: Number(row?.used),
+    });
+  }
   if (!Number(row?.deleted)) throw notFound();
   return noContent(ctx.rid);
 };

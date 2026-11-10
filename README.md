@@ -51,6 +51,14 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `GET /api/v1/integrations/job-sites` | 채용 사이트 체크리스트 |
 | `OPTIONS` | CORS |
 
+서류와 업로드 (`services/core-api`):
+
+| 메서드와 경로 | 내용 |
+| --- | --- |
+| `POST /api/v1/documents/:id/restore` | 보관된 서류를 되돌린다. `finalizedVersionId`가 있으면 `FINALIZED`, 없으면 `DRAFT`. `revision`은 1 증가하고 검색 색인을 다시 넣는다. 없거나 이미 지워졌거나 내 서류가 아니면 404. `expectedRevision`이 다르면 409. 보관 중이 아니면 200으로 그대로 둔다 |
+| `GET /api/v1/documents?archived=1` | 내가 최근 30일 안에 보관한 서류. `updatedAt`이 최근인 순. 각 항목에 `archivedAt`과 `purgeAt`(보관 시각 + 30일)이 붙는다 |
+| `DELETE /api/v1/sources/:id` | 경력 근거가 가리키면 409 `INVALID_TRANSITION`. `details.reason`은 `REFERENCED_BY_EVIDENCE`이고 `details.evidenceCount`는 그 근거 수다 |
+
 그 밖의 분기는 `services/gateway/src/routes/owner.ts`의 `ownerOf`다. Python으로 가는 예는 근거 가져오기, 공고·문서·면접·프로젝트의 AI 실행, `operations`, 승인 결정, 대화 공유와 아티팩트다. 인증, 대화 쓰기, 결제, 공고·지원·회사·소셜·프로필, 문서 enqueue, `GET /api/v1/ai/jobs/:id`는 코어다.
 
 코어가 채팅을 넣을 때는 `chat_jobs`에 쓴다. 그 밖의 AI 작업은 `ai_jobs`와 `outbox`에 쓴다. `QUEUE_BACKEND=redis`이면 디스패처가 outbox를 Redis Streams로 넘긴다. 스트림은 `q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`다. fit 작업도 `q:document`를 쓴다. `QUEUE_BACKEND=postgres`이면 프로세스 안 채팅 폴러가 `chat_jobs`를 가져간다. 그 폴러는 `CHAT_EXECUTOR=external`이거나 큐가 redis이면 켜지지 않는다 (`services/ai/src/app/jobs.py`).
@@ -222,5 +230,7 @@ Python Worker `push-be-python`은 배포하지 않는다. 게이트웨이 `worke
 스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 전송 기본은 `tcp`다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
 
 `0046_rag_nodes_archived.sql`은 코드와 순서가 무관하다. 배포 전에 적용하면 이미 보관된 서류·경력 근거·저장 공고의 검색 노드가 바로 지워지고, 서류 노드의 `document_id`가 채워져 빠른 매칭이 서류 기준으로 동작한다. 되돌릴 때는 `DROP FUNCTION rag_nodes_drop_archived() CASCADE;`를 실행한다. 지운 노드와 채운 `document_id`는 되돌릴 필요가 없다.
+
+`0048_documents_purge_index_fit_cache_fk.sql`도 코드와 순서가 무관하다. 보관된 서류의 `updated_at` 부분 인덱스를 만들고, `posting_fit_cache`의 고아 행을 지운 뒤 `document_id`와 `posting_id`에 `ON DELETE CASCADE` 외래 키를 건다. 운영 적용은 이 파일 하나다. 번호가 더 큰 마이그레이션이 있으면 0048 다음에 번호 순으로 적용한다. 되돌릴 때는 헤더의 `DROP INDEX`와 두 `DROP CONSTRAINT`를 실행한다.
 
 `develop`에 대한 PR과 push는 바뀐 경로의 테스트만 돌린다. `DEPLOY_BRANCH`(기본 `main`) push는 ai, gateway, core, db 테스트를 모두 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다.
