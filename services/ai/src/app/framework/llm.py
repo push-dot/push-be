@@ -145,6 +145,7 @@ def _callback_type():
                     incoming,
                     outgoing,
                     ai_cost_micro_credits("OPENAI", "", incoming, outgoing),
+                    self.generation,
                 )
             except LostClaim:
                 # Released here because the fit judge never settles after the call; gate paths still raise from their own settle.

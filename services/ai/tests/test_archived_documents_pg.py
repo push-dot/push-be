@@ -220,6 +220,27 @@ async def test_chat_document_context_reads_only_the_callers_live_documents(db):
     assert await read(archived) == ""
 
 
+async def test_reingest_after_restore_brings_the_document_nodes_back(db):
+    """Archive drops the nodes (0046). Restore's status SQL plus the ingest job brings them back."""
+    from app.infrastructure.posting_match import load_corpus
+
+    user = await seed_user(db)
+    doc = await seed_document(db, user)
+    posting = await seed_posting(db)
+    assert (await ingest_document(db, user, doc))["nodes"] == 1
+    await db.q().execute("UPDATE documents SET status = 'ARCHIVED' WHERE id = $1", doc)
+    assert await nodes(db, "document", doc) == 0
+    await db.q().execute(
+        "UPDATE documents SET revision = revision + 1, "
+        "status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, "
+        "updated_at = now() WHERE id = $1 AND status = 'ARCHIVED'",
+        doc,
+    )
+    assert (await ingest_document(db, user, doc))["nodes"] == 1
+    rows, _ = await load_corpus(db.q(), user, doc)
+    assert posting in [row["id"] for row in rows]
+
+
 async def test_a_document_archived_while_it_is_embedded_keeps_no_nodes(db):
     user = await seed_user(db)
     doc = await seed_document(db, user)

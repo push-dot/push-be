@@ -100,6 +100,28 @@ async def test_streamed_reply_with_usage_metadata_settles_one_row():
     assert (settled.input_tokens, settled.output_tokens) == (11, 7)
 
 
+async def test_callback_settles_with_the_generation_the_attempt_reserved():
+    from app.framework.llm import AiUsageCallback
+
+    class Recording(_CountingUsage):
+        def __init__(self):
+            super().__init__()
+            self.args: tuple = ()
+
+        async def settle(self, *args):
+            self.args = args
+            await super().settle(*args)
+
+    user_id = uuid4()
+    store = Recording()
+    row = _reserved(user_id)
+    await store.create(row)
+    callback = AiUsageCallback(store, user_id, "job-1", row.id, 4)
+    await _stream(_StreamModel(), callback)
+    assert store.args[0] == row.id
+    assert store.args[-1] == 4
+
+
 async def test_exception_mid_stream_releases_reservation_and_writes_no_settled_row():
     from app.framework.llm import AiUsageCallback
 

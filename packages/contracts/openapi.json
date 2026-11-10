@@ -4492,6 +4492,11 @@
               }
             ]
           },
+          "archivedAt": {
+            "description": "Archived list only. When the document was archived, equal to updatedAt.",
+            "format": "date-time",
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -4534,6 +4539,11 @@
                 "type": "null"
               }
             ]
+          },
+          "purgeAt": {
+            "description": "Archived list only. updatedAt plus 30 days, when the row is purged.",
+            "format": "date-time",
+            "type": "string"
           },
           "revision": {
             "type": "integer"
@@ -17370,7 +17380,7 @@
     },
     "/api/v1/documents": {
       "get": {
-        "description": "Archived documents are left out.",
+        "description": "Archived documents are left out, unless archived=1. archived=1 lists the caller's documents archived within 30 days, newest by updatedAt. Each of those items adds archivedAt and purgeAt (updatedAt plus 30 days). Those two fields are absent on every other document response.",
         "operationId": "getDocuments",
         "parameters": [
           {
@@ -17414,6 +17424,19 @@
                 "COVER_LETTER",
                 "CAREER_STATEMENT",
                 "HUB_PROFILE"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 lists documents archived within 30 days. 0 or omitted lists live documents.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "0",
+                "1"
               ],
               "type": "string"
             }
@@ -18595,6 +18618,73 @@
           }
         },
         "summary": "Save a hub profile document or an uploaded file as an application profile",
+        "tags": [
+          "documents"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/documents/{id}/restore": {
+      "post": {
+        "description": "Owner only. A document with finalizedVersionId returns to FINALIZED, otherwise DRAFT, and revision increases by 1. Enqueues ingest so the search nodes dropped on archive come back. 404 when the document is missing, not the caller's, or already purged. 409 REVISION_CONFLICT when expectedRevision does not match. 200 with the document unchanged when it is not archived.",
+        "operationId": "postDocumentsByIdRestore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedRevision": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "expectedRevision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Document"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Restore an archived document",
         "tags": [
           "documents"
         ],
@@ -27827,7 +27917,7 @@
     },
     "/api/v1/sources/{id}": {
       "delete": {
-        "description": "409 INVALID_TRANSITION when career evidence references the source. Unpins it from the profile resume.",
+        "description": "409 INVALID_TRANSITION when career evidence references the source. details.reason is REFERENCED_BY_EVIDENCE and details.evidenceCount is how many evidence rows point at it. Unpins it from the profile resume.",
         "operationId": "deleteSourcesById",
         "parameters": [
           {
