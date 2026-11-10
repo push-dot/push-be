@@ -420,6 +420,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
         )
+        emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):
             entered = {"entered": result.goto}

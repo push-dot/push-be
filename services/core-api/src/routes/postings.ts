@@ -500,14 +500,23 @@ const idList = (value: unknown, field: string): string[] => {
  * when the caller has no application for the posting yet, which closes most of the double-apply window.
  */
 
-const applySql = (stamp: boolean): string => `WITH job AS (
+const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
     INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
     SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
     WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
     RETURNING id
   ), app AS (
-    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at${stamp ? ", stage_entered_at" : ""})
-    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9${stamp ? ", jsonb_build_object('APPLIED', $9::timestamptz)" : ""} FROM job
+    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at${stamp ? ", stage_entered_at" : ""}${snapshot ? ", applicant_snapshot" : ""})
+    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9${stamp ? ", jsonb_build_object('APPLIED', $9::timestamptz)" : ""}${snapshot ? `, (
+      SELECT jsonb_build_object(
+        'headline', p.headline,
+        'jobCategory', p.job_category,
+        'tenureYears', p.tenure_years,
+        'careers', p.careers,
+        'skills', p.skills,
+        'capturedAt', $9::timestamptz
+      ) FROM profiles p WHERE p.user_id = $2
+    )` : ""} FROM job
     RETURNING id
   ), ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
@@ -524,8 +533,14 @@ const applySql = (stamp: boolean): string => `WITH job AS (
   )
   SELECT id FROM app`;
 
-const APPLY_SQL = applySql(true);
-const APPLY_SQL_BARE = applySql(false);
+const APPLY_SQL = applySql(true, true);
+const APPLY_SQL_STAMP = applySql(true, false);
+const APPLY_SQL_BARE = applySql(false, false);
+
+const namesUndefinedColumn = (err: unknown, column: string): boolean => {
+  const e = err as { message?: string };
+  return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
+};
 
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
@@ -569,13 +584,28 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     posting.deadline, now, fields.choseong, fields.jamo, applicationId,
     JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
   ];
+  const runApply = async (sql: string): Promise<Record<string, unknown> | null> => {
+    try {
+      return await one(ctx.deps.query, sql, applyParams);
+    } catch (err) {
+      // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
+      if (isUnique(err)) return null;
+      throw err;
+    }
+  };
   try {
-    created = await one(ctx.deps.query, APPLY_SQL, applyParams);
+    created = await runApply(APPLY_SQL);
   } catch (err) {
-    // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
-    if (isUnique(err)) created = null;
-    else if (!isUndefinedColumn(err)) throw err;
-    else created = await one(ctx.deps.query, APPLY_SQL_BARE, applyParams);
+    if (!isUndefinedColumn(err)) throw err;
+    // Snapshot is newer than stage_entered_at. A database that lacks only the snapshot
+    // keeps the stamp. One that lacks the stamp (the error names that column) uses the bare insert.
+    const next = namesUndefinedColumn(err, "applicant_snapshot") ? APPLY_SQL_STAMP : APPLY_SQL_BARE;
+    try {
+      created = await runApply(next);
+    } catch (err2) {
+      if (!isUndefinedColumn(err2) || next === APPLY_SQL_BARE) throw err2;
+      created = await runApply(APPLY_SQL_BARE);
+    }
   }
   if (!created) {
     // A concurrent apply for the same posting won; answer with its application.
@@ -774,6 +804,7 @@ const postingApplicantCounts = async (ctx: Ctx, idRaw: string): Promise<Response
 };
 
 const APPLICANT_SQL = `SELECT a.id, a.user_id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at,
+  (to_jsonb(a) -> 'applicant_snapshot') AS applicant_snapshot,
   (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = a.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score
   FROM applications a JOIN jobs j ON j.id = a.job_id
   WHERE a.id = $1 AND j.source_posting_id = $2`;
@@ -805,7 +836,7 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
       ) d
     ), '[]'::json)`;
   };
-  let sql = `SELECT a.id, a.stage, a.applied_at, u.display_name, pr.headline, pr.job_category, pr.tenure_years, pr.avatar_key,
+  let sql = `SELECT a.id, a.stage, a.applied_at, (to_jsonb(a) ->> 'company_seen_at') IS NULL AS is_new, u.display_name, pr.headline, pr.job_category, pr.tenure_years, pr.avatar_key,
     ${documentsSql(true)} AS documents
     FROM applications a
     JOIN jobs j ON j.id = a.job_id
@@ -843,6 +874,7 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
       documentKinds: documentKinds(row.documents),
       stage: String(row.stage ?? ""),
       appliedAt: ts(row.applied_at) ?? "",
+      isNew: asBool(row.is_new),
     },
     createdAt: row.applied_at,
     id: String(row.id),
@@ -913,6 +945,23 @@ const applicationFiles = async (ctx: Ctx, applicationId: string): Promise<{ id: 
   }
 };
 
+const objectOf = (value: unknown): Record<string, unknown> | null => {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return null; }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
+};
+
+const textOrNull = (value: unknown): string | null => value == null ? null : String(value);
+
+const tenureOf = (value: unknown): number | null => {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
 const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
   const postingId = requireUuid(postingRaw, "id");
   const applicationId = requireUuid(applicationRaw, "applicationId");
@@ -932,11 +981,13 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
     snapshotDocuments(ctx, applicationId),
     applicationFiles(ctx, applicationId),
     one(ctx.deps.query,
-      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills,
+      `SELECT u.display_name, u.email, p.headline, p.job_category, p.tenure_years, p.careers, p.skills,
          (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
        FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN user_settings s ON s.user_id = u.id WHERE u.id = $1`,
       [String(application.user_id)]),
   ]);
+  const snap = objectOf(application.applicant_snapshot);
+  const submitted = snap != null;
   return data(200, {
     application: companyApplicationDto(application),
     documents,
@@ -944,10 +995,14 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
     applicant: {
       displayName: String(person?.display_name ?? ""),
       email: person?.email == null ? "" : String(person.email),
-      headline: person?.headline == null ? "" : String(person.headline),
-      careers: jsonList(person?.careers),
-      skills: jsonList(person?.skills).map(String),
+      headline: submitted ? (snap.headline == null ? "" : String(snap.headline)) : (person?.headline == null ? "" : String(person.headline)),
+      jobCategory: submitted ? textOrNull(snap.jobCategory) : textOrNull(person?.job_category),
+      tenureYears: submitted ? tenureOf(snap.tenureYears) : tenureOf(person?.tenure_years),
+      careers: jsonList(submitted ? snap.careers : person?.careers),
+      skills: jsonList(submitted ? snap.skills : person?.skills).map(String),
       hubProfileId: asBool(person?.hub_public) ? String(application.user_id) : null,
+      profileSource: submitted ? "SUBMITTED" : "CURRENT",
+      capturedAt: submitted ? ts(snap.capturedAt) : null,
     },
   }, ctx.rid);
 };

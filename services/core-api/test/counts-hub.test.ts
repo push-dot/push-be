@@ -123,6 +123,46 @@ test("hub tenure and status filters accept comma lists", async () => {
   assert.equal(bad.status, 422);
 });
 
+test("hub tenure accepts the board buckets and keeps legacy 0-2", async () => {
+  const bounds = async (tenure: string): Promise<unknown[]> => {
+    resetLimits();
+    const seen: Call[] = [];
+    const res = await handle(get("/api/v1/profiles?tenure=" + encodeURIComponent(tenure)), env(), deps(authed(seen, async (sql) => {
+      if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };
+      if (sql.includes("count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+      if (sql.includes("FROM profiles")) return { rows: [], rowCount: 0 };
+      return empty;
+    })));
+    assert.equal(res.status, 200, tenure);
+    const sql = seen.find((call) => call.sql.includes("FROM profiles") && call.sql.includes("tenure_years"));
+    assert.ok(sql, tenure);
+    return sql.params;
+  };
+  assert.deepEqual((await bounds("0")).filter((value) => value === 0), [0, 0]);
+  const one = await bounds("1-2");
+  assert.equal(one.includes(1), true);
+  assert.equal(one.includes(2), true);
+  assert.equal(one.includes(0), false);
+  const legacy = await bounds("0-2");
+  assert.equal(legacy.includes(0), true);
+  assert.equal(legacy.includes(2), true);
+  const senior = await bounds("10+");
+  assert.equal(senior.includes(10), true);
+  assert.equal(senior.includes(80), true);
+  resetLimits();
+  const bothSeen: Call[] = [];
+  const both = await handle(get("/api/v1/profiles?tenure=0,1-2"), env(), deps(authed(bothSeen, async (sql) => {
+    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };
+    if (sql.includes("count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) return { rows: [], rowCount: 0 };
+    return empty;
+  })));
+  assert.equal(both.status, 200);
+  const sql = bothSeen.find((call) => call.sql.includes("tenure_years BETWEEN"));
+  assert.match(sql!.sql, /OR/);
+  assert.deepEqual(sql!.params.filter((value) => typeof value === "number"), [0, 0, 1, 2]);
+});
+
 test("popular posts from the last week sort by view count", async () => {
   resetLimits();
   const seen: Call[] = [];

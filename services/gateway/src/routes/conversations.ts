@@ -275,7 +275,35 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
   }
 }
 
-type StoredFiles = Map<string, { fileName: string; size: number }>;
+type StoredFile = { fileName: string; size: number };
+type ApplicationChip = { title: string; documentTitles: string[] };
+type StoredAttachments = { files: Map<string, StoredFile>; applications: Map<string, ApplicationChip> };
+
+// Company conversations only. A personal conversation has a null company_id, so the join matches nothing.
+const APPLICATION_CHIPS_SQL = `SELECT a.id, u.display_name,
+  COALESCE((
+    SELECT json_agg(docs.title ORDER BY docs.ord, docs.title)
+    FROM (
+      SELECT s.title, 0 AS ord FROM application_snapshots s WHERE s.application_id = a.id
+      UNION
+      SELECT f.file_name, 1 AS ord FROM application_files f WHERE f.application_id = a.id
+    ) docs
+  ), '[]'::json) AS document_titles
+ FROM applications a
+ JOIN jobs j ON j.id = a.job_id
+ JOIN job_postings p ON p.id = j.source_posting_id
+ JOIN conversations c ON c.id = $1::uuid AND c.company_id IS NOT NULL AND c.company_id = p.company_id
+ JOIN users u ON u.id = a.user_id
+ WHERE a.id = ANY($2::uuid[])`;
+
+function chipTitles(value: unknown): string[] {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => String(item ?? ""));
+}
 
 function attachmentList(raw: unknown): unknown[] {
   let attachments = raw ?? [];
@@ -285,41 +313,61 @@ function attachmentList(raw: unknown): unknown[] {
   return Array.isArray(attachments) ? attachments : [];
 }
 
-async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredFiles> {
-  const files: StoredFiles = new Map();
+async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredAttachments> {
+  const files: Map<string, StoredFile> = new Map();
+  const applications: Map<string, ApplicationChip> = new Map();
   const ids = new Set<string>();
+  const applicationIds = new Set<string>();
   for (const message of messages) {
     for (const raw of attachmentList(message.attachments)) {
-      const id = raw && typeof raw === "object" ? parseUuid(String((raw as Record<string, unknown>).id ?? "")) : null;
-      if (id) ids.add(id);
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      const id = parseUuid(String(item.id ?? ""));
+      if (!id) continue;
+      ids.add(id);
+      if (String(item.type ?? "") === "APPLICATION") applicationIds.add(id);
     }
   }
-  if (!ids.size) return files;
-  try {
-    const rows = await deps.query(
-      "SELECT id, file_name, octet_length(content) AS size FROM conversation_attachments WHERE conversation_id = $1::uuid AND id = ANY($2::uuid[])",
-      [conversationId, [...ids]],
-    );
-    for (const row of rows) files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });
-  } catch {
-    // names and sizes are extras; the page is still served without them
+  if (ids.size) {
+    try {
+      const rows = await deps.query(
+        "SELECT id, file_name, octet_length(content) AS size FROM conversation_attachments WHERE conversation_id = $1::uuid AND id = ANY($2::uuid[])",
+        [conversationId, [...ids]],
+      );
+      for (const row of rows) files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });
+    } catch {
+      // names and sizes are extras; the page is still served without them
+    }
   }
-  return files;
+  if (applicationIds.size) {
+    try {
+      const rows = await deps.query(APPLICATION_CHIPS_SQL, [conversationId, [...applicationIds]]);
+      for (const row of rows) {
+        applications.set(String(row.id).toLowerCase(), {
+          title: String(row.display_name ?? ""),
+          documentTitles: chipTitles(row.document_titles),
+        });
+      }
+    } catch {
+      // titles are extras; the page is still served without them
+    }
+  }
+  return { files, applications };
 }
 
-const messageJson = (files: StoredFiles) => (row: Record<string, unknown>): Record<string, unknown> => ({
+const messageJson = (stored: StoredAttachments) => (row: Record<string, unknown>): Record<string, unknown> => ({
   id: String(row.id),
   conversationId: String(row.conversation_id),
   role: String(row.role),
   text: String(row.text ?? ""),
   attachments: attachmentList(row.attachments)
-    .map((raw) => attachmentJson(raw, files))
+    .map((raw) => attachmentJson(raw, stored))
     .filter((item): item is Record<string, unknown> => item !== null),
   operationId: row.operation_id == null ? null : String(row.operation_id),
   createdAt: formatJsonTimestamp(row.created_at),
 });
 
-function attachmentJson(raw: unknown, files: StoredFiles): Record<string, unknown> | null {
+function attachmentJson(raw: unknown, stored: StoredAttachments): Record<string, unknown> | null {
   const a = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
   const title = a.title == null ? "" : String(a.title);
   const name = String(a.name ?? a.fileName ?? "");
@@ -330,8 +378,15 @@ function attachmentJson(raw: unknown, files: StoredFiles): Record<string, unknow
   const out: Record<string, unknown> = { type: String(a.type ?? ""), id: String(a.id ?? "") };
   if (a.documentId != null) out.documentId = String(a.documentId);
   if (a.title != null) out.title = String(a.title);
-  const file = files.get(parseUuid(String(out.id)) ?? "");
+  const file = stored.files.get(parseUuid(String(out.id)) ?? "");
   if (file) Object.assign(out, file);
+  if (String(out.type) === "APPLICATION") {
+    const chip = stored.applications.get(parseUuid(String(out.id)) ?? "");
+    if (chip) {
+      out.title = chip.title;
+      out.documentTitles = chip.documentTitles;
+    }
+  }
   return out;
 }
 

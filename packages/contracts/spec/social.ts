@@ -53,7 +53,7 @@ export const routes: Route[] = [
       ...pageParams,
       query("q", { type: "string", maxLength: 200 }),
       query("category", csv("Comma-separated: dev, data, design, plan, marketing, sales, hr, ops")),
-      query("tenure", csv("Comma-separated: 0-2, 3-5, 6-9, 10+")),
+      query("tenure", csv("Comma-separated: 0, 1-2, 3-5, 6-9, 10+. Legacy 0-2 is still accepted.")),
       query("status", csv("Comma-separated: satisfied, seeking, feedback")),
       query("explore", enumOf("recommended", "offers", "received"), "recommended: same jobCategory as the caller; offers: profiles the caller sent offers to; received: profiles that sent the caller an offer"),
     ],

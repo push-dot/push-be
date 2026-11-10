@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from app.framework.fit_judge import judge_fit
-from app.harness.approval import approval_id_for
+from app.harness.approval import approval_conversation_id, approval_id_for
 from app.harness.core_client import idempotency_key
 from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
@@ -92,7 +92,10 @@ class FitArgs(BaseModel):
     content: str = ""
 
 
-def _http(name, tier, model, summary, method, path_of, *, write=False, body_of=None, wrap=None):
+def _http(
+    name, tier, model, summary, method, path_of,
+    *, write=False, body_of=None, wrap=None, display=None,
+):
     async def run(ctx: ToolContext, args):
         data = await ctx.core.call(
             method,
@@ -107,7 +110,7 @@ def _http(name, tier, model, summary, method, path_of, *, write=False, body_of=N
             return {"draft": data}
         return data
 
-    return ToolSpec(name, tier, model, run, lambda _args: summary)
+    return ToolSpec(name, tier, model, run, lambda _args: summary, display=display)
 
 
 def _patch_posting(name, tier, model, summary, body_of, *, draft_only=False):
@@ -126,6 +129,46 @@ def _patch_posting(name, tier, model, summary, body_of, *, draft_only=False):
         )
 
     return ToolSpec(name, tier, model, run, lambda _args: summary)
+
+
+def _arg(args, name: str):
+    if isinstance(args, dict):
+        return args[name]
+    return getattr(args, name)
+
+
+_STAGE_DISPLAY_SQL = (
+    "SELECT u.display_name, a.stage "
+    "FROM applications a "
+    "JOIN users u ON u.id = a.user_id "
+    "JOIN jobs j ON j.id = a.job_id "
+    "JOIN job_postings p ON p.id = j.source_posting_id "
+    "JOIN conversations c ON c.id = $3::uuid "
+    "AND c.company_id IS NOT NULL AND c.company_id = p.company_id "
+    "WHERE a.id = $1::uuid AND p.id = $2::uuid"
+)
+
+
+async def _stage_rows(args, db) -> list[dict]:
+    """Name and stages for the approval card. Scoped to the conversation's company. No colour."""
+    conversation_id = approval_conversation_id.get()
+    if not conversation_id or db is None:
+        return []
+    row = await db.q().fetchrow(
+        _STAGE_DISPLAY_SQL,
+        _arg(args, "application_id"),
+        _arg(args, "posting_id"),
+        conversation_id,
+    )
+    if row is None:
+        return []
+    name = str(row["display_name"] or "")
+    return [{
+        "name": name,
+        "initial": name[:1],
+        "from": str(row["stage"] or ""),
+        "to": str(_arg(args, "stage")),
+    }]
 
 
 def _kept(args, drop: set[str]) -> dict:
@@ -186,7 +229,7 @@ EMPLOYER_TOOLS = [
           lambda args: f"/api/v1/postings/{args.posting_id}/close", write=True),
     _http("change_applicant_stage", Tier.RISKY_WRITE, StageArgs, "지원자 단계를 바꿔요", "PATCH",
           lambda args: f"/api/v1/postings/{args.posting_id}/applicants/{args.application_id}",
-          write=True, body_of=lambda args: {"stage": args.stage}),
+          write=True, body_of=lambda args: {"stage": args.stage}, display=_stage_rows),
     _http("send_offer", Tier.RISKY_WRITE, OfferArgs, "인재에게 제안을 보내요", "POST",
           lambda args: f"/api/v1/profiles/{args.profile_id}/offer", write=True,
           body_of=lambda args: _kept(args, {"profile_id"})),

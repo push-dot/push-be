@@ -312,6 +312,12 @@ test("apply snapshots document json and a second apply does not snapshot again",
   assert.equal(created.data.fitScore, null);
   const snapshot = seen.find((call) => call.sql.includes("INSERT INTO application_snapshots"));
   assert.ok(snapshot);
+  const wrote = seen.find((call) => call.sql.includes("INSERT INTO applications"));
+  assert.match(wrote!.sql, /applicant_snapshot/);
+  assert.match(wrote!.sql, /'headline', p\.headline/);
+  assert.match(wrote!.sql, /'jobCategory', p\.job_category/);
+  assert.match(wrote!.sql, /'tenureYears', p\.tenure_years/);
+  assert.match(wrote!.sql, /'capturedAt', \$9::timestamptz/);
   const snapshots = JSON.parse(String(snapshot.params[13])) as { document_id: string; content: string }[];
   assert.deepEqual(snapshots, [{ document_id: DOC, title: "Resume", content: JSON.stringify({ summary: "hi" }) }]);
   const second = await handle(
@@ -1486,6 +1492,26 @@ test("apply falls back when stage_entered_at is missing", async () => {
   assert.equal(writes[1].sql.includes("stage_entered_at"), false);
   const body = await res.json() as { data: { stageEnteredAt: Record<string, string> } };
   assert.equal(body.data.stageEnteredAt.APPLIED, "2026-10-21T00:00:00Z");
+});
+
+test("apply keeps stage_entered_at when only applicant_snapshot is missing", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const missing = Object.assign(new Error('column "applicant_snapshot" of relation "applications" does not exist'), { code: "42703" });
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS") && sql.includes("applicant_snapshot")) throw missing;
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000b"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const writes = calls.filter((c) => c.sql.startsWith("WITH job AS"));
+  assert.equal(writes.length, 2);
+  assert.match(writes[0].sql, /applicant_snapshot/);
+  assert.match(writes[1].sql, /stage_entered_at/);
+  assert.equal(writes[1].sql.includes("applicant_snapshot"), false);
 });
 
 test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {

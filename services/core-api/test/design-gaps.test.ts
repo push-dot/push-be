@@ -113,18 +113,19 @@ test("apply snapshots an owned source and a member can stream that file", async 
 
 test("applicant list and detail add profile fields and document pages", async () => {
   resetLimits();
+  const listSeen: Call[] = [];
   const listed = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants`, {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
-    deps(authed([], true, async (sql) => {
+    deps(authed(listSeen, true, async (sql) => {
       if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
       if (sql.includes("FROM applications")) {
         return {
           rows: [{
             id: APP, stage: "APPLIED", applied_at: NOW, display_name: "Bea", headline: "Backend",
-            job_category: "dev", tenure_years: 4, avatar_key: "avatars/bea.png",
+            job_category: "dev", tenure_years: 4, avatar_key: "avatars/bea.png", is_new: true,
             documents: [{ title: "resume.pdf", pages: 2 }],
           }],
           rowCount: 1,
@@ -134,19 +135,22 @@ test("applicant list and detail add profile fields and document pages", async ()
     })),
   );
   assert.equal(listed.status, 200);
-  const listBody = await listed.json() as { data: { applicant: { jobCategory: string; tenureYears: number; avatarUrl: string | null }; documents: { title: string; pages: number }[] }[] };
+  const listBody = await listed.json() as { data: { isNew: boolean; applicant: { jobCategory: string; tenureYears: number; avatarUrl: string | null }; documents: { title: string; pages: number }[] }[] };
   assert.equal(listBody.data[0].applicant.jobCategory, "dev");
   assert.equal(listBody.data[0].applicant.tenureYears, 4);
   assert.equal(listBody.data[0].applicant.avatarUrl, "/api/v1/uploads/images/avatars%2Fbea.png");
+  assert.equal(listBody.data[0].isNew, true);
+  assert.match(listSeen.find((call) => call.sql.includes("FROM applications a"))!.sql, /company_seen_at'\) IS NULL AS is_new/);
   assert.deepEqual(listBody.data[0].documents, [{ title: "resume.pdf", pages: 2 }]);
 
   resetLimits();
+  const detailSeen: Call[] = [];
   const detail = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
-    deps(authed([], true, async (sql) => {
+    deps(authed(detailSeen, true, async (sql) => {
       if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
       if (sql.includes("application_snapshots")) return { rows: [], rowCount: 0 };
       if (sql.includes("FROM applications")) {
@@ -171,8 +175,67 @@ test("applicant list and detail add profile fields and document pages", async ()
     displayName: "Bea",
     email: "bea@acme.com",
     headline: "Backend",
+    jobCategory: null,
+    tenureYears: null,
     careers: [{ company: "Acme" }],
     skills: ["Go"],
     hubProfileId: null,
+    profileSource: "CURRENT",
+    capturedAt: null,
   });
+  const loaded = detailSeen.find((call) => call.sql.includes("fit_score"));
+  assert.match(loaded!.sql, /applicant_snapshot/);
+  const personSql = detailSeen.find((call) => call.sql.includes("FROM users") && call.sql.includes("profiles"));
+  assert.match(personSql!.sql, /p\.job_category/);
+  assert.match(personSql!.sql, /p\.tenure_years/);
+});
+
+test("applicant detail keeps the submitted profile after the live one changes", async () => {
+  resetLimits();
+  const detail = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, {
+      headers: { authorization: "Bearer secret-token" },
+    }),
+    env(),
+    deps(authed([], true, async (sql) => {
+      if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("application_snapshots")) return { rows: [], rowCount: 0 };
+      if (sql.includes("FROM applications")) {
+        return {
+          rows: [{
+            id: APP, user_id: USER, revision: 1, job_id: "abababab-abab-4bab-8bab-abababababab",
+            company: "Acme", title: "Backend", stage: "APPLIED", applied_at: NOW, created_at: NOW, updated_at: NOW,
+            applicant_snapshot: {
+              headline: "제출한 한 줄", jobCategory: "dev", tenureYears: 4,
+              careers: [{ company: "옛회사" }], skills: ["Go"], capturedAt: "2026-11-10T00:00:00Z",
+            },
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM users") && sql.includes("profiles")) {
+        return {
+          rows: [{
+            display_name: "바뀐이름", email: "now@new.test", headline: "지금 한 줄",
+            job_category: "design", tenure_years: 9, careers: [{ company: "새회사" }], skills: ["Rust"],
+            hub_public: true,
+          }],
+          rowCount: 1,
+        };
+      }
+      return empty;
+    })),
+  );
+  assert.equal(detail.status, 200);
+  const body = await detail.json() as { data: { applicant: Record<string, unknown> } };
+  assert.equal(body.data.applicant.displayName, "바뀐이름");
+  assert.equal(body.data.applicant.email, "now@new.test");
+  assert.equal(body.data.applicant.hubProfileId, USER);
+  assert.equal(body.data.applicant.headline, "제출한 한 줄");
+  assert.equal(body.data.applicant.jobCategory, "dev");
+  assert.equal(body.data.applicant.tenureYears, 4);
+  assert.deepEqual(body.data.applicant.careers, [{ company: "옛회사" }]);
+  assert.deepEqual(body.data.applicant.skills, ["Go"]);
+  assert.equal(body.data.applicant.profileSource, "SUBMITTED");
+  assert.equal(body.data.applicant.capturedAt, "2026-11-10T00:00:00Z");
 });
