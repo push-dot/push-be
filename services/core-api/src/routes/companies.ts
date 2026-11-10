@@ -148,9 +148,14 @@ const inviteFail = (
   code: string,
   message: string,
   reason: InviteReason,
-  companyName?: unknown,
+  expired?: { companyName?: unknown; inviterName?: unknown; expiresAt?: string | null },
 ): HttpError => new HttpError(status, code, message, reason === "EXPIRED"
-  ? { reason, companyName: companyName == null ? "" : String(companyName) }
+  ? {
+      reason,
+      companyName: expired?.companyName == null ? "" : String(expired.companyName),
+      inviterName: expired?.inviterName == null ? "" : String(expired.inviterName),
+      expiresAt: expired?.expiresAt ?? null,
+    }
   : { reason });
 
 const rowOf = (body: unknown): Record<string, unknown> | null => {
@@ -477,7 +482,7 @@ const patchCompany = async (ctx: Ctx): Promise<Response> => {
 };
 
 const listInvites = async (ctx: Ctx): Promise<Response> => {
-  const mine = await requireAdmin(ctx);
+  const mine = await loadMine(ctx);
   const rows = await query(ctx.deps.query,
     "SELECT id, email, expires_at FROM company_invites WHERE company_id = $1 AND accepted_at IS NULL AND expires_at > $2 ORDER BY expires_at ASC, id ASC",
     [String(mine.id), ctx.now.toISOString()]);
@@ -557,6 +562,16 @@ const inviterOf = async (ctx: Ctx, row: Record<string, unknown>) => {
   return earliestAdmin(ctx, companyId);
 };
 
+const expiredDetails = async (ctx: Ctx, row: Record<string, unknown>) => {
+  const inviter = await inviterOf(ctx, row);
+  const expires = Date.parse(String(row.expires_at));
+  return {
+    companyName: row.company_name,
+    inviterName: inviter?.name ?? "",
+    expiresAt: Number.isNaN(expires) ? null : ts(row.expires_at),
+  };
+};
+
 const previewInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   const row = await loadInvitePreview(ctx, await sha256Hex(token));
   if (!row) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
@@ -564,7 +579,7 @@ const previewInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   if (row.deletion_requested_at != null) throw inviteFail(404, "NOT_FOUND", "resource not found", "COMPANY_DELETING");
   const expires = Date.parse(String(row.expires_at));
   if (Number.isNaN(expires) || ctx.now.getTime() > expires) {
-    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", row.company_name);
+    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", await expiredDetails(ctx, row));
   }
   const inviter = await inviterOf(ctx, row);
   if (!inviter) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
@@ -579,15 +594,13 @@ const previewInvite = async (ctx: Ctx, token: string): Promise<Response> => {
 
 const acceptInvite = async (ctx: Ctx, token: string): Promise<Response> => {
   requireEmployer(ctx);
-  const inviteRow = await one(ctx.deps.query,
-    "SELECT i.id, i.company_id, i.email, i.expires_at, i.accepted_at, c.name AS company_name, c.deletion_requested_at FROM company_invites i JOIN companies c ON c.id = i.company_id WHERE i.token_hash = $1",
-    [await sha256Hex(token)]);
+  const inviteRow = await loadInvitePreview(ctx, await sha256Hex(token));
   if (!inviteRow) throw inviteFail(404, "NOT_FOUND", "resource not found", "INVALID");
   if (inviteRow.accepted_at != null) throw inviteFail(409, "CONFLICT", "invite already accepted", "ACCEPTED");
   if (inviteRow.deletion_requested_at != null) throw inviteFail(409, "CONFLICT", "company is pending deletion", "COMPANY_DELETING");
   const expires = Date.parse(String(inviteRow.expires_at));
   if (Number.isNaN(expires) || ctx.now.getTime() > expires) {
-    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", inviteRow.company_name);
+    throw inviteFail(404, "NOT_FOUND", "resource not found", "EXPIRED", await expiredDetails(ctx, inviteRow));
   }
   const [user, membership] = await Promise.all([
     one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [ctx.user.id]),

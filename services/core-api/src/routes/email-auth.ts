@@ -8,6 +8,8 @@ import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
 import { TERMS_VERSION } from "./consents.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
+const VERIFY_MS = 24 * HOUR_MS;
+const RESEND_AFTER_MS = 60 * 1000;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 const LOGIN_PER_MINUTE = 10;
@@ -183,6 +185,26 @@ const verify = async (ctx: Ctx): Promise<Response> => {
   return data(200, await issue(ctx, userId), ctx.rid);
 };
 
+const VERIFY_SIGNUP = "SELECT id FROM email_signups WHERE lower(email) = lower($1::text)";
+const NEWEST_VERIFY = "SELECT expires_at FROM email_tokens WHERE signup_id = $1::uuid AND kind = 'VERIFY' ORDER BY expires_at DESC LIMIT 1";
+
+// Always 204. The mail limit runs before the lookup, so an unknown address and a real one look the same.
+const resendVerify = async (ctx: Ctx): Promise<Response> => {
+  const body = await readJson(ctx.request);
+  const email = requireEmail(body.email);
+  await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
+  const signup = await one(ctx.deps.query, VERIFY_SIGNUP, [email]);
+  if (signup) {
+    const newest = await one(ctx.deps.query, NEWEST_VERIFY, [String(signup.id)]);
+    const issued = newest ? Date.parse(String(newest.expires_at)) - VERIFY_MS : Number.NaN;
+    if (newest && !Number.isNaN(issued) && ctx.now.getTime() - issued > RESEND_AFTER_MS) {
+      const token = await issueEmailToken(ctx, "VERIFY", null, String(signup.id));
+      await sendLink(ctx, email, "verify", token);
+    }
+  }
+  return noContent(ctx.rid);
+};
+
 const login = async (ctx: Ctx): Promise<Response> => {
   const body = await readJson(ctx.request);
   const email = requireEmail(body.email);
@@ -245,6 +267,7 @@ export const dispatchEmailAuth = async (ctx: Ctx, path: string): Promise<Respons
   if (ctx.request.method !== "POST") return null;
   if (path === "/api/v1/auth/email/signup") return signup(ctx);
   if (path === "/api/v1/auth/email/verify") return verify(ctx);
+  if (path === "/api/v1/auth/email/verify/resend") return resendVerify(ctx);
   if (path === "/api/v1/auth/email/login") return login(ctx);
   if (path === "/api/v1/auth/email/password-reset") return requestReset(ctx);
   if (path === "/api/v1/auth/email/password-reset/confirm") return confirmReset(ctx);
