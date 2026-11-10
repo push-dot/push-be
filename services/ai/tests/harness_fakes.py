@@ -62,10 +62,10 @@ class Gate:
         self.reserved.append(job_id)
         return uuid4()
 
-    async def _settle(self, usage_id, model, input_tokens, output_tokens):
+    async def _settle(self, usage_id, model, input_tokens, output_tokens, generation=None):
         self.settled.append((model, input_tokens, output_tokens))
 
-    async def _release(self, usage_id):
+    async def _release(self, usage_id, generation=None):
         self.released.append(usage_id)
 
 

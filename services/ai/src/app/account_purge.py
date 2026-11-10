@@ -25,6 +25,7 @@ RETENTION = {
     "email_signup": "1 day",     # unverified email signups with no live verify mail left
     "payment": "5 years",        # billing_ledger rows whose owner was purged (전자상거래법)
     "report": "3 years",         # offer_reports (전자상거래법 불만·분쟁 기록)
+    "document": "30 days",      # documents the user archived (status ARCHIVED)
 }
 
 # Foreign keys cascade from users (migration 0018). workspace_files has no
@@ -127,6 +128,14 @@ REPORTS_SQL = (
     "DELETE FROM offer_reports WHERE ctid IN (SELECT ctid FROM offer_reports "
     "WHERE created_at < now() - $1::text::interval LIMIT $2)"
 )
+# Archive (core-api documents.ts) only sets status = ARCHIVED. After the retention
+# period the row is hard-deleted. Versions, exports, shares and revision proposals
+# reference the document or its versions with ON DELETE CASCADE, so one parent
+# delete removes them in FK order. A second pass matches nothing.
+DOCUMENTS_SQL = (
+    "DELETE FROM documents WHERE ctid IN (SELECT ctid FROM documents "
+    "WHERE status = 'ARCHIVED' AND updated_at < now() - $1::text::interval LIMIT $2)"
+)
 
 
 def remove_images(storage_dir: str, keys) -> None:
@@ -182,6 +191,7 @@ async def purge_deleted(pool, storage_dir: str | None) -> None:
     await _sweep(pool, EMAIL_SIGNUPS_SQL, "email_signup")
     await _sweep(pool, PAYMENTS_SQL, "payment")
     await _sweep(pool, REPORTS_SQL, "report")
+    await _sweep(pool, DOCUMENTS_SQL, "document")
     if storage_dir and keys:
         # Up to 50 users' files: keep the unlinks off the event loop.
         await asyncio.to_thread(remove_images, storage_dir, keys)

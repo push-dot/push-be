@@ -227,7 +227,9 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | --- | --- |
 | `GET /admin/queue/stats` | 스트림별 `{length, oldestAgeSec, pending}`, 작업 종류별 24시간 `{waitP50, waitP95, runP50, runP95, failRate, dead}`, `neon:{dbSizeBytes, ragNodes}` |
 | `GET /admin/jobs?status=DEAD` | 작업 목록 (최대 200건) |
-| `POST /admin/jobs/{id}/retry` | `DEAD`·`FAILED` 작업을 `QUEUED`로 되돌리고 크레딧을 다시 예약한다. 아래 응답은 아무것도 바꾸지 않는다. 사용 가능 잔액이 예약액보다 적으면 `402 INSUFFICIENT_CREDITS`(잔액이 채워진 뒤 다시 부른다), 결제 처리가 소유자 행을 3초 넘게 잡고 있으면 `503 BILLING_BUSY`(잠시 뒤 다시 부른다), 대상이 `DEAD`·`FAILED`가 아니면 `409` |
+| `POST /admin/jobs/{id}/retry` | `DEAD`·`FAILED` 작업을 `QUEUED`로 되돌리고 크레딧을 다시 예약한다. 아래 응답은 아무것도 바꾸지 않는다. 대상이 `DEAD`·`FAILED`가 아니면 `409` |
+| `402 INSUFFICIENT_CREDITS` | 사용 가능 잔액이 예약액보다 적다. 잔액이 채워진 뒤 다시 부른다 |
+| `503 BILLING_BUSY` | 결제 처리가 소유자 행을 3초 넘게 잡고 있다. 잠시 뒤 다시 부른다 |
 | `POST /admin/jobs/{id}/cancel` | `QUEUED`·`RETRY`·`RUNNING` 작업을 취소하고 예약을 해제한다. 실행 중이던 워커가 취소 뒤에 남기는 사용량은 기록되지 않는다 |
 | `POST /admin/queues/{name}/pause`, `/resume` | 워커가 그 스트림을 읽지 않게 하거나 다시 읽게 한다 |
 

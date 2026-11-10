@@ -424,7 +424,7 @@ test("user B cannot cancel a stream in user A's conversation", async () => {
   assert.equal(seen.some(([sql]) => sql.startsWith("UPDATE") || sql.startsWith("INSERT")), false);
 });
 
-test("cancel on a shared conversation looks up the job by conversation only; db failure is 500", async () => {
+test("cancel on a shared conversation only targets the caller's job; db failure is 500", async () => {
   resetLimits();
   const seen: Seen = [];
   const res = await handle(cancel(CONV_SHARED, USER_B), env(), deps(fake(seen, {
@@ -434,7 +434,8 @@ test("cancel on a shared conversation looks up the job by conversation only; db 
   assert.equal(res.status, 200);
   const jobs = dataSeen(seen).find(([sql]) => sql.includes("FROM chat_jobs"));
   assert.ok(jobs);
-  assert.match(jobs[0], /found\.company_id IS NOT NULL OR j\.user_id = \$2::uuid/);
+  assert.match(jobs[0], /j\.user_id = \$2::uuid/);
+  assert.doesNotMatch(jobs[0], /found\.company_id IS NOT NULL OR j\.user_id/);
   assert.deepEqual(jobs[1], [CONV_SHARED, USER_B, COMPANY]);
 
   resetLimits();

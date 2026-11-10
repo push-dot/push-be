@@ -261,6 +261,33 @@ test("deleting the subscription a plan change replaced leaves the company plan a
   assert.equal(w.seen.some((call) => call.sql.startsWith("UPDATE users")), false);
 });
 
+test("a retired employer price id still names its plan, so a rotation keeps the renewal grant", async () => {
+  const retired = "price_retired_employer_pro";
+  const w = world((sql) => sql.includes("FROM companies")
+    ? [{ id: COMPANY, plan: null, stripe_customer_id: "cus_VawTPdFMM1vGO3", stripe_subscription_id: "sub_retired" }]
+    : undefined);
+  const event = {
+    ...invoice({
+      parent: { subscription_details: { subscription: "sub_retired" } },
+      lines: { data: [{
+        amount: 10000,
+        period: { start: 1_763_000_000 },
+        pricing: { price_details: { price: retired }, type: "price_details" },
+      }] },
+    }),
+    id: "evt_retired_price",
+  };
+  const res = await handle(await signed(event), envOf({ STRIPE_PRICE_EMPLOYER_PRO: "price_current_employer_pro" }), {
+    query: w.query,
+    now: () => NOW,
+    fetch: (() => { throw new Error("live stripe"); }) as typeof fetch,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(w.ledger()[0]?.params[5], "Pro 월 구독");
+  assert.equal(w.seen.some((call) => call.sql.includes("billing_alerts")), false);
+  assert.ok(w.seen.some((call) => call.params.some((param) => String(param).endsWith(":PRO"))));
+});
+
 test("a replaced subscription's negative final invoice adds a 요금제 변경 환급 row with the refunded amount", async () => {
   const w = world(companyRow);
   const res = await handle(await signed({ ...invoice({

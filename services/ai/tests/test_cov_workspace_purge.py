@@ -84,7 +84,7 @@ async def test_purge_logs_and_swallows_db_errors(tmp_path, caplog):
 async def test_every_statement_gets_its_period_from_the_retention_table():
     pool = _Pool()
     await purge_deleted(pool, None)
-    assert len(pool.sql) == 15
+    assert len(pool.sql) == 16
     assert all("$1::text::interval" in sql for sql in pool.sql)
     assert {args[0] for args in pool.args} <= set(RETENTION.values())
     assert (RETENTION["payment"], SWEEP_BATCH) in pool.args and RETENTION["payment"] == "5 years"

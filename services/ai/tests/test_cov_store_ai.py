@@ -24,11 +24,12 @@ def claimed():
 
 
 async def test_create_for_job_passes_job_id_last():
-    db, conn = fake_db(True)
+    db, conn = fake_db((True, 1))
     u, job = _usage(), uuid4()
-    await AiUsageStore(db).create_for_job(u, job)
+    assert await AiUsageStore(db).create_for_job(u, job) == 1
     _, sql, args = conn.last
     assert "job_id = COALESCE(ai_usage.job_id, EXCLUDED.job_id)" in sql
+    assert "RETURNING reservation_gen" in sql
     assert args[0] == u.id and args[1] == USER and args[-1] == job and len(args) == 12
 
 
@@ -52,7 +53,7 @@ async def test_create_without_claim_is_plain_upsert():
 
 
 async def test_create_with_claim_inserts_only_for_owned_job(claimed):
-    db, conn = fake_db("INSERT 0 1")
+    db, conn = fake_db(1)
     await AiUsageStore(db).create(_usage())
     assert len(conn.calls) == 1
     _, sql, args = conn.last
@@ -89,6 +90,8 @@ async def test_lock_settle_release_expire_sql_args():
     assert conn.last[2] == (uid, 1, 2, 3) and "status = 'SETTLED'" in conn.last[1]
     await s.release(uid)
     assert conn.last[2] == (uid,) and "'RELEASED'" in conn.last[1]
+    await s.release(uid, 4)
+    assert conn.last[2] == (uid, 4) and "reservation_gen = $2" in conn.last[1]
     await s.expire_stale()
     assert "'EXPIRED'" in conn.last[1]
 
