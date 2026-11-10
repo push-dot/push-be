@@ -55,17 +55,22 @@ async def judge_fit(
         ai = ent.AiOptions(provider="OPENAI", model=levers.model, effort=levers.effort)
         owned = await gate._reserve(
             user_id, ai, _SYSTEM, f"{posting}\n{document}", job_id, purpose="fit")
-        usage = (getattr(gate, "usage", None), user_id, job_id, owned)
+        if owned is not None:
+            usage = (
+                getattr(gate, "usage", None), user_id, job_id,
+                getattr(owned, "id", owned), getattr(owned, "generation", None),
+            )
     invoke = {}
     if usage is not None:
-        store, usage_user, usage_job, reservation_id = usage
-        callback = AiUsageCallback(store, usage_user, usage_job, reservation_id)
+        store, usage_user, usage_job, reservation_id, *rest = usage
+        generation = rest[0] if rest else None
+        callback = AiUsageCallback(store, usage_user, usage_job, reservation_id, generation)
         invoke["config"] = {"callbacks": [callback]}
     try:
         _raw, scores = await astructured_reply(model, FitDimensions, messages, **invoke)
     except BaseException:
         if owned is not None:
-            await gate._release(owned)
+            await gate._release(getattr(owned, "id", owned), getattr(owned, "generation", None))
         raise
     if scores is None:
         raise ValueError("fit judge returned an unreadable answer")

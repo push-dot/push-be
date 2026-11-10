@@ -23,9 +23,9 @@ class _CountingUsage(StubAiUsageStore):
         self.settles += 1
         await super().settle(*args)
 
-    async def release(self, id_):
+    async def release(self, id_, generation=None):
         self.releases += 1
-        await super().release(id_)
+        await super().release(id_, generation)
 
 
 class _StreamModel(BaseChatModel):

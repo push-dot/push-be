@@ -110,12 +110,15 @@ def _callback_type():
     from app.domain.entities.ai_usage import ai_cost_micro_credits
 
     class _AiUsageCallback(AsyncCallbackHandler):
-        def __init__(self, store, user_id, job_id, reservation_id):
+        def __init__(self, store, user_id, job_id, reservation_id, generation=None):
             super().__init__()
             self.store = store
             self.user_id = user_id
             self.job_id = job_id
             self.reservation_id = reservation_id
+            # The generation this attempt reserved. A retry of the same row bumps it,
+            # and release matches only this value.
+            self.generation = generation
             self._runs: dict = {}
 
         async def _finish(self, run_id, status: str) -> bool:
@@ -126,7 +129,7 @@ def _callback_type():
 
         async def _release(self) -> None:
             try:
-                await self.store.release(self.reservation_id)
+                await self.store.release(self.reservation_id, self.generation)
             except Exception:
                 logging.getLogger(__name__).exception(
                     "usage release failed id=%s", self.reservation_id
@@ -162,5 +165,5 @@ def _callback_type():
 
 
 class AiUsageCallback:
-    def __new__(cls, store, user_id, job_id, reservation_id):
-        return _callback_type()(store, user_id, job_id, reservation_id)
+    def __new__(cls, store, user_id, job_id, reservation_id, generation=None):
+        return _callback_type()(store, user_id, job_id, reservation_id, generation)

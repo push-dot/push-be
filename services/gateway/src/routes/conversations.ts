@@ -193,14 +193,24 @@ const ACTIVE_JOB = "SELECT j.id FROM chat_jobs j JOIN found ON found.id = j.conv
 const ACTIVE_JOB_SQL = SCOPED_FOUND
   + " SELECT (SELECT id FROM found) AS conversation_id, (" + ACTIVE_JOB + ") AS job_id";
 
+// A company conversation is visible to every member, but only the member who
+// created the job may cancel it. `mine` is false when the running job belongs
+// to someone else, and null when there is no running job.
+const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid) AS mine FROM chat_jobs j "
+  + "JOIN found ON found.id = j.conversation_id "
+  + "WHERE j.status IN ('PENDING', 'RUNNING') "
+  + "ORDER BY j.created_at DESC LIMIT 1";
+
 // The cancel and its event commit together, so a stream always sees the
 // terminal event. A job that finished in the meantime updates no row.
-const CANCEL_SQL = SCOPED_FOUND + ", job AS (" + ACTIVE_JOB + "), cancelled AS ("
+const CANCEL_SQL = SCOPED_FOUND + ", active AS (" + CANCEL_JOB + "), job AS ("
+  + "SELECT id FROM active WHERE mine), cancelled AS ("
   + "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
-  + "WHERE id = (SELECT id FROM job) AND status IN ('PENDING', 'RUNNING') RETURNING id"
+  + "WHERE id = (SELECT id FROM job) AND user_id = $2::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id"
   + "), recorded AS ("
   + "INSERT INTO chat_events (job_id, type, payload) SELECT id, 'cancelled', '{}'::jsonb FROM cancelled RETURNING job_id"
-  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id";
+  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id, "
+  + "(SELECT mine FROM active) AS mine";
 
 const present = (value: unknown): boolean => value != null && value !== "";
 
@@ -353,7 +363,13 @@ export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, 
   try {
     const rows = await deps.query(CANCEL_SQL, [id, user.id, user.companyId]);
     if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    if (!present(rows[0].job_id)) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    if (!present(rows[0].job_id)) {
+      const mine = rows[0].mine;
+      if (mine === false || mine === "f" || mine === "false") {
+        return errorResponse(403, "FORBIDDEN", "forbidden", rid);
+      }
+      return errorResponse(409, "CONFLICT", "no active stream", rid);
+    }
     return jsonResponse(200, { data: { jobId: String(rows[0].job_id), status: "CANCELLED" } }, rid);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);

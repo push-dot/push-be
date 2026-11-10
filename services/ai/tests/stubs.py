@@ -280,9 +280,10 @@ class StubAiUsageStore:
                 u.cost_micro_credits = cost
                 u.status = ent.USAGE_SETTLED
 
-    async def release(self, id_):
+    async def release(self, id_, generation=None):
         for u in self.items:
-            if u.id == id_ and u.status == ent.USAGE_RESERVED:
+            if u.id == id_ and u.status == ent.USAGE_RESERVED and (
+                    generation is None or getattr(u, "reservation_gen", generation) == generation):
                 u.cost_micro_credits = 0
                 u.status = ent.USAGE_RELEASED
 

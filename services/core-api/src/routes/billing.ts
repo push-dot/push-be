@@ -731,10 +731,20 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
     [String(user.id), canceled ? "CANCELED" : "ACTIVE", period, plan, ctx.now.toISOString()]);
 }
 
+// Price ids this plan used before the current STRIPE_PRICE_EMPLOYER_* value.
+// planLine reads them, so a price rotation still refunds and grants invoices
+// created on the previous id. Add the old id here when the env value changes;
+// do not delete it. These are test-mode ids, never a live charge.
+const LEGACY_EMPLOYER_PRICES: Record<"BASIC" | "PRO" | "ULTRA", readonly string[]> = {
+  BASIC: [],
+  PRO: ["price_retired_employer_pro"],
+  ULTRA: [],
+};
+
 const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC) return "BASIC";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO) return "PRO";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA) return "ULTRA";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC || LEGACY_EMPLOYER_PRICES.BASIC.includes(priceId)) return "BASIC";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO || LEGACY_EMPLOYER_PRICES.PRO.includes(priceId)) return "PRO";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA || LEGACY_EMPLOYER_PRICES.ULTRA.includes(priceId)) return "ULTRA";
   return null;
 };
 

@@ -258,7 +258,7 @@ async def test_settle_failure_does_not_fail_the_completion():
 
 async def test_provider_failure_releases_reservation_even_if_release_fails():
     class Usage(StubAiUsageStore):
-        async def release(self, id_):
+        async def release(self, id_, generation=None):
             raise RuntimeError("db")
 
     g = _gate(chat=StubChatCompleter(err=RuntimeError("x")), usage=Usage())

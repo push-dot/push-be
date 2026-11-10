@@ -491,3 +491,64 @@ async def test_a_busy_owner_costs_the_pass_one_lock_attempt_not_one_per_reservat
     assert await pool.fetchval(
         "SELECT count(*) FROM credit_reservations WHERE job_id = ANY($1::uuid[]) AND status = 'RESERVED'",
         held + dying) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stale_fit_attempt_cannot_release_the_retried_reservation(pg, monkeypatch):
+    """The old attempt's release waits on the row the retry is reserving, then must not clear it."""
+    from app.domain import entities as ent
+    from app.domain.services.ai import AIGate
+    from app.framework.llm import AiUsageCallback
+
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    pool, new_user, _ = pg
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 80, 0)
+    gate = AIGate(DB(pool), "key", None)
+    ai = ent.AiOptions(provider="OPENAI", model="m", effort="LOW")
+    first = await gate._reserve(user, ai, "system", "user", jid, purpose="fit")
+    assert first is not None and first.generation == 1
+
+    started = asyncio.Event()
+    holding = asyncio.Event()
+
+    async def retry():
+        async with pool.acquire() as conn, conn.transaction():
+            second = await AIGate(DB(conn), "key", None)._reserve(
+                user, ai, "system", "user", jid, purpose="fit")
+            assert second is not None and second.generation == 2
+            holding.set()
+            await started.wait()
+            return second
+
+    async def stale_release():
+        await holding.wait()
+        started.set()
+        await gate._release(first.id, first.generation)
+
+    second, _ = await asyncio.gather(retry(), stale_release())
+    row = await pool.fetchrow(
+        "SELECT status, reservation_gen, cost_micro_credits FROM ai_usage WHERE id = $1",
+        first.id,
+    )
+    assert row["status"] == "RESERVED"
+    assert row["reservation_gen"] == 2
+    assert row["cost_micro_credits"] > 0
+
+    callback = AiUsageCallback(gate.usage, user, jid, first.id, first.generation)
+    await callback.on_llm_error(RuntimeError("stale attempt"), run_id=uuid4())
+    still = await pool.fetchval("SELECT status FROM ai_usage WHERE id = $1", first.id)
+    assert still == "RESERVED"
+
+    await gate._settle(second.id, "m", 11, 7, second.generation)
+    billed = await pool.fetchrow(
+        "SELECT status, cost_micro_credits FROM ai_usage WHERE id = $1", first.id,
+    )
+    assert billed["status"] == "SETTLED"
+    assert billed["cost_micro_credits"] > 0
+    await gate._release(first.id, first.generation)
+    left = await pool.fetchval(
+        "SELECT cost_micro_credits FROM ai_usage WHERE id = $1", first.id,
+    )
+    assert left == billed["cost_micro_credits"]

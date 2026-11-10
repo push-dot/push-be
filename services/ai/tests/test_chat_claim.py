@@ -207,7 +207,8 @@ async def test_cron_and_second_workflow_cannot_steal_a_live_job():
             "provider text NOT NULL, model text NOT NULL, managed boolean NOT NULL, "
             "input_tokens int NOT NULL, output_tokens int NOT NULL, "
             "cost_micro_credits int NOT NULL, status text NOT NULL, "
-            "created_at timestamptz NOT NULL)")
+            "created_at timestamptz NOT NULL, "
+            "reservation_gen bigint NOT NULL DEFAULT 1)")
         uid = uuid4()
         fresh = uuid4()
         aged = uuid4()

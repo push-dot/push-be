@@ -447,3 +447,86 @@ async def test_a_sweep_deletes_in_batches_and_leaves_the_rest_for_the_next_pass(
     assert await db.fetchval("SELECT count(*) FROM search_queries") == 1
     await purge_deleted(db, None)
     assert await db.fetchval("SELECT count(*) FROM search_queries") == 0
+
+
+async def test_archived_documents_are_hard_deleted_after_30_days(db):
+    user = uuid.uuid4()
+    await db.execute(
+        "INSERT INTO users (id, provider, provider_subject, display_name) "
+        "VALUES ($1, 'test', md5(random()::text), 'u')",
+        user,
+    )
+
+    async def seed(status: str, updated: str) -> dict[str, uuid.UUID]:
+        doc, version, export_id, share, proposal = (uuid.uuid4() for _ in range(5))
+        await db.execute(
+            "INSERT INTO documents (id, user_id, title, kind, template, status, updated_at) "
+            f"VALUES ($1, $2, '이력서', 'RESUME', 'SIMPLE', $3, {updated})",
+            doc,
+            user,
+            status,
+        )
+        await db.execute(
+            "INSERT INTO document_versions (id, user_id, document_id, number, content) "
+            "VALUES ($1, $2, $3, 1, '{}'::jsonb)",
+            version,
+            user,
+            doc,
+        )
+        await db.execute(
+            "INSERT INTO document_exports (id, user_id, document_id, version_id, format, template, "
+            "language, content, blocks, content_hash, status, renderer_version) "
+            "VALUES ($1, $2, $3, $4, 'PDF', 'SIMPLE', '', '{}'::jsonb, '[]'::jsonb, 'h', "
+            "'READY_TO_RENDER', '1')",
+            export_id,
+            user,
+            doc,
+            version,
+        )
+        await db.execute(
+            "INSERT INTO document_shares (id, document_id, version_id, token_hash, created_by) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            share,
+            doc,
+            version,
+            str(share),
+            user,
+        )
+        await db.execute(
+            "INSERT INTO revision_proposals (id, user_id, document_id, source_version_id, "
+            "source_revision, selection, replacement, claim_status) "
+            "VALUES ($1, $2, $3, $4, 1, '{}'::jsonb, 'x', 'SUPPORTED')",
+            proposal,
+            user,
+            doc,
+            version,
+        )
+        return {
+            "documents": doc,
+            "document_versions": version,
+            "document_exports": export_id,
+            "document_shares": share,
+            "revision_proposals": proposal,
+        }
+
+    old = await seed("ARCHIVED", "now() - interval '31 days'")
+    recent = await seed("ARCHIVED", "now() - interval '29 days'")
+    active = await seed("DRAFT", "now() - interval '31 days'")
+
+    async def counts(ids: dict[str, uuid.UUID]) -> dict[str, int]:
+        return {
+            table: int(await db.fetchval(f"SELECT count(*) FROM {table} WHERE id = $1", row_id))
+            for table, row_id in ids.items()
+        }
+
+    gone = {table: 0 for table in old}
+    kept = {table: 1 for table in recent}
+    await purge_deleted(db, None)
+    assert await counts(old) == gone
+    assert await counts(recent) == kept
+    assert await counts(active) == kept
+
+    await purge_deleted(db, None)
+    assert await counts(old) == gone
+    assert await counts(recent) == kept
+    assert await counts(active) == kept

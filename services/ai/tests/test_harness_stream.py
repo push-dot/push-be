@@ -29,7 +29,7 @@ class _Store:
     async def settle(self, reservation_id, incoming, outgoing, cost) -> None:
         self.settled.append((incoming, outgoing))
 
-    async def release(self, reservation_id) -> None:
+    async def release(self, reservation_id, generation=None) -> None:
         self.settled.append(("release", reservation_id))
 
 
