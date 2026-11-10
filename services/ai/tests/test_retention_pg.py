@@ -126,6 +126,12 @@ async def seed_company(conn, days_ago: int) -> dict:
         ids["posting"],
     )
     await conn.execute(
+        "INSERT INTO documents (id, user_id, title, kind, template, status) "
+        "VALUES ($1, $2, 't', 'RESUME', 'SIMPLE', 'DRAFT')",
+        ids["document"],
+        ids["candidate"],
+    )
+    await conn.execute(
         "INSERT INTO posting_fit_cache (user_id, posting_id, document_id, fit_score, parts) "
         "VALUES ($1, $2, $3, 1, '{}')",
         ids["candidate"],
