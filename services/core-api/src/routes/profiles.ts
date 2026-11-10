@@ -32,7 +32,15 @@ import {
   notify,
 } from "./recruiting-shared.ts";
 
-const TENURE = new Map<string, [number, number]>([["0-2", [0, 2]], ["3-5", [3, 5]], ["6-9", [6, 9]], ["10+", [10, 80]]]);
+// Board buckets, plus legacy 0-2 so an old client still filters.
+const TENURE = new Map<string, [number, number]>([
+  ["0", [0, 0]],
+  ["1-2", [1, 2]],
+  ["3-5", [3, 5]],
+  ["6-9", [6, 9]],
+  ["10+", [10, 80]],
+  ["0-2", [0, 2]],
+]);
 
 const CAREER_STATUS = new Set(["satisfied", "seeking", "feedback"]);
 

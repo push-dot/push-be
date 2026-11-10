@@ -179,6 +179,32 @@ async def test_always_ask_asks_safe_write():
     assert any(event.get("type") == "tool" and event.get("state") == "wait" and event.get("tier") == "SAFE_WRITE" for event in events)
 
 
+async def test_tool_run_is_emitted_before_ok():
+    runs = []
+    model = ScriptedChat([
+        {"tool_calls": [_call("bookmark_posting", "c1"), _call("apply_to_posting", "c2")]},
+        {"content": "done"},
+    ])
+    graph, _db = _graph(model, runs)
+    first = await _events(graph, _input("AUTO"))
+    def named(events, name):
+        return [
+            event for event in events
+            if event.get("type") == "tool" and event.get("name") == name
+        ]
+
+    bookmark = named(first, "bookmark_posting")
+    assert [event["state"] for event in bookmark] == ["run", "ok"]
+    assert "result" not in bookmark[0]
+    waiting = named(first, "apply_to_posting")
+    assert [event["state"] for event in waiting] == ["wait"]
+    second = await _events(graph, Command(resume={"option_id": "approve"}))
+    applied = named(second, "apply_to_posting")
+    assert [event["state"] for event in applied] == ["run", "ok"]
+    assert applied[1]["result"] == {"applied": True}
+    assert runs == [("bookmark", "p1"), ("apply", "p1")]
+
+
 async def test_tool_cap_8():
     runs = []
     calls = [_call("bookmark_posting", f"c{i}", f"p{i}") for i in range(10)]

@@ -3782,18 +3782,29 @@ export interface components {
                 pages: number | null;
                 title: string;
             }[];
+            /** @description True until any member of the company opens this applicant. Clears on the first GET of the detail. */
+            isNew: boolean;
             /** @enum {string} */
             stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
         };
         ApplicantDetail: {
             applicant: {
+                /** @description When the submitted profile was captured. Null when profileSource is CURRENT. */
+                capturedAt: string | null;
                 careers: unknown[];
                 displayName: string;
                 email: string;
                 headline: string;
                 /** @description The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null */
                 hubProfileId: string | null;
+                jobCategory: string | null;
+                /**
+                 * @description SUBMITTED is the profile captured at apply time. CURRENT is the live profile, for an application with no snapshot.
+                 * @enum {string}
+                 */
+                profileSource: "SUBMITTED" | "CURRENT";
                 skills: string[];
+                tenureYears: number | null;
             };
             application: components["schemas"]["PostingsApplicantApplication"];
             documents: {
@@ -4270,7 +4281,7 @@ export interface components {
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
                 seq: number;
                 /**
-                 * @description Current turns emit wait, ok, or err. Replay can still send run.
+                 * @description run is sent just before the tool executes, then ok or err. wait is the approval pause.
                  * @enum {string}
                  */
                 state: "run" | "ok" | "err" | "wait";
@@ -4351,6 +4362,13 @@ export interface components {
                     /** @enum {string} */
                     status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
                 };
+                /** @description change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools. */
+                rows?: {
+                    from: string;
+                    initial?: string;
+                    name: string;
+                    to: string;
+                }[];
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
                 seq: number;
                 summary?: string;
@@ -4785,6 +4803,8 @@ export interface components {
         };
         ConversationsMessageAttachment: {
             documentId?: string;
+            /** @description APPLICATION chips in a company conversation: snapshot titles and file names. Absent for every other attachment, and when the application is not this company's. */
+            documentTitles?: string[];
             /** @description Uploaded PDF name, present when id is an attachment of this conversation */
             fileName?: string;
             id: string;

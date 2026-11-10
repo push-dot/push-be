@@ -32,7 +32,9 @@ def _graph(tier: Tier, failures: list[Exception]):
 
 
 def _line(events):
-    return next(event for event in events if event.get("type") == "tool")
+    tools = [event for event in events if event.get("type") == "tool"]
+    assert tools[0]["state"] == "run"
+    return tools[-1]
 
 
 async def test_a_read_that_fails_once_is_retried_and_flagged():

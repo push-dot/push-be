@@ -292,6 +292,10 @@
             },
             "type": "array"
           },
+          "isNew": {
+            "description": "True until any member of the company opens this applicant. Clears on the first GET of the detail.",
+            "type": "boolean"
+          },
           "stage": {
             "enum": [
               "DISCOVERED",
@@ -314,7 +318,8 @@
           "documents",
           "documentKinds",
           "stage",
-          "appliedAt"
+          "appliedAt",
+          "isNew"
         ],
         "type": "object"
       },
@@ -322,6 +327,18 @@
         "properties": {
           "applicant": {
             "properties": {
+              "capturedAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When the submitted profile was captured. Null when profileSource is CURRENT."
+              },
               "careers": {
                 "items": {},
                 "type": "array"
@@ -347,20 +364,52 @@
                 ],
                 "description": "The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null"
               },
+              "jobCategory": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "profileSource": {
+                "description": "SUBMITTED is the profile captured at apply time. CURRENT is the live profile, for an application with no snapshot.",
+                "enum": [
+                  "SUBMITTED",
+                  "CURRENT"
+                ],
+                "type": "string"
+              },
               "skills": {
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "tenureYears": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
               "displayName",
               "email",
               "headline",
+              "jobCategory",
+              "tenureYears",
               "careers",
               "skills",
-              "hubProfileId"
+              "hubProfileId",
+              "profileSource",
+              "capturedAt"
             ],
             "type": "object"
           },
@@ -2444,7 +2493,7 @@
                       "type": "integer"
                     },
                     "state": {
-                      "description": "Current turns emit wait, ok, or err. Replay can still send run.",
+                      "description": "run is sent just before the tool executes, then ok or err. wait is the approval pause.",
                       "enum": [
                         "run",
                         "ok",
@@ -2729,6 +2778,32 @@
                         "optionId"
                       ],
                       "type": "object"
+                    },
+                    "rows": {
+                      "description": "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+                      "items": {
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          },
+                          "initial": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
                     },
                     "seq": {
                       "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
@@ -4325,6 +4400,13 @@
         "properties": {
           "documentId": {
             "type": "string"
+          },
+          "documentTitles": {
+            "description": "APPLICATION chips in a company conversation: snapshot titles and file names. Absent for every other attachment, and when the application is not this company's.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "fileName": {
             "description": "Uploaded PDF name, present when id is an attachment of this conversation",
@@ -13616,6 +13698,32 @@
                     ],
                     "type": "object"
                   },
+                  "rows": {
+                    "description": "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+                    "items": {
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "initial": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
@@ -15243,7 +15351,7 @@
                     "type": "integer"
                   },
                   "state": {
-                    "description": "Current turns emit wait, ok, or err. Replay can still send run.",
+                    "description": "run is sent just before the tool executes, then ok or err. wait is the approval pause.",
                     "enum": [
                       "run",
                       "ok",
@@ -15471,6 +15579,32 @@
                     ],
                     "type": "object"
                   },
+                  "rows": {
+                    "description": "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+                    "items": {
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "initial": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "seq": {
                     "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
                     "type": "integer"
@@ -17098,7 +17232,7 @@
                     "type": "integer"
                   },
                   "state": {
-                    "description": "Current turns emit wait, ok, or err. Replay can still send run.",
+                    "description": "run is sent just before the tool executes, then ok or err. wait is the approval pause.",
                     "enum": [
                       "run",
                       "ok",
@@ -26145,7 +26279,7 @@
             "name": "tenure",
             "required": false,
             "schema": {
-              "description": "Comma-separated: 0-2, 3-5, 6-9, 10+",
+              "description": "Comma-separated: 0, 1-2, 3-5, 6-9, 10+. Legacy 0-2 is still accepted.",
               "type": "string"
             }
           },
@@ -27516,7 +27650,7 @@
             "name": "tenure",
             "required": false,
             "schema": {
-              "description": "type=people only: comma-separated tenure buckets: 0-2, 3-5, 6-9, 10+",
+              "description": "type=people only: comma-separated tenure buckets: 0, 1-2, 3-5, 6-9, 10+. Legacy 0-2 is still accepted.",
               "type": "string"
             }
           },

@@ -123,7 +123,7 @@ const chatEvents: Record<string, Schema> = {
   tool: obj({
     type: enumOf("tool"),
     name: str,
-    state: { ...enumOf("run", "ok", "err", "wait"), description: "Current turns emit wait, ok, or err. Replay can still send run." },
+    state: { ...enumOf("run", "ok", "err", "wait"), description: "run is sent just before the tool executes, then ok or err. wait is the approval pause." },
     summary: str,
     tier: str,
     result: any,
@@ -162,6 +162,15 @@ const chatEvents: Record<string, Schema> = {
     documentId: str,
     hunks: { ...arr(hunk), description: "DOCUMENT_EDIT: the proposed change, sent before it is applied" },
     foot: { type: "string", description: "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting" },
+    rows: {
+      ...arr(obj({
+        name: str,
+        initial: str,
+        from: str,
+        to: str,
+      }, ["name", "from", "to"])),
+      description: "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+    },
     options: arr(option),
     resolution: resolutionField,
     seq,
@@ -700,6 +709,7 @@ export const schemas: Record<string, Schema> = {
     title: str,
     fileName: { type: "string", description: "Uploaded PDF name, present when id is an attachment of this conversation" },
     size: { type: "integer", description: "Uploaded PDF size in bytes, present with fileName" },
+    documentTitles: { ...arr(str), description: "APPLICATION chips in a company conversation: snapshot titles and file names. Absent for every other attachment, and when the application is not this company's." },
   }, ["type", "id"]),
   ConversationsApprovalAnswer: obj({
     id: uuid,
