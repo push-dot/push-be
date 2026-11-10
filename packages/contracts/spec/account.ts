@@ -126,7 +126,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Email signup (sends verification link)",
     auth: "public",
-    description: "Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+    description: "Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
     body: body(obj({
       email,
       password,
@@ -144,6 +144,14 @@ export const routes: Route[] = [
     body: body(obj({ token: str })),
     responses: { 200: ok(ref("AuthTokens")) },
   }),
+  post("core", "/api/v1/auth/email/verify/resend", {
+    tag: "auth",
+    summary: "Resend the verification mail",
+    auth: "public",
+    description: "204 whether or not the email exists. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email, before the lookup, including an unknown email. The mail bucket is shared with signup and password reset. An unverified signup whose newest verification link was issued more than 60 seconds ago gets a new link and the previous unused link stops working. Inside that 60 seconds, or when the address is unknown or already verified, nothing is sent.",
+    body: body(obj({ email })),
+    responses: { 204: noContent },
+  }),
   post("core", "/api/v1/auth/email/login", {
     tag: "auth",
     summary: "Email login",
@@ -156,7 +164,7 @@ export const routes: Route[] = [
     tag: "auth",
     summary: "Request password reset link",
     auth: "public",
-    description: "202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.",
+    description: "202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup and verification resend) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.",
     body: body(obj({ email })),
     responses: { 202: accepted },
   }),
@@ -362,7 +370,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/companies/me/invites", {
     tag: "companies",
     summary: "List pending invites",
-    description: "ADMIN only.",
+    description: "Any company member. Pending invites only. Sending, resending and cancelling stay ADMIN only.",
     responses: { 200: okList(ref("CompanyInvite")) },
   }),
   post("core", "/api/v1/companies/me/invites/{id}/resend", {
@@ -390,7 +398,7 @@ export const routes: Route[] = [
     tag: "companies",
     summary: "Preview an invite",
     auth: "public",
-    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.",
+    description: "404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName, details.inviterName (empty when the inviter is gone) and details.expiresAt.",
     params: [tokenParam],
     responses: {
       200: ok(obj({ companyName: str, inviterName: str, inviterRole: companyRole, email: str, expiresAt: dateTime })),
@@ -399,7 +407,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/companies/invites/{token}/accept", {
     tag: "companies",
     summary: "Accept an invite",
-    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).",
+    description: "EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName, details.inviterName and details.expiresAt), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).",
     params: [tokenParam],
     responses: { 204: noContent },
   }),
@@ -419,7 +427,7 @@ export const routes: Route[] = [
   put("core", "/api/v1/me/consents/terms", {
     tag: "consents",
     summary: "Store signup terms",
-    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.",
+    description: "Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement. The same version again keeps the stored version and timestamps. A different version copies the previous agreement into user_consent_history and then stores the new version and timestamps. Omitted version is 1.0.",
     body: body({
       ...obj({
         age14: bool,

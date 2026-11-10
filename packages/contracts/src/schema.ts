@@ -364,7 +364,7 @@ export interface paths {
         put?: never;
         /**
          * Request password reset link
-         * @description 202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.
+         * @description 202 whether or not the email exists, while the shared mail bucket (3 per minute per email, also used by signup and verification resend) has room. Over that bucket is 429 RATE_LIMITED (details.retryAfterSec 60). A mail provider failure is 500 INTERNAL.
          */
         post: operations["postAuthEmailPasswordReset"];
         delete?: never;
@@ -424,7 +424,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -447,6 +447,26 @@ export interface paths {
          * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/verify/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend the verification mail
+         * @description 204 whether or not the email exists. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email, before the lookup, including an unknown email. The mail bucket is shared with signup and password reset. An unverified signup whose newest verification link was issued more than 60 seconds ago gets a new link and the previous unused link stops working. Inside that 60 seconds, or when the address is unknown or already verified, nothing is sent.
+         */
+        post: operations["postAuthEmailVerifyResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -862,7 +882,7 @@ export interface paths {
         };
         /**
          * Preview an invite
-         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName.
+         * @description 404 when the token is unknown, accepted, expired, or the company is pending deletion. details.reason is INVALID (unknown token), ACCEPTED, COMPANY_DELETING or EXPIRED; EXPIRED also carries details.companyName, details.inviterName (empty when the inviter is gone) and details.expiresAt.
          */
         get: operations["getCompaniesInvitesByToken"];
         put?: never;
@@ -884,7 +904,7 @@ export interface paths {
         put?: never;
         /**
          * Accept an invite
-         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
+         * @description EMPLOYER only; the account email must match the invite email (403). Joins as MEMBER. 409 CONFLICT when the invite is already accepted, the company is pending deletion, or the user is already in a company. Errors carry details.reason: INVALID (404 unknown token), EXPIRED (404, with details.companyName, details.inviterName and details.expiresAt), ACCEPTED (409), COMPANY_DELETING (409), EMAIL_MISMATCH (403), ALREADY_MEMBER (409).
          */
         post: operations["postCompaniesInvitesByTokenAccept"];
         delete?: never;
@@ -923,7 +943,7 @@ export interface paths {
         };
         /**
          * List pending invites
-         * @description ADMIN only.
+         * @description Any company member. Pending invites only. Sending, resending and cancelling stay ADMIN only.
          */
         get: operations["getCompaniesMeInvites"];
         put?: never;
@@ -2276,7 +2296,7 @@ export interface paths {
         get?: never;
         /**
          * Store signup terms
-         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement; a later call keeps the stored version. Omitted version is 1.0.
+         * @description Unknown keys are rejected. The body needs marketing, or all three of age14, serviceTerms, and privacy. Those three flags are accepted only as true and cannot be cleared. termsVersion is accepted only with those three, max 64 UTF-16 code units. It is stored on the first agreement. The same version again keeps the stored version and timestamps. A different version copies the previous agreement into user_consent_history and then stores the new version and timestamps. Omitted version is 1.0.
          */
         put: operations["putMeConsentsTerms"];
         post?: never;
@@ -6376,6 +6396,32 @@ export interface operations {
                         data: components["schemas"]["AuthTokens"];
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postAuthEmailVerifyResend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };

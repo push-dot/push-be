@@ -54,7 +54,8 @@ function isCore(method: string, path: string): boolean {
   }
   if (method === "POST" && (
     path === "/api/v1/auth/email/signup"
-    || path === "/api/v1/auth/email/verify"
+    ||     path === "/api/v1/auth/email/verify"
+    || path === "/api/v1/auth/email/verify/resend"
     || path === "/api/v1/auth/email/login"
     || path === "/api/v1/auth/email/password-reset"
     || path === "/api/v1/auth/email/password-reset/confirm"

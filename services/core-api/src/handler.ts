@@ -46,6 +46,7 @@ const PUBLIC = new Set([
 const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/signup",
   "/api/v1/auth/email/verify",
+  "/api/v1/auth/email/verify/resend",
   "/api/v1/auth/email/login",
   "/api/v1/auth/email/password-reset",
   "/api/v1/auth/email/password-reset/confirm",

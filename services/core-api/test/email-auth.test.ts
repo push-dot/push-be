@@ -14,7 +14,7 @@ const PASSWORD = "secret123";
 type Row = Record<string, unknown>;
 type Call = { sql: string; params: unknown[] };
 type Mail = { to: string; subject: string; text: string; html: string };
-type Err = { error: { code: string; message: string; details: { field?: string; accountType?: string; email?: string } | null } };
+type Err = { error: { code: string; message: string; details: { field?: string; accountType?: string; email?: string; retryAfterSec?: number } | null } };
 type Session = { data: { accessToken: string; refreshToken: string; expiresIn: number; user: { id: string; accountType: string; companyId: string | null; companyRole: string | null } } };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
@@ -124,6 +124,12 @@ const createDb = () => {
         token_hash: params[4], expires_at: params[5], used_at: null,
       });
       return { rows: [], rowCount: 1 };
+    }
+    if (sql.startsWith("SELECT expires_at FROM email_tokens") && sql.includes("kind = 'VERIFY'")) {
+      const rows = tokens.filter((row) => row.signup_id === params[0] && row.kind === "VERIFY");
+      rows.sort((a, b) => String(b.expires_at).localeCompare(String(a.expires_at)));
+      const newest = rows[0];
+      return { rows: newest ? [{ expires_at: newest.expires_at }] : [], rowCount: newest ? 1 : 0 };
     }
     if (sql.includes("email_tokens") && sql.includes("email_signups")) {
       const token = tokens.find((row) => row.token_hash === params[0] && row.kind === "VERIFY");
@@ -1131,4 +1137,58 @@ test("without a mail provider only development prints the link", async () => {
   } finally {
     console.log = original;
   }
+});
+
+test("verification resend is 204 without saying whether the email exists", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const query = counted(db);
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  let now = new Date("2026-10-21T00:00:00Z");
+  const call = (email: string, ip: string) => handle(
+    post("/api/v1/auth/email/verify/resend", { email }, { "cf-connecting-ip": ip }),
+    env(),
+    { query, now: () => now, mailer },
+  );
+
+  const unknown = await call("missing@push.app", "10.9.0.1");
+  assert.equal(unknown.status, 204);
+  assert.equal(await unknown.text(), "");
+  assert.equal(sent.length, 0);
+  assert.equal(db.tokens.length, 0);
+
+  const signed = await handle(post("/api/v1/auth/email/signup", signupBody(), { "cf-connecting-ip": "10.9.0.2" }), env(), { query, now: () => now, mailer });
+  assert.equal(signed.status, 202);
+  const first = tokenFrom(sent[0]);
+  assert.equal(db.tokens.filter((row) => row.kind === "VERIFY").length, 1);
+
+  now = new Date(now.getTime() + 61_000);
+  const resent = await call(EMAIL, "10.9.0.3");
+  assert.equal(resent.status, 204);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /\/auth\/verify\?token=/);
+  const second = tokenFrom(sent[1]);
+  assert.notEqual(second, first);
+  assert.equal(db.tokens.some((row) => row.token_hash && row.kind === "VERIFY" && row.used_at == null), true);
+  const dead = await handle(post("/api/v1/auth/email/verify", { token: first }, { "cf-connecting-ip": "10.9.0.4" }), env(), { query, now: () => now, mailer });
+  assert.equal(dead.status, 401);
+  assert.equal(db.users.length, 0);
+
+  const cooling = await call(EMAIL, "10.9.0.5");
+  assert.equal(cooling.status, 204);
+  assert.equal(sent.length, 2);
+  const stillCooling = await call(EMAIL, "10.9.0.6");
+  assert.equal(stillCooling.status, 204);
+  assert.equal(sent.length, 2);
+
+  const limited = await call(EMAIL, "10.9.0.7");
+  assert.equal(limited.status, 429);
+  const limitedBody = await limited.json() as Err;
+  assert.equal(limitedBody.error.code, "RATE_LIMITED");
+  assert.equal(limitedBody.error.details?.retryAfterSec, 60);
+  assert.equal(sent.length, 2);
+
+  const fresh = await handle(post("/api/v1/auth/email/verify", { token: second }, { "cf-connecting-ip": "10.9.0.8" }), env(), { query, now: () => now, mailer });
+  assert.equal(fresh.status, 200);
 });

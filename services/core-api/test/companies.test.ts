@@ -1074,17 +1074,42 @@ test("GET /companies/me omits profile keys when the profile columns are missing"
   assert.equal(seen.some((call) => call.sql.includes("AS member_count") && !call.sql.includes("logo_key")), true);
 });
 
-test("GET /companies/me/invites returns pending invites for an admin only", async () => {
+test("GET /companies/me/invites returns pending invites to a member; send, resend and cancel stay admin-only", async () => {
   resetLimits();
   const memberSeen: Call[] = [];
+  const pendingId = "11111111-1111-4111-8111-1111111111a1";
+  const memberRows = [
+    { id: "i1", email: "a@push.app", expires_at: "2026-10-22T00:00:00.000Z" },
+    { id: "i2", email: "b@push.app", expires_at: "2026-10-28T00:00:00.000Z" },
+  ];
   const member = gate(memberSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };
+    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 2)], rowCount: 1 };
+    if (sql.includes("FROM company_invites") && !sql.includes("AS member_count")) return { rows: memberRows, rowCount: 2 };
     return empty;
   });
-  const denied = await handle(get("/api/v1/companies/me/invites"), env(), deps(member));
-  assert.equal(denied.status, 403);
-  assert.equal((await denied.json() as Err).error.code, "FORBIDDEN");
-  assert.equal(memberSeen.some((call) => call.sql.includes("FROM company_invites") && !call.sql.includes("AS member_count")), false);
+  const listed = await handle(get("/api/v1/companies/me/invites"), env(), deps(member));
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), {
+    data: [
+      { id: "i1", email: "a@push.app", expiresAt: "2026-10-22T00:00:00Z", invitedAt: "2026-10-15T00:00:00Z" },
+      { id: "i2", email: "b@push.app", expiresAt: "2026-10-28T00:00:00Z", invitedAt: "2026-10-21T00:00:00Z" },
+    ],
+  });
+  const memberList = memberSeen.find((call) => call.sql.includes("FROM company_invites") && !call.sql.includes("AS member_count"));
+  assert.ok(memberList);
+  assert.equal(memberList.params[0], COMPANY);
+
+  resetLimits();
+  const posted = await handle(post("/api/v1/companies/me/invites", { email: "c@push.app" }, "11111111-1111-4111-8111-1111111111a1"), env(), deps(member));
+  assert.equal(posted.status, 403);
+  assert.equal((await posted.json() as Err).error.code, "FORBIDDEN");
+  const removed = await handle(del(`/api/v1/companies/me/invites/${pendingId}`), env(), deps(member));
+  assert.equal(removed.status, 403);
+  assert.equal((await removed.json() as Err).error.code, "FORBIDDEN");
+  const resent = await handle(post(`/api/v1/companies/me/invites/${pendingId}/resend`, {}, "11111111-1111-4111-8111-1111111111a2"), env(), deps(member));
+  assert.equal(resent.status, 403);
+  assert.equal((await resent.json() as Err).error.code, "FORBIDDEN");
+  assert.equal(memberSeen.some((call) => call.sql.startsWith("INSERT INTO company_invites") || call.sql.startsWith("DELETE FROM company_invites") || call.sql.startsWith("UPDATE company_invites")), false);
 
   resetLimits();
   const missing = await handle(get("/api/v1/companies/me/invites"), env(), deps(gate([], employer(), async () => empty)));
@@ -1313,6 +1338,56 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
   );
   assert.equal(unknown.status, 404);
   assert.equal((await unknown.json() as Err).error.code, "NOT_FOUND");
+});
+
+test("an expired invite says who sent it and when it ended", async () => {
+  const token = "expired-token";
+  const row = {
+    id: "inv",
+    company_id: COMPANY,
+    email: "m@push.app",
+    expires_at: "2020-01-01T00:00:00.000Z",
+    accepted_at: null,
+    deletion_requested_at: null,
+    company_name: "푸시",
+    inviter_user_id: OTHER,
+  };
+  type Expired = { error: { code: string; details: { reason: string; companyName: string; inviterName: string; expiresAt: string | null } } };
+  const query = (inviter: Record<string, unknown> | null, admin: Record<string, unknown> | null): Deps["query"] =>
+    gate([], employer(), async (sql) => {
+      if (sql.includes("token_hash")) {
+        assert.equal(sql.includes("inviter_user_id"), true);
+        return { rows: [row], rowCount: 1 };
+      }
+      if (sql.includes("m.user_id = $2")) return inviter ? { rows: [inviter], rowCount: 1 } : empty;
+      if (sql.includes("m.role = 'ADMIN'") && sql.includes("display_name")) return admin ? { rows: [admin], rowCount: 1 } : empty;
+      return empty;
+    });
+
+  resetLimits();
+  const preview = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(query({ display_name: "민수", role: "MEMBER" }, null)));
+  assert.equal(preview.status, 404);
+  assert.deepEqual((await preview.json() as Expired).error.details, {
+    reason: "EXPIRED", companyName: "푸시", inviterName: "민수", expiresAt: "2020-01-01T00:00:00Z",
+  });
+
+  resetLimits();
+  const gone = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(query(null, null)));
+  assert.equal(gone.status, 404);
+  assert.equal((await gone.json() as Expired).error.details.inviterName, "");
+
+  resetLimits();
+  const accept = await handle(
+    post(`/api/v1/companies/invites/${token}/accept`, {}, "33333333-3333-4333-8333-3333333333e1"),
+    env(),
+    deps(query({ display_name: "민수", role: "ADMIN" }, null)),
+  );
+  assert.equal(accept.status, 404);
+  const acceptBody = await accept.json() as Expired;
+  assert.equal(acceptBody.error.code, "NOT_FOUND");
+  assert.deepEqual(acceptBody.error.details, {
+    reason: "EXPIRED", companyName: "푸시", inviterName: "민수", expiresAt: "2020-01-01T00:00:00Z",
+  });
 });
 
 test("RESEND_API_KEY uses the invite token as the idempotency key", async () => {
@@ -1618,11 +1693,11 @@ test("invite preview and accept errors carry details.reason", async () => {
   assert.deepEqual(await run("preview", null), { status: 404, details: { reason: "INVALID" } });
   assert.deepEqual(await run("preview", { ...base, accepted_at: "2026-10-20T00:00:00Z" }), { status: 404, details: { reason: "ACCEPTED" } });
   assert.deepEqual(await run("preview", { ...base, deletion_requested_at: "2026-10-20T00:00:00Z" }), { status: 404, details: { reason: "COMPANY_DELETING" } });
-  assert.deepEqual(await run("preview", expired), { status: 404, details: { reason: "EXPIRED", companyName: "푸시" } });
+  assert.deepEqual(await run("preview", expired), { status: 404, details: { reason: "EXPIRED", companyName: "푸시", inviterName: "", expiresAt: "2020-01-01T00:00:00Z" } });
   assert.deepEqual(await run("accept", null), { status: 404, details: { reason: "INVALID" } });
   assert.deepEqual(await run("accept", { ...base, accepted_at: "2026-10-20T00:00:00Z" }), { status: 409, details: { reason: "ACCEPTED" } });
   assert.deepEqual(await run("accept", { ...base, deletion_requested_at: "2026-10-20T00:00:00Z" }), { status: 409, details: { reason: "COMPANY_DELETING" } });
-  assert.deepEqual(await run("accept", expired), { status: 404, details: { reason: "EXPIRED", companyName: "푸시" } });
+  assert.deepEqual(await run("accept", expired), { status: 404, details: { reason: "EXPIRED", companyName: "푸시", inviterName: "", expiresAt: "2020-01-01T00:00:00Z" } });
   assert.deepEqual(await run("accept", base, { email: "other@push.app" }), { status: 403, details: { reason: "EMAIL_MISMATCH" } });
   assert.deepEqual(await run("accept", base, { member: true }), { status: 409, details: { reason: "ALREADY_MEMBER" } });
   assert.deepEqual(await run("accept", base, { claim: false }), { status: 409, details: { reason: "ACCEPTED" } });
