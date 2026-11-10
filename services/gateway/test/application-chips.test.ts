@@ -111,7 +111,7 @@ test("gateway chips stay inside the conversation's company", async (t) => {
   const otherConv = crypto.randomUUID();
   const personalConv = crypto.randomUUID();
   const insertUser = (id: string, name: string) => db.query(
-    "INSERT INTO users (id, provider, provider_subject, display_name, plan) VALUES ($1, 'test', $1, $2, 'FREE')",
+    "INSERT INTO users (id, provider, provider_subject, display_name, plan) VALUES ($1::uuid, 'test', $1::uuid::text, $2, 'FREE')",
     [id, name]);
   await insertUser(applicant, "김태윤");
   await insertUser(member, "담당자");

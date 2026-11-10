@@ -47,7 +47,7 @@ const call = async (people: Map<string, Person>, userId: string, method: string,
 
 const insertUser = async (id: string, name: string, email: string, employer = false) => {
   await pg!.query(
-    "INSERT INTO users (id, provider, provider_subject, display_name, email, is_employer, plan) VALUES ($1, 'test', $1, $2, $3, $4, 'FREE')",
+    "INSERT INTO users (id, provider, provider_subject, display_name, email, is_employer, plan) VALUES ($1::uuid, 'test', $1::uuid::text, $2, $3, $4, 'FREE')",
     [id, name, email, employer]);
 };
 
