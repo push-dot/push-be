@@ -552,3 +552,45 @@ async def test_a_stale_fit_attempt_cannot_release_the_retried_reservation(pg, mo
         "SELECT cost_micro_credits FROM ai_usage WHERE id = $1", first.id,
     )
     assert left == billed["cost_micro_credits"]
+
+
+@pytest.mark.asyncio
+async def test_settle_with_a_stale_generation_keeps_the_newer_reservation(pg, monkeypatch):
+    """A stale generation must not bill the reservation a retry just opened."""
+    from app.domain import entities as ent
+    from app.domain.services.ai import AIGate
+    from app.framework.llm import AiUsageCallback
+
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    pool, new_user, _ = pg
+    user = await new_user()
+    await grant(pool, 100, user=user)
+    jid = await job(pool, user, 80, 0)
+    gate = AIGate(DB(pool), "key", None)
+    ai = ent.AiOptions(provider="OPENAI", model="m", effort="LOW")
+    first = await gate._reserve(user, ai, "system", "user", jid, purpose="fit")
+    second = await gate._reserve(user, ai, "system", "user", jid, purpose="fit")
+    assert first is not None and second is not None
+    assert first.id == second.id
+    assert first.generation == 1 and second.generation == 2
+
+    store = AiUsageStore(DB(pool))
+    callback = AiUsageCallback(store, user, jid, first.id, first.generation)
+    await callback.on_llm_end(SimpleNamespace(
+        generations=[], llm_output={"token_usage": {"prompt_tokens": 9, "completion_tokens": 8}}),
+        run_id=uuid4())
+    held = await pool.fetchrow(
+        "SELECT status, reservation_gen, cost_micro_credits FROM ai_usage WHERE id = $1", first.id)
+    assert held["status"] == "RESERVED"
+    assert held["reservation_gen"] == 2
+    assert held["cost_micro_credits"] > 0
+
+    with pytest.raises(LostClaim):
+        await store.settle(first.id, 9, 8, 150, first.generation)
+    await store.settle(second.id, 3, 4, 220, second.generation)
+    billed = await pool.fetchrow(
+        "SELECT status, reservation_gen, input_tokens, output_tokens FROM ai_usage WHERE id = $1",
+        first.id)
+    assert billed["status"] == "SETTLED"
+    assert billed["reservation_gen"] == 2
+    assert billed["input_tokens"] == 3 and billed["output_tokens"] == 4

@@ -220,7 +220,8 @@ class AIGate:
             await self.usage.settle(
                 usage_id, input_tokens, output_tokens,
                 ent.ai_cost_micro_credits("OPENAI", model,
-                                          input_tokens, output_tokens))
+                                          input_tokens, output_tokens),
+                generation)
         except LostClaim:
             await self._release(usage_id, generation)
             raise

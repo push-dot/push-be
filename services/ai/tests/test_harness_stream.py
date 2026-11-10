@@ -26,7 +26,7 @@ class _Store:
     def __init__(self) -> None:
         self.settled: list = []
 
-    async def settle(self, reservation_id, incoming, outgoing, cost) -> None:
+    async def settle(self, reservation_id, incoming, outgoing, cost, generation=None) -> None:
         self.settled.append((incoming, outgoing))
 
     async def release(self, reservation_id, generation=None) -> None:

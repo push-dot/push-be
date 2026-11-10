@@ -82,7 +82,7 @@ test("document routes go to core except rendering and the AI revision proposal",
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}`), "core");
-  for (const sub of ["review", "finalize", "archive"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
+  for (const sub of ["review", "finalize", "archive", "restore"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions/${ID}/apply`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/exports`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/exports`), "core");

@@ -1404,7 +1404,7 @@ export interface paths {
         };
         /**
          * List documents
-         * @description Archived documents are left out.
+         * @description Archived documents are left out, unless archived=1. archived=1 lists the caller's documents archived within 30 days, newest by updatedAt. Each of those items adds archivedAt and purgeAt (updatedAt plus 30 days). Those two fields are absent on every other document response.
          */
         get: operations["getDocuments"];
         put?: never;
@@ -1592,6 +1592,26 @@ export interface paths {
          * @description target defaults to application. A HUB_PROFILE document id keeps the old behavior: application with no applicationId does not write the hub profile; application with applicationId requires expectedRevision and links that document; a revision mismatch is 409 REVISION_CONFLICT; target hub uses the same write as POST /documents/{id}/base-profile. sections is only valid with target hub. Omitted sections copies every present heading. Present sections replaces only those keys and does not clear a key whose heading is absent. An empty list writes nothing. applied lists the keys that were written. An uploaded source id the caller owns creates a new HUB_PROFILE application profile and does not write the base profile. text/plain and text/markdown return 200. pdf, docx, and octet-stream return 202 with jobId; the version stays empty until that ingest job finishes. A missing id and another user's source are both 404. An archived document is 409 INVALID_TRANSITION.
          */
         post: operations["postDocumentsByIdProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore an archived document
+         * @description Owner only. A document with finalizedVersionId returns to FINALIZED, otherwise DRAFT, and revision increases by 1. Enqueues ingest so the search nodes dropped on archive come back. 404 when the document is missing, not the caller's, or already purged. 409 REVISION_CONFLICT when expectedRevision does not match. 200 with the document unchanged when it is not archived.
+         */
+        post: operations["postDocumentsByIdRestore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3575,7 +3595,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a source
-         * @description 409 INVALID_TRANSITION when career evidence references the source. Unpins it from the profile resume.
+         * @description 409 INVALID_TRANSITION when career evidence references the source. details.reason is REFERENCED_BY_EVIDENCE and details.evidenceCount is how many evidence rows point at it. Unpins it from the profile resume.
          */
         delete: operations["deleteSourcesById"];
         options?: never;
@@ -4809,6 +4829,11 @@ export interface components {
         };
         Document: {
             applicationId: string | null;
+            /**
+             * Format: date-time
+             * @description Archived list only. When the document was archived, equal to updatedAt.
+             */
+            archivedAt?: string;
             /** Format: date-time */
             createdAt: string;
             finalizedVersionId: string | null;
@@ -4818,6 +4843,11 @@ export interface components {
             kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
             language: string;
             latestVersionId: string | null;
+            /**
+             * Format: date-time
+             * @description Archived list only. updatedAt plus 30 days, when the row is purged.
+             */
+            purgeAt?: string;
             revision: number;
             /** @enum {string} */
             status: "DRAFT" | "FINALIZED" | "ARCHIVED";
@@ -8272,6 +8302,8 @@ export interface operations {
                 cursor?: string;
                 applicationId?: string;
                 kind?: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
+                /** @description 1 lists documents archived within 30 days. 0 or omitted lists live documents. */
+                archived?: "0" | "1";
             };
             header?: never;
             path?: never;
@@ -8760,6 +8792,40 @@ export interface operations {
                             /** @enum {string} */
                             target: "hub" | "application";
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postDocumentsByIdRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expectedRevision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Document"];
                     };
                 };
             };

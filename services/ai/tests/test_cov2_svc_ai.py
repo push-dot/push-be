@@ -432,7 +432,7 @@ async def test_cancelled_completion_releases_its_reservation():
 class _ClosedJobUsage(StubAiUsageStore):
     """The job was cancelled or failed while its call ran: the settle is refused."""
 
-    async def settle(self, id_, input_tokens, output_tokens, cost):
+    async def settle(self, id_, input_tokens, output_tokens, cost, generation=None):
         raise LostClaim()
 
 

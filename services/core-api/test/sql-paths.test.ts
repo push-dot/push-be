@@ -80,6 +80,48 @@ test("follower and following lists build both joins with and without a cursor", 
   }
 });
 
+test("an archived document list pages by updated_at and restore enqueues ingest", async () => {
+  const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const doc = {
+    id, revision: 2, application_id: null, title: "보관", kind: "RESUME", template: "SIMPLE", language: "ko",
+    status: "ARCHIVED", latest_version_id: null, finalized_version_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    created_at: NOW, updated_at: NOW,
+  };
+  const listed = await run(get("/api/v1/documents?archived=1&cursor=" + encodeURIComponent(CURSOR)), (sql) => (
+    sql.includes("purge_at") ? [{ ...doc, purge_at: "2026-11-20T00:00:00.000Z" }] : null
+  ));
+  assert.equal(listed.res.status, 200);
+  assert.ok(listed.calls.some((c) => c.sql.includes("status = 'ARCHIVED'") && c.sql.includes("interval '30 days'") && c.sql.includes("(updated_at, id) <")));
+  const body = await listed.res.json() as { data: { archivedAt: string; purgeAt: string; updatedAt: string; status: string }[] };
+  assert.equal(body.data[0].status, "ARCHIVED");
+  assert.equal(body.data[0].archivedAt, body.data[0].updatedAt);
+  assert.equal(typeof body.data[0].purgeAt, "string");
+
+  const rejected = await run(get("/api/v1/documents?archived=2"));
+  assert.equal(rejected.res.status, 400);
+
+  resetLimits();
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("UPDATE documents SET revision = revision + 1") && sql.includes("FINALIZED")) return [{ status: "FINALIZED" }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", queue: "q:ingest" }];
+    return null;
+  });
+  const res = await handle(new Request("https://core.example/api/v1/documents/" + id + "/restore", {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab" },
+    body: JSON.stringify({ expectedRevision: 2 }),
+  }), env(), { query, now: () => new Date(NOW) });
+  assert.equal(res.status, 200);
+  const restored = await res.json() as { data: { status: string; revision: number; archivedAt?: string } };
+  assert.equal(restored.data.status, "FINALIZED");
+  assert.equal(restored.data.revision, 3);
+  assert.equal(restored.data.archivedAt, undefined);
+  const job = calls.find((c) => c.sql.includes("INSERT INTO ai_jobs"));
+  assert.ok(job);
+  assert.equal(JSON.parse(String(job.params[7])).documentId, id);
+});
+
 test("profile explore filters add the recommended and offers clauses", async () => {
   const clauseOf = (explore: string): string => {
     if (explore === "recommended") return "p.job_category = (SELECT job_category";

@@ -5,9 +5,9 @@ import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
 } from "../document-content.ts";
-import { HttpError, data, fieldError, hashJson, parseUuid, randomToken, requireUuid, sha256Hex } from "../http.ts";
+import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, randomToken, requireUuid, sha256Hex } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
-import { listPage, pageOf, ts } from "../page.ts";
+import { listPage, pageOf, pageResult, ts } from "../page.ts";
 import { httpsUrl, unprocessable } from "./recruiting-shared.ts";
 import type { Ctx } from "../types.ts";
 
@@ -43,6 +43,13 @@ const documentDto = (row: Row): Row => ({
   finalizedVersionId: str(row.finalized_version_id),
   createdAt: ts(row.created_at),
   updatedAt: ts(row.updated_at),
+});
+
+/** Archived list rows only. purgeAt is updated_at plus the 30-day retention window. */
+const archivedDocumentDto = (row: Row): Row => ({
+  ...documentDto(row),
+  archivedAt: ts(row.updated_at),
+  purgeAt: ts(row.purge_at),
 });
 
 const versionDto = (row: Row): Row => ({
@@ -208,8 +215,7 @@ const blockInputs = (value: unknown): Block[] => {
   });
 };
 
-export const listDocuments = async (ctx: Ctx): Promise<Response> => {
-  const page = pageOf(ctx.url);
+const listFilters = (ctx: Ctx): { applicationId: string | null; kind: string | null } => {
   const appRaw = ctx.url.searchParams.get("applicationId");
   let applicationId: string | null = null;
   if (appRaw) {
@@ -218,6 +224,38 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
   }
   const kind = ctx.url.searchParams.get("kind") || null;
   if (kind !== null && !KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
+  return { applicationId, kind };
+};
+
+/** Own documents archived within 30 days, newest by updated_at. archivedAt and purgeAt are on these rows only. */
+const listArchivedDocuments = async (ctx: Ctx): Promise<Response> => {
+  const page = pageOf(ctx.url);
+  const { applicationId, kind } = listFilters(ctx);
+  const where = ["user_id = $1", "status = 'ARCHIVED'", "updated_at > now() - interval '30 days'"];
+  const params: unknown[] = [ctx.user.id];
+  for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
+    if (value === null) continue;
+    params.push(value);
+    where.push(`${column} = $${params.length}`);
+  }
+  if (page.cursor) {
+    params.push(page.cursor.createdAt, page.cursor.id);
+    where.push(`(updated_at, id) < ($${params.length - 1}, $${params.length})`);
+  }
+  params.push(page.limit + 1);
+  const rows = await query(ctx.deps.query,
+    `SELECT ${DOC_COLS}, updated_at + interval '30 days' AS purge_at FROM documents WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id DESC LIMIT $${params.length}`,
+    params);
+  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.updated_at, id: String(row.id) }));
+  return pageBody(paged.items.map(archivedDocumentDto), paged.nextCursor, paged.hasMore, ctx.rid);
+};
+
+export const listDocuments = async (ctx: Ctx): Promise<Response> => {
+  const archived = ctx.url.searchParams.get("archived");
+  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
+  if (archived === "1") return listArchivedDocuments(ctx);
+  const page = pageOf(ctx.url);
+  const { applicationId, kind } = listFilters(ctx);
   const where = ["user_id = $1", "status <> 'ARCHIVED'"];
   const params: unknown[] = [ctx.user.id];
   for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
@@ -438,6 +476,25 @@ export const archiveDocument = async (ctx: Ctx, idRaw: string): Promise<Response
     [id, ctx.user.id, now, expected]);
   if (!updated) await failedUpdate(ctx, "documents", id);
   return data(200, documentDto({ ...doc, revision: expected + 1, status: "ARCHIVED", updated_at: now }), ctx.rid);
+};
+
+const RESTORE_SQL = `UPDATE documents SET revision = revision + 1,
+    status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, updated_at = $3
+  WHERE id = $1 AND user_id = $2 AND revision = $4 AND status = 'ARCHIVED'
+  RETURNING status`;
+
+export const restoreDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
+  const expected = Number(values.expectedRevision);
+  const doc = await loadDocument(ctx, id);
+  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+  if (doc.status !== "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
+  const now = ts(ctx.now);
+  const updated = await one(ctx.deps.query, RESTORE_SQL, [id, ctx.user.id, now, expected]);
+  if (!updated) await failedUpdate(ctx, "documents", id);
+  await enqueueIngest(ctx, { documentId: id });
+  return data(200, documentDto({ ...doc, revision: expected + 1, status: String(updated!.status), updated_at: now }), ctx.rid);
 };
 
 export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -923,7 +980,7 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (baseProfile && method === "POST") return setBaseProfile(ctx, baseProfile[1]);
   const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);
   if (profile && method === "POST") return convertProfile(ctx, profile[1]);
-  const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|exports))?$/);
+  const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|restore|exports))?$/);
   if (!m) return null;
   const [, id, sub] = m;
   if (!sub && method === "GET") return getDocument(ctx, id);
@@ -932,6 +989,7 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (sub === "review" && method === "POST") return reviewDocument(ctx, id);
   if (sub === "finalize" && method === "POST") return finalizeDocument(ctx, id);
   if (sub === "archive" && method === "POST") return archiveDocument(ctx, id);
+  if (sub === "restore" && method === "POST") return restoreDocument(ctx, id);
   if (sub === "exports" && method === "GET") return listExports(ctx, id);
   if (sub === "exports" && method === "POST") return createExport(ctx, id);
   return null;
