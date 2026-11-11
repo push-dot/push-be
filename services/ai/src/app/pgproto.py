@@ -720,14 +720,90 @@ class _Transaction:
         return False
 
 
+class _LocalConnectionPool:
+    """Bounded pool for local uvicorn and scripts (no Workers request scope)."""
+
+    def __init__(self, database_url: str, transport: str, max_size: int):
+        self.database_url = database_url
+        self.transport = transport
+        self.max_size = max(1, max_size)
+        self._lock = asyncio.Lock()
+        self._idle: list[PgConnection] = []
+        self._size = 0
+        self._waiters: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+
+    async def _connect(self) -> PgConnection:
+        conn = await connect(self.database_url, self.transport)
+        return conn
+
+    async def checkout(self) -> PgConnection:
+        async with self._lock:
+            while self._idle:
+                conn = self._idle.pop()
+                if not conn.closed:
+                    return conn
+                self._size -= 1
+            if self._size < self.max_size:
+                self._size += 1
+                need_connect = True
+            else:
+                need_connect = False
+                fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                await self._waiters.put(fut)
+        if need_connect:
+            try:
+                return await self._connect()
+            except BaseException:
+                async with self._lock:
+                    self._size -= 1
+                    self._notify_waiter()
+                raise
+        await fut
+        return await self.checkout()
+
+    def _notify_waiter(self) -> None:
+        while not self._waiters.empty():
+            try:
+                fut = self._waiters.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not fut.done():
+                fut.set_result(None)
+                break
+
+    async def checkin(self, conn: PgConnection, *, drop: bool) -> None:
+        async with self._lock:
+            if drop or conn.closed:
+                await conn.close()
+                self._size -= 1
+            else:
+                self._idle.append(conn)
+            self._notify_waiter()
+
+    async def close_all(self) -> None:
+        async with self._lock:
+            idle = self._idle
+            self._idle = []
+            self._size = 0
+            while not self._waiters.empty():
+                try:
+                    fut = self._waiters.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if not fut.done():
+                    fut.cancel()
+        for conn in idle:
+            await conn.close()
+
+
 # Workers binds a socket to the request that opened it. A connection stored
 # on the isolate is visible to every concurrent invocation; the next request
 # treats it as stale, opens another WebSocket, and the two invocations steal
 # the socket until the runtime reports "Too many subrequests" or resolves a
 # promise on the wrong request. The connection therefore lives in a ContextVar
 # set for that fetch, cron run, or workflow step, and is closed before the
-# invocation ends. Local uvicorn has no per-request socket rule, so it keeps
-# one TCP connection behind its own lock.
+# invocation ends. Local uvicorn has no per-request socket rule; it uses a
+# bounded pool so concurrent handlers do not serialize on one connection.
 class _ScopeState:
     def __init__(self) -> None:
         self.conn: Optional[PgConnection] = None
@@ -748,22 +824,24 @@ def begin_request_scope() -> _ScopeState:
 class PgPool:
     """Postgres connections that are never shared across Workers requests."""
 
-    def __init__(self, database_url: str, transport: str = "tcp"):
+    def __init__(self, database_url: str, transport: str = "tcp", max_size: int = 10):
         self.database_url = database_url
         self.transport = transport
         self.dsn = parse_dsn(database_url)
-        self._local: Optional[_ScopeState] = None
+        self._max_size = max(1, max_size)
+        self._local_pool: Optional[_LocalConnectionPool] = None
 
     def acquire(self):
         return _Acquire(self)
 
-    def _current_state(self) -> _ScopeState:
-        state = _request_state.get()
-        if state is not None:
-            return state
-        if self._local is None:
-            self._local = _ScopeState()
-        return self._local
+    def _request_scope(self) -> Optional[_ScopeState]:
+        return _request_state.get()
+
+    def _local_pool_lazy(self) -> _LocalConnectionPool:
+        if self._local_pool is None:
+            self._local_pool = _LocalConnectionPool(
+                self.database_url, self.transport, self._max_size)
+        return self._local_pool
 
     async def _ensure_locked(self, state: _ScopeState) -> PgConnection:
         conn = state.conn
@@ -796,14 +874,30 @@ class PgPool:
                 _request_state.set(None)
 
     async def _call(self, method: str, *args):
-        state = self._current_state()
-        async with state.lock:
-            conn = await self._ensure_locked(state)
-            try:
-                return await getattr(conn, method)(*args)
-            except (ConnectionError, asyncio.IncompleteReadError, OSError):
-                await self._drop_state(state)
-                raise
+        state = self._request_scope()
+        if state is not None:
+            async with state.lock:
+                conn = await self._ensure_locked(state)
+                try:
+                    return await getattr(conn, method)(*args)
+                except (ConnectionError, asyncio.IncompleteReadError, OSError):
+                    await self._drop_state(state)
+                    raise
+            return
+        pool = self._local_pool_lazy()
+        conn = await pool.checkout()
+        drop = False
+        try:
+            return await getattr(conn, method)(*args)
+        except (ConnectionError, asyncio.IncompleteReadError, OSError):
+            drop = True
+            raise
+        except BaseException as exc:
+            if not isinstance(exc, PgError):
+                drop = True
+            raise
+        finally:
+            await pool.checkin(conn, drop=drop)
 
     async def execute(self, sql: str, *args) -> str:
         return await self._call("execute", sql, *args)
@@ -821,12 +915,10 @@ class PgPool:
         return await self._call("fetchval", sql, *args)
 
     async def close(self) -> None:
-        current = _request_state.get()
-        local = self._local
-        if local is not None:
-            async with local.lock:
-                await self._drop_state(local)
-        if current is not None and current is not local:
+        if self._local_pool is not None:
+            await self._local_pool.close_all()
+        current = self._request_scope()
+        if current is not None:
             async with current.lock:
                 await self._drop_state(current)
 
@@ -836,22 +928,35 @@ class _Acquire:
         self.pool = pool
         self.conn: Optional[PgConnection] = None
         self.state: Optional[_ScopeState] = None
+        self._local_pool: Optional[_LocalConnectionPool] = None
+        self._local_hold = False
 
     async def __aenter__(self) -> PgConnection:
-        self.state = self.pool._current_state()
-        await self.state.lock.acquire()
-        try:
-            self.conn = await self.pool._ensure_locked(self.state)
-            return self.conn
-        except Exception:
-            self.state.lock.release()
-            raise
+        state = self.pool._request_scope()
+        if state is not None:
+            self.state = state
+            await state.lock.acquire()
+            try:
+                self.conn = await self.pool._ensure_locked(state)
+                return self.conn
+            except Exception:
+                state.lock.release()
+                raise
+        self._local_pool = self.pool._local_pool_lazy()
+        self.conn = await self._local_pool.checkout()
+        self._local_hold = True
+        return self.conn
 
     async def __aexit__(self, exc_type, exc, tb):
         state = self.state
         try:
-            if state is not None and exc_type is not None and not isinstance(exc, PgError):
-                await self.pool._drop_state(state)
+            if state is not None:
+                if exc_type is not None and not isinstance(exc, PgError):
+                    await self.pool._drop_state(state)
+            elif self._local_hold and self.conn is not None and self._local_pool is not None:
+                drop = exc_type is not None and not isinstance(exc, PgError)
+                await self._local_pool.checkin(self.conn, drop=drop)
+                self._local_hold = False
         finally:
             if state is not None and state.lock.locked():
                 state.lock.release()
