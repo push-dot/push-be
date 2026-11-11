@@ -883,21 +883,21 @@ class PgPool:
                 except (ConnectionError, asyncio.IncompleteReadError, OSError):
                     await self._drop_state(state)
                     raise
-            return
-        pool = self._local_pool_lazy()
-        conn = await pool.checkout()
-        drop = False
-        try:
-            return await getattr(conn, method)(*args)
-        except (ConnectionError, asyncio.IncompleteReadError, OSError):
-            drop = True
-            raise
-        except BaseException as exc:
-            if not isinstance(exc, PgError):
+        else:
+            pool = self._local_pool_lazy()
+            conn = await pool.checkout()
+            drop = False
+            try:
+                return await getattr(conn, method)(*args)
+            except (ConnectionError, asyncio.IncompleteReadError, OSError):
                 drop = True
-            raise
-        finally:
-            await pool.checkin(conn, drop=drop)
+                raise
+            except BaseException as exc:
+                if not isinstance(exc, PgError):
+                    drop = True
+                raise
+            finally:
+                await pool.checkin(conn, drop=drop)
 
     async def execute(self, sql: str, *args) -> str:
         return await self._call("execute", sql, *args)
