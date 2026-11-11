@@ -1,5 +1,13 @@
 import { query, type Query } from "./db.ts";
 
+// Runs on Cloudflare Workers (no Redis). Neon ``rate_limits`` is the source of
+// truth: one CONSUME upsert per request while the bucket is not known full.
+// ``remoteHits`` only short-circuits repeat denials in this isolate for the
+// current UTC minute; it never grants quota without a successful consume.
+// On Neon failure, ``memory`` is a last-resort per-isolate counter (same as the
+// Python worker). wrangler.jsonc has no KV, Durable Objects, or rate-limiting
+// bindings today.
+
 const CONSUME_SQL = (
   "INSERT INTO rate_limits (bucket, hits, expires_at) "
   + "VALUES ($1, 1, to_timestamp($2::double precision)) "

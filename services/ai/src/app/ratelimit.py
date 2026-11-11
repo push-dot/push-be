@@ -18,8 +18,10 @@ A request that is already at the limit does not increment the row. The
 limit, and an empty ``RETURNING`` means the bucket is full.
 
 Known-full buckets are cached in-process so repeated denials skip the
-shared store. With ``QUEUE_BACKEND=redis`` and ``REDIS_URL``, Redis is
-used instead of Postgres; Postgres then memory remain the fallbacks.
+shared store (deny-only; allowance always goes through Redis or Postgres).
+
+On the Hostinger VPS (``QUEUE_BACKEND=redis``, compose Redis), counters
+live in Redis; Neon ``rate_limits`` and in-process memory are fallbacks.
 """
 
 from __future__ import annotations
