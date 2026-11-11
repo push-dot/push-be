@@ -1,27 +1,9 @@
 """Shared request counters.
 
-The in-isolate limiter counted separately on every Workers isolate, so a
-user could pass 600/min once per isolate. Cloudflare's Rate Limiting
-binding is counted per colo, is not part of the Workers Free feature
-list, and is not callable from the Python worker. Durable Objects with
-the SQLite backend are on the free plan, but each check would spend the
-free request quota and the Python worker would need another binding.
-
-Neon is already connected from both workers. One upsert is visible to
-every isolate and colo. The window is the UTC minute, so a burst at the
-minute boundary can be allowed twice. When ``rate_limits`` is not there
-yet, the call falls back to the in-isolate limiter for that request and
-tries Neon again on the next one.
-
-A request that is already at the limit does not increment the row. The
-``ON CONFLICT`` update runs only while ``hits`` is still below the
-limit, and an empty ``RETURNING`` means the bucket is full.
-
-Known-full buckets are cached in-process so repeated denials skip the
-shared store (deny-only; allowance always goes through Redis or Postgres).
-
-On the Hostinger VPS (``QUEUE_BACKEND=redis``, compose Redis), counters
-live in Redis; Neon ``rate_limits`` and in-process memory are fallbacks.
+Workers (gateway, core-api) use Neon ``rate_limits``. The VPS AI API uses
+in-process ``SlidingWindow`` counters when Redis is off, and Redis when
+``QUEUE_BACKEND=redis`` (no Postgres on the request path). ``allow()`` with
+a pool is for non-request callers (cron sweep shares the same table).
 """
 
 from __future__ import annotations
@@ -38,6 +20,9 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
+
+REDIS_BREAKER_S = 30.0
+REDIS_SOCKET_TIMEOUT_S = 0.5
 
 # One upsert. The row lock on conflict serializes this +1 with the front
 # Worker's lease. The front stops at 90% of the same bucket so a read
@@ -99,21 +84,30 @@ class SlidingWindow:
 
 _warned_missing = False
 _memory = SlidingWindow()
-# Buckets this process has seen filled; further requests are rejected here.
+# Buckets known full in Redis or Postgres paths; short-circuits repeat denials.
 _known_hits: dict[str, int] = {}
 _known_window = -1
 _redis: Redis | None = None
 _redis_checked = False
+_redis_down_until = 0.0
 
 
 def reset_for_tests() -> None:
     global _warned_missing, _redis, _redis_checked, _known_window
+    global _redis_down_until
     _warned_missing = False
     _known_window = -1
     _known_hits.clear()
     _memory.clear()
     _redis = None
     _redis_checked = False
+    _redis_down_until = 0.0
+
+
+def redis_configured() -> bool:
+    if queue_backend() != "redis":
+        return False
+    return bool(os.environ.get("REDIS_URL", "").strip())
 
 
 def _missing_table(exc: BaseException) -> bool:
@@ -137,11 +131,10 @@ def _remember_hits(bucket: str, hits: int | None, limit: int) -> None:
     _known_hits[bucket] = int(hits)
 
 
-def _redis_url() -> str | None:
-    if queue_backend() != "redis":
-        return None
-    url = os.environ.get("REDIS_URL", "").strip()
-    return url or None
+def _trip_redis_breaker(moment: float | None = None) -> None:
+    global _redis_down_until
+    now = time.time() if moment is None else moment
+    _redis_down_until = now + REDIS_BREAKER_S
 
 
 def _redis_client() -> Redis | None:
@@ -149,15 +142,20 @@ def _redis_client() -> Redis | None:
     if _redis_checked:
         return _redis
     _redis_checked = True
-    url = _redis_url()
-    if url is None:
+    url = os.environ.get("REDIS_URL", "").strip()
+    if not url or queue_backend() != "redis":
         return None
     try:
         from redis.asyncio import Redis
 
-        _redis = Redis.from_url(url, decode_responses=True)
+        _redis = Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=REDIS_SOCKET_TIMEOUT_S,
+            socket_timeout=REDIS_SOCKET_TIMEOUT_S,
+        )
     except Exception:
-        logger.warning("rate limit redis client unavailable; using postgres")
+        logger.warning("rate limit redis client unavailable")
         _redis = None
     return _redis
 
@@ -173,37 +171,55 @@ async def _consume_redis(bucket: str, limit: int, ttl_s: int) -> int | None:
     return int(hits)
 
 
-async def allow(pool, kind: str, key: str, limit: int,
-                now: float | None = None) -> bool:
-    """Return whether this key may proceed.
-
-    Allowed requests increment the shared counter. A full bucket returns
-    no row and is left unchanged.
-    """
-    global _warned_missing
-    moment = time.time() if now is None else now
+def _bucket(kind: str, key: str, moment: float) -> tuple[str, int]:
     window = int(moment) // 60
     ident = key or "unknown"
-    bucket = f"{kind}:{ident}:{window}"
+    return f"{kind}:{ident}:{window}", window
+
+
+async def allow_redis(kind: str, key: str, limit: int,
+                      memory: SlidingWindow,
+                      now: float | None = None) -> bool:
+    """VPS AI request path: Redis with in-process fallback, no Postgres."""
+    moment = time.time() if now is None else now
+    bucket, window = _bucket(kind, key, moment)
     _sync_known_window(window)
     known = _known_hits.get(bucket)
     if known is not None and known >= limit:
         return False
 
+    ident = key or "unknown"
+    if moment < _redis_down_until:
+        return memory.allow(ident, limit, moment)
+
     ttl_s = window * 60 + 120 - int(moment)
     if ttl_s < 60:
         ttl_s = 120
 
-    if _redis_url() is not None:
-        try:
-            hits = await _consume_redis(bucket, limit, ttl_s)
-            if hits is None:
-                _remember_hits(bucket, None, limit)
-                return False
-            _remember_hits(bucket, hits, limit)
-            return hits <= limit
-        except Exception:
-            logger.warning("rate limit redis failed; falling back to postgres")
+    try:
+        hits = await _consume_redis(bucket, limit, ttl_s)
+    except Exception:
+        _trip_redis_breaker(moment)
+        logger.warning("rate limit redis failed; using in-process window")
+        return memory.allow(ident, limit, moment)
+
+    if hits is None:
+        _remember_hits(bucket, None, limit)
+        return False
+    _remember_hits(bucket, hits, limit)
+    return hits <= limit
+
+
+async def allow(pool, kind: str, key: str, limit: int,
+                now: float | None = None) -> bool:
+    """Postgres shared counter (Workers parity tests, non-request callers)."""
+    global _warned_missing
+    moment = time.time() if now is None else now
+    bucket, window = _bucket(kind, key, moment)
+    _sync_known_window(window)
+    known = _known_hits.get(bucket)
+    if known is not None and known >= limit:
+        return False
 
     if pool is None:
         return _memory.allow(bucket, limit, moment)

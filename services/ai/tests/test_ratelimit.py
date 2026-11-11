@@ -1,5 +1,7 @@
 from app.pgproto import PgError
-from app.ratelimit import allow, reset_for_tests, sweep
+from app.ratelimit import (
+    REDIS_BREAKER_S, SlidingWindow, allow, allow_redis, reset_for_tests, sweep,
+)
 
 
 class _Pool:
@@ -96,13 +98,16 @@ def test_sliding_window_counts_per_key_inside_the_window():
     assert rl.allow("a", 2, 10.5)
 
 
-async def test_redis_backend_is_used_when_configured(monkeypatch):
+async def test_redis_allow_deny_and_known_full_short_circuit(monkeypatch):
     reset_for_tests()
     monkeypatch.setenv("QUEUE_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     counts: dict[str, int] = {}
+    mem = SlidingWindow()
+    calls = {"n": 0}
 
     async def fake_consume(bucket: str, limit: int, ttl_s: int):
+        calls["n"] += 1
         key = f"rl:{bucket}"
         n = counts.get(key, 0) + 1
         if n > limit:
@@ -112,15 +117,36 @@ async def test_redis_backend_is_used_when_configured(monkeypatch):
 
     monkeypatch.setattr("app.ratelimit._consume_redis", fake_consume)
 
-    pool = _Pool(hits=1)
     moment = 1_700_000_000.0
-    assert await allow(pool, "user", "u1", 2, now=moment) is True
-    assert await allow(pool, "user", "u1", 2, now=moment) is True
-    assert await allow(pool, "user", "u1", 2, now=moment) is False
-    assert len(pool.calls) == 0
+    assert await allow_redis("user", "u1", 2, mem, now=moment) is True
+    assert await allow_redis("user", "u1", 2, mem, now=moment) is True
+    assert await allow_redis("user", "u1", 2, mem, now=moment) is False
     assert counts["rl:user:u1:28333333"] == 2
-    assert await allow(pool, "user", "u1", 2, now=moment + 0.5) is False
-    assert len(pool.calls) == 0
+    assert calls["n"] == 2
+    assert await allow_redis("user", "u1", 2, mem, now=moment + 0.5) is False
+    assert calls["n"] == 2
+
+
+async def test_redis_failure_uses_memory_and_opens_breaker(monkeypatch):
+    reset_for_tests()
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    mem = SlidingWindow()
+    attempts = {"n": 0}
+
+    async def boom(*_a, **_k):
+        attempts["n"] += 1
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr("app.ratelimit._consume_redis", boom)
+    moment = 1_700_000_000.0
+    assert await allow_redis("user", "u1", 2, mem, now=moment) is True
+    assert attempts["n"] == 1
+    assert await allow_redis("user", "u2", 2, mem, now=moment + 1) is True
+    assert attempts["n"] == 1
+    later = moment + REDIS_BREAKER_S + 1
+    await allow_redis("user", "u3", 2, mem, now=later)
+    assert attempts["n"] == 2
 
 
 def test_sliding_window_drops_the_least_recently_used_key_in_constant_time():
