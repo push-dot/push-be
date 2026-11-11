@@ -47,7 +47,7 @@ const CANONICAL_ACCESS: Record<string, string> = {
 };
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
 const FORM_OVERHEAD_BYTES = 64 * 1024;
-const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
+const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) AND EXISTS (SELECT 1 FROM msg) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE", "EMPLOYER_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
 const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
@@ -346,7 +346,9 @@ const enqueueChatMessage = async (
   }, ctx.deps.transaction);
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
+    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM msg RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const kick = withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
@@ -440,7 +442,10 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    + "job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), "
+    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
+    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   await scheduleChatJob(ctx, jobId);
