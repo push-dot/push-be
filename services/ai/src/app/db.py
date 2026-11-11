@@ -27,6 +27,13 @@ POOL_IDLE_S = 30.0
 APP_NAME = "push-ai"
 CHECKPOINTER_IDLE_S = 60.0
 
+# Defaults assume VPS runtime DATABASE_URL uses Neon’s pooled host (-pooler in the
+# hostname). Several compose services (ai-worker, ingest-worker, dispatcher, …)
+# each open an asyncpg pool (max default below) plus a small checkpointer pool;
+# PgBouncer multiplexes those clients onto far fewer Postgres connections. Do not
+# raise DB_POOL_MAX_SIZE against a direct (non-pooler) endpoint—max_connections is
+# tied to compute size. push-be-core on Cloudflare Workers uses app.pgproto with
+# per-request scope, not these pool env vars.
 _DEFAULT_POOL_MIN_SIZE = 0
 _DEFAULT_POOL_MAX_SIZE = 10
 _DEFAULT_CHECKPOINTER_POOL_MAX_SIZE = 4

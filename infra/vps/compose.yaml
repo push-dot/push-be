@@ -1,7 +1,8 @@
 # Hostinger KVM 2 (2 vCPU / 8 GB), bootstrapped by harden.sh. No panel, no docker.sock.
 # Traefik in this file terminates TLS for ${AI_HOST} and ${DISPATCH_HOST}; it is the
 # only service with published ports (80, 443). Everything else stays on internal networks.
-# This file does not run Postgres: DATABASE_URL points at Neon. Migrations stay manual
+# This file does not run Postgres: DATABASE_URL points at Neon (pooled -pooler host
+# recommended—several services below each run an asyncpg pool). Migrations stay manual
 # (RUN_MIGRATIONS=0).
 # QUEUE_BACKEND=redis runs AI jobs in ai-worker from Redis Streams.
 # QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller (also in ai-worker).

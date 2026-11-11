@@ -162,7 +162,7 @@ cd services/core-api && npx wrangler dev
 
 VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어간다), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
 
-운영 compose는 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB 풀 기본은 `DB_POOL_MIN_SIZE=0`, `DB_POOL_MAX_SIZE=10`, `CHECKPOINTER_POOL_MAX_SIZE=4`이며, VPS `ai` 한 프로세스·워커 `QUEUE_CONCURRENCY` 3~4 수준과 맞춘 값이다. 절차와 한도는 `infra/vps/README.md`에 있다.
+운영 compose는 Hostinger VPS에서 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 Neon에 TCP 접속하고, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB는 Neon이고 VPS `DATABASE_URL`은 **풀러 호스트(`-pooler`)** 를 쓰는 것이 좋다. ai-worker·ingest-worker·dispatcher 등 여러 컨테이너가 각각 asyncpg 풀(기본 상한 `DB_POOL_MAX_SIZE=10`)과 checkpointer 풀(기본 `CHECKPOINTER_POOL_MAX_SIZE=4`)을 연다. 풀러 없이 direct 엔드포인트만 쓰면 compute `max_connections` 한도를 금방 쓴다. `DB_POOL_MAX_SIZE`를 올릴 때는 반드시 풀러 URL을 확인한다. `push-be-core`는 Cloudflare Workers에서 Neon `pgproto` **요청당 한 연결**(ContextVar)이라 이 풀 env와 무관하다. 절차와 한도는 `infra/vps/README.md`에 있다.
 
 ### GitHub Actions 배포
 

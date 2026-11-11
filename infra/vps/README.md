@@ -78,6 +78,19 @@ CI가 하는 일:
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
 3. `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다.
 
+## Neon 연결과 DB 풀
+
+Postgres는 Neon이다. VPS는 compose로 AI를 돌리고 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 접속한다. `push-be-core`는 Cloudflare Workers에서 `DATABASE_URL`로 같은 DB를 쓰되, Workers 런타임 규칙 때문에 `app.pgproto`가 **요청마다 ContextVar로 한 연결**만 연다(프로세스 단위 asyncpg 풀과 분리).
+
+VPS에서는 `ai-worker`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다.
+
+| Neon 엔드포인트 | 용도 |
+| --- | --- |
+| **Pooled** (`…-pooler…neon.tech`, Neon 콘솔의 Pooled connection) | VPS `DATABASE_URL`, Workers 런타임. PgBouncer가 많은 클라이언트 연결을 적은 서버 연결로 묶는다. `DB_POOL_MAX_SIZE`를 올릴 때는 이 URL을 써야 한다. |
+| **Direct** (pooler 없는 호스트) | compute당 `max_connections`가 작다. 여러 VPS 컨테이너 풀 + Workers 동시 호출이 겹치면 `too many connections`가 날 수 있다. `migrate.yml`처럼 마이그레이션 전용으로만 쓰는 편이 낫다. |
+
+Neon 문서: [Connection pooling](https://neon.com/docs/connect/connection-pooling). 풀 크기 튜닝은 `DB_POOL_*`, `CHECKPOINTER_POOL_MAX_SIZE` env로 한다. 기본 10/4는 풀러 URL을 전제로 한 보수적인 상한이다.
+
 ## 테스트 서버 (staging)
 
 develop에 push하면 테스트 서버가 배포된다. main은 지금처럼 운영 서버로 간다.
