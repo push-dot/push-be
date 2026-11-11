@@ -5,20 +5,9 @@ from __future__ import annotations
 
 import os
 
-from app.domain.errors import DomainError, validation_field
-
 
 def image_dir(storage_dir: str) -> str:
     return os.path.join(storage_dir, "images")
-
-
-def image_path(storage_dir: str, key: str) -> str:
-    if not _safe_key(key):
-        raise validation_field("key", "invalid image key")
-    path = os.path.join(image_dir(storage_dir), key)
-    if not os.path.isfile(path):
-        raise DomainError(404, "NOT_FOUND", "resource not found")
-    return path
 
 
 async def image_bytes(db, key: str) -> bytes | None:

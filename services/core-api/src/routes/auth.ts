@@ -30,14 +30,11 @@ const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, par
   }
 };
 
-const employerFlag = (value: unknown): boolean =>
-  value === true || value === "t" || value === "true" || value === 1;
-
 const textOrNull = (value: unknown): string | null =>
   value == null || value === "" ? null : String(value);
 
 export const emailTaken = (row: Record<string, unknown>): HttpError => {
-  const employer = employerFlag(row.is_employer);
+  const employer = asBool(row.is_employer);
   const accountType = employer ? "EMPLOYER" : "PERSONAL";
   const message = employer
     ? "이 이메일은 기업 계정으로 가입되어 있어요"
@@ -134,7 +131,7 @@ function userFrom(row: Record<string, unknown>): UserRow {
     stripeCustomerId: row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
     periodEndsAt: row.period_ends_at == null ? null : String(row.period_ends_at),
     createdAt: String(row.created_at),
-    accountType: employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL",
+    accountType: asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL",
     companyId: textOrNull(row.company_id),
     companyRole: textOrNull(row.company_role),
   };
@@ -340,7 +337,7 @@ export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => 
 };
 
 const accountLabel = (row: Record<string, unknown>): "PERSONAL" | "EMPLOYER" =>
-  employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL";
+  asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL";
 
 const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise<string> => {
   const provider = rec.provider == null || rec.provider === "" ? "" : String(rec.provider);
@@ -514,5 +511,3 @@ export async function me(ctx: Ctx): Promise<Response> {
     plan: ctx.user.plan,
   }, ctx.rid);
 }
-
-export { requireUuid };
