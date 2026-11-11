@@ -81,7 +81,11 @@ const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
 const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: string }, micro: number, referenceId: string): Promise<void> => {
   const companyId = "companyId" in owner ? owner.companyId : undefined;
   const left = await availableMicro(ctx.deps.query, "userId" in owner ? owner.userId : "", companyId);
-  const amount = -Number(left <= 0n ? 0n : left < BigInt(micro) ? left : BigInt(micro));
+  let deduct: bigint;
+  if (left <= 0n) deduct = 0n;
+  else if (left < BigInt(micro)) deduct = left;
+  else deduct = BigInt(micro);
+  const amount = -Number(deduct);
   if (companyId) {
     await companyLedger(ctx, companyId, amount, referenceId, { description: TOPUP_REFUND_DESCRIPTION, amountUsdCents: null, receiptUrl: null }, "REFUND");
   }
