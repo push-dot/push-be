@@ -1,5 +1,6 @@
 import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
+import { scheduleChatJob } from "../conversations/schedule-chat-job.ts";
 import { one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
@@ -312,33 +313,7 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<
   }
 }
 
-async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
-  const fetchImpl = ctx.deps.fetch ?? fetch;
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    "x-push-internal": "1",
-    "x-request-id": ctx.rid,
-  };
-  const secret = (ctx.env.AI_SHARED_SECRET || "").trim();
-  if (secret) headers["x-push-ai-secret"] = secret;
-  try {
-    const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ jobId }),
-    });
-    if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
-  } catch {
-    console.error("vps chat wake failed");
-  }
-}
-
-// The VPS claims the inserted row. An empty origin is a configuration error.
-export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
-  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
-  if (!origin) throw new HttpError(500, "NOT_CONFIGURED", "ai origin is not configured");
-  await wakeVps(ctx, origin, jobId);
-};
+export { scheduleChatJob };
 
 const enqueueChatMessage = async (
   ctx: Ctx,

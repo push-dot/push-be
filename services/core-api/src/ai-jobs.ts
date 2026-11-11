@@ -2,7 +2,7 @@ import { one } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { planTier } from "./jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "./jobs/enqueue.ts";
-import { scheduleChatJob } from "./routes/conversations.ts";
+import { scheduleChatJob } from "./conversations/schedule-chat-job.ts";
 import type { Ctx } from "./types.ts";
 
 export type ResumeJob = {
