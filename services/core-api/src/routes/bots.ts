@@ -63,6 +63,7 @@ const botDto = (row: BotRow): Record<string, unknown> => ({
 });
 
 const BOT_COLS = "b.id, b.kind, b.company_id, b.company_name, b.posting_id, b.posting_url, b.display_name, b.avatar_key, b.mascot_key, b.notifications_muted, b.revision, b.created_at, b.updated_at";
+const BOT_RETURNING = "id, kind, company_id, company_name, posting_id, posting_url, display_name, avatar_key, mascot_key, notifications_muted, revision, created_at, updated_at";
 
 const ensurePushBot = async (ctx: Ctx): Promise<string> => {
   const id = await pushBotId(ctx.user.id);
@@ -242,7 +243,7 @@ const patchBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const updated = await revisionUpdate(ctx.deps.query, "bots",
     `UPDATE bots SET revision = revision + 1, display_name = $3, notifications_muted = $4, avatar_key = $5, mascot_key = $6, updated_at = $7
      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND revision = $8
-     RETURNING ${BOT_COLS}`,
+     RETURNING ${BOT_RETURNING}`,
     [id, ctx.user.id, displayName, notificationsMuted, avatarKey, mascotKey, now, body.expectedRevision],
     id, ctx.user.id);
   if (!updated) throw new HttpError(404, "NOT_FOUND", "resource not found");
