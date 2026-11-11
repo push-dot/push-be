@@ -110,6 +110,51 @@ test("the stream route rejects before queueing: plan gate, unverified company, c
   assert.equal(typeof error.details.retryAfterSec, "number");
 });
 
+test("redis idempotent stream retry does not re-run approval rejection or status events", async () => {
+  resetLimits();
+  const JOB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const KEY = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  let inserts = 0;
+  const sqls: string[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    const rows = (list: Row[]) => ({ rows: list, rowCount: list.length });
+    if (sql.includes("SELECT id, queue FROM ai_jobs WHERE user_id")) {
+      if (inserts > 0) return rows([{ id: JOB, queue: "personal.chat" }]);
+      return rows([]);
+    }
+    if (sql.startsWith("WITH conv")) {
+      sqls.push(sql);
+      return rows([{ id: CONV }]);
+    }
+    if (sql.includes("INSERT INTO ai_jobs")) {
+      inserts += 1;
+      return rows([{ id: params[0], queue: params[2] }]);
+    }
+    if (sql.includes("access_tokens")) {
+      return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
+    }
+    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+    if (sql.includes("user_consents")) return rows([{ reference_data: true }]);
+    if (sql.includes("co.verified_at")) return rows([{ company_id: null }]);
+    if (sql.includes("FROM conversations c LEFT JOIN companies")) {
+      return rows([{ id: CONV, company_id: null, company_plan: null, user_plan: "PRO" }]);
+    }
+    if (sql.includes("count(*)::int AS n FROM ai_jobs")) return rows([{ n: 0 }]);
+    if (sql.includes("balance_after")) return rows([{ balance_after: "100000000" }]);
+    return rows([]);
+  };
+  const run = () => handle(new Request(`https://core.example/api/v1/conversations/${CONV}/messages/stream`, {
+    method: "POST",
+    headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": KEY },
+    body: JSON.stringify({ text: "안녕", accessMode: "AUTO" }),
+  }), env({ QUEUE_BACKEND: "redis" }), deps(query));
+  assert.equal((await run()).status, 202);
+  assert.equal((await run()).status, 202);
+  assert.equal(sqls.length, 2);
+  assert.match(sqls[1], /EXISTS \(SELECT 1 FROM msg\)/);
+  assert.match(sqls[1], /INSERT INTO chat_events \(job_id, type, payload\) SELECT \$3, 'status', \$6::jsonb FROM msg/);
+});
+
 test("a personal stream without reference consent is 403 before queueing", async () => {
   resetLimits();
   const db = fake({ consent: false });
