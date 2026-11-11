@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
-import { LAST_LINE, QUEUE_POSITION } from "../src/middleware/ratelimit.ts";
+import {
+  CONVERSATION_STATUS, conversationListAuxCtesForLive, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
+  personalOwnerPc,
+} from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -147,23 +150,27 @@ const listQuery = (seen: Array<[string, unknown[]]>): Query => {
 };
 
 const assertQueuePositionSql = (sql: string): void => {
-  assert.ok(sql.includes(QUEUE_POSITION), "queue_position uses the shared fragment");
-  assert.match(sql, /CASE WHEN me\.at IS NULL THEN NULL ELSE \(SELECT count\(\*\)::int FROM chat_jobs p JOIN conversations pc ON pc\.id = p\.conversation_id WHERE p\.status = 'PENDING' AND p\.created_at < me\.at /);
-  assert.match(sql, /AND \(CASE WHEN c\.company_id IS NOT NULL THEN pc\.company_id = c\.company_id ELSE pc\.user_id = c\.user_id AND pc\.company_id IS NULL END\)\) END/);
-  assert.match(sql, /\(SELECT min\(j\.created_at\) AS at FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status = 'PENDING'\) me\) AS queue_position/);
-  assert.doesNotMatch(sql, /status = 'RUNNING'\) me/);
+  assert.match(sql, /owner_pending AS \(/);
+  assert.match(sql, /queue_rank AS \(/);
+  assert.match(sql, /LEFT JOIN owner_pending op ON op\.created_at < cm\.at/);
+  assert.match(sql, /COUNT\(op\.id\)::int AS queue_position/);
+  assert.match(sql, /LEFT JOIN queue_rank qr ON qr\.conversation_id = c\.id/);
+  assert.doesNotMatch(sql, /ROW_NUMBER\(\) OVER \(ORDER BY created_at\)/);
 };
 
 const assertStatusSql = (sql: string): void => {
+  assert.ok(sql.includes(CONVERSATION_STATUS), "status uses the shared CASE");
   const needs = sql.indexOf("THEN 'NEEDS_APPROVAL'");
   const running = sql.indexOf("THEN 'RUNNING'");
   assert.ok(needs >= 0 && running > needs);
-  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM approvals a WHERE a\.conversation_id = c\.id AND a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)\) THEN 'NEEDS_APPROVAL'/);
-  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status IN \('PENDING', 'RUNNING'\)\) THEN 'RUNNING'/);
-  assert.match(sql, /ELSE 'DONE' END AS status/);
+  assert.match(sql, /needs_approval AS \(/);
+  assert.match(sql, /active_chat AS \(/);
+  assert.match(sql, /LEFT JOIN needs_approval na ON na\.conversation_id = c\.id/);
+  assert.match(sql, /LEFT JOIN active_chat ac ON ac\.conversation_id = c\.id/);
   assert.ok(sql.includes(LAST_LINE), "last_line uses the shared fragment");
+  assert.match(sql, /COALESCE\(appr_last\.title, event_last\.line\)/);
   assertQueuePositionSql(sql);
-  assert.match(sql, /LEFT JOIN LATERAL \(SELECT m\.text FROM messages m WHERE m\.conversation_id = c\.id ORDER BY m\.created_at DESC, m\.id DESC LIMIT 1\) last_msg ON true/);
+  assert.match(sql, new RegExp(LAST_MSG_LATERAL.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(sql, /m\.text ILIKE/);
   assert.match(sql, /COALESCE\(last_msg\.text, ''\) ILIKE/);
   assert.match(sql, /c\.title ILIKE/);
@@ -335,12 +342,42 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
 });
 
 test("an expired approval card does not flag the conversation as NEEDS_APPROVAL", async () => {
-  const { LIST_SQL } = await import("../src/middleware/ratelimit.ts");
-  const { readFile } = await import("node:fs/promises");
-  const inline = await readFile(new URL("../src/routes/conversations.ts", import.meta.url), "utf8");
-  for (const sql of [LIST_SQL, inline]) {
+  const { LIST_SQL, conversationListAuxCtes } = await import("../src/middleware/ratelimit.ts");
+  for (const sql of [LIST_SQL, conversationListAuxCtes(personalOwnerPc("$1"))]) {
     assert.match(sql, /a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)/);
   }
+});
+
+test("list uses one database round trip on the standalone list path", async () => {
+  resetLimits();
+  const devEnv = env();
+  devEnv.APP_ENV = "development";
+  devEnv.DEV_AUTH_TOKEN = "secret-token";
+  devEnv.DEV_USER_ID = USER;
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request(
+    "https://push-be.example/api/v1/conversations",
+    { headers: { authorization: "Bearer secret-token" } },
+  ), devEnv, deps(listQuery(seen)));
+  assert.equal(res.status, 200);
+  const listCalls = seen.filter(([sql]) => sql.includes("FROM conversations") && !sql.includes("access_tokens"));
+  assert.equal(listCalls.length, 1);
+  assert.ok(listCalls[0][0].includes(personalOwnerPc("$1")));
+});
+
+test("combined auth+list uses owner-scoped queue_rank CTE", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request(
+    "https://push-be.example/api/v1/conversations",
+    { headers: { authorization: "Bearer secret-token" } },
+  ), env(), deps(listQuery(seen)));
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  const listSql = String(seen[0][0]);
+  assert.ok(listSql.includes(liveOwnerJoin), "live is joined inside aux CTEs");
+  assert.doesNotMatch(listSql, /pc\.user_id = live\.id[^)]*\) WHERE j\.status/);
+  assertQueuePositionSql(listSql);
 });
 
 const getQuery = (seen: Array<[string, unknown[]]>, ownerId = USER): Query => {

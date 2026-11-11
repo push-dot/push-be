@@ -6,7 +6,10 @@ import {
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LAST_LINE, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, QUEUE_POSITION, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import {
+  conversationRowSelect, employerOwnerPc, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL,
+  personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL,
+} from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -28,18 +31,6 @@ const likePattern = (raw: string | null): string | null => {
   return `%${trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 };
 
-const CONVERSATION_SELECT = "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
-    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
-    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
-    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
-    + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-    + "ELSE 'DONE' END AS status, " + LAST_LINE + ", " + QUEUE_POSITION + " "
-    + "FROM conversations c "
-    + "LEFT JOIN users cu ON cu.id = c.user_id "
-    + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
-    + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true ";
-
 async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null, archived = false): Promise<Response> {
   let filterSql = "";
   const params: unknown[] = [ownerId];
@@ -58,8 +49,9 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
   const ownerSql = audience === "EMPLOYER"
     ? "company_id = $1::uuid"
     : "user_id = $1::uuid AND company_id IS NULL";
+  const ownerPc = audience === "EMPLOYER" ? employerOwnerPc("$1") : personalOwnerPc("$1");
   const rows = await deps.query(
-    CONVERSATION_SELECT
+    conversationRowSelect(ownerPc)
     + "WHERE " + ownerSql + " AND c.archived = " + (archived ? "true" : "false")
     + filterSql
     + ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`,
@@ -75,7 +67,7 @@ export async function getConversation(request: Request, env: FrontEnv, deps: Dep
   if (user instanceof Response) return user;
   try {
     const rows = await deps.query(
-      CONVERSATION_SELECT
+      conversationRowSelect(personalOwnerPc("$2"))
       + "WHERE c.id = $1::uuid AND c.user_id = $2::uuid AND c.company_id IS NULL",
       [id, user.id],
     );
