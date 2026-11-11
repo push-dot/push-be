@@ -71,21 +71,31 @@ type LibraryItem = { id: string; fileName: string; mimeType: string; size: numbe
 
 const kindOf = (value: unknown): string | null => value == null || value === "" ? null : String(value);
 
-const sourceItem = (row: Record<string, unknown>): LibraryItem => ({
+export const sourceItem = (row: Record<string, unknown>): LibraryItem => ({
   id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
   pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
   origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind), company: null, postingTitle: null,
 });
+
+export const documentLibraryItem = (row: Record<string, unknown>): LibraryItem => ({
+  id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
+  createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
+  company: row.company == null ? null : String(row.company), postingTitle: row.posting_title == null ? null : String(row.posting_title),
+});
+
+export type DocumentsLibraryRow = LibraryItem;
+
+export const libraryItemsNewerFirst = (a: LibraryItem, b: LibraryItem): number => {
+  const byTime = rank(b.createdAt).localeCompare(rank(a.createdAt));
+  return byTime || b.id.localeCompare(a.id);
+};
 
 const rank = (createdAt: unknown): string => {
   const p = parseUtc(createdAt);
   return `${p.y}-${p.mo}-${p.d}T${p.h}:${p.mi}:${p.s}.${String(p.micros).padStart(6, "0")}`;
 };
 
-const newerFirst = (a: LibraryItem, b: LibraryItem): number => {
-  const byTime = rank(b.createdAt).localeCompare(rank(a.createdAt));
-  return byTime || b.id.localeCompare(a.id);
-};
+const newerFirst = libraryItemsNewerFirst;
 
 export const listSources = async (ctx: Ctx): Promise<Response> => {
   const kind = ctx.url.searchParams.get("kind") || null;
@@ -109,11 +119,7 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
   });
   const items: LibraryItem[] = [
     ...sourceRows.map(sourceItem),
-    ...(documents?.rows ?? []).map((row) => ({
-      id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
-      createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
-      company: row.company == null ? null : String(row.company), postingTitle: row.posting_title == null ? null : String(row.posting_title),
-    })),
+    ...(documents?.rows ?? []).map(documentLibraryItem),
   ].sort(newerFirst);
   const hasMore = items.length > page.limit;
   const slice = items.slice(0, page.limit);

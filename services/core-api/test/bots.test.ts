@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Query, Transaction } from "../src/db.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+import { encodeCursor } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const POSTING = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -24,6 +26,8 @@ type Call = { sql: string; params: unknown[] };
 function authed(seen: Call[], plan: string, extra?: Deps["query"]): Deps["query"] {
   return async (sql, params = []) => {
     seen.push({ sql, params: params ?? [] });
+    if (sql.includes("set_config") && sql.includes("lock_timeout")) return { rows: [{}], rowCount: 1 };
+    if (sql.includes("FOR NO KEY UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("access_tokens")) {
       return {
@@ -110,8 +114,10 @@ test("POST /api/v1/bots returns BOT_LIMIT on FREE plan", async () => {
     })),
   );
   assert.equal(res.status, 403);
-  const body = await res.json() as { error: { code: string } };
+  const body = await res.json() as { error: { code: string; details: { limit: number; plan: string } } };
   assert.equal(body.error.code, "BOT_LIMIT");
+  assert.equal(body.error.details.limit, 3);
+  assert.equal(body.error.details.plan, "FREE");
 });
 
 test("POST /api/v1/bots creates a company bot when under limit", async () => {
@@ -304,4 +310,221 @@ test("PATCH /api/v1/bots/:id updates name and mute flag", async () => {
   const body = await res.json() as { data: { displayName: string; notificationsMuted: boolean } };
   assert.equal(body.data.displayName, "New");
   assert.equal(body.data.notificationsMuted, true);
+});
+
+test("POST /api/v1/bots runs limit check inside deps.transaction", async () => {
+  resetLimits();
+  const txCalls: Call[] = [];
+  const transaction: Transaction = async (work) => work(async (sql, params = []) => {
+    txCalls.push({ sql, params: params ?? [] });
+    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
+    if (sql.includes("FOR NO KEY UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 1 }], rowCount: 1 };
+    if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  });
+  const res = await handle(
+    post("/api/v1/bots", { companyName: "Acme" }, "77777777-7777-4777-8777-777777777777"),
+    env(),
+    { ...deps(authed([], "PRO", async () => ({ rows: [], rowCount: 0 }))), transaction },
+  );
+  assert.equal(res.status, 201);
+  const order = txCalls.map((c) => {
+    if (c.sql.includes("set_config")) return "set_config";
+    if (c.sql.includes("FOR NO KEY UPDATE")) return "lock";
+    if (c.sql.includes("count(*)")) return "count";
+    if (c.sql.includes("INSERT INTO bots")) return "insert";
+    return "other";
+  }).filter((x) => x !== "other");
+  assert.deepEqual(order.slice(0, 4), ["set_config", "lock", "count", "insert"]);
+  assert.equal(txCalls.some((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'company'")), true);
+});
+
+test("POST /api/v1/bots on ULTRA skips lock and company count", async () => {
+  resetLimits();
+  const txCalls: Call[] = [];
+  const transaction: Transaction = async (work) => work(async (sql, params = []) => {
+    txCalls.push({ sql, params: params ?? [] });
+    if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  });
+  const res = await handle(
+    post("/api/v1/bots", { companyName: "Acme" }, "88888888-8888-4888-8888-888888888888"),
+    env(),
+    { ...deps(authed([], "ULTRA", async () => ({ rows: [], rowCount: 0 }))), transaction },
+  );
+  assert.equal(res.status, 201);
+  assert.equal(txCalls.some((c) => c.sql.includes("FOR NO KEY UPDATE")), false);
+  assert.equal(txCalls.some((c) => c.sql.includes("count(*)") && c.sql.includes("kind = 'company'")), false);
+  assert.equal(txCalls.some((c) => c.sql.includes("INSERT INTO bots")), true);
+});
+
+test("POST /api/v1/bots allows PRO create when count is 19", async () => {
+  resetLimits();
+  const res = await handle(
+    post("/api/v1/bots", { companyName: "Acme" }, "99999999-9999-4999-8999-999999999999"),
+    env(),
+    deps(authed([], "PRO", async (sql) => {
+      if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) return { rows: [], rowCount: 1 };
+      if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 19 }], rowCount: 1 };
+      if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    })),
+  );
+  assert.equal(res.status, 201);
+});
+
+test("POST /api/v1/bots returns 429 RATE_LIMITED on lock timeout", async () => {
+  resetLimits();
+  const transaction: Transaction = async (work) => work(async (sql) => {
+    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
+    const err = Object.assign(new Error("lock timeout"), { code: "55P03" });
+    throw err;
+  });
+  const res = await handle(
+    post("/api/v1/bots", { companyName: "Acme" }, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01"),
+    env(),
+    { ...deps(authed([], "FREE", async () => ({ rows: [], rowCount: 0 }))), transaction },
+  );
+  assert.equal(res.status, 429);
+  const body = await res.json() as { error: { code: string; details: { retryAfterSec: number } } };
+  assert.equal(body.error.code, "RATE_LIMITED");
+  assert.equal(body.error.details.retryAfterSec, 1);
+});
+
+test("GET /api/v1/bots/:id/library returns three sections for an owned bot", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(get(`/api/v1/bots/${BOT}/library`), env(), deps(authed(seen, "PRO", async (sql) => {
+    if (sql.includes("FROM bots b WHERE b.id = $1 AND b.user_id = $2")) {
+      return { rows: [{ id: BOT, kind: "company", display_name: "Acme", revision: 1 }], rowCount: 1 };
+    }
+    if (sql.includes("FROM conversations c") && sql.includes("last_message_preview")) {
+      return {
+        rows: [{
+          id: CONV, revision: 1, application_id: null, title: "첫 채팅", pinned: false,
+          created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
+          last_message_preview: "hello", status: "DONE",
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("FROM sources") && sql.includes("SOURCE', 'FILE'")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM user_links ul")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as {
+    data: {
+      conversations: { items: unknown[]; nextCursor: null; hasMore: boolean };
+      files: { items: unknown[] };
+      links: { items: unknown[] };
+    };
+  };
+  assert.ok(body.data.conversations);
+  assert.ok(body.data.files);
+  assert.ok(body.data.links);
+  assert.equal(body.data.conversations.items[0] && (body.data.conversations.items[0] as { lastMessagePreview: string }).lastMessagePreview, "hello");
+  assert.match(seen.find((c) => c.sql.includes("NOT c.archived"))!.sql, /NOT c\.archived/);
+  assert.match(seen.find((c) => c.sql.includes("NEEDS_APPROVAL"))!.sql, /NEEDS_APPROVAL/);
+});
+
+test("GET /api/v1/bots/:id/library returns 404 for a missing bot", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(get(`/api/v1/bots/${BOT}/library`), env(), deps(authed(seen, "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 404);
+  assert.equal(seen.some((c) => c.sql.includes("FROM user_links")), false);
+});
+
+test("GET /api/v1/bots/:id/library section=files skips conversation and link queries", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=files`), env(), deps(authed(seen, "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    if (sql.includes("FROM sources")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 200);
+  assert.equal(seen.some((c) => c.sql.includes("last_message_preview")), false);
+  assert.equal(seen.some((c) => c.sql.includes("FROM user_links")), false);
+  assert.match(seen.find((c) => c.sql.includes("SOURCE', 'FILE'"))!.sql, /SOURCE', 'FILE'/);
+});
+
+test("GET /api/v1/bots/:id/library rejects invalid section", async () => {
+  resetLimits();
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=nope`), env(), deps(authed([], "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 400);
+  const body = await res.json() as { error: { details: { field: string } } };
+  assert.equal(body.error.details.field, "section");
+});
+
+test("GET /api/v1/bots/:id/library rejects limit=0", async () => {
+  resetLimits();
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?limit=0`), env(), deps(authed([], "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 400);
+  const body = await res.json() as { error: { details: { field: string } } };
+  assert.equal(body.error.details.field, "limit");
+});
+
+test("GET /api/v1/bots/:id/library filters markdown uploads", async () => {
+  resetLimits();
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=files`), env(), deps(authed([], "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    if (sql.includes("FROM sources")) {
+      return {
+        rows: [{
+          id: crypto.randomUUID(), file_name: "notes.md", mime_type: "text/plain", size: 1,
+          page_count: null, origin: "UPLOAD", created_at: NOW.toISOString(), doc_kind: null,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { files: { items: unknown[] } } };
+  assert.equal(body.data.files.items.length, 0);
+});
+
+test("GET /api/v1/bots/:id/library links query uses strpos and excludes empty url", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=links`), env(), deps(authed(seen, "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    if (sql.includes("FROM user_links ul")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 200);
+  const linkSql = seen.find((c) => c.sql.includes("FROM user_links ul"))!.sql;
+  assert.match(linkSql, /ul\.url <> ''/);
+  assert.match(linkSql, /strpos/);
+});
+
+test("GET /api/v1/bots/:id/library conversation cursor compares updated_at", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const cursor = encodeCursor("2026-10-17T00:00:00.000Z", CONV);
+  const res = await handle(get(`/api/v1/bots/${BOT}/library?conversationCursor=${cursor}`), env(), deps(authed(seen, "PRO", async (sql) => {
+    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
+    if (sql.includes("FROM conversations c")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM sources")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
+    if (sql.includes("FROM user_links")) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  })));
+  assert.equal(res.status, 200);
+  assert.match(seen.find((c) => c.sql.includes("c.updated_at"))!.sql, /c\.updated_at/);
 });

@@ -851,6 +851,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{id}/library": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List bot library conversations, files, and links */
+        get: operations["getBotsByIdLibrary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{id}/read": {
         parameters: {
             query?: never;
@@ -4072,6 +4089,38 @@ export interface components {
         BotCompanyHit: {
             name: string;
             openPostingCount: number;
+        };
+        BotLibrary: {
+            conversations: {
+                hasMore: boolean;
+                items: components["schemas"]["BotLibraryConversation"][];
+                nextCursor: string | null;
+            };
+            files: {
+                hasMore: boolean;
+                items: components["schemas"]["DocumentsLibraryItem"][];
+                nextCursor: string | null;
+            };
+            links: {
+                hasMore: boolean;
+                items: components["schemas"]["ProfileLink"][];
+                nextCursor: string | null;
+            };
+        };
+        BotLibraryConversation: {
+            applicationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            lastMessagePreview: string;
+            pinned: boolean;
+            revision: number;
+            /** @enum {string} */
+            status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
         };
         BotLinkPreview: {
             company: string;
@@ -7343,6 +7392,42 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdLibrary: {
+        parameters: {
+            query?: {
+                /** @description Page size (default 50, max 100) */
+                limit?: number;
+                /** @description When set, only that section is populated */
+                section?: "conversations" | "files" | "links";
+                /** @description Cursor for the conversations section */
+                conversationCursor?: string;
+                /** @description Cursor for the files section */
+                fileCursor?: string;
+                /** @description Cursor for the links section */
+                linkCursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotLibrary"];
                     };
                 };
             };
