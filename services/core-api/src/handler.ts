@@ -31,6 +31,7 @@ import { dispatchPostings } from "./routes/postings.ts";
 import { dispatchPosts } from "./routes/posts.ts";
 import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
+import { dispatchBots } from "./routes/bots.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
 const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
@@ -223,6 +224,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (postings) return postings;
   const search = await dispatchSearch(ctx, path);
   if (search) return search;
+  const bots = await dispatchBots(ctx, path);
+  if (bots) return bots;
   const profiles = await dispatchProfiles(ctx, path);
   if (profiles) return profiles;
   const offers = await dispatchOffers(ctx, path);

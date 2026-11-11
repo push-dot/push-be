@@ -5,8 +5,9 @@ import * as documents from "./documents.ts";
 import * as postings from "./postings.ts";
 import { sharedSchemas, type Route, type Schema } from "./shared.ts";
 import * as social from "./social.ts";
+import * as bots from "./bots.ts";
 
-const areas = [account, career, conversations, documents, postings, social];
+const areas = [account, bots, career, conversations, documents, postings, social];
 
 export const routes: Route[] = areas.flatMap((area) => area.routes);
 
