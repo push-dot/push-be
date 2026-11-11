@@ -23,16 +23,21 @@ class _Pool:
 
 async def test_shared_counter_allows_until_limit():
     reset_for_tests()
-    pool = _Pool(hits=2)
-    assert await allow(pool, "user", "u1", 2, now=1_700_000_000.0) is True
-    pool.hits = 3
-    assert await allow(pool, "user", "u1", 2, now=1_700_000_000.0) is False
+    pool = _Pool(hits=1)
+    moment = 1_700_000_000.0
+    assert await allow(pool, "user", "u1", 2, now=moment) is True
+    pool.hits = 2
+    assert await allow(pool, "user", "u1", 2, now=moment) is True
+    pool.hits = None
+    assert await allow(pool, "user", "u1", 2, now=moment) is False
     bucket = pool.calls[0][1][0]
     assert bucket.startswith("user:u1:")
     assert "rate_limits" in pool.calls[0][0]
     assert "hits <" in pool.calls[0][0]
     assert pool.calls[0][1][2] == 2
     assert pool.calls[1][1][2] == 2
+    assert await allow(pool, "user", "u1", 2, now=moment) is False
+    assert len(pool.calls) == 2
 
 
 async def test_full_bucket_does_not_increment():
@@ -40,6 +45,29 @@ async def test_full_bucket_does_not_increment():
     pool = _Pool(hits=None)
     assert await allow(pool, "user", "u1", 2, now=1_700_000_000.0) is False
     assert pool.calls[0][1][2] == 2
+
+
+async def test_known_full_bucket_skips_the_shared_store():
+    reset_for_tests()
+    pool = _Pool(hits=None)
+    moment = 1_700_000_000.0
+    assert await allow(pool, "user", "u1", 2, now=moment) is False
+    assert len(pool.calls) == 1
+    assert await allow(pool, "user", "u1", 2, now=moment + 0.5) is False
+    assert len(pool.calls) == 1
+
+
+async def test_known_window_rollover_clears_the_local_cache():
+    reset_for_tests()
+    pool = _Pool(hits=1)
+    assert await allow(pool, "user", "u1", 2, now=1_700_000_040.0) is True
+    pool.hits = None
+    assert await allow(pool, "user", "u1", 2, now=1_700_000_099.0) is False
+    assert len(pool.calls) == 2
+    pool.calls.clear()
+    pool.hits = 1
+    assert await allow(pool, "user", "u1", 2, now=1_700_000_100.0) is True
+    assert len(pool.calls) == 1
 
 
 async def test_missing_table_falls_back_to_memory_then_retries():
@@ -66,6 +94,33 @@ def test_sliding_window_counts_per_key_inside_the_window():
     assert not rl.allow("a", 2, 2)
     assert rl.allow("b", 2, 2)
     assert rl.allow("a", 2, 10.5)
+
+
+async def test_redis_backend_is_used_when_configured(monkeypatch):
+    reset_for_tests()
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    counts: dict[str, int] = {}
+
+    async def fake_consume(bucket: str, limit: int, ttl_s: int):
+        key = f"rl:{bucket}"
+        n = counts.get(key, 0) + 1
+        if n > limit:
+            return None
+        counts[key] = n
+        return n
+
+    monkeypatch.setattr("app.ratelimit._consume_redis", fake_consume)
+
+    pool = _Pool(hits=1)
+    moment = 1_700_000_000.0
+    assert await allow(pool, "user", "u1", 2, now=moment) is True
+    assert await allow(pool, "user", "u1", 2, now=moment) is True
+    assert await allow(pool, "user", "u1", 2, now=moment) is False
+    assert len(pool.calls) == 0
+    assert counts["rl:user:u1:28333333"] == 2
+    assert await allow(pool, "user", "u1", 2, now=moment + 0.5) is False
+    assert len(pool.calls) == 0
 
 
 def test_sliding_window_drops_the_least_recently_used_key_in_constant_time():

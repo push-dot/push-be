@@ -13,7 +13,7 @@ from starlette.types import Message, Receive, Scope, Send
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.api.errors import error_body, redact
-from app.ratelimit import SlidingWindow
+from app.ratelimit import allow as rate_allow
 
 # Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
 # webhooks and image bytes are served by push-be-core, not this service.
@@ -48,8 +48,6 @@ def _client_ip(scope: Scope) -> str:
 class ApiMiddleware:
     def __init__(self, app):
         self.app = app
-        self._user_rl = SlidingWindow()
-        self._public_rl = SlidingWindow()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -66,8 +64,7 @@ class ApiMiddleware:
         rid = (scope.get("state") or {}).get("request_id", "")
         now = datetime.now(timezone.utc).timestamp()
         if _is_public(path, scope.get("method", "GET")):
-            if not await self._limited(
-                    scope, "ip", _client_ip(scope), self._public_rl, 60, now):
+            if not await self._limited(scope, "ip", _client_ip(scope), 60, now):
                 await self._error(send, 429, "RATE_LIMITED",
                                   "too many requests", rid)
                 return
@@ -94,8 +91,7 @@ class ApiMiddleware:
             await self._error(send, 500, "INTERNAL", "internal error", rid)
             return
         scope.setdefault("state", {})["user"] = user
-        if not await self._limited(
-                scope, "user", str(user.id), self._user_rl, 600, now):
+        if not await self._limited(scope, "user", str(user.id), 600, now):
             await self._error(send, 429, "RATE_LIMITED",
                               "too many requests", rid)
             return
@@ -106,8 +102,10 @@ class ApiMiddleware:
         await self._idempotent(scope, receive, send, deps.idem, user, path, rid)
 
     async def _limited(self, scope: Scope, kind: str, key: str,
-                       memory: SlidingWindow, limit: int, now: float) -> bool:
-        return memory.allow(key or "unknown", limit, now)
+                       limit: int, now: float) -> bool:
+        db = getattr(scope["app"].state, "db", None)
+        pool = getattr(db, "pool", None)
+        return await rate_allow(pool, kind, key, limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,
                           idem, user, path: str, rid: str) -> None:

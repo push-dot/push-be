@@ -8,6 +8,7 @@ import pytest
 
 from app.api import middleware as mw
 from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error
+from app.ratelimit import reset_for_tests
 from app.domain.entities import IdempotencyRecord, User
 from app.domain.errors import token_expired
 
@@ -166,6 +167,7 @@ async def test_non_http_and_missing_deps_and_non_api_pass_through():
 
 
 async def test_public_path_skips_auth_until_ip_limit():
+    reset_for_tests()
     app, seen = inner(200)
     m = ApiMiddleware(app)
     d = deps()
@@ -210,6 +212,7 @@ async def test_auth_backend_failure_is_500_without_leaking():
 
 
 async def test_user_rate_limit():
+    reset_for_tests()
     app, _ = inner(200)
     m = ApiMiddleware(app)
     d = deps()
@@ -221,6 +224,7 @@ async def test_user_rate_limit():
 
 
 async def test_cf_worker_stays_on_the_memory_limiter(monkeypatch):
+    reset_for_tests()
     app, _ = inner(200)
     m = ApiMiddleware(app)
     state = {"db": SimpleNamespace(pool="POOL")}
