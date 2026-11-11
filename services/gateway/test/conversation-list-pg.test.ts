@@ -100,10 +100,10 @@ test("list enrichment matches legacy on Postgres (personal, employer, LIST page 
   const target = crypto.randomUUID();
 
   await db.query(
-    "INSERT INTO users (id, provider, provider_subject, display_name, plan) VALUES ($1, 'test', $1::text, 'owner', 'FREE')",
+    "INSERT INTO users (id, provider, provider_subject, display_name, plan) VALUES ($1::uuid, 'test', $1::uuid::text, 'owner', 'FREE')",
     [user],
   );
-  await db.query("INSERT INTO companies (id, name) VALUES ($1, 'co')", [company]);
+  await db.query("INSERT INTO companies (id, name) VALUES ($1::uuid, 'co')", [company]);
   await db.query("INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'ADMIN')", [company, user]);
 
   const insertConv = (id: string, title: string, updated: Date, companyId: string | null) => db.query(
