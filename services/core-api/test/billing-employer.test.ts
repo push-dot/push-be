@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { createStoreReceipts } from "../src/billing/stores.ts";
 import { hmacSha256Hex } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -259,6 +260,9 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     const taken = capture(sql, params);
     if (taken) return taken;
+    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+      return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
+    }
     if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) {
       return { rows: [{ user_id: USER }], rowCount: 1 };
     }
@@ -1280,6 +1284,9 @@ test("a store expiration drops the personal plan", async () => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
+    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+      return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
+    }
     if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
   };
@@ -1310,6 +1317,9 @@ test("a google pubsub renewal updates the plan once", async () => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     const taken = capture(sql, params);
     if (taken) return taken;
+    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+      return { rows: [{ original_transaction_id: "tx-renew" }], rowCount: 1 };
+    }
     if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) return { rows: [{ user_id: USER }], rowCount: 1 };
     if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     return empty;
@@ -1322,14 +1332,33 @@ test("a google pubsub renewal updates the plan once", async () => {
   const jwt = await oidc.sign({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600 });
   const env = envOf({ GOOGLE_OIDC_AUDIENCE: audience, GOOGLE_PLAY_PACKAGE: "app.push.mobile" });
   const certs = certsFetch([oidc.jwk]);
+  const renewedAt = "2027-06-01T00:00:00.000Z";
+  const playEnv = envOf({
+    GOOGLE_OIDC_AUDIENCE: audience,
+    GOOGLE_PLAY_PACKAGE: "app.push.mobile",
+    GOOGLE_PLAY_KEY: JSON.stringify({ client_email: "svc@test", private_key: "unused" }),
+  });
+  const port = createStoreReceipts(playEnv, certs, NOW);
+  const stores: NonNullable<Deps["stores"]> = {
+    ...port,
+    verifyGoogle: async (purchaseToken, productId, subscription) => {
+      assert.equal(purchaseToken, "tx-renew");
+      assert.equal(productId, "ios.pro");
+      assert.equal(subscription, true);
+      return { productId: "ios.pro", originalTransactionId: "tx-renew", expiresAt: renewedAt, consumable: false };
+    },
+  };
   const req = () => storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + jwt);
-  const first = await handle(req(), env, { query, now: () => NOW, fetch: certs });
+  const first = await handle(req(), playEnv, { query, now: () => NOW, fetch: certs, stores });
   assert.equal(first.status, 200);
-  const second = await handle(req(), env, { query, now: () => NOW, fetch: certs });
+  const second = await handle(req(), playEnv, { query, now: () => NOW, fetch: certs, stores });
   assert.equal(second.status, 200);
   assert.equal(ledger.filter((row) => row.reference === "tx-renew").length, 1);
   const update = seen.find((call) => call.sql.includes("UPDATE users") && call.params.includes("PRO"));
   assert.equal(update?.params[1], "PRO");
+  assert.equal(update?.params[2], renewedAt);
+  const iap = seen.find((call) => call.sql.includes("UPDATE iap_subscriptions") && call.params[0] === "tx-renew");
+  assert.equal(iap?.params[2], renewedAt);
   const wrong = {
     packageName: "com.evil.app",
     subscriptionNotification: { notificationType: 2, purchaseToken: "tx-renew", subscriptionId: "ios.pro" },
@@ -1340,6 +1369,69 @@ test("a google pubsub renewal updates the plan once", async () => {
     { query, now: () => NOW, fetch: certs },
   );
   assert.equal(rejected.status, 400);
+});
+
+test("a stale store expiration does not downgrade a newer subscription", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
+      return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
+    }
+    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+      return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
+    }
+    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  };
+  const stores: NonNullable<Deps["stores"]> = {
+    ...noStores,
+    decodeAppleNotification: async () => ({
+      notificationType: "EXPIRED",
+      originalTransactionId: "tx-old",
+      productId: "ios.pro",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+    }),
+  };
+  const res = await handle(storeHook("/api/v1/billing/webhook/app-store", "signed"), envOf(), { query, now: () => NOW, stores });
+  assert.equal(res.status, 200);
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE users") && call.sql.includes("plan = 'FREE'")), false);
+});
+
+test("a stale store renewal does not overwrite the current plan", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const ledger: LedgerRow[] = [];
+  const capture = takeLedger(ledger);
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    const taken = capture(sql, params);
+    if (taken) return taken;
+    if (sql.includes("SELECT user_id FROM iap_subscriptions WHERE original_transaction_id")) {
+      return { rows: [{ user_id: USER }], rowCount: 1 };
+    }
+    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+      return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
+    }
+    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    return empty;
+  };
+  const stores: NonNullable<Deps["stores"]> = {
+    ...noStores,
+    decodeAppleNotification: async () => ({
+      notificationType: "DID_RENEW",
+      originalTransactionId: "tx-old",
+      productId: "ios.pro",
+      expiresAt: "2026-11-21T00:00:00.000Z",
+    }),
+  };
+  const res = await handle(storeHook("/api/v1/billing/webhook/app-store", "signed"), envOf(), { query, now: () => NOW, stores });
+  assert.equal(res.status, 200);
+  assert.equal(seen.some((call) => call.sql.includes("UPDATE users") && call.params[1] === "PRO"), false);
+  assert.equal(ledger.filter((row) => row.reference === "tx-old").length, 0);
 });
 
 test("google oidc keys are cached until a new kid or the max-age", async () => {
@@ -1462,7 +1554,12 @@ test("a refunded credit top-up keeps the plan; a refunded subscription still end
     const query: Deps["query"] = async (sql, params = []) => {
       seen.push({ sql, params });
       if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-      if (sql.includes("FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: productId === "ios.topup" }], rowCount: 1 };
+      if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
+        return { rows: [{ user_id: USER, topup: productId === "ios.topup" }], rowCount: 1 };
+      }
+      if (downgrades && sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
+        return { rows: [{ original_transaction_id: id }], rowCount: 1 };
+      }
       return empty;
     };
     const res = await handle(storeHook("/api/v1/billing/webhook/app-store", await refund(id, productId)), env, { query, now: () => NOW });

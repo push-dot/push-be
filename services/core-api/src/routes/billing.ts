@@ -1,6 +1,6 @@
 import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
-import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
+import { createStoreReceipts, googlePlayPubsub, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
 import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "../db.ts";
 import { HttpError, data, pageBody } from "../http.ts";
@@ -883,6 +883,13 @@ const grantNote = (
 
 const lockUser = (ctx: Ctx, userId: unknown) => lockOwner(ctx.deps.query, "PERSONAL", String(userId));
 
+const currentStoreSubscription = async (ctx: Ctx, userId: string): Promise<string | null> => {
+  const row = await one(ctx.deps.query,
+    "SELECT original_transaction_id FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY expires_at DESC NULLS FIRST LIMIT 1",
+    [userId]);
+  return row?.original_transaction_id == null ? null : String(row.original_transaction_id);
+};
+
 const storeNote = async (
   ctx: Ctx,
   notificationType: string,
@@ -898,6 +905,10 @@ const storeNote = async (
       "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
     if (row?.user_id) await lockUser(ctx, row.user_id);
+    let drivesPlan = false;
+    if (row?.user_id && row.topup !== true) {
+      drivesPlan = (await currentStoreSubscription(ctx, String(row.user_id))) === transactionId;
+    }
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
@@ -907,9 +918,11 @@ const storeNote = async (
       await takeBack(ctx, { userId: String(row.user_id) }, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
       return;
     }
-    await query(ctx.deps.query,
-      "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
-      [String(row.user_id), expiresAt]);
+    if (drivesPlan) {
+      await query(ctx.deps.query,
+        "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
+        [String(row.user_id), expiresAt]);
+    }
     return;
   }
   const grants = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
@@ -928,10 +941,12 @@ const storeNote = async (
   await query(ctx.deps.query,
     "UPDATE iap_subscriptions SET status = 'ACTIVE', product_id = $2, expires_at = COALESCE($3::timestamptz, expires_at), sandbox = $4 WHERE original_transaction_id = $1",
     [transactionId, productId, expiresAt, sandbox]);
-  await query(ctx.deps.query,
-    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
-    [userId, kind, expiresAt]);
-  await userLedger(ctx, userId, grantMicro("PERSONAL", kind), transactionId);
+  if ((await currentStoreSubscription(ctx, userId)) === transactionId) {
+    await query(ctx.deps.query,
+      "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
+      [userId, kind, expiresAt]);
+    await userLedger(ctx, userId, grantMicro("PERSONAL", kind), transactionId);
+  }
 };
 
 export const appleWebhook = async (ctx: Ctx): Promise<Response> => {
@@ -952,6 +967,17 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
-  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, note.expiresAt);
+  let expiresAt = note.expiresAt;
+  const pushed = googlePlayPubsub(body);
+  const sub = pushed?.subscriptionNotification && typeof pushed.subscriptionNotification === "object"
+    ? pushed.subscriptionNotification as Record<string, unknown> : null;
+  if (sub) {
+    const upper = String(note.notificationType).toUpperCase();
+    const grant = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
+    if (grant && note.purchaseToken && note.productId) {
+      expiresAt = (await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true)).expiresAt;
+    }
+  }
+  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, expiresAt);
   return data(200, { received: true }, ctx.rid);
 };
