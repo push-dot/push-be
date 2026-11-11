@@ -423,7 +423,7 @@ const googleAccessToken = async (env: CoreEnv, fetchImpl: typeof fetch, now: Dat
   return body.access_token;
 };
 
-const pubsubNote = (body: unknown): Record<string, unknown> | null => {
+export const googlePlayPubsub = (body: unknown): Record<string, unknown> | null => {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const message = (body as Record<string, unknown>).message;
   if (!message || typeof message !== "object" || Array.isArray(message)) return null;
@@ -507,7 +507,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
   },
   decodeGoogleNotification: async (body, authorization) => {
     await verifyGoogleOidc(env, fetchImpl, authorization, now);
-    const pushed = pubsubNote(body);
+    const pushed = googlePlayPubsub(body);
     if (!pushed) throw invalidSignature();
     const packageName = typeof pushed.packageName === "string" ? pushed.packageName : "";
     if (env.GOOGLE_PLAY_PACKAGE && packageName && packageName !== env.GOOGLE_PLAY_PACKAGE) throw invalidPurchase();
