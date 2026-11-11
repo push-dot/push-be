@@ -2,6 +2,7 @@ import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError } from "../http.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const PATH = "/api/v1/me/consents";
 const TERMS_PATH = "/api/v1/me/consents/terms";
@@ -33,21 +34,6 @@ const REPLACE_TERMS = "WITH previous AS ("
   + "marketing_at = CASE WHEN $4::boolean THEN $2::timestamptz ELSE user_consents.marketing_at END "
   + "WHERE user_id = $1::uuid AND user_id IN (SELECT user_id FROM archived)";
 
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-};
-
 const termsOf = (row: Record<string, unknown> | null) => ({
   version: row?.terms_version == null ? null : String(row.terms_version),
   age14At: ts(row?.age14_at),
@@ -73,7 +59,7 @@ const getConsents = async (ctx: Ctx): Promise<Response> => {
 };
 
 const putConsents = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   if (typeof body.referenceData !== "boolean") throw fieldError("referenceData", "must be a boolean");
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
@@ -86,7 +72,7 @@ const putConsents = async (ctx: Ctx): Promise<Response> => {
 };
 
 const putTerms = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const allowed = new Set(["age14", "serviceTerms", "privacy", "marketing", "termsVersion"]);
   for (const key of Object.keys(body)) {
     if (!allowed.has(key)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");

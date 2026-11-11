@@ -6,6 +6,7 @@ import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
 const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
@@ -18,19 +19,6 @@ const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
 // Written on the cancel that refunds a replaced subscription's unused time, so the successor carries that period's credits.
 const REFUNDED = "push: replaced, unused time refunded";
 const UUID = /^[0-9a-f-]{36}$/i;
-
-async function readObject(request: Request): Promise<Record<string, unknown>> {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-}
 
 function configured(ctx: Ctx): boolean {
   return Boolean(ctx.env.STRIPE_SECRET_KEY);

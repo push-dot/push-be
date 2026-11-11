@@ -3,6 +3,7 @@ import { HttpError, codePoints, data, noContent, randomToken, sha256Hex } from "
 import { createMailer, type Mailer } from "../mail/mailer.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const INVITE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOT_VERIFIED = "사업자 정보를 확인하지 못했어요. 개업 직후라면 1–2일 뒤 다시 시도해 주세요";
@@ -100,21 +101,6 @@ const websiteOf = (value: unknown): string | null => {
   if (value === null) return null;
   if (typeof value !== "string" || codePoints(value) < 1 || codePoints(value) > 2000 || !httpUrl(value)) throw invalid("website");
   return value;
-};
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
 };
 
 const requireEmployer = (ctx: Ctx): void => {
@@ -221,7 +207,7 @@ const withLegalName = async <T>(legalName: string | null, withColumn: () => Prom
 
 const verifyBusiness = async (ctx: Ctx): Promise<Response> => {
   requireEmployer(ctx);
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const bNo = fieldText(body, "bNo");
   const startDt = fieldText(body, "startDt");
   const pNm = fieldText(body, "pNm");
@@ -415,7 +401,7 @@ const inviteJson = (row: Record<string, unknown>) => ({
 
 const invite = async (ctx: Ctx): Promise<Response> => {
   const mine = await requireAdmin(ctx);
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   const companyId = String(mine.id);
   const member = await one(ctx.deps.query,
@@ -454,7 +440,7 @@ const invite = async (ctx: Ctx): Promise<Response> => {
 
 const patchCompany = async (ctx: Ctx): Promise<Response> => {
   const mine = await requireAdmin(ctx);
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   for (const key of Object.keys(body)) {
     if (!PROFILE_KEYS.has(key)) throw invalid(key);
   }
@@ -639,7 +625,7 @@ const removeMember = async (ctx: Ctx, userId: string): Promise<Response> => {
 };
 
 const transferAdmin = async (ctx: Ctx, userId: string): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const keys = Object.keys(body);
   if (keys.length !== 1 || keys[0] !== "role" || body.role !== "ADMIN") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "role" });
