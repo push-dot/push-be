@@ -55,3 +55,17 @@ def test_checkpointer_pool_max_from_env(monkeypatch):
     assert cfg["max_size"] == _DEFAULT_CHECKPOINTER_POOL_MAX_SIZE
     monkeypatch.setenv("CHECKPOINTER_POOL_MAX_SIZE", "8")
     assert checkpointer_pool_config()["max_size"] == 8
+
+
+def test_asyncpg_pool_rejects_zero_max(monkeypatch):
+    monkeypatch.setenv("DB_POOL_MAX_SIZE", "0")
+    with pytest.raises(ValueError, match="DB_POOL_MAX_SIZE must be >= 1"):
+        asyncpg_pool_config()
+    with pytest.raises(ValueError, match="DB_POOL_MAX_SIZE must be >= 1"):
+        neon_pool_max_size()
+
+
+def test_checkpointer_pool_rejects_zero_max(monkeypatch):
+    monkeypatch.setenv("CHECKPOINTER_POOL_MAX_SIZE", "0")
+    with pytest.raises(ValueError, match="CHECKPOINTER_POOL_MAX_SIZE must be >= 1"):
+        checkpointer_pool_config()

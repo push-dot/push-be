@@ -39,29 +39,42 @@ _DEFAULT_POOL_MAX_SIZE = 10
 _DEFAULT_CHECKPOINTER_POOL_MAX_SIZE = 4
 
 
-def _env_positive_int(name: str, default: int) -> int:
+def _env_non_negative_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
+        raise ValueError(f"{name} must be an integer >= 0") from exc
     if value < 0:
         raise ValueError(f"{name} must be >= 0")
     return value
 
 
+def _env_pool_max_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer >= 1") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return value
+
+
 def asyncpg_pool_config() -> dict[str, int]:
-    min_size = _env_positive_int("DB_POOL_MIN_SIZE", _DEFAULT_POOL_MIN_SIZE)
-    max_size = _env_positive_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
+    min_size = _env_non_negative_int("DB_POOL_MIN_SIZE", _DEFAULT_POOL_MIN_SIZE)
+    max_size = _env_pool_max_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
     if min_size > max_size:
         raise ValueError("DB_POOL_MIN_SIZE must be <= DB_POOL_MAX_SIZE")
     return {"min_size": min_size, "max_size": max_size}
 
 
 def neon_pool_max_size() -> int:
-    return _env_positive_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
+    return _env_pool_max_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
 
 
 async def _init_conn(conn) -> None:
@@ -80,7 +93,7 @@ async def _init_conn(conn) -> None:
 
 
 def checkpointer_pool_config() -> dict:
-    max_size = _env_positive_int(
+    max_size = _env_pool_max_int(
         "CHECKPOINTER_POOL_MAX_SIZE", _DEFAULT_CHECKPOINTER_POOL_MAX_SIZE)
     return {
         "min_size": 0,
