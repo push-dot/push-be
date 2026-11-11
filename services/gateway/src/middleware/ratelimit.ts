@@ -140,28 +140,38 @@ export const personalOwnerPc = (ownerParam: string): string =>
   `pc.user_id = ${ownerParam}::uuid AND pc.company_id IS NULL`;
 export const employerOwnerPc = (ownerParam: string): string =>
   `pc.company_id = ${ownerParam}::uuid`;
-export const liveOwnerPc = "pc.user_id = live.id AND pc.company_id IS NULL";
+/** Join `live` inside aux CTEs (LIST_SQL); do not reference `live` only in a WHERE fragment. */
+export const liveOwnerJoin = "INNER JOIN live ON live.id = pc.user_id AND pc.company_id IS NULL";
 
-/** One scan of the owner's pending queue; per-page rows join instead of a correlated COUNT. */
-export function conversationListAuxCtes(ownerPcSql: string): string {
-  return "queue_rank AS ("
-    + "SELECT conversation_id, (ROW_NUMBER() OVER (ORDER BY created_at) - 1)::int AS queue_position "
-    + "FROM ("
-    + "SELECT j.conversation_id, MIN(j.created_at) AS created_at "
-    + "FROM chat_jobs j INNER JOIN conversations pc ON pc.id = j.conversation_id "
-    + "WHERE j.status = 'PENDING' AND " + ownerPcSql + " "
-    + "GROUP BY j.conversation_id"
-    + ") q"
+type ConversationListAux = { ownerWhere: string; liveJoin?: string };
+
+/** One owner-scoped scan of pending jobs; queue_position counts jobs, not conversations. */
+export function conversationListAuxCtes(spec: ConversationListAux | string): string {
+  const ownerWhere = typeof spec === "string" ? spec : spec.ownerWhere;
+  const liveJoin = typeof spec === "string" ? "" : (spec.liveJoin ?? "");
+  const ownerTail = ownerWhere ? ` AND ${ownerWhere}` : "";
+  const pcJobs = "INNER JOIN conversations pc ON pc.id = j.conversation_id" + (liveJoin ? ` ${liveJoin}` : "");
+  const pcApprovals = "INNER JOIN conversations pc ON pc.id = a.conversation_id" + (liveJoin ? ` ${liveJoin}` : "");
+  return "owner_pending AS ("
+    + "SELECT j.id, j.conversation_id, j.created_at FROM chat_jobs j " + pcJobs + " "
+    + "WHERE j.status = 'PENDING'" + ownerTail
+    + "), queue_rank AS ("
+    + "SELECT cm.conversation_id, COUNT(op.id)::int AS queue_position "
+    + "FROM (SELECT conversation_id, MIN(created_at) AS at FROM owner_pending GROUP BY conversation_id) cm "
+    + "LEFT JOIN owner_pending op ON op.created_at < cm.at "
+    + "GROUP BY cm.conversation_id"
     + "), needs_approval AS ("
-    + "SELECT DISTINCT a.conversation_id FROM approvals a "
-    + "INNER JOIN conversations pc ON pc.id = a.conversation_id "
-    + "WHERE a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now()) AND " + ownerPcSql
+    + "SELECT DISTINCT a.conversation_id FROM approvals a " + pcApprovals + " "
+    + "WHERE a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())" + ownerTail
     + "), active_chat AS ("
-    + "SELECT DISTINCT j.conversation_id FROM chat_jobs j "
-    + "INNER JOIN conversations pc ON pc.id = j.conversation_id "
-    + "WHERE j.status IN ('PENDING', 'RUNNING') AND " + ownerPcSql
+    + "SELECT DISTINCT j.conversation_id FROM chat_jobs j " + pcJobs + " "
+    + "WHERE j.status IN ('PENDING', 'RUNNING')" + ownerTail
     + ")";
 }
+
+/** LIST_SQL auth+list path: owner filter comes from joining `live`, not a bare `live.id` predicate. */
+export const conversationListAuxCtesForLive = (): string =>
+  conversationListAuxCtes({ ownerWhere: "", liveJoin: liveOwnerJoin });
 
 export const LAST_MSG_LATERAL = "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
   + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true ";
@@ -217,7 +227,7 @@ export function conversationRowSelect(ownerPcSql: string): string {
 }
 
 export const LIST_SQL = AUTH_RATE_PREFIX
-  + ", " + conversationListAuxCtes(liveOwnerPc)
+  + ", " + conversationListAuxCtesForLive()
   + ", page AS ("
   + CONVERSATION_LIST_SELECT
   + "FROM conversations c JOIN live ON live.id = c.user_id "

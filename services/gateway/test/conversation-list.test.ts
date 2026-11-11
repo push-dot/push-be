@@ -3,7 +3,8 @@ import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import {
-  CONVERSATION_STATUS, LAST_LINE, LAST_MSG_LATERAL, liveOwnerPc, personalOwnerPc,
+  CONVERSATION_STATUS, conversationListAuxCtesForLive, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
+  personalOwnerPc,
 } from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
 
@@ -149,11 +150,12 @@ const listQuery = (seen: Array<[string, unknown[]]>): Query => {
 };
 
 const assertQueuePositionSql = (sql: string): void => {
+  assert.match(sql, /owner_pending AS \(/);
   assert.match(sql, /queue_rank AS \(/);
-  assert.match(sql, /ROW_NUMBER\(\) OVER \(ORDER BY created_at\) - 1\)::int AS queue_position/);
-  assert.match(sql, /WHERE j\.status = 'PENDING'/);
+  assert.match(sql, /LEFT JOIN owner_pending op ON op\.created_at < cm\.at/);
+  assert.match(sql, /COUNT\(op\.id\)::int AS queue_position/);
   assert.match(sql, /LEFT JOIN queue_rank qr ON qr\.conversation_id = c\.id/);
-  assert.doesNotMatch(sql, /SELECT count\(\*\)::int FROM chat_jobs p/);
+  assert.doesNotMatch(sql, /ROW_NUMBER\(\) OVER \(ORDER BY created_at\)/);
 };
 
 const assertStatusSql = (sql: string): void => {
@@ -372,8 +374,10 @@ test("combined auth+list uses owner-scoped queue_rank CTE", async () => {
   ), env(), deps(listQuery(seen)));
   assert.equal(res.status, 200);
   assert.equal(seen.length, 1);
-  assert.match(String(seen[0][0]), new RegExp(liveOwnerPc.replace(/\./g, "\\.")));
-  assertQueuePositionSql(String(seen[0][0]));
+  const listSql = String(seen[0][0]);
+  assert.ok(listSql.includes(liveOwnerJoin), "live is joined inside aux CTEs");
+  assert.doesNotMatch(listSql, /pc\.user_id = live\.id[^)]*\) WHERE j\.status/);
+  assertQueuePositionSql(listSql);
 });
 
 const getQuery = (seen: Array<[string, unknown[]]>, ownerId = USER): Query => {
