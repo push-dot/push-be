@@ -11,3 +11,8 @@ python_modules/
 node_modules/
 pylock.toml
 *.egg-info/
+
+# Graphify local cache and machine-specific build state (committed: graph.json, graph.html, GRAPH_REPORT.md)
+graphify-out/cache/
+graphify-out/.graphify_*
+graphify-out/manifest.json
