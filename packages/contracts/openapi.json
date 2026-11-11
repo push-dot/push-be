@@ -995,6 +995,185 @@
         ],
         "type": "object"
       },
+      "Bot": {
+        "properties": {
+          "avatarKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "companyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "companyName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "push",
+              "company"
+            ],
+            "type": "string"
+          },
+          "lastMessagePreview": {
+            "type": "string"
+          },
+          "mascotKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notificationsMuted": {
+            "type": "boolean"
+          },
+          "postingId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postingUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "DONE",
+              "RUNNING",
+              "NEEDS_APPROVAL"
+            ],
+            "type": "string"
+          },
+          "unread": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "displayName",
+          "companyId",
+          "companyName",
+          "postingId",
+          "postingUrl",
+          "avatarKey",
+          "mascotKey",
+          "notificationsMuted",
+          "revision",
+          "createdAt",
+          "updatedAt",
+          "lastMessagePreview",
+          "unread",
+          "status"
+        ],
+        "type": "object"
+      },
+      "BotCompanyHit": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "openPostingCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "openPostingCount"
+        ],
+        "type": "object"
+      },
+      "BotLinkPreview": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "company": {
+                "type": "string"
+              },
+              "postingId": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "status": {
+                "const": "found",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "company",
+              "title",
+              "postingId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "not_a_posting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "CalendarEvent": {
         "properties": {
           "applicationId": {
@@ -5222,7 +5401,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, ...",
+                "description": "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, BOT_LIMIT, DEFAULT_BOT_PROTECTED, ...",
                 "type": "string"
               },
               "details": {
@@ -10722,6 +10901,630 @@
         "summary": "Create Stripe credit top-up checkout session",
         "tags": [
           "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots": {
+      "get": {
+        "description": "Ensures the default Push bot exists. Push bot is listed first. Includes last message preview, unread flag, and aggregate status when cheap.",
+        "operationId": "getBots",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Bot"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List bots for the signed-in user",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "post": {
+        "description": "403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.",
+        "operationId": "postBots",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "companyId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "companyName": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "postingId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "postingUrl": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "companyId",
+                  "companyName",
+                  "postingId",
+                  "postingUrl",
+                  "displayName"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Bot"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Create a company bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/companies/search": {
+      "get": {
+        "operationId": "getBotsCompaniesSearch",
+        "parameters": [
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required company name substring",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/BotCompanyHit"
+                      },
+                      "type": "array"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Search companies by name with open posting counts",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/link-preview": {
+      "post": {
+        "operationId": "postBotsLinkPreview",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BotLinkPreview"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Resolve a job posting URL before creating a bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}": {
+      "delete": {
+        "description": "403 DEFAULT_BOT_PROTECTED for the Push bot.",
+        "operationId": "deleteBotsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a company bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "get": {
+        "operationId": "getBotsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Bot"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Get a bot profile",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "patch": {
+        "operationId": "patchBotsById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "avatarKey": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "expectedRevision": {
+                    "type": "integer"
+                  },
+                  "mascotKey": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "notificationsMuted": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "expectedRevision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Bot"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Update a bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/conversations": {
+      "get": {
+        "operationId": "getBotsByIdConversations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Conversation"
+                      },
+                      "type": "array"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List conversations under a bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "post": {
+        "operationId": "postBotsByIdConversations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "applicationId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Conversation"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Start a conversation under a bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/read": {
+      "post": {
+        "operationId": "postBotsByIdRead",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "readAt": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "readAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Mark a bot read",
+        "tags": [
+          "bots"
         ],
         "x-owner": "core"
       }

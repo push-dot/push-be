@@ -753,6 +753,121 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List bots for the signed-in user
+         * @description Ensures the default Push bot exists. Push bot is listed first. Includes last message preview, unread flag, and aggregate status when cheap.
+         */
+        get: operations["getBots"];
+        put?: never;
+        /**
+         * Create a company bot
+         * @description 403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.
+         */
+        post: operations["postBots"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/companies/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search companies by name with open posting counts */
+        get: operations["getBotsCompaniesSearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/link-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a job posting URL before creating a bot */
+        post: operations["postBotsLinkPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a bot profile */
+        get: operations["getBotsById"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a company bot
+         * @description 403 DEFAULT_BOT_PROTECTED for the Push bot.
+         */
+        delete: operations["deleteBotsById"];
+        options?: never;
+        head?: never;
+        /** Update a bot */
+        patch: operations["patchBotsById"];
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List conversations under a bot */
+        get: operations["getBotsByIdConversations"];
+        put?: never;
+        /** Start a conversation under a bot */
+        post: operations["postBotsByIdConversations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark a bot read */
+        post: operations["postBotsByIdRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/calendar/events": {
         parameters: {
             query?: never;
@@ -3931,6 +4046,44 @@ export interface components {
                 id: string;
             };
         };
+        Bot: {
+            avatarKey: string | null;
+            companyId: string | null;
+            companyName: string;
+            /** Format: date-time */
+            createdAt: string;
+            displayName: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "push" | "company";
+            lastMessagePreview: string;
+            mascotKey: string | null;
+            notificationsMuted: boolean;
+            postingId: string | null;
+            postingUrl: string | null;
+            revision: number;
+            /** @enum {string} */
+            status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
+            unread: boolean;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        BotCompanyHit: {
+            name: string;
+            openPostingCount: number;
+        };
+        BotLinkPreview: {
+            company: string;
+            /** Format: uuid */
+            postingId: string;
+            /** @constant */
+            status: "found";
+            title: string;
+        } | {
+            /** @constant */
+            status: "not_a_posting";
+        };
         CalendarEvent: {
             applicationId: string | null;
             /** Format: date-time */
@@ -5021,7 +5174,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, BOT_LIMIT, DEFAULT_BOT_PROTECTED, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -6920,6 +7073,306 @@ export interface operations {
                     "application/json": {
                         data: {
                             url: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Bot"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBots: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    companyId: string | null;
+                    companyName: string;
+                    displayName: string;
+                    postingId: string | null;
+                    postingUrl: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Bot"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsCompaniesSearch: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                /** @description Required company name substring */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotCompanyHit"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsLinkPreview: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    url: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotLinkPreview"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Bot"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchBotsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    avatarKey?: string | null;
+                    displayName?: string;
+                    expectedRevision: number;
+                    mascotKey?: string | null;
+                    notificationsMuted?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Bot"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdConversations: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"][];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsByIdConversations: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    applicationId?: string | null;
+                    title: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Conversation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsByIdRead: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: date-time */
+                            readAt: string;
                         };
                     };
                 };

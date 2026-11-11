@@ -56,7 +56,7 @@ const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, r
   + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
   + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
 
-async function requireAgentConsent(ctx: Ctx): Promise<void> {
+export async function requireAgentConsent(ctx: Ctx): Promise<void> {
   const row = await one(ctx.deps.query, AGENT_CONSENT, [ctx.user.id]);
   if (!asBool(row?.reference_data)) {
     throw new HttpError(403, "CONSENT_REQUIRED", "reference data consent is required");
@@ -85,7 +85,7 @@ function forbidExtra(body: Record<string, unknown>, allowed: string[]): void {
   }
 }
 
-function convDto(row: Record<string, unknown>): Record<string, unknown> {
+export function convDto(row: Record<string, unknown>): Record<string, unknown> {
   return {
     id: String(row.id),
     revision: Number(row.revision),
