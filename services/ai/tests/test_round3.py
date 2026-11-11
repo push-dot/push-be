@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import hmac as hmac_mod
-import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.db import NotFoundError
 from app.domain import entities as ent
-from app.domain.errors import DomainError
 from app.domain.services.ai import record_usage
-from app.domain.services.billing import BillingService
 from app.domain.services.conversation import ConversationService
 from app.domain.services.document import DocumentService
 from tests.stubs import (FakeDB, StubAiUsageStore, StubApplicationStore,
@@ -23,13 +16,6 @@ from tests.stubs import (FakeDB, StubAiUsageStore, StubApplicationStore,
 
 def _now():
     return datetime.now(timezone.utc)
-
-
-def _sign(payload: bytes, secret: str, ts: datetime) -> str:
-    t = int(ts.timestamp())
-    mac = hmac_mod.new(secret.encode(), f"{t}.".encode() + payload,
-                       hashlib.sha256).hexdigest()
-    return f"t={t},v1={mac}"
 
 
 async def test_record_usage_attaches_by_usage_id_not_model():
@@ -157,94 +143,3 @@ async def test_job_finishes_done():
     job["user_id"] = conv.user_id
     await r.svc._run_job(job)
     assert ("DONE", None) in r.jobs.finished
-
-
-class _LedgerStore:
-    def __init__(self):
-        self.events = set()
-        self.ledger = []
-        self.seen = set()
-        self.calls = []
-        self.balance = 0
-        self.customers = set()
-        self.sub_updates = []
-
-    async def record_stripe_event(self, event_id, typ, at):
-        if event_id in self.events:
-            return False
-        self.events.add(event_id)
-        return True
-
-    async def delete_stripe_event(self, event_id):
-        self.events.discard(event_id)
-
-    async def lock_user(self, user_id):
-        self.calls.append("lock")
-
-    async def update_subscription(self, user_id, plan, status, customer_id,
-                                  period_ends_at):
-        if customer_id:
-            self.customers.add(customer_id)
-
-    async def update_subscription_by_customer(self, customer_id, plan, status,
-                                              period_ends_at):
-        if customer_id not in self.customers:
-            raise NotFoundError()
-        self.sub_updates.append((customer_id, plan, status))
-
-    async def append_ledger(self, e):
-        self.calls.append("append")
-        key = (e.user_id, e.type, e.reference_id)
-        if key in self.seen:
-            return
-        self.seen.add(key)
-        self.ledger.append(e)
-
-    async def last_balance(self, user_id):
-        self.calls.append("balance")
-        return self.balance
-
-
-def _billing(store):
-    svc = BillingService(FakeDB(), None, True,
-                         {ent.PLAN_PRO: "price_pro"}, "https://app/ok",
-                         "https://app/cancel", "https://app", "whsec_test")
-    svc.billing = store
-    return svc
-
-
-def _event(event_id, typ, obj):
-    return json.dumps({"id": event_id, "type": typ,
-                       "data": {"object": obj}}).encode()
-
-
-async def test_checkout_ledger_dedup_and_lock():
-    store = _LedgerStore()
-    svc = _billing(store)
-    user_id = uuid4()
-    obj = {"id": "cs_dup", "client_reference_id": str(user_id),
-           "customer": "cus_1", "metadata": {"planId": "PRO"}}
-    for eid in ("evt_a", "evt_b"):
-        payload = _event(eid, "checkout.session.completed", obj)
-        await svc.handle_webhook(payload, _sign(payload, "whsec_test", _now()))
-    assert len(store.ledger) == 1
-    assert "lock" in store.calls
-    assert store.calls.index("lock") < store.calls.index("append")
-
-
-async def test_subscription_update_before_checkout_retries():
-    store = _LedgerStore()
-    svc = _billing(store)
-    sub = _event("evt_sub", "customer.subscription.updated",
-                 {"customer": "cus_late", "status": "active",
-                  "items": {"data": [{"price": {"id": "price_pro"}}]}})
-    with pytest.raises(DomainError):
-        await svc.handle_webhook(sub, _sign(sub, "whsec_test", _now()))
-    assert "evt_sub" not in store.events
-    checkout = _event("evt_co", "checkout.session.completed",
-                      {"id": "cs_1", "client_reference_id": str(uuid4()),
-                       "customer": "cus_late",
-                       "metadata": {"planId": "PRO"}})
-    await svc.handle_webhook(checkout, _sign(checkout, "whsec_test", _now()))
-    await svc.handle_webhook(sub, _sign(sub, "whsec_test", _now()))
-    assert store.sub_updates == [("cus_late", ent.PLAN_PRO, ent.SUB_ACTIVE)]

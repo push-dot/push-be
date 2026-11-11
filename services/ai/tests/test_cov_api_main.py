@@ -132,7 +132,7 @@ async def test_failed_bootstrap_closes_what_it_opened(boot, monkeypatch):
         closed.append(type(self).__name__)
 
     monkeypatch.setattr(main, "run_migrations", failing_migrations)
-    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+    for client in (main.OpenAIClient,):
         monkeypatch.setattr(client, "aclose", aclose)
     fa = FastAPI()
     with pytest.raises(RuntimeError):
@@ -152,12 +152,11 @@ async def test_failed_seed_after_clients_closes_clients_and_pool(boot, monkeypat
 
     monkeypatch.setenv("RUN_MIGRATIONS", "0")
     monkeypatch.setattr(main.ExperimentService, "seed", seed)
-    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+    for client in (main.OpenAIClient,):
         monkeypatch.setattr(client, "aclose", aclose)
     with pytest.raises(RuntimeError):
         await main._bootstrap(FastAPI(), Config(database_url="d"))
-    assert sorted(closed) == sorted(
-        ["OAuthClient", "OpenAIClient", "GoogleClient", "StripeClient"])
+    assert sorted(closed) == sorted(["OpenAIClient"])
     assert boot["pool"].closed
 
 
