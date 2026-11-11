@@ -9,6 +9,7 @@ import pytest
 from app.db import (
     POOL_IDLE_S,
     _init_conn,
+    asyncpg_pool_config,
     checkpointer_pool_config,
     create_pool,
 )
@@ -30,8 +31,10 @@ async def test_asyncpg_pool_is_empty_until_used_and_closes(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
     monkeypatch.setenv("DB_DRIVER", "asyncpg")
+    expected = asyncpg_pool_config()
     pool = await create_pool("postgres://push:push@127.0.0.1:5432/push")
-    assert captured["kwargs"]["min_size"] == 0
+    assert captured["kwargs"]["min_size"] == expected["min_size"]
+    assert captured["kwargs"]["max_size"] == expected["max_size"]
     assert captured["kwargs"]["max_inactive_connection_lifetime"] <= 60
     assert captured["kwargs"]["max_inactive_connection_lifetime"] == POOL_IDLE_S
     assert captured["kwargs"]["server_settings"]["application_name"] == "push-ai"
