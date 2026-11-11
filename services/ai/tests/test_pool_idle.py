@@ -120,9 +120,9 @@ async def test_shutdown_stops_the_worker_first_and_closes_the_pool_last(monkeypa
     monkeypatch.setattr(app.db, "open_chat_checkpointer", open_saver)
     monkeypatch.setattr(ConversationService, "start_worker", started)
     monkeypatch.setattr(ConversationService, "stop_worker", stopped)
-    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+    for client in (main.OpenAIClient,):
         monkeypatch.setattr(client, "aclose", aclose)
     fa = FastAPI()
     await main._bootstrap(fa, Config(database_url="d"))
     await main._shutdown(fa)
-    assert closed == ["worker", "checkpointer"] + ["client"] * 4 + ["pool"]
+    assert closed == ["worker", "checkpointer", "client", "pool"]

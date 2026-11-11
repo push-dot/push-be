@@ -49,7 +49,7 @@ def _user(id_=None):
 
 def _svc(env, dev_user, sessions, dev_token=DEV_TOKEN):
     dev_id = dev_user.id if dev_user else uuid4()
-    svc = AuthService(FakeDB(), None, {}, env, dev_token, dev_id)
+    svc = AuthService(FakeDB(), env, dev_token, dev_id)
     svc.users = _Users(dev_user)
     svc.sessions = sessions
     return svc
