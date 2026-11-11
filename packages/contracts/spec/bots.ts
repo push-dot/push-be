@@ -36,10 +36,36 @@ const linkPreview = {
 
 const companyHit = closed({ name: str, openPostingCount: int }, ["name", "openPostingCount"]);
 
+const botLibraryConversation = obj({
+  id: uuid,
+  revision: int,
+  applicationId: nullable(uuid),
+  title: str,
+  pinned: bool,
+  createdAt: dateTime,
+  updatedAt: dateTime,
+  status: botStatus,
+  lastMessagePreview: str,
+});
+
+const botLibrarySection = (item: ReturnType<typeof ref>) => closed({
+  items: arr(item),
+  nextCursor: nullable(str),
+  hasMore: bool,
+}, ["items", "nextCursor", "hasMore"]);
+
+const botLibrary = closed({
+  conversations: botLibrarySection(ref("BotLibraryConversation")),
+  files: botLibrarySection(ref("DocumentsLibraryItem")),
+  links: botLibrarySection(ref("ProfileLink")),
+}, ["conversations", "files", "links"]);
+
 export const schemas: Record<string, Schema> = {
   Bot: bot,
   BotCompanyHit: companyHit,
   BotLinkPreview: linkPreview,
+  BotLibraryConversation: botLibraryConversation,
+  BotLibrary: botLibrary,
 };
 
 export const routes: Route[] = [
@@ -118,5 +144,18 @@ export const routes: Route[] = [
     summary: "Mark a bot read",
     params: [id],
     responses: { 200: ok(closed({ readAt: dateTime }, ["readAt"])) },
+  }),
+  get("core", "/api/v1/bots/{id}/library", {
+    tag: "bots",
+    summary: "List bot library conversations, files, and links",
+    params: [
+      id,
+      query("limit", int, "Page size (default 50, max 100)"),
+      query("section", { type: "string", enum: ["conversations", "files", "links"] }, "When set, only that section is populated"),
+      query("conversationCursor", str, "Cursor for the conversations section"),
+      query("fileCursor", str, "Cursor for the files section"),
+      query("linkCursor", str, "Cursor for the links section"),
+    ],
+    responses: { 200: ok(ref("BotLibrary")) },
   }),
 ];

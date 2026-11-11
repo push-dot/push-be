@@ -1,9 +1,12 @@
-import { one, query } from "../db.ts";
-import { HttpError, asBool, codePoints, data, fieldError, noContent, pageBody, requireUuid, uuid5Url } from "../http.ts";
+import { boundTransaction, lockOwner } from "../billing/credits.ts";
+import { isLockTimeout, one, query, type Query, type Transaction } from "../db.ts";
+import { HttpError, asBool, codePoints, data, fieldError, noContent, pageBody, parseUuid, requireUuid, uuid5Url } from "../http.ts";
 import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
+import { decodeCursor, encodeCursor } from "../time.ts";
 import type { Ctx } from "../types.ts";
 import { openClause, readObject, rejectFields, textOf, httpsUrl, withPublicStatus } from "./recruiting-shared.ts";
 import { requireAgentConsent, convDto } from "./conversations.ts";
+import { documentLibraryItem, libraryItemsNewerFirst, sourceItem, type DocumentsLibraryRow } from "./sources.ts";
 
 const COMPANY_LIMIT: Record<string, number | null> = { FREE: 3, PRO: 20, ULTRA: null };
 const PUSH_LABEL = "Push Bot";
@@ -17,7 +20,11 @@ const planTier = (plan: unknown): string => {
   return tier || "FREE";
 };
 
-const companyBotLimit = (plan: unknown): number | null => COMPANY_LIMIT[planTier(plan)] ?? COMPANY_LIMIT.FREE;
+const companyBotLimit = (plan: unknown): number | null => {
+  const tier = planTier(plan);
+  const limit = COMPANY_LIMIT[tier];
+  return limit === undefined ? COMPANY_LIMIT.FREE : limit;
+};
 
 const canonUrl = (value: string): string => {
   try {
@@ -136,20 +143,12 @@ const listBots = async (ctx: Ctx): Promise<Response> => {
   return data(200, items, ctx.rid);
 };
 
-const assertCompanyBotLimit = async (ctx: Ctx): Promise<void> => {
-  const limit = companyBotLimit(ctx.user.plan);
-  if (limit == null) return;
-  const row = await one(ctx.deps.query,
-    "SELECT count(*)::int AS n FROM bots WHERE user_id = $1 AND kind = 'company' AND deleted_at IS NULL",
-    [ctx.user.id]);
-  if (Number(row?.n ?? 0) >= limit) {
-    throw new HttpError(403, "BOT_LIMIT", "company bot limit reached for your plan", { limit, plan: planTier(ctx.user.plan) });
-  }
-};
+const inTransactionOf = (ctx: Ctx): Transaction =>
+  ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
 
-const resolveCompanyName = async (ctx: Ctx, companyId: string | null, companyName: string): Promise<{ companyId: string | null; companyName: string }> => {
+const resolveCompanyName = async (q: Query, companyId: string | null, companyName: string): Promise<{ companyId: string | null; companyName: string }> => {
   if (companyId) {
-    const company = await one(ctx.deps.query, "SELECT id, name FROM companies WHERE id = $1", [companyId]);
+    const company = await one(q, "SELECT id, name FROM companies WHERE id = $1", [companyId]);
     if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
     return { companyId, companyName: String(company.name ?? companyName) };
   }
@@ -158,43 +157,63 @@ const resolveCompanyName = async (ctx: Ctx, companyId: string | null, companyNam
 };
 
 const createBot = async (ctx: Ctx): Promise<Response> => {
-  await ensurePushBot(ctx);
   const body = await readObject(ctx.request);
   rejectFields(body, ["id", "kind", "revision", "createdAt", "updatedAt"]);
-  await assertCompanyBotLimit(ctx);
   const companyId = body.companyId == null ? null : requireUuid(String(body.companyId), "companyId");
   const companyName = body.companyName == null ? "" : textOf(body.companyName, "companyName", 0, 200);
-  const resolved = await resolveCompanyName(ctx, companyId, companyName);
   let postingId: string | null = null;
-  if (body.postingId != null) {
-    postingId = requireUuid(String(body.postingId), "postingId");
-    const posting = await one(ctx.deps.query, "SELECT id, company, title FROM job_postings WHERE id = $1", [postingId]);
-    if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (!resolved.companyName) resolved.companyName = String(posting.company ?? "");
-  }
+  if (body.postingId != null) postingId = requireUuid(String(body.postingId), "postingId");
   let postingUrl: string | null = null;
   if (body.postingUrl != null) {
     postingUrl = textOf(body.postingUrl, "postingUrl", 1, 2000);
     if (!httpsUrl(postingUrl)) throw fieldError("postingUrl", "must be an http(s) URL without credentials");
   }
   let displayName = body.displayName == null ? "" : textOf(body.displayName, "displayName", 1, 120);
-  if (!displayName) {
-    displayName = postingId
-      ? resolved.companyName
-      : resolved.companyName || "Company bot";
-  }
-  const id = crypto.randomUUID();
+  await ensurePushBot(ctx);
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query,
-    `INSERT INTO bots (id, user_id, kind, company_id, company_name, posting_id, posting_url, display_name, created_at, updated_at)
-     VALUES ($1,$2,'company',$3,$4,$5,$6,$7,$8,$8)`,
-    [id, ctx.user.id, resolved.companyId, resolved.companyName, postingId, postingUrl, displayName, now]);
-  return data(201, botDto({
-    id, kind: "company", company_id: resolved.companyId, company_name: resolved.companyName,
-    posting_id: postingId, posting_url: postingUrl, display_name: displayName,
-    avatar_key: null, mascot_key: null, notifications_muted: false, revision: 1,
-    created_at: now, updated_at: now, last_message_preview: "", unread: false, status: "DONE",
-  }), ctx.rid);
+  const id = crypto.randomUUID();
+  try {
+    const inserted = await inTransactionOf(ctx)(async (q) => {
+      const limit = companyBotLimit(ctx.user.plan);
+      if (limit != null) {
+        await boundTransaction(q, "3s");
+        await lockOwner(q, "PERSONAL", ctx.user.id);
+        const row = await one(q, "SELECT count(*)::int AS n FROM bots WHERE user_id = $1 AND kind = 'company' AND deleted_at IS NULL", [ctx.user.id]);
+        if (Number(row?.n ?? 0) >= limit) {
+          throw new HttpError(403, "BOT_LIMIT", "company bot limit reached for your plan", { limit, plan: planTier(ctx.user.plan) });
+        }
+      }
+      const resolved = await resolveCompanyName(q, companyId, companyName);
+      if (postingId != null) {
+        const posting = await one(q, "SELECT id, company, title FROM job_postings WHERE id = $1", [postingId]);
+        if (!posting) throw new HttpError(404, "NOT_FOUND", "resource not found");
+        if (!resolved.companyName) resolved.companyName = String(posting.company ?? "");
+      }
+      if (!displayName) {
+        displayName = postingId
+          ? resolved.companyName
+          : resolved.companyName || "Company bot";
+      }
+      await query(q,
+        `INSERT INTO bots (id, user_id, kind, company_id, company_name, posting_id, posting_url, display_name, created_at, updated_at)
+         VALUES ($1,$2,'company',$3,$4,$5,$6,$7,$8,$8)`,
+        [id, ctx.user.id, resolved.companyId, resolved.companyName, postingId, postingUrl, displayName, now]);
+      return {
+        companyId: resolved.companyId, companyName: resolved.companyName,
+      };
+    });
+    return data(201, botDto({
+      id, kind: "company", company_id: inserted.companyId, company_name: inserted.companyName,
+      posting_id: postingId, posting_url: postingUrl, display_name: displayName,
+      avatar_key: null, mascot_key: null, notifications_muted: false, revision: 1,
+      created_at: now, updated_at: now, last_message_preview: "", unread: false, status: "DONE",
+    }), ctx.rid);
+  } catch (err) {
+    if (isLockTimeout(err)) {
+      throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 1 });
+    }
+    throw err;
+  }
 };
 
 const getBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -369,6 +388,201 @@ const searchCompanies = async (ctx: Ctx): Promise<Response> => {
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 };
 
+type LibrarySection<T> = { items: T[]; nextCursor: string | null; hasMore: boolean };
+
+const emptyLibrarySection = <T>(): LibrarySection<T> => ({ items: [], nextCursor: null, hasMore: false });
+
+const libraryLimit = (url: URL): number => {
+  const raw = url.searchParams.get("limit");
+  if (!raw) return 50;
+  if (!/^[1-9]\d*$/.test(raw)) throw fieldError("limit", "must be a positive integer");
+  return Math.min(Number(raw), 100);
+};
+
+const libraryCursor = (url: URL, field: string): { createdAt: string; id: string } | null => {
+  const encoded = url.searchParams.get(field);
+  if (!encoded) return null;
+  try {
+    const cursor = decodeCursor(encoded);
+    const id = parseUuid(cursor.id);
+    if (!id) throw fieldError(field, "invalid cursor");
+    return { createdAt: cursor.createdAt, id };
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw fieldError(field, "invalid cursor");
+  }
+};
+
+const botLibraryConversationDto = (row: Record<string, unknown>): Record<string, unknown> => ({
+  ...convDto(row),
+  status: String(row.status ?? "DONE"),
+  lastMessagePreview: String(row.last_message_preview ?? ""),
+});
+
+const botLibraryLinkDto = (row: Record<string, unknown>): Record<string, unknown> => ({
+  id: String(row.id),
+  kind: String(row.kind ?? "other"),
+  url: String(row.url ?? ""),
+  title: String(row.title ?? ""),
+  status: String(row.status ?? "READ"),
+  fitCount: Number(row.fit_count ?? 0),
+  aiRead: asBool(row.ai_read),
+  createdAt: ts(row.created_at),
+});
+
+const CONV_STATUS_SQL = `CASE
+    WHEN EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.conversation_id = c.id AND a.status = 'PENDING'
+        AND (a.expires_at IS NULL OR a.expires_at > now())
+    ) THEN 'NEEDS_APPROVAL'
+    WHEN EXISTS (
+      SELECT 1 FROM chat_jobs j
+      WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')
+    ) THEN 'RUNNING'
+    ELSE 'DONE'
+  END AS status`;
+
+const ATTACH_SOURCE_IDS = `SELECT (a->>'id')::uuid
+  FROM conversations c
+  JOIN messages m ON m.conversation_id = c.id
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE WHEN jsonb_typeof(m.attachments) = 'array' THEN m.attachments ELSE '[]'::jsonb END
+  ) a
+  WHERE c.user_id = $1 AND c.bot_id = $2 AND NOT c.archived
+    AND a->>'type' IN ('SOURCE', 'FILE')
+    AND a->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`;
+
+const ATTACH_DOCUMENT_IDS = `SELECT (a->>'documentId')::uuid
+  FROM conversations c
+  JOIN messages m ON m.conversation_id = c.id
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE WHEN jsonb_typeof(m.attachments) = 'array' THEN m.attachments ELSE '[]'::jsonb END
+  ) a
+  WHERE c.user_id = $1 AND c.bot_id = $2 AND NOT c.archived
+    AND a->>'documentId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`;
+
+const fetchBotLibraryConversations = async (ctx: Ctx, botId: string, limit: number): Promise<LibrarySection<Record<string, unknown>>> => {
+  const cursor = libraryCursor(ctx.url, "conversationCursor");
+  const params: unknown[] = [ctx.user.id, botId];
+  let sql = `SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at,
+    COALESCE((
+      SELECT left(m.text, 140) FROM messages m
+      WHERE m.conversation_id = c.id
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 1
+    ), '') AS last_message_preview,
+    ${CONV_STATUS_SQL}
+    FROM conversations c
+    WHERE c.user_id = $1 AND c.bot_id = $2 AND NOT c.archived`;
+  if (cursor) {
+    params.push(cursor.createdAt, cursor.id);
+    sql += ` AND (c.updated_at, c.id) < ($${params.length - 1}, $${params.length})`;
+  }
+  params.push(limit + 1);
+  sql += ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`;
+  const rows = await query(ctx.deps.query, sql, params);
+  const mapped = rows.rows.map((row) => ({ item: botLibraryConversationDto(row), createdAt: row.updated_at, id: String(row.id) }));
+  const paged = pageResult(mapped, limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  return { items: paged.items.map((row) => row.item), nextCursor: paged.nextCursor, hasMore: paged.hasMore };
+};
+
+const fileListTail = (alias: "" | "d.", params: unknown[], cursor: { createdAt: string; id: string } | null, limit: number): string => {
+  if (cursor) {
+    params.push(cursor.createdAt, cursor.id);
+    params.push(limit + 1);
+    return ` AND (${alias}created_at, ${alias}id) < ($${params.length - 2}, $${params.length - 1}) ORDER BY ${alias}created_at DESC, ${alias}id DESC LIMIT $${params.length}`;
+  }
+  params.push(limit + 1);
+  return ` ORDER BY ${alias}created_at DESC, ${alias}id DESC LIMIT $${params.length}`;
+};
+
+const fetchBotLibraryFiles = async (ctx: Ctx, botId: string, limit: number): Promise<LibrarySection<DocumentsLibraryRow>> => {
+  const cursor = libraryCursor(ctx.url, "fileCursor");
+  const uploadParams: unknown[] = [ctx.user.id, botId];
+  const docParams: unknown[] = [ctx.user.id, botId];
+  const uploadSql = `SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind
+    FROM sources
+    WHERE user_id = $1
+    AND id IN (${ATTACH_SOURCE_IDS})${fileListTail("", uploadParams, cursor, limit)}`;
+  const docSql = `SELECT d.id, d.title, d.created_at, to_jsonb(d)->>'kind' AS kind, a.company, a.title AS posting_title
+    FROM documents d
+    LEFT JOIN applications a ON a.id = d.application_id
+    WHERE d.user_id = $1 AND d.status <> 'ARCHIVED'
+    AND (
+      d.application_id IN (
+        SELECT c.application_id FROM conversations c
+        WHERE c.user_id = $1 AND c.bot_id = $2 AND NOT c.archived AND c.application_id IS NOT NULL
+      )
+      OR d.id IN (${ATTACH_DOCUMENT_IDS})
+    )${fileListTail("d.", docParams, cursor, limit)}`;
+  const [uploads, documents] = await Promise.all([
+    query(ctx.deps.query, uploadSql, uploadParams),
+    query(ctx.deps.query, docSql, docParams),
+  ]);
+  const sourceRows = uploads.rows.filter((row) => {
+    const name = String(row.file_name ?? "");
+    const mime = String(row.mime_type ?? "");
+    return !name.toLowerCase().endsWith(".md") && mime.toLowerCase() !== "text/markdown";
+  });
+  const items: DocumentsLibraryRow[] = [
+    ...sourceRows.map(sourceItem),
+    ...documents.rows.map(documentLibraryItem),
+  ].sort(libraryItemsNewerFirst);
+  const hasMore = items.length > limit;
+  const slice = items.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const nextCursor = hasMore && last?.createdAt ? encodeCursor(last.createdAt, last.id) : null;
+  return { items: slice, nextCursor, hasMore };
+};
+
+const fetchBotLibraryLinks = async (ctx: Ctx, botId: string, limit: number): Promise<LibrarySection<Record<string, unknown>>> => {
+  const cursor = libraryCursor(ctx.url, "linkCursor");
+  const params: unknown[] = [ctx.user.id, botId];
+  let sql = `SELECT ul.id, ul.kind, ul.url, ul.title, ul.status, ul.fit_count, ul.ai_read, ul.created_at
+    FROM user_links ul
+    WHERE ul.user_id = $1 AND ul.deleted_at IS NULL AND ul.url <> ''
+    AND (
+      ul.url = (SELECT b.posting_url FROM bots b WHERE b.id = $2 AND b.user_id = $1 AND b.deleted_at IS NULL)
+      OR EXISTS (
+        SELECT 1 FROM conversations c
+        JOIN messages m ON m.conversation_id = c.id
+        WHERE c.user_id = ul.user_id AND c.bot_id = $2 AND NOT c.archived
+          AND strpos(m.text, ul.url) > 0
+      )
+    )`;
+  if (cursor) {
+    params.push(cursor.createdAt, cursor.id);
+    sql += ` AND (ul.created_at, ul.id) < ($${params.length - 1}, $${params.length})`;
+  }
+  params.push(limit + 1);
+  sql += ` ORDER BY ul.created_at DESC, ul.id DESC LIMIT $${params.length}`;
+  const rows = await query(ctx.deps.query, sql, params);
+  const mapped = rows.rows.map((row) => ({ item: botLibraryLinkDto(row), createdAt: row.created_at, id: String(row.id) }));
+  const paged = pageResult(mapped, limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+  return { items: paged.items.map((row) => row.item), nextCursor: paged.nextCursor, hasMore: paged.hasMore };
+};
+
+const listBotLibrary = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  if (id === await pushBotId(ctx.user.id)) await ensurePushBot(ctx);
+  await assertOwnedBot(ctx, id);
+  const limit = libraryLimit(ctx.url);
+  const sectionRaw = ctx.url.searchParams.get("section");
+  if (sectionRaw && sectionRaw !== "conversations" && sectionRaw !== "files" && sectionRaw !== "links") {
+    throw fieldError("section", "must be conversations, files, or links");
+  }
+  const wantConversations = !sectionRaw || sectionRaw === "conversations";
+  const wantFiles = !sectionRaw || sectionRaw === "files";
+  const wantLinks = !sectionRaw || sectionRaw === "links";
+  const [conversations, files, links] = await Promise.all([
+    wantConversations ? fetchBotLibraryConversations(ctx, id, limit) : emptyLibrarySection(),
+    wantFiles ? fetchBotLibraryFiles(ctx, id, limit) : emptyLibrarySection(),
+    wantLinks ? fetchBotLibraryLinks(ctx, id, limit) : emptyLibrarySection(),
+  ]);
+  return data(200, { conversations, files, links }, ctx.rid);
+};
+
 const markBotRead = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const botId = requireUuid(idRaw, "id");
   await assertOwnedBot(ctx, botId);
@@ -393,6 +607,8 @@ export const dispatchBots = async (ctx: Ctx, path: string): Promise<Response | n
   const convs = path.match(/^\/api\/v1\/bots\/([^/]+)\/conversations$/);
   if (method === "GET" && convs) return listBotConversations(ctx, convs[1]);
   if (method === "POST" && convs) return createBotConversation(ctx, convs[1]);
+  const library = path.match(/^\/api\/v1\/bots\/([^/]+)\/library$/);
+  if (method === "GET" && library) return listBotLibrary(ctx, library[1]);
   const read = path.match(/^\/api\/v1\/bots\/([^/]+)\/read$/);
   if (method === "POST" && read) return markBotRead(ctx, read[1]);
   return null;

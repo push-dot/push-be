@@ -1131,6 +1131,166 @@
         ],
         "type": "object"
       },
+      "BotLibrary": {
+        "additionalProperties": false,
+        "properties": {
+          "conversations": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/BotLibraryConversation"
+                },
+                "type": "array"
+              },
+              "nextCursor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextCursor",
+              "hasMore"
+            ],
+            "type": "object"
+          },
+          "files": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/DocumentsLibraryItem"
+                },
+                "type": "array"
+              },
+              "nextCursor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextCursor",
+              "hasMore"
+            ],
+            "type": "object"
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/ProfileLink"
+                },
+                "type": "array"
+              },
+              "nextCursor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextCursor",
+              "hasMore"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "conversations",
+          "files",
+          "links"
+        ],
+        "type": "object"
+      },
+      "BotLibraryConversation": {
+        "properties": {
+          "applicationId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lastMessagePreview": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "DONE",
+              "RUNNING",
+              "NEEDS_APPROVAL"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "applicationId",
+          "title",
+          "pinned",
+          "createdAt",
+          "updatedAt",
+          "status",
+          "lastMessagePreview"
+        ],
+        "type": "object"
+      },
       "BotLinkPreview": {
         "oneOf": [
           {
@@ -11466,6 +11626,100 @@
           }
         },
         "summary": "Start a conversation under a bot",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/library": {
+      "get": {
+        "operationId": "getBotsByIdLibrary",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 50, max 100)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "When set, only that section is populated",
+            "in": "query",
+            "name": "section",
+            "required": false,
+            "schema": {
+              "enum": [
+                "conversations",
+                "files",
+                "links"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Cursor for the conversations section",
+            "in": "query",
+            "name": "conversationCursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Cursor for the files section",
+            "in": "query",
+            "name": "fileCursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Cursor for the links section",
+            "in": "query",
+            "name": "linkCursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BotLibrary"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List bot library conversations, files, and links",
         "tags": [
           "bots"
         ],
