@@ -22,9 +22,6 @@ from app.jsonutil import to_jsonable
 import json
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 def hash_json(v) -> str:
     return hash_bytes(json.dumps(to_jsonable(v), separators=(",", ":"),
@@ -94,7 +91,7 @@ class ApprovalService:
             except Exception:
                 raise internal()
         h = await self._hash_target(user_id, kind, application_id, target_id)
-        now = _now()
+        now = utcnow()
         a = ent.Approval(
             id=uuid4(), user_id=user_id, revision=1, kind=kind,
             application_id=application_id, target_id=target_id,
@@ -161,7 +158,7 @@ class ApprovalService:
                 raise not_found()
             if a.revision != expected:
                 raise revision_conflict(a.revision)
-            now = _now()
+            now = utcnow()
             if a.status == ent.APPROVAL_PENDING and a.expired(now):
                 a.status = ent.APPROVAL_EXPIRED
                 a.updated_at = now
@@ -200,14 +197,14 @@ class ApprovalService:
         if (a.kind != kind or a.application_id != application_id
                 or a.target_id != target_id):
             raise approval_required("approval does not cover this target")
-        if a.expired(_now()):
+        if a.expired(utcnow()):
             raise approval_required("approval expired")
         if a.status != ent.APPROVAL_APPROVED:
             raise approval_required("approval is not approved")
         if expected_hash and a.payload_hash != expected_hash:
             raise approval_stale("approved content has changed")
         if ent.one_shot_approval(kind):
-            now = _now()
+            now = utcnow()
             a.status = ent.APPROVAL_CONSUMED
             a.consumed_at = now
             a.updated_at = now
@@ -233,7 +230,7 @@ class ApprovalService:
                                    evidence_id: UUID) -> None:
         try:
             a = await self.approvals.find_active(
-                user_id, ent.APPROVAL_EVIDENCE_USE, application_id, evidence_id, _now())
+                user_id, ent.APPROVAL_EVIDENCE_USE, application_id, evidence_id, utcnow())
         except NotFoundError:
             raise approval_required(
                 "EVIDENCE_USE approval required for evidence " + str(evidence_id))

@@ -11,9 +11,6 @@ from app.domain.services.approval import ApprovalService
 from app.infrastructure.store_applications import ApplicationStore
 from app.infrastructure.store_jobs import JobStore
 
-def _now() -> datetime:
-    return utcnow()
-
 
 class ApplicationService:
     # approvals/adapters served submissions, which moved to core; main.py still passes them.
@@ -43,7 +40,7 @@ class ApplicationService:
             raise not_found()
         except Exception:
             raise internal()
-        now = _now()
+        now = utcnow()
         a = ent.Application(
             id=uuid4(), user_id=user_id, revision=1, job_id=job_id, company=j.company,
             title=j.title, stage="DISCOVERED", notes=notes, created_at=now, updated_at=now)

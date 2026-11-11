@@ -42,9 +42,6 @@ class UsageHold:
     generation: int
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 def managed_allowance(plan: str | None) -> int:
     return ent.PLAN_CREDITS_MICRO.get(plan or ent.PLAN_FREE, 0)
@@ -83,7 +80,7 @@ class AIGate:
             input_tokens=input_tokens, output_tokens=output_tokens,
             cost_micro_credits=ent.ai_cost_micro_credits(
                 "OPENAI", model, input_tokens, output_tokens),
-            status=ent.USAGE_SETTLED, created_at=_now())
+            status=ent.USAGE_SETTLED, created_at=utcnow())
         try:
             # A queue job's meter rows join the job, so its settle counts them against the reservation.
             if job_id and queue_backend() == "redis":
@@ -156,7 +153,7 @@ class AIGate:
         ai.effort = levers.effort
         if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:
             raise feature_disabled("ultraResume requires the ULTRA plan")
-        now = _now()
+        now = utcnow()
         month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                   microsecond=0)
         spent = await self.usage.sum_cost_since(user_id, month_start)
@@ -172,7 +169,7 @@ class AIGate:
         if queue_backend() == "redis":
             if not job_id:
                 return None
-            now = _now()
+            now = utcnow()
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
                 id=usage_row_id(job_id, purpose), user_id=user_id,
@@ -190,7 +187,7 @@ class AIGate:
             await self.usage.lock_user(user_id)
             await self.usage.expire_stale()
             u = await self.users.get(user_id)
-            now = _now()
+            now = utcnow()
             month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                       microsecond=0)
             spent = await self.usage.sum_cost_since(user_id, month_start)
@@ -429,7 +426,7 @@ class AIService:
 
         async def work():
             nonlocal op
-            now = _now()
+            now = utcnow()
             op_id = uuid4()
             op = ent.Operation(
                 id=op_id, user_id=user_id, type=ent.OP_AI_GENERATE,

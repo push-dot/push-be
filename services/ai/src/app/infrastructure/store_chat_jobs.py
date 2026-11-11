@@ -17,9 +17,6 @@ STALE_RUNNING_S = _STEP_BUDGET_S * 6 + _STEP_BACKOFF_S * 3 + 10 * 60
 NUDGE_PENDING_AGE_S = 60
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 def _affected(tag) -> int:
     if not tag:
@@ -55,7 +52,7 @@ class ChatJobStore:
             "  SELECT id FROM chat_jobs WHERE status='PENDING' AND run_at<=now()"
             "  ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
             ") RETURNING id, user_id, conversation_id, payload, attempt",
-            _now())
+            utcnow())
         return dict(row) if row else None
 
     async def finish(self, job_id: UUID, status: str,
@@ -66,14 +63,14 @@ class ChatJobStore:
             tag = await self.db.q().execute(
                 "UPDATE chat_jobs SET status=$2, error=$3, updated_at=$4 "
                 "WHERE id=$1 AND status='RUNNING' AND checkpoint->>'claim'=$5",
-                job_id, status, error, _now(), token)
+                job_id, status, error, utcnow(), token)
             if _affected(tag) == 0:
                 raise LostClaim()
             return
         await self.db.q().execute(
             "UPDATE chat_jobs SET status=$2, error=$3, updated_at=$4 "
             "WHERE id=$1 AND status NOT IN ('DONE', 'FAILED', 'CANCELLED')",
-            job_id, status, error, _now())
+            job_id, status, error, utcnow())
 
     async def requeue(self, job_id: UUID, delay_s: float) -> None:
         async def work():
@@ -81,7 +78,7 @@ class ChatJobStore:
                 "UPDATE chat_jobs SET status='PENDING', "
                 "run_at=now() + make_interval(secs => $2), updated_at=$3, "
                 "checkpoint = COALESCE(checkpoint, '{}'::jsonb) - 'claim' "
-                "WHERE id=$1 AND status <> 'CANCELLED'", job_id, delay_s, _now())
+                "WHERE id=$1 AND status <> 'CANCELLED'", job_id, delay_s, utcnow())
             if _affected(tag) == 0:
                 return
             await self.db.q().execute(
@@ -96,7 +93,7 @@ class ChatJobStore:
         ``0`` recovers every RUNNING job and is only for a process restart.
         """
         age = STALE_RUNNING_S if max_age_s is None else max_age_s
-        now = _now()
+        now = utcnow()
         await self.db.pool.execute(
             "UPDATE chat_jobs SET status='FAILED', error='worker died', "
             "updated_at=$1 WHERE status='RUNNING' AND ("
@@ -209,14 +206,14 @@ class ChatJobStore:
             "COALESCE(checkpoint, '{}'::jsonb), '{claim}', to_jsonb($3::text), true) "
             "WHERE id=$1 AND status='PENDING' AND run_at<=now() "
             "RETURNING id, user_id, conversation_id, payload, attempt, status",
-            job_id, _now(), claim)
+            job_id, utcnow(), claim)
         return dict(row) if row else None
 
     async def touch_owner(self, job_id: UUID, claim: str) -> bool:
         tag = await self.db.q().execute(
             "UPDATE chat_jobs SET updated_at=$3 WHERE id=$1 AND status='RUNNING' "
             "AND checkpoint->>'claim'=$2",
-            job_id, claim, _now())
+            job_id, claim, utcnow())
         return _affected(tag) != 0
 
     async def claim_id(self, job_id: UUID) -> Optional[dict]:
@@ -224,7 +221,7 @@ class ChatJobStore:
             "UPDATE chat_jobs SET status='RUNNING', attempt=attempt+1, "
             "updated_at=$2 WHERE id=$1 AND status='PENDING' AND run_at<=now() "
             "RETURNING id, user_id, conversation_id, payload, attempt",
-            job_id, _now())
+            job_id, utcnow())
         return dict(row) if row else None
 
     async def get(self, job_id: UUID) -> Optional[dict]:
@@ -242,13 +239,13 @@ class ChatJobStore:
                 "UPDATE chat_jobs SET checkpoint=$2, updated_at=$3 "
                 "WHERE id=$1 AND status IN ('RUNNING', 'DONE') "
                 "AND checkpoint->>'claim'=$4",
-                job_id, _dump(body), _now(), token)
+                job_id, _dump(body), utcnow(), token)
             if _affected(tag) == 0:
                 raise LostClaim()
             return
         await self.db.q().execute(
             "UPDATE chat_jobs SET checkpoint=$2, updated_at=$3 WHERE id=$1",
-            job_id, _dump(body), _now())
+            job_id, _dump(body), utcnow())
 
     async def pending_ids(self, limit: int = 5,
                           min_age_s: float = NUDGE_PENDING_AGE_S) -> list[UUID]:
@@ -314,7 +311,7 @@ class ChatJobStore:
             "UPDATE ai_jobs SET checkpoint = COALESCE(checkpoint, '{}'::jsonb) "
             "|| jsonb_build_object('conversation_state', $2::text), updated_at=$3 "
             "WHERE id=$1",
-            job_id, state, _now())
+            job_id, state, utcnow())
 
 
 class QueueJobs:

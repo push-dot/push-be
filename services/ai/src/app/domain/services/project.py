@@ -26,9 +26,6 @@ PEV_PENDING = "PENDING"
 PEV_VERIFIED = "VERIFIED"
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 def blueprint_cap(plan: str | None) -> int | None:
     key = (plan or "FREE").strip().upper()
@@ -99,7 +96,7 @@ class ProjectService:
             if analysis.application_id != application_id:
                 raise validation_field(
                     "gapAnalysisId", "analysis belongs to another application")
-            now = _now()
+            now = utcnow()
             blueprints = build_blueprints(
                 user_id, application_id, gap_analysis_id, analysis, now)
             # Without the lock two parallel requests both see the same count and pass the cap.
@@ -137,7 +134,7 @@ class ProjectService:
                 raise invalid_transition("evidence already verified")
             if e.test_results.exit_code != 0:
                 raise invalid_transition("recorded tests failed")
-            now = _now()
+            now = utcnow()
             e.status = PEV_VERIFIED
             e.verified_at = now
             e.updated_at = now

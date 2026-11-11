@@ -22,9 +22,6 @@ from app.infrastructure.store_evidence import EvidenceStore
 from app.infrastructure.store_operations import OperationStore
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 _LIVE_EVENT_TYPES = frozenset(
     {
@@ -187,7 +184,7 @@ class ConversationService:
                 try:
                     from app.queue.admin import AdminJobs
 
-                    await AdminJobs(self.db.q()).expire_approvals(_now())
+                    await AdminJobs(self.db.q()).expire_approvals(utcnow())
                 except Exception:
                     log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
