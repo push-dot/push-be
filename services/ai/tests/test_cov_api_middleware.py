@@ -8,6 +8,7 @@ import pytest
 
 from app.api import middleware as mw
 from app.api.middleware import ApiMiddleware, _client_ip, _is_public, _public_error
+from app.ratelimit import reset_for_tests
 from app.domain.entities import IdempotencyRecord, User
 from app.domain.errors import token_expired
 
@@ -166,6 +167,7 @@ async def test_non_http_and_missing_deps_and_non_api_pass_through():
 
 
 async def test_public_path_skips_auth_until_ip_limit():
+    reset_for_tests()
     app, seen = inner(200)
     m = ApiMiddleware(app)
     d = deps()
@@ -210,6 +212,7 @@ async def test_auth_backend_failure_is_500_without_leaking():
 
 
 async def test_user_rate_limit():
+    reset_for_tests()
     app, _ = inner(200)
     m = ApiMiddleware(app)
     d = deps()
@@ -220,13 +223,46 @@ async def test_user_rate_limit():
     assert status == 429 and _err(body)["code"] == "RATE_LIMITED"
 
 
-async def test_cf_worker_stays_on_the_memory_limiter(monkeypatch):
+async def test_middleware_never_queries_postgres_for_rate_limits(monkeypatch):
+    reset_for_tests()
+    monkeypatch.delenv("QUEUE_BACKEND", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    class _Pool:
+        async def fetchval(self, *_a, **_k):
+            raise AssertionError("rate limit must not use postgres")
+
     app, _ = inner(200)
     m = ApiMiddleware(app)
-    state = {"db": SimpleNamespace(pool="POOL")}
+    state = {"db": SimpleNamespace(pool=_Pool())}
     status, _, _ = await call(
         m, deps(), "GET", headers={"Authorization": "Bearer t"}, state=state)
     assert status == 200
+
+
+async def test_middleware_redis_path_skips_postgres(monkeypatch):
+    reset_for_tests()
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1/0")
+    calls = {"redis": 0}
+
+    async def fake_consume(bucket: str, limit: int, ttl_s: int):
+        calls["redis"] += 1
+        return calls["redis"]
+
+    monkeypatch.setattr("app.ratelimit._consume_redis", fake_consume)
+
+    class _Pool:
+        async def fetchval(self, *_a, **_k):
+            raise AssertionError("rate limit must not use postgres")
+
+    app, _ = inner(200)
+    m = ApiMiddleware(app)
+    hdr = {"Authorization": "Bearer t"}
+    state = {"db": SimpleNamespace(pool=_Pool())}
+    for _ in range(2):
+        assert (await call(m, deps(), "GET", headers=hdr, state=state))[0] == 200
+    assert calls["redis"] == 2
 
 
 async def test_get_and_stream_and_exempt_posts_skip_idempotency():

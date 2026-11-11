@@ -39,8 +39,18 @@ test("ratelimit: an empty key shares the 'unknown' bucket", async () => {
 
 test("ratelimit: denies when the capped upsert returns no row or exceeds the limit", async () => {
   assert.equal(await allow(recording(() => []).query, "user", "u1", 5, T0), false);
+  resetLimits();
   assert.equal(await allow(recording(() => [{ hits: "6" }]).query, "user", "u1", 5, T0), false);
+  resetLimits();
   assert.equal(await allow(recording(() => [{ hits: "5" }]).query, "user", "u1", 5, T0), true);
+});
+
+test("ratelimit: a known-full bucket is rejected without a second neon write", async () => {
+  const db = recording(() => []);
+  assert.equal(await allow(db.query, "user", "u1", 2, T0), false);
+  assert.equal(db.seen.length, 1);
+  assert.equal(await allow(db.query, "user", "u1", 2, T0 + 500), false);
+  assert.equal(db.seen.length, 1);
 });
 
 for (const [name, err] of [
