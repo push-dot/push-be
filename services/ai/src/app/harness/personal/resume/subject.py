@@ -46,7 +46,8 @@ def _url_key(url: str) -> str:
 
 def _own_material(url: str) -> bool:
     # A GitHub link is the user's own work, never the posting a flow is about.
-    return "github.com" in url.lower()
+    host = (urlsplit(url.strip()).hostname or "").lower()
+    return host == "github.com" or host.endswith(".github.com")
 
 
 def saved_for_turn(saved: dict[str, Any], posting: str | None, links: list[str]) -> dict[str, Any]:

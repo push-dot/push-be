@@ -5,7 +5,9 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import replace
+from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -389,7 +391,7 @@ def _invalid(output: dict) -> bool:
     return output.get("valid") is False
 
 
-def _fail_update(state: dict, phase: str) -> dict:
+def _fail_update(state: Mapping[str, Any], phase: str) -> dict[str, Any]:
     failed = int(state.get("validation_failures") or 0) + 1
     return {
         "validation_failures": failed,
@@ -399,7 +401,7 @@ def _fail_update(state: dict, phase: str) -> dict:
     }
 
 
-def _failed_check(state: dict, phase: str, said: str) -> dict:
+def _failed_check(state: Mapping[str, Any], phase: str, said: str) -> dict[str, Any]:
     update = _fail_update(state, phase)
     if not update["retry"]:
         notice(said)
@@ -831,13 +833,13 @@ def _choice(
     return event
 
 
-async def _ask(db, state: dict, event: dict) -> None:
+async def _ask(db: Any, state: Mapping[str, Any], event: dict[str, Any]) -> None:
     if await _save_choice(db, state, event):
         waiting(event["id"], "answer")
         emit(event)
 
 
-async def _save_choice(db, state: dict, event: dict) -> bool:
+async def _save_choice(db: Any, state: Mapping[str, Any], event: dict[str, Any]) -> bool:
     if db is None:
         return True
     approval_id = UUID(str(event["id"]))
@@ -1995,7 +1997,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     graph = StateGraph(ResumeGraphState)
 
-    def add(name: str, node) -> None:
+    def add(name: str, node: Any) -> None:
         graph.add_node(name, with_status(name, node))
 
     add("p0_mode", work_node("mode_select"))

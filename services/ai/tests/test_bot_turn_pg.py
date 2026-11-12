@@ -34,9 +34,10 @@ async def db():
         await pool.close()
 
 
-async def queued_turn(db, attachments: list) -> SimpleNamespace:
-    """A bot thread with one turn as core leaves it: a claimed job and the USER row."""
-    user, bot, thread, job = uuid4(), uuid4(), uuid4(), uuid4()
+async def queued_turn(db, attachments: list, *, bot: bool = True) -> SimpleNamespace:
+    """A thread with one turn as core leaves it: a claimed job and the USER row. A bot thread
+    unless bot is False, which is a web conversation."""
+    user, bot_id, thread, job = uuid4(), uuid4(), uuid4(), uuid4()
     q = db.q()
     await q.execute(
         "INSERT INTO users (id, provider, provider_subject, display_name) "
@@ -44,17 +45,18 @@ async def queued_turn(db, attachments: list) -> SimpleNamespace:
         user,
         str(user),
     )
+    if bot:
+        await q.execute(
+            "INSERT INTO bots (id, user_id, kind, company_name, display_name) "
+            "VALUES ($1, $2, 'push', '', 'Push Bot')",
+            bot_id,
+            user,
+        )
     await q.execute(
-        "INSERT INTO bots (id, user_id, kind, company_name, display_name) "
-        "VALUES ($1, $2, 'push', '', 'Push Bot')",
-        bot,
-        user,
-    )
-    await q.execute(
-        "INSERT INTO conversations (id, user_id, title, bot_id) VALUES ($1, $2, 'Push Bot', $3)",
+        "INSERT INTO conversations (id, user_id, title, bot_id) VALUES ($1, $2, '채팅', $3)",
         thread,
         user,
-        bot,
+        bot_id if bot else None,
     )
     await q.execute(
         "INSERT INTO ai_jobs "
@@ -221,3 +223,38 @@ async def test_a_company_bots_quick_start_reads_the_bots_posting_by_id(db):
         await q.execute("DELETE FROM users WHERE id = $1", turn.user)
         await q.execute("DELETE FROM job_postings WHERE id = $1", posting)
         await q.execute("DELETE FROM companies WHERE id = $1", company)
+
+
+# The newest status or tool row of a job is the line the gateway lists for a running conversation.
+_NEWEST_LINE = (
+    "SELECT type, payload->>'phase' AS phase FROM chat_events "
+    "WHERE job_id = $1 AND type IN ('status', 'tool') ORDER BY id DESC LIMIT 1"
+)
+
+
+async def test_a_web_conversation_gets_no_phase_row_so_its_list_line_and_stream_are_as_before(db):
+    turn = await queued_turn(db, [], bot=False)
+    try:
+        await run_turn(db, turn)
+
+        types = [
+            event["type"]
+            for event in await db.q().fetch(
+                "SELECT type FROM chat_events WHERE job_id = $1 ORDER BY id", turn.job
+            )
+        ]
+        assert "status" not in types and "notice" not in types
+        assert await db.q().fetchrow(_NEWEST_LINE, turn.job) is None
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", turn.user)
+
+
+async def test_a_bot_thread_keeps_its_phase_rows(db):
+    turn = await queued_turn(db, [])
+    try:
+        await run_turn(db, turn)
+
+        newest = await db.q().fetchrow(_NEWEST_LINE, turn.job)
+        assert (newest["type"], newest["phase"]) == ("status", "thinking")
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", turn.user)

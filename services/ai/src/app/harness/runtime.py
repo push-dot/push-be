@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from datetime import UTC, datetime, timezone
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -37,21 +38,21 @@ _PAGES_PER_TURN = 2
 _INPUT_KEYS = ("pages", "attachments", "documentId", "postingId")
 
 
-def _column(row, key: str):
+def _column(row: Any, key: str) -> Any:
     try:
         return row[key]
     except (KeyError, IndexError):
         return None
 
 
-def _job_uuid(job_id) -> UUID | None:
+def _job_uuid(job_id: object) -> UUID | None:
     try:
         return UUID(str(job_id)) if job_id else None
     except ValueError:
         return None
 
 
-def _json_list(raw) -> list:
+def _json_list(raw: object) -> list[Any]:
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -60,7 +61,7 @@ def _json_list(raw) -> list:
     return raw if isinstance(raw, list) else []
 
 
-def bot_context(row) -> dict | None:
+def bot_context(row: Any) -> dict[str, Any] | None:
     """The bot a thread belongs to, as the model and the flow see it. Never read from a request."""
     kind = _column(row, "bot_kind")
     if kind is None:
@@ -293,7 +294,7 @@ class HarnessRuntime:
             found["job_created_at"] = row["job_created_at"]
         return found
 
-    async def _posting_input(self, posting_id) -> dict:
+    async def _posting_input(self, posting_id: object) -> dict[str, Any]:
         """The posting a turn works on, read by id: the flow has its text before any tool call."""
         try:
             row = await self.svc.db.q().fetchrow(
@@ -318,8 +319,9 @@ class HarnessRuntime:
             posting["url"] = row["source_url"]
         return {"postingId": posting["id"], "posting": posting}
 
-    async def _inputs(self, payload: dict, posting_id=None) -> dict:
-        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    async def _inputs(self, payload: dict[str, Any], posting_id: object = None) -> dict[str, Any]:
+        raw = payload.get("context")
+        context = raw if isinstance(raw, dict) else {}
         incoming = await _turn_inputs(payload)
         posting_id = posting_id or context.get("postingId")
         if posting_id:
@@ -370,7 +372,8 @@ class HarnessRuntime:
         ai = self._ai(payload, spec, plan)
         turn: dict = {}
         started = conversation.get("job_created_at") or datetime.now(UTC)
-        run = Run(str(payload.get("job_id") or ""), wire_time(started))
+        run = Run(str(payload.get("job_id") or ""), wire_time(started),
+                  announce=conversation.get("bot") is not None)
         tokens = [
             (bound_services, bound_services.set(self.svc)),
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
@@ -380,7 +383,9 @@ class HarnessRuntime:
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         ok = False
         try:
-            yield "custom", run.status("thinking", THINKING)
+            first = run.status("thinking", THINKING)
+            if first is not None:
+                yield "custom", first
             async for item in self._chat_turn(
                     graph, payload, conversation, config, stream_mode, ai, turn, spec):
                 yield item

@@ -66,8 +66,18 @@ def _statuses(items) -> list[dict]:
     return [chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "status"]
 
 
+PUSH_BOT = {
+    "company_id": None,
+    "resume_state": None,
+    "bot_kind": "push",
+    "bot_name": "Push Bot",
+    "bot_company": "",
+}
+
+
 def _runtime(rows: Rows | None = None, model=ScriptedLC):
-    svc = service(rows)
+    """A bot thread unless the test passes the rows of another conversation."""
+    svc = service(rows or Rows(dict(PUSH_BOT)))
     runtime = HarnessRuntime(svc, model_cls=model)
 
     def core(request: httpx.Request) -> httpx.Response:
@@ -117,7 +127,7 @@ async def test_a_card_waits_just_before_it_is_shown_and_the_answer_starts_a_new_
         _call("apply_to_posting", {"posting_id": POSTING}),
         {"content": "지원했어요"},
     ]
-    rows = Rows()
+    rows = Rows(dict(PUSH_BOT))
     _svc, runtime = _runtime(rows)
 
     asked = await run(runtime, _payload("이 공고에 지원해 줘"))
@@ -146,7 +156,7 @@ async def test_a_document_flow_step_works_with_its_node_sentence_and_its_gate_wa
         {"content": json.dumps({"message": "어떤 방식으로 쓸지 골라 주세요"})},
         {"content": json.dumps({"message": "자료를 받았어요"})},
     ]
-    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    rows = Rows({**PUSH_BOT, "resume_state": {"status": "active", "phase": "mode_select"}})
     _svc, runtime = _runtime(rows)
 
     first = await run(runtime, _payload("서류 만들어줘"))
@@ -190,7 +200,7 @@ async def test_a_document_edit_card_waits_for_a_confirm():
             },
         )
     ]
-    rows = Rows()
+    rows = Rows(dict(PUSH_BOT))
     _svc, runtime = _runtime(rows)
 
     items = await run(runtime, _payload("이력서 첫 줄 고쳐 줘", access_mode="ALWAYS_ASK"))
@@ -268,6 +278,28 @@ async def test_writing_a_cover_letter_alone_says_so():
     assert [event["text"] for event in seen] == ["경력 섹션을 쓰는 중", "자기소개서를 쓰는 중"]
 
 
+async def test_a_conversation_without_a_bot_sends_the_stream_it_always_did():
+    ScriptedLC.replies = [
+        _call("get_posting", {"posting_id": POSTING}),
+        {"content": "필수 요건은 세 가지예요"},
+    ]
+    _svc, runtime = _runtime(Rows())
+
+    items = await run(runtime, _payload("이 공고 요건 알려 줘"))
+
+    assert _statuses(items) == []
+
+
+async def test_a_card_in_a_conversation_without_a_bot_waits_for_no_status():
+    ScriptedLC.replies = [_call("apply_to_posting", {"posting_id": POSTING})]
+    _svc, runtime = _runtime(Rows())
+
+    items = await run(runtime, _payload("이 공고에 지원해 줘"))
+
+    assert _statuses(items) == []
+    assert any(chunk.get("type") == "approval" for mode, chunk in items if mode == "custom")
+
+
 def _system_prompt() -> str:
     first = SeeingLC.seen[0]
     return first[0].content
@@ -304,14 +336,7 @@ async def test_a_company_bot_knows_its_name_and_its_posting():
 async def test_the_push_bot_calls_itself_a_bot_and_a_web_conversation_keeps_its_prompt():
     SeeingLC.seen = []
     ScriptedLC.replies = [{"content": "안녕하세요"}, {"content": "안녕하세요"}]
-    push = {
-        "company_id": None,
-        "resume_state": None,
-        "bot_kind": "push",
-        "bot_name": "Push Bot",
-        "bot_company": "",
-    }
-    _svc, runtime = _runtime(Rows(push), SeeingLC)
+    _svc, runtime = _runtime(Rows(dict(PUSH_BOT)), SeeingLC)
     await run(runtime, _payload("안녕"))
     pushed = _system_prompt()
 

@@ -117,15 +117,17 @@ def wire_time(at: datetime) -> str:
 
 @dataclass
 class Run:
-    """One job of a turn: its id, its start, and the last status it sent."""
+    """One job of a turn: its id, its start, and the last status it sent.
+    Only a bot thread announces: the web's lists and streams read status rows as before."""
 
     job_id: str
     since: str
+    announce: bool = True
     last: tuple[str, str] | None = None
 
     def status(self, phase: str, text: str) -> dict[str, str] | None:
         """The phase's event, or None when it repeats the last one: a tool loop thinks once."""
-        if (phase, text) == self.last:
+        if not self.announce or (phase, text) == self.last:
             return None
         self.last = (phase, text)
         return {"type": "status", "text": text, "phase": phase, "since": self.since}
@@ -161,7 +163,7 @@ def waiting(card_id: object, card_for: CardFor, label: str | None = None) -> Non
     """Sent once per card, just before its `approval` or `choice`. `since` is its asking time.
     A write's card says what it waits on by its label (personal/tools.py CARD_LABEL)."""
     run = current_run.get()
-    if run is None:
+    if run is None or not run.announce:
         return
     text = f"{label} · 확인을 기다리는 중" if label else WAITING[card_for]
     run.last = ("waiting", text)
@@ -179,7 +181,9 @@ def waiting(card_id: object, card_for: CardFor, label: str | None = None) -> Non
 
 def notice(text: str) -> None:
     """A step failed and the run goes on. A rejected card is not a notice."""
-    emit({"type": "notice", "text": text})
+    run = current_run.get()
+    if run is None or run.announce:
+        emit({"type": "notice", "text": text})
 
 
 def with_status(name: str, node: Callable[[Any], Awaitable[Any]]) -> Any:
