@@ -145,6 +145,7 @@ function isRecruiting(path: string): boolean {
   if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
   if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;
   if (path === "/api/v1/bots" || path.startsWith("/api/v1/bots/")) return true;
+  if (path === "/api/v1/materials" || path.startsWith("/api/v1/materials/")) return true;
   if (path === "/api/v1/posts" || path.startsWith("/api/v1/posts/")) return true;
   return false;
 }

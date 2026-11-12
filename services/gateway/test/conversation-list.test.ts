@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { complete } from "./fakes.ts";
 import {
   CONVERSATION_STATUS, conversationListAuxCtesForLive, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
   personalOwnerPc,
@@ -93,7 +94,7 @@ const env = (): FrontEnv => ({
 });
 
 const deps = (query: Query): Deps => ({
-  query,
+  query: complete(query),
   sleep: async () => {},
   now: () => NOW,
 });
