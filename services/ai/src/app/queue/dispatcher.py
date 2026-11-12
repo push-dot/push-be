@@ -112,6 +112,7 @@ class Dispatcher:
             stats = DispatchStats(dispatched, promoted, requeued, rehydrated)
             if maintain:
                 await db.reconcile_credits(now)
+                await db.compact_finished(now)
                 await db.purge_finished(now)
                 await db.expire_approvals(now)
                 pool = getattr(db, "conn", None)
@@ -120,6 +121,8 @@ class Dispatcher:
                 await purge_deleted(pool, storage)
                 self.db_conditions = db_conditions(
                     stats, await db.neon_stats(), await db.open_billing_alerts())
+                # Last: it raises when LangGraph renamed a table, and the steps above still run.
+                await db.sweep_orphan_checkpoints()
             return stats
         finally:
             await db.close()

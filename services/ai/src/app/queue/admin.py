@@ -1,10 +1,44 @@
 from datetime import timedelta
 
+from app.domain.chat_turns import compaction
 from app.queue.credits import ShortBalance, available_micro, lock_owner, release_job, unless_busy
 
-FINISHED = ("DONE", "FAILED", "DEAD", "CANCELLED")
 RETENTION = timedelta(days=30)
 STATS_WINDOW = timedelta(hours=24)
+# A stream attached to a job closes at its terminal event, so after this no reader is between two
+# token rows when they merge.
+COMPACT_AFTER = timedelta(minutes=10)
+COMPACT_BATCH = 200
+# Orphan threads erased per maintenance pass (SWEEP_S, 15 minutes). An orphan is a thread whose run
+# wrote checkpoints after the thread was deleted. While fewer than this many wait, each goes in the
+# first pass after its run ends, and a run ends within its deadline (JOB_DEADLINE_CHAT_S).
+CHECKPOINT_SWEEP_BATCH = 500
+
+# Statuses are literal so the planner can use ai_jobs_finished_uncompacted_idx (0057).
+# A bot's turns are its chat history: they stay until the bot is deleted or its chat is cleared, which
+# cascade from the thread. Only bot turns are compacted, so a compacted job is one of them. Notify jobs
+# of a bot thread and every other job keep the 30-day rule.
+_PURGE_FINISHED = (
+    "DELETE FROM ai_jobs j WHERE j.status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') "
+    "AND NOT (j.checkpoint ? 'compacted') AND j.updated_at < $1 "
+    "AND NOT (j.type = 'chat' AND EXISTS (SELECT 1 FROM conversations c "
+    "WHERE c.id = j.conversation_id AND c.bot_id IS NOT NULL))"
+)
+_UNCOMPACTED_BOT_TURNS = (
+    "SELECT j.id FROM ai_jobs j WHERE j.status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') "
+    "AND NOT (j.checkpoint ? 'compacted') AND j.updated_at < $1 AND j.type = 'chat' "
+    "AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = j.conversation_id AND c.bot_id IS NOT NULL) "
+    "ORDER BY j.updated_at LIMIT $2"
+)
+# Takes the job's row lock, so an admin retry of the same job waits for the compaction.
+_MARK_COMPACTED = (
+    "UPDATE ai_jobs SET checkpoint = checkpoint || jsonb_build_object('compacted', true) "
+    "WHERE id = $1 AND status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') AND NOT (checkpoint ? 'compacted') "
+    "RETURNING id"
+)
+_TURN_ROWS = "SELECT id, type, payload FROM chat_events WHERE job_id = $1 ORDER BY id"
+_SET_TEXT = "UPDATE chat_events SET payload = jsonb_set(payload, '{text}', to_jsonb($2::text)) WHERE id = $1"
+_DROP_ROWS = "DELETE FROM chat_events WHERE id = ANY($1::bigint[])"
 
 
 def _iso(value):
@@ -103,12 +137,31 @@ class AdminJobs:
             "WHERE status = 'PENDING' AND expires_at < $1", now)
 
     async def purge_finished(self, now) -> int:
-        tag = await self.conn.execute(
-            "DELETE FROM ai_jobs WHERE status = ANY($1::text[]) AND updated_at < $2",
-            list(FINISHED), now - RETENTION)
+        tag = await self.conn.execute(_PURGE_FINISHED, now - RETENTION)
         await self.conn.execute(
             "DELETE FROM outbox WHERE dispatched_at IS NOT NULL AND dispatched_at < $1", now - RETENTION)
         return int(tag.split()[-1])
+
+    async def compact_finished(self, now) -> int:
+        """Rewrites finished bot turns to the rows a reader needs (chat_turns.compaction), once each."""
+        jobs = await self.conn.fetch(_UNCOMPACTED_BOT_TURNS, now - COMPACT_AFTER, COMPACT_BATCH)
+        compacted = 0
+        for job in jobs:
+            async with self.conn.transaction():
+                if await self.conn.fetchrow(_MARK_COMPACTED, job["id"]) is None:
+                    continue
+                merged, dropped = compaction([dict(row) for row in await self.conn.fetch(_TURN_ROWS, job["id"])])
+                for row_id, text in merged.items():
+                    await self.conn.execute(_SET_TEXT, row_id, text)
+                if dropped:
+                    await self.conn.execute(_DROP_ROWS, dropped)
+            compacted += 1
+        return compacted
+
+    async def sweep_orphan_checkpoints(self) -> int:
+        """Erases the model memory of deleted threads that the delete's trigger could not see (0057).
+        Raises when the LangGraph checkpointer is set up and one of its tables is missing."""
+        return int(await self.conn.fetchval("SELECT sweep_orphan_checkpoints($1)", CHECKPOINT_SWEEP_BATCH))
 
 
 def _num(value) -> float | None:
