@@ -1040,6 +1040,45 @@ const userLedgerOf = async (userId: string) => (await pg!.query(
   "SELECT type, reference_id, amount_micro_credits, balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY seq", [userId])).rows
   .map((row) => [row.type, row.reference_id, Number(row.amount_micro_credits), Number(row.balance_after)]);
 
+test("personal creditsRefillAt is the instant from which a read grants the next month's plan credits", async (t) => {
+  const userId = await storeUser(t);
+  if (!userId) return;
+  const read = async (at: number): Promise<Row> => {
+    resetLimits();
+    const res = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env,
+      { query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(at) });
+    assert.equal(res.status, 200);
+    return (await res.json() as { data: Row }).data;
+  };
+  const status = await read(START);
+  assert.equal(status.creditsRefillAt, "2026-12-01T00:00:00.000Z");
+  const refill = Date.parse(String(status.creditsRefillAt));
+  await read(refill - 1);
+  assert.deepEqual((await userLedgerOf(userId)).map((row) => row[1]), ["monthly:2026-11"]);
+  await read(refill);
+  assert.deepEqual((await userLedgerOf(userId)).map((row) => row[1]), ["monthly:2026-11", "monthly:2026-12"]);
+});
+
+test("a company has creditsRefillAt only on calendar months: none without a plan, none once a Stripe period is paid", async (t) => {
+  const co = await company(t);
+  if (!co) return;
+  assert.equal("creditsRefillAt" in await billingRead(co.id, START), false);
+  await pg!.query("UPDATE companies SET plan = 'BASIC' WHERE id = $1", [co.id]);
+  const status = await billingRead(co.id, START);
+  assert.equal(status.creditsRefillAt, "2026-12-01T00:00:00.000Z");
+  const refill = Date.parse(String(status.creditsRefillAt));
+  await billingRead(co.id, refill - 1);
+  assert.deepEqual(grantRows(await ledgerOf(co.id)), [["monthly:2026-11:BASIC", 3000]]);
+  await billingRead(co.id, refill);
+  assert.deepEqual(grantRows(await ledgerOf(co.id)), [["monthly:2026-11:BASIC", 3000], ["monthly:2026-12:BASIC", 3000]]);
+  const stripe = stripeWorld(co.customer);
+  const basic = stripe.subscribe("BASIC", refill + DAY);
+  assert.equal(await deliver(stripe, checkout(co.id, basic, "BASIC", refill + DAY), refill + DAY), 200);
+  const onPeriod = await billingRead(co.id, refill + 2 * DAY);
+  assert.equal(onPeriod.plan, "BASIC");
+  assert.equal("creditsRefillAt" in onPeriod, false);
+});
+
 const storeRefund = async (userId: string, tx: string, at: number, note: { platform: "APP_STORE" | "GOOGLE_PLAY"; type: string }, wrap: (q: Query) => Query = (q) => q) => {
   let clock = at;
   const deps: Deps = {
