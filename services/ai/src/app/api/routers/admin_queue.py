@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.queue.config import QUEUE_GROUPS
+from app.queue.credits import ShortBalance, lock_busy
 
 
 def admin_router(dispatcher) -> APIRouter:
@@ -57,7 +58,14 @@ def admin_router(dispatcher) -> APIRouter:
     @router.post("/jobs/{id}/retry")
     async def retry(id: str):
         target = job_id(id)
-        done = await with_db(lambda db: db.retry(target, dispatcher.now()))
+        try:
+            done = await with_db(lambda db: db.retry(target, dispatcher.now()))
+        except ShortBalance:
+            raise HTTPException(status_code=402, detail="INSUFFICIENT_CREDITS") from None
+        except Exception as err:
+            if not lock_busy(err):
+                raise
+            raise HTTPException(status_code=503, detail="BILLING_BUSY") from None
         if not done:
             raise HTTPException(status_code=409)
         await dispatcher.run_once(dispatcher.now())

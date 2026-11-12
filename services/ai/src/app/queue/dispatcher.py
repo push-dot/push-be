@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.account_purge import purge_deleted
 from app.clock import utcnow
 from app.queue.admin import AdminJobs
+from app.queue.credits import close_each
 from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
 from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
@@ -54,15 +55,12 @@ class PgJobs(AdminJobs):
         """Requeue jobs whose worker died; a lost heartbeat costs an attempt, so a job
         that keeps killing its worker ends DEAD (reservation released) instead of looping."""
         rows = await self.conn.fetch(
-            "WITH stale AS ("
             "UPDATE ai_jobs SET attempts = attempts + 1, run_after = $1, updated_at = $1, "
             "status = CASE WHEN attempts + 1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
-            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) RETURNING id, queue, status), "
-            "released AS ("
-            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 FROM stale s "
-            "WHERE r.job_id = s.id AND s.status = 'DEAD' AND r.status = 'RESERVED') "
-            "SELECT id, queue, status FROM stale",
+            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) "
+            "RETURNING id, id AS job_id, user_id, company_id, queue, status",
             now, list(ids))
+        await close_each(self.conn, [row for row in rows if row["status"] == "DEAD"], now)
         return [_row(row, "id", "queue", "status") for row in rows]
 
     async def pending_jobs(self, now):
@@ -74,20 +72,13 @@ class PgJobs(AdminJobs):
 
     async def reconcile_credits(self, now) -> int:
         """Close reservations left RESERVED when a worker died between finish and settle."""
-        row = await self.conn.fetchrow(
-            "WITH settled AS ("
-            "UPDATE credit_reservations r SET status = 'SETTLED', updated_at = $1, settled_micro = "
-            "(SELECT COALESCE(SUM(u.cost_micro_credits), 0) FROM ai_usage u "
-            "WHERE u.job_id = r.job_id AND u.status = 'SETTLED') "
-            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' AND j.status = 'DONE' "
-            "AND j.updated_at < $2 RETURNING 1), "
-            "released AS ("
-            "UPDATE credit_reservations r SET status = 'RELEASED', updated_at = $1 "
-            "FROM ai_jobs j WHERE j.id = r.job_id AND r.status = 'RESERVED' "
-            "AND j.status IN ('FAILED', 'DEAD', 'CANCELLED') AND j.updated_at < $2 RETURNING 1) "
-            "SELECT (SELECT count(*) FROM settled) + (SELECT count(*) FROM released) AS n",
-            now, now - timedelta(seconds=RECONCILE_AFTER_S))
-        return int(row["n"]) if row else 0
+        before = now - timedelta(seconds=RECONCILE_AFTER_S)
+        rows = await self.conn.fetch(
+            "SELECT r.job_id, r.user_id, r.company_id, j.status FROM credit_reservations r "
+            "JOIN ai_jobs j ON j.id = r.job_id "
+            "WHERE r.status = 'RESERVED' AND j.status IN ('DONE', 'FAILED', 'DEAD', 'CANCELLED') "
+            "AND j.updated_at < $1", before)
+        return await close_each(self.conn, rows, now)
 
 
 def _row(row, *keys):
@@ -127,7 +118,8 @@ class Dispatcher:
                 storage = os.environ.get("STORAGE_DIR") or None
                 await sweep(pool)
                 await purge_deleted(pool, storage)
-                self.db_conditions = db_conditions(stats, await db.neon_stats())
+                self.db_conditions = db_conditions(
+                    stats, await db.neon_stats(), await db.open_billing_alerts())
             return stats
         finally:
             await db.close()

@@ -7,6 +7,7 @@
 #   - a container appeared, or one runs privileged, with host namespaces or added capabilities
 #   - the firewall rate-limited or dropped outbound traffic (scanner, SMTP, private ranges)
 #   - a process runs from /tmp, /var/tmp, /dev/shm, /root or /home, or has a miner name
+#   - an upgrade left a *.dpkg-dist under /etc (--force-confold kept our edit over a new default)
 # The first run records a baseline. After an alert the new state becomes the baseline.
 set -euo pipefail
 shopt -s nullglob
@@ -71,6 +72,9 @@ binaries() {
 users() {
   cut -d: -f1,3,4,6,7 /etc/passwd
   grep -E '^(root|sudo|adm|docker|wheel):' /etc/group
+}
+confold() {
+  find /etc -name '*.dpkg-dist'
 }
 listeners() {
   ss -Hlntu | awk '{print $1, $5}'
@@ -153,6 +157,7 @@ track users both users
 track listeners new listeners
 track containers new containers
 track procs new procs
+track confold new confold
 check_firewall
 
 if [ "${#alerts[@]}" -gt 0 ]; then

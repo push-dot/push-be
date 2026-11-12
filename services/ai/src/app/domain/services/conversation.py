@@ -9,7 +9,7 @@ from uuid import UUID
 from app.db import DB
 from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
-from app.domain.errors import DomainError
+from app.domain.errors import DomainError, missing_provider_key
 from app.domain.services.ai import AIGate
 from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
@@ -22,12 +22,24 @@ from app.infrastructure.store_evidence import EvidenceStore
 from app.infrastructure.store_operations import OperationStore
 
 
-def _now() -> datetime:
-    return utcnow()
 
-
-_LIVE_EVENT_TYPES = frozenset({
-    "tool", "todo", "diff", "approval", "choice", "fit", "cancelled", "file", "done"})
+_LIVE_EVENT_TYPES = frozenset(
+    {
+        "tool",
+        "todo",
+        "diff",
+        "approval",
+        "choice",
+        "fit",
+        "cancelled",
+        "file",
+        "result",
+        "done",
+        "think",
+        "plan",
+        "paper",
+    }
+)
 
 
 def _live_event(chunk: dict):
@@ -35,6 +47,7 @@ def _live_event(chunk: dict):
     if kind not in _LIVE_EVENT_TYPES:
         return None
     return kind, {key: value for key, value in chunk.items() if key != "type"}
+
 
 IDLE_MIN_S = 1.0
 IDLE_MAX_S = 60.0
@@ -66,8 +79,15 @@ async def _wait(event: asyncio.Event, delay: float) -> bool:
 
 
 class ConversationService:
-    def __init__(self, db: DB, ai: AIGate, checkpointer=None,
-                 document_svc=None, job_svc=None, application_svc=None):
+    def __init__(
+        self,
+        db: DB,
+        ai: AIGate,
+        checkpointer=None,
+        document_svc=None,
+        job_svc=None,
+        application_svc=None,
+    ):
         self.db = db
         self.conversations = ConversationStore(db)
         self.applications = ApplicationStore(db)
@@ -94,6 +114,7 @@ class ConversationService:
         # LangGraph compile is the heavy import. Health and auth requests
         # never touch it; the first local chat message in an isolate does.
         from app.harness.runtime import HarnessRuntime
+
         runtime = getattr(self, "_harness_runtime", None)
         if runtime is None:
             runtime = HarnessRuntime(self)
@@ -125,8 +146,7 @@ class ConversationService:
         try:
             recovered = await self.jobs.reset_stale(0)
             if recovered:
-                logging.getLogger(__name__).info(
-                    "requeued %d stale chat jobs", recovered)
+                logging.getLogger(__name__).info("requeued %d stale chat jobs", recovered)
             self._worker_task = asyncio.create_task(self._worker_loop())
         except Exception:
             set_job_scheduler(self._prev_scheduler)
@@ -163,7 +183,8 @@ class ConversationService:
                     log.exception("chat job stale sweep failed")
                 try:
                     from app.queue.admin import AdminJobs
-                    await AdminJobs(self.db.q()).expire_approvals(_now())
+
+                    await AdminJobs(self.db.q()).expire_approvals(utcnow())
                 except Exception:
                     log.exception("approval expiry sweep failed")
                 last_stale = _loop_time()
@@ -197,6 +218,7 @@ class ConversationService:
     async def _notify_ai_done(self, user_id, conversation_id) -> None:
         try:
             from app.domain.chat_settings import insert_ai_done
+
             await insert_ai_done(self.db.q(), user_id, conversation_id)
         except Exception:
             logging.getLogger(__name__).exception("AI_DONE insert failed")
@@ -208,32 +230,30 @@ class ConversationService:
         terminal = False
         try:
             async for mode, chunk in self.graph.astream(
-                    {
-                        "user_id": job["user_id"],
-                        "conversation_id": job["conversation_id"],
-                        "text": p.get("text") or "",
-                        "context": p.get("context") or {},
-                        "ai": with_managed_default(p.get("ai")),
-                        "access_mode": p.get("access_mode") or "SUGGEST",
-                        "operation": None,
-                        "job_id": str(job_id),
-                        "event_id": 0,
-                        **turn_from_payload(p),
-                        **({"resume": p["resume"]} if p.get("resume") else {}),
-                    },
-                    config={"configurable": {
-                        "thread_id": str(job["conversation_id"])}},
-                    stream_mode=["custom", "values"]):
+                {
+                    "user_id": job["user_id"],
+                    "conversation_id": job["conversation_id"],
+                    "text": p.get("text") or "",
+                    "context": p.get("context") or {},
+                    "ai": with_managed_default(p.get("ai")),
+                    "access_mode": p.get("access_mode") or "SUGGEST",
+                    "operation": None,
+                    "job_id": str(job_id),
+                    "event_id": 0,
+                    **turn_from_payload(p),
+                    **({"resume": p["resume"]} if p.get("resume") else {}),
+                },
+                config={"configurable": {"thread_id": str(job["conversation_id"])}},
+                stream_mode=["custom", "values"],
+            ):
                 if mode == "custom" and isinstance(chunk, dict):
                     if await self.jobs.status(job_id) == "CANCELLED":
                         terminal = True
                         break
                     if "token" in chunk:
-                        await self.jobs.emit(
-                            job_id, "token", {"text": chunk["token"]})
+                        await self.jobs.emit(job_id, "token", {"text": chunk["token"]})
                     elif "status" in chunk:
-                        await self.jobs.emit(
-                            job_id, "status", {"text": chunk["status"]})
+                        await self.jobs.emit(job_id, "status", {"text": chunk["status"]})
                     else:
                         live = _live_event(chunk)
                         if live is not None:
@@ -243,43 +263,56 @@ class ConversationService:
                         terminal = True
                         break
                     from app.jsonutil import to_jsonable
+
                     await self.jobs.emit(
-                        job_id, "done",
-                        {"operation": to_jsonable(chunk["operation"])})
+                        job_id, "done", {"operation": to_jsonable(chunk["operation"])}
+                    )
             if not terminal:
                 if await self.jobs.status(job_id) == "CANCELLED":
                     terminal = True
                 else:
                     await self.jobs.finish(job_id, "DONE")
-                    await self._notify_ai_done(
-                        job["user_id"], job["conversation_id"])
+                    await self._notify_ai_done(job["user_id"], job["conversation_id"])
                     terminal = True
         except DomainError as e:
             await self._drop_enqueued_user_message(job_id)
             await self.jobs.emit(
-                job_id, "error",
-                {"error": {"code": e.code, "message": e.message,
-                           "details": e.details}})
+                job_id,
+                "error",
+                {"error": {"code": e.code, "message": e.message, "details": e.details}},
+            )
             await self.jobs.finish(job_id, "FAILED", e.code)
             terminal = True
         except Exception as e:
             log.exception("chat job %s failed", job_id)
-            if job["attempt"] < 3:
+            if missing_provider_key(e):
+                await self.jobs.emit(
+                    job_id,
+                    "error",
+                    {
+                        "error": {
+                            "code": "NOT_CONFIGURED",
+                            "message": "managed AI is not configured",
+                        }
+                    },
+                )
+                await self.jobs.finish(job_id, "FAILED", "NOT_CONFIGURED")
+                terminal = True
+            elif job["attempt"] < 3:
                 await self.jobs.requeue(job_id, 2.0 * job["attempt"])
             else:
                 # The cause can hold SQL or provider text; only the job row keeps it.
                 await self.jobs.emit(
-                    job_id, "error",
-                    {"error": {"code": "INTERNAL", "message": "internal error"}})
+                    job_id, "error", {"error": {"code": "INTERNAL", "message": "internal error"}}
+                )
                 await self.jobs.finish(job_id, "FAILED", str(e)[:500])
                 terminal = True
 
     async def _drop_enqueued_user_message(self, job_id: UUID) -> None:
         """A rejected chat must not keep the USER row written at enqueue."""
         from app.infrastructure.store_chat_jobs import user_message_id
+
         try:
-            await self.conversations.delete_unlinked_user_message(
-                user_message_id(job_id))
+            await self.conversations.delete_unlinked_user_message(user_message_id(job_id))
         except Exception:
-            logging.getLogger(__name__).exception(
-                "user message rollback failed")
+            logging.getLogger(__name__).exception("user message rollback failed")

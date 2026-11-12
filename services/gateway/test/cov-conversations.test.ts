@@ -167,7 +167,7 @@ test("a cached session lists only the caller's personal conversations with filte
   assert.deepEqual(body.data, [{
     id: CONV_A, revision: 3, applicationId: null, title: "", pinned: true,
     createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-09T00:00:00Z", status: "DONE",
-    lastMessagePreview: "", createdBy: { displayName: "" }, postingId: null,
+    queuePosition: null, lastLine: null, lastMessagePreview: "", createdBy: { displayName: "" }, postingId: null,
   }]);
   assert.deepEqual(body.page, { hasMore: true, nextCursor: encodeCursor("2026-10-09T00:00:00Z", CONV_A) });
 });
@@ -424,7 +424,7 @@ test("user B cannot cancel a stream in user A's conversation", async () => {
   assert.equal(seen.some(([sql]) => sql.startsWith("UPDATE") || sql.startsWith("INSERT")), false);
 });
 
-test("cancel on a shared conversation looks up the job by conversation only; db failure is 500", async () => {
+test("cancel on a shared conversation only targets the caller's job; db failure is 500", async () => {
   resetLimits();
   const seen: Seen = [];
   const res = await handle(cancel(CONV_SHARED, USER_B), env(), deps(fake(seen, {
@@ -434,7 +434,8 @@ test("cancel on a shared conversation looks up the job by conversation only; db 
   assert.equal(res.status, 200);
   const jobs = dataSeen(seen).find(([sql]) => sql.includes("FROM chat_jobs"));
   assert.ok(jobs);
-  assert.match(jobs[0], /found\.company_id IS NOT NULL OR j\.user_id = \$2::uuid/);
+  assert.match(jobs[0], /j\.user_id = \$2::uuid/);
+  assert.doesNotMatch(jobs[0], /found\.company_id IS NOT NULL OR j\.user_id/);
   assert.deepEqual(jobs[1], [CONV_SHARED, USER_B, COMPANY]);
 
   resetLimits();
@@ -577,6 +578,42 @@ test("when the shared stream read fails it falls back to scoped lookups", async 
 });
 
 // ---- event polling ----
+
+test("a finished job is delivered on the first poll and the stream stops", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "3" });
+  await warm(USER_A, e);
+  let reads = 0;
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: withJob(() => {
+      reads += 1;
+      return [
+        { id: 1, type: "status", payload: { text: "대기 중" } },
+        { id: 2, type: "token", payload: { text: "질문" } },
+        { id: 3, type: "choice", payload: { id: "c1", gate: "intake", options: [] } },
+        { id: 4, type: "done", payload: { awaiting: "choice" } },
+      ];
+    }),
+  }), async () => {}));
+  const frames = framesOf(await res.text());
+  assert.deepEqual(frames.map((frame) => frame.type), ["status", "token", "choice", "done"]);
+  assert.equal(frames[3]?.awaiting, "choice");
+  assert.equal(reads, 1);
+});
+
+test("the poll cap closes with no error frame", async () => {
+  resetLimits();
+  const e = env({ SSE_MAX_POLLS: "2" });
+  await warm(USER_A, e);
+  const res = await handle(active(CONV_A, USER_A), e, deps(fake([], {
+    user: userRow(USER_A),
+    data: withJob(() => []),
+  }), async () => {}));
+  const text = await res.text();
+  assert.match(text, /: ping\n\n/);
+  assert.deepEqual(framesOf(text), []);
+});
 
 test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async () => {
   resetLimits();

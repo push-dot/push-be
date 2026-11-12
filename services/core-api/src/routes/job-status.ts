@@ -5,6 +5,7 @@ import { planTier, queueFor, type JobType } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { rejectArchived } from "./documents.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -24,9 +25,9 @@ const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not 
 const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknown>): Promise<Response> => {
   const plan = planTier(ctx.user.plan);
   const queue = queueFor(type, plan, "PERSONAL");
-  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id });
   if (!pressure.ok) {
-    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }
   const key = (ctx.request.headers.get("idempotency-key") || "").trim();
   const { jobId } = await enqueueJob(ctx.deps.query, {
@@ -35,7 +36,7 @@ const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknow
     plan,
     payload,
     idempotencyKey: key ? type + ":" + key : undefined,
-  });
+  }, ctx.deps.transaction);
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
   return data(202, { jobId }, ctx.rid);
 };
@@ -67,10 +68,11 @@ export const enqueueFit = async (ctx: Ctx, postingIdRaw: string): Promise<Respon
   const documentId = requireUuid(String(body.documentId ?? ""), "documentId");
   const owned = await one(
     ctx.deps.query,
-    "SELECT d.id FROM documents d JOIN job_postings p ON p.id = $2 WHERE d.id = $1 AND d.user_id = $3",
+    "SELECT d.id, d.status FROM documents d JOIN job_postings p ON p.id = $2 WHERE d.id = $1 AND d.user_id = $3",
     [documentId, postingId, ctx.user.id],
   );
   if (!owned) throw notFound();
+  rejectArchived(owned);
   return acceptJob(ctx, "fit", { postingId, documentId });
 };
 
@@ -84,7 +86,8 @@ export const enqueueDocumentGenerate = async (ctx: Ctx, documentIdRaw: string): 
   if (!Array.isArray(evidence) || evidence.some((v) => typeof v !== "string" || !UUID_RE.test(v))) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be a list of UUIDs", { field: "evidenceIds" });
   }
-  const owned = await one(ctx.deps.query, "SELECT id FROM documents WHERE id = $1 AND user_id = $2", [documentId, ctx.user.id]);
+  const owned = await one(ctx.deps.query, "SELECT id, status FROM documents WHERE id = $1 AND user_id = $2", [documentId, ctx.user.id]);
   if (!owned) throw notFound();
+  rejectArchived(owned);
   return acceptJob(ctx, "document", { documentId, kind: "generate", body });
 };

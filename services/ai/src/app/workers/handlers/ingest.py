@@ -1,5 +1,7 @@
-from uuid import NAMESPACE_URL, UUID, uuid5
+import json
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from app.infrastructure.resume_workspace import md_to_doc
 from app.queue.worker import JobFailed
 from app.rag.readers import (
     read_document, read_evidence, read_github, read_job, read_posting, read_source, read_web,
@@ -54,7 +56,8 @@ async def reindex_all(query, store, ingestor, heartbeat) -> int:
     async def one_document(row):
         item = await read_document(query(), row["id"])
         await ingestor.ingest_text(
-            Tenant(user_id=_uuid(row["user_id"])), "document", row["id"], item["text"] if item else "")
+            Tenant(user_id=_uuid(row["user_id"])), "document", row["id"], item["text"] if item else "",
+            document_id=row["id"])
 
     async def jobs(after):
         return await store.jobs_missing(model, after)
@@ -81,6 +84,33 @@ async def reindex_all(query, store, ingestor, heartbeat) -> int:
     return done + await _each(postings, heartbeat, one_posting)
 
 
+async def _fill_profile_document(query, user_id, source_id: UUID, document_id: UUID) -> dict:
+    conn = query()
+    source = await read_source(conn, source_id)
+    if source is None or _uuid(source["user_id"]) != user_id:
+        raise _missing()
+    content, blocks = md_to_doc(source["text"])
+    rows = [
+        {"id": block.id, "text": block.text, "evidenceRefs": [], "claimStatus": "UNSUPPORTED"}
+        for block in blocks
+    ]
+    await conn.execute(
+        """WITH ins AS (
+             INSERT INTO document_versions (
+               id, user_id, document_id, application_id, number, content, blocks, change_note, quality, created_at
+             ) VALUES ($1, $2, $3, NULL, 1, $4::jsonb, $5::jsonb, 'source', $6::jsonb, now())
+             RETURNING id
+           )
+           UPDATE documents SET latest_version_id = ins.id, updated_at = now()
+           FROM ins WHERE documents.id = $3 AND documents.user_id = $2""",
+        uuid4(), user_id, document_id,
+        json.dumps(content, ensure_ascii=False),
+        json.dumps(rows, ensure_ascii=False),
+        json.dumps({"method": "RULE_BASED", "evidenceFidelity": 0}),
+    )
+    return {"documentId": str(document_id)}
+
+
 def make_ingest(query, store, ingestor, github_client):
     async def ingest(ctx) -> dict:
         job = ctx.job
@@ -89,6 +119,11 @@ def make_ingest(query, store, ingestor, github_client):
         company_id = _uuid(job.get("company_id"))
         if payload.get("reindex"):
             return {"sources": await reindex_all(query, store, ingestor, ctx.heartbeat)}
+        if payload.get("profileDocumentId"):
+            if not payload.get("sourceId"):
+                raise JobFailed({"code": "VALIDATION_ERROR", "message": "unknown ingest payload"})
+            return await _fill_profile_document(
+                query, user_id, UUID(payload["sourceId"]), UUID(payload["profileDocumentId"]))
         if payload.get("sourceId"):
             source_id = UUID(payload["sourceId"])
             source = await read_source(query(), source_id)
@@ -110,7 +145,8 @@ def make_ingest(query, store, ingestor, github_client):
             if document is None or _uuid(document["user_id"]) != user_id:
                 raise _missing()
             return {"nodes": await ingestor.ingest_text(
-                Tenant(user_id=user_id, company_id=company_id), "document", document_id, document["text"])}
+                Tenant(user_id=user_id, company_id=company_id), "document", document_id, document["text"],
+                document_id=document_id)}
         if payload.get("jobId"):
             job_id = UUID(payload["jobId"])
             saved = await read_job(query(), job_id)

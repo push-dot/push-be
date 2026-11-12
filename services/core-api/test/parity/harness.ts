@@ -193,7 +193,7 @@ export const parityGroup = async (group: string, base: CoreEnv = { APP_ENV: "pro
         const rows = result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v == null ? null : String(v)])));
         const got = JSON.stringify(normalize(rows, known));
         const want = JSON.stringify(normalize(golden[index].body, known));
-        if (got !== want) mismatches.push(`${item.name}: rows differ\n  core:   ${got}\n  python: ${want}`);
+        if (got !== want) mismatches.push(`${item.name}: rows differ\n  core:   ${got}\n  golden: ${want}`);
         continue;
       }
       const headers: Record<string, string> = { "x-request-id": "parity" };
@@ -208,7 +208,7 @@ export const parityGroup = async (group: string, base: CoreEnv = { APP_ENV: "pro
       const want = order(expected(golden[index], known, item.ignoreKeys));
       const got = order(await actual(res, known, item.ignoreKeys));
       if (res.status !== golden[index].status || got !== want) {
-        mismatches.push(`${item.name}: status ${res.status} vs ${golden[index].status}\n  core:   ${got}\n  python: ${want}`);
+        mismatches.push(`${item.name}: status ${res.status} vs ${golden[index].status}\n  core:   ${got}\n  golden: ${want}`);
       }
     }
   } finally {

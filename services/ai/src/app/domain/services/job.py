@@ -19,9 +19,6 @@ from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 _WORD_RE = re.compile(r"[a-z0-9+#가-힣]+")
 # Each id costs an evidence read and an approval check inside one transaction.
@@ -134,7 +131,7 @@ def run_gap_analysis(j: ent.JobPosting, app_id: UUID,
         id=uuid4(), user_id=j.user_id, application_id=app_id, job_id=j.id,
         job_revision=j.revision, evidence_ids=[e.id for e in pool],
         matched=matched, missing=missing, preferred_missing=preferred_missing,
-        risks=j.risks or [], fit_score=fit, method=method, created_at=_now(),
+        risks=j.risks or [], fit_score=fit, method=method, created_at=utcnow(),
         part_scores=part_scores(j.requirements, j.keywords, pool))
 
 
@@ -183,7 +180,7 @@ class JobService:
                      requirements: list[str], preferred: list[str],
                      deadline: Optional[datetime], language: str) -> ent.JobPosting:
         validate_job_input(company, title, source_kind, source_url, source_text)
-        now = _now()
+        now = utcnow()
         j = ent.JobPosting(
             id=uuid4(), user_id=user_id, revision=1, company=company, title=title,
             source_kind=source_kind, source_url=source_url, source_text=source_text,
@@ -238,7 +235,7 @@ class JobService:
             await self.analyses.mark_stale_for_job(user_id, job_id, UUID(int=0))
             await self.analyses.create(analysis)
             await self._save_reference_samples(user_id, j, pool)
-            now = _now()
+            now = utcnow()
             op = ent.Operation(
                 id=uuid4(), user_id=user_id, type=ent.OP_JOB_ANALYSIS,
                 application_id=app.id, status=ent.OP_SUCCEEDED,

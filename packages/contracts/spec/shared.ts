@@ -30,6 +30,11 @@ export const obj = (properties: Record<string, Schema>, required: string[] = Obj
   required,
 });
 
+export const closed = (properties: Record<string, Schema>, required?: string[]): Schema => ({
+  ...obj(properties, required),
+  additionalProperties: false,
+});
+
 export const arr = (items: Schema): Schema => ({ type: "array", items });
 
 export const str: Schema = { type: "string" };
@@ -83,7 +88,7 @@ export const query = (name: string, schema: Schema = str, description?: string):
 });
 
 export const pageParams: Schema[] = [
-  query("limit", { type: "integer", minimum: 1, maximum: 100, default: 50 }),
+  query("limit", { type: "integer", minimum: 1, maximum: 100, default: 50 }, "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400."),
   query("cursor", str, "Opaque cursor from page.nextCursor"),
 ];
 
@@ -98,7 +103,7 @@ export const del = route("delete");
 export const sharedSchemas: Record<string, Schema> = {
   Error: obj({
     error: obj({
-      code: { type: "string", description: "VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, CONSENT_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, TOKEN_EXPIRED, INTERNAL, ..." },
+      code: { type: "string", description: "VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, BOT_LIMIT, DEFAULT_BOT_PROTECTED, ..." },
       message: str,
       requestId: str,
       details: nullable({ type: "object", additionalProperties: true }),

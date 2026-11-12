@@ -13,7 +13,7 @@ from starlette.types import Message, Receive, Scope, Send
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.api.errors import error_body, redact
-from app.ratelimit import SlidingWindow
+from app.ratelimit import SlidingWindow, allow_redis, redis_configured
 
 # Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
 # webhooks and image bytes are served by push-be-core, not this service.
@@ -107,6 +107,8 @@ class ApiMiddleware:
 
     async def _limited(self, scope: Scope, kind: str, key: str,
                        memory: SlidingWindow, limit: int, now: float) -> bool:
+        if redis_configured():
+            return await allow_redis(kind, key, limit, memory, now)
         return memory.allow(key or "unknown", limit, now)
 
     async def _idempotent(self, scope: Scope, receive: Receive, send: Send,

@@ -26,6 +26,27 @@ test("responses vary on Origin whether or not the origin is allowed", async () =
   assert.equal(preflight.headers.get("vary"), "Origin");
 });
 
+test("fo-web origins get allow-origin and credentials; an unknown https origin does not", async () => {
+  const deps = { query: async () => [] } as Deps;
+  for (const origin of [
+    "https://push-fo-web.youngjoon568.workers.dev",
+    "https://push.devcyjoon.tech",
+  ]) {
+    const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+      method: "OPTIONS",
+      headers: { origin, "access-control-request-method": "GET" },
+    }), env, deps);
+    assert.equal(res.headers.get("access-control-allow-origin"), origin, origin);
+    assert.equal(res.headers.get("access-control-allow-credentials"), "true", origin);
+  }
+  const denied = await handle(new Request("https://push-be.example/api/v1/auth/me", {
+    method: "OPTIONS",
+    headers: { origin: "https://evil.example", "access-control-request-method": "GET" },
+  }), env, deps);
+  assert.equal(denied.headers.get("access-control-allow-origin"), null);
+  assert.equal(denied.headers.get("access-control-allow-credentials"), null);
+});
+
 test("a cursor timestamp is sent to Postgres in canonical ISO form", async () => {
   resetLimits();
   const seen: unknown[][] = [];

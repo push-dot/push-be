@@ -14,11 +14,12 @@ from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.framework.fit_judge import judge_fit
+from app.harness.approval import approval_id_for
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
-from app.harness.policy import Decision, Tier, decide
+from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
 from app.jsonutil import to_jsonable
@@ -97,6 +98,15 @@ class FollowUser(BaseModel):
     user_id: UUID
 
 
+class ProfileSearch(BaseModel):
+    q: str = ""
+
+
+class SendOffer(BaseModel):
+    profile_id: UUID
+    message: str
+
+
 class ProfilePatch(_Camel):
     display_name: str | None = None
     headline: str | None = None
@@ -128,6 +138,12 @@ class CareerQuery(BaseModel):
     query: str = ""
 
 
+class MatchArgs(BaseModel):
+    chips: list[str] = []
+    min_fit: bool = False
+    document_id: OptionalId = None
+
+
 class PrepareArgs(BaseModel):
     interview_id: UUID
     expected_revision: int = 0
@@ -143,6 +159,7 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
             company_id=ctx.company_id,
             json=body or None,
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
+            approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
 
     return ToolSpec(name, tier, model, run, lambda _args: summary)
@@ -152,13 +169,62 @@ def _svc():
     return bound_services.get()
 
 
+_LIBRARY_SQL = (
+    "SELECT id, file_name, mime_type, size, page_count, origin, created_at "
+    "FROM sources WHERE user_id = $1 AND origin IN ('UPLOAD', 'AI') "
+    "ORDER BY created_at DESC, id DESC LIMIT 50"
+)
+
+
+def _cell(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _library_item(row) -> dict:
+    return {
+        "id": str(_cell(row, "id")),
+        "fileName": _cell(row, "file_name") or "",
+        "mimeType": _cell(row, "mime_type") or "",
+        "size": int(_cell(row, "size") or 0),
+        "pageCount": _cell(row, "page_count"),
+        "createdAt": _cell(row, "created_at"),
+        "origin": str(_cell(row, "origin") or "UPLOAD"),
+    }
+
+
+def _markdown_library_item(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    name = item.get("fileName") if isinstance(item.get("fileName"), str) else item.get("title")
+    mime = item.get("mimeType") if isinstance(item.get("mimeType"), str) else ""
+    if not isinstance(name, str):
+        name = ""
+    return name.lower().endswith(".md") or mime.lower() == "text/markdown"
+
+
+async def _library_sources(ctx: ToolContext) -> list:
+    if ctx.db is None:
+        return []
+    try:
+        user_id = UUID(ctx.user_id)
+    except (TypeError, ValueError):
+        return []
+    rows = await ctx.db.q().fetch(_LIBRARY_SQL, user_id)
+    return [to_jsonable(_library_item(row)) for row in rows or []]
+
+
 async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    items = []
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
-    if document_svc is None:
-        return {"items": []}
-    page = await document_svc.list(UUID(ctx.user_id), None, None, PageRequest())
-    return {"items": to_jsonable(page.items)}
+    if document_svc is not None:
+        page = await document_svc.list(UUID(ctx.user_id), None, None, PageRequest())
+        items.extend(to_jsonable(page.items))
+    items.extend(await _library_sources(ctx))
+    return {"items": [item for item in items if not _markdown_library_item(item)]}
 
 
 async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:
@@ -183,7 +249,7 @@ def _diff(args: EditDocumentArgs) -> dict:
     }
 
 
-def _document_event(job_id: str, tool_call_id: str, document_id: str) -> dict:
+def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: list) -> dict:
     # tool_call_id keeps a second edit in the same job from reusing a resolved approval.
     approval_id = str(uuid5(NAMESPACE_URL, f"push:chat-approval:{job_id}:{tool_call_id}"))
     return {
@@ -196,12 +262,14 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str) -> dict:
             {"id": "apply", "label": "적용"},
             {"id": "skip", "label": "그대로 두기"},
         ],
+        "hunks": hunks,
     }
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
-        event = _document_event(ctx.job_id, ctx.tool_call_id, str(args.document_id))
+        event = _document_event(
+            ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
@@ -239,25 +307,32 @@ def start_document_choice_id(conversation_id: str, job_id: str) -> str:
     return str(uuid5(NAMESPACE_URL, "push:start-document:" + conversation_id + ":" + job_id))
 
 
-def _resume_status(row) -> str:
+def _resume_saved(row) -> dict:
     if not row:
-        return ""
+        return {}
     try:
         raw = row["resume_state"]  # dict from pgproto, Record from asyncpg
     except (KeyError, TypeError):
-        return ""
+        return {}
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except json.JSONDecodeError:
-            return ""
-    if isinstance(raw, dict):
-        return str(raw.get("status") or "")
-    return ""
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _draft_detail(saved: dict) -> str:
+    from app.harness.personal.resume.drafts import draft_text
+
+    if not draft_text(saved.get("drafts")):
+        return ""
+    return f"작성 중인 이력서 초안(v{int(saved.get('draft_version') or 1)})이 있어요."
 
 
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
-    if _resume_status(await _resume_row(ctx)) == "active":
+    saved = _resume_saved(await _resume_row(ctx))
+    if saved.get("status") == "active":
         choice = {
             "type": "choice",
             "id": start_document_choice_id(ctx.conversation_id, ctx.job_id),
@@ -269,6 +344,8 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
                 {"id": "cancel", "label": "그만하기"},
             ],
         }
+        if detail := _draft_detail(saved):
+            choice["detail"] = detail
         await insert_chat_approval(ctx.db, ctx.user_id, ctx.conversation_id, choice, None)
         await ctx.db.q().execute(
             "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
@@ -327,6 +404,18 @@ async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:
     return to_jsonable(op)
 
 
+async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
+    from app.domain.quick_starts import conditions_from_chips
+    from app.domain.services.posting_match import run_quick_match
+
+    conditions = conditions_from_chips(args.chips)
+    conditions["minFit"] = args.min_fit
+    if args.document_id is not None:
+        conditions["documentId"] = str(args.document_id)
+    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
+    return {"items": result.get("items") or [], "text": result.get("text") or ""}
+
+
 async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     svc = _svc()
     if svc is None or getattr(svc, "ai", None) is None:
@@ -348,6 +437,7 @@ PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",
           lambda args: "/api/v1/postings" + ("?" + urlencode({"q": args.q}) if args.q else ""),
           drop=("q",)),
+    _spec("find_matching_postings", Tier.READ, MatchArgs, _find_matching_postings, "공고를 찾아요"),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
     _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",
@@ -363,6 +453,9 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/calendar/events"),
     _core("get_my_profile", Tier.READ, EmptyArgs, "내 프로필을 봐요", "GET",
           lambda _args: "/api/v1/me/profile"),
+    _core("search_profiles", Tier.READ, ProfileSearch, "허브 프로필을 찾아요", "GET",
+          lambda args: "/api/v1/profiles" + ("?" + urlencode({"q": args.q}) if args.q else ""),
+          drop=("q",)),
     _core("list_posts", Tier.READ, EmptyArgs, "글을 봐요", "GET",
           lambda _args: "/api/v1/posts"),
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
@@ -394,6 +487,9 @@ PERSONAL_TOOLS = [
     _core("send_offer_message", Tier.RISKY_WRITE, OfferMessage, "제안에 답장을 보내요", "POST",
           lambda args: f"/api/v1/me/offers/{args.offer_id}/messages",
           write=True, drop=("offer_id",)),
+    _core("send_offer", Tier.RISKY_WRITE, SendOffer, "커피챗 제안을 보내요", "POST",
+          lambda args: f"/api/v1/profiles/{args.profile_id}/offer",
+          write=True, drop=("profile_id",)),
     _core("create_post", Tier.RISKY_WRITE, PostBody, "글을 올려요", "POST",
           lambda _args: "/api/v1/posts", write=True),
     _core("create_comment", Tier.RISKY_WRITE, CommentBody, "댓글을 남겨요", "POST",

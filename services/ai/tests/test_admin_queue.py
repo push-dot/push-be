@@ -45,6 +45,9 @@ class FakeAdminDb:
     async def neon_stats(self):
         return {"dbSizeBytes": 10, "ragNodes": 2}
 
+    async def open_billing_alerts(self):
+        return 0
+
     async def pending_outbox(self):
         return []
 
@@ -109,6 +112,31 @@ def test_pause_resume_and_cancel_endpoints():
     assert [str(j) for j in db.cancelled] == [job_id]
 
 
+def test_retry_short_of_credits_is_402():
+    from app.queue.credits import ShortBalance
+
+    class Short(FakeAdminDb):
+        async def retry(self, job_id, now):
+            raise ShortBalance()
+
+    http, _ = client(FakeRedis(decode_responses=True), db=Short())
+    res = http.post(f"/admin/jobs/{uuid4()}/retry", headers={"authorization": "Bearer admin-secret"})
+    assert (res.status_code, res.json()["detail"]) == (402, "INSUFFICIENT_CREDITS")
+
+
+def test_retry_while_the_owner_row_is_locked_is_503():
+    class Busy(Exception):
+        sqlstate = "55P03"
+
+    class Locked(FakeAdminDb):
+        async def retry(self, job_id, now):
+            raise Busy("canceling statement due to lock timeout")
+
+    http, _ = client(FakeRedis(decode_responses=True), db=Locked())
+    res = http.post(f"/admin/jobs/{uuid4()}/retry", headers={"authorization": "Bearer admin-secret"})
+    assert (res.status_code, res.json()["detail"]) == (503, "BILLING_BUSY")
+
+
 class Sent:
     def __init__(self, discord_ok=True):
         self.discord = []
@@ -128,6 +156,47 @@ class Sent:
 def alerts(sent, client_):
     return Alerts(client_, discord_url="https://discord.example/api/webhooks/x",
                   resend_key="re_test", email_from="alerts@push.example", email_to="ops@push.example")
+
+
+@pytest.mark.asyncio
+async def test_open_billing_alerts_fire_until_resolved():
+    from types import SimpleNamespace
+
+    from app.queue.admin import AdminJobs
+    from app.queue.alerts import db_conditions
+
+    class Conn:
+        async def fetchval(self, sql, *args):
+            assert "FROM billing_alerts WHERE resolved_at IS NULL" in sql
+            return 2
+
+    assert await AdminJobs(Conn()).open_billing_alerts() == 2
+    stats = SimpleNamespace(requeued=0)
+    neon = {"dbSizeBytes": 0}
+    firing, detail = db_conditions(stats, neon, 2)["billing_alert"]
+    assert firing and detail.startswith("2 open rows in billing_alerts")
+    assert db_conditions(stats, neon, 0)["billing_alert"][0] is False
+
+
+@pytest.mark.asyncio
+async def test_open_billing_alerts_is_zero_before_the_table_exists():
+    from app.queue.admin import AdminJobs
+
+    class PgError(Exception):
+        def __init__(self, sqlstate):
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
+
+    class Conn:
+        def __init__(self, sqlstate):
+            self.sqlstate = sqlstate
+
+        async def fetchval(self, sql, *args):
+            raise PgError(self.sqlstate)
+
+    assert await AdminJobs(Conn("42P01")).open_billing_alerts() == 0
+    with pytest.raises(PgError):
+        await AdminJobs(Conn("08003")).open_billing_alerts()
 
 
 @pytest.mark.asyncio
@@ -196,6 +265,10 @@ async def test_retry_dead_job_requeues_and_reserves_again():
         await conn.execute(
             "INSERT INTO credit_reservations (job_id, user_id, amount_micro, status) VALUES ($1, $2, 500, 'RELEASED')",
             job, user)
+        # retry holds the 500 again only when the balance covers it.
+        await conn.execute(
+            "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id) "
+            "VALUES ($1, $2, 'PURCHASE', 500, 500, 'grant')", uuid4(), user)
         admin = AdminJobs(conn)
         assert await admin.retry(job, NOW) is True
         row = await conn.fetchrow("SELECT status, attempts, error FROM ai_jobs WHERE id = $1", job)
@@ -208,6 +281,7 @@ async def test_retry_dead_job_requeues_and_reserves_again():
         dead = await admin.dead_jobs("CANCELLED", 10)
         assert [d["id"] for d in dead] == [str(job)]
     finally:
+        await conn.execute("DELETE FROM billing_ledger WHERE user_id = $1", user)
         await conn.execute("DELETE FROM users WHERE id = $1", user)
         await conn.close()
 

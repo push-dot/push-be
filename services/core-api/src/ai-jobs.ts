@@ -2,7 +2,7 @@ import { one } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { planTier } from "./jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "./jobs/enqueue.ts";
-import { scheduleChatJob } from "./routes/conversations.ts";
+import { scheduleChatJob } from "./conversations/schedule-chat-job.ts";
 import type { Ctx } from "./types.ts";
 
 export type ResumeJob = {
@@ -54,7 +54,7 @@ export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string
     payload,
     idempotencyKey: job.idempotencyKey,
     conversationId: job.conversationId,
-  });
+  }, ctx.deps.transaction);
   await one(ctx.deps.query, STATUS, [jobId, WAITING]);
   await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
   return jobId;

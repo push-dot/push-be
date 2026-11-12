@@ -59,7 +59,7 @@ export const buildSpec = (): Schema => {
     info: {
       title: "Push API",
       version: "1.0.0",
-      description: "Every route a client can call through the gateway. x-owner names the worker that answers it. Webhooks, /internal and AI worker act-as routes are not listed.",
+      description: "Every route a client can call through the gateway. x-owner names the worker that answers it. Webhooks, /internal and AI worker act-as routes are not listed. Public core routes and GET /api/v1/healthz are 60 requests per minute per IP. Authenticated core routes and gateway user routes are 600 per minute per user. Those 429 RATE_LIMITED responses have no retryAfterSec.",
     },
     servers: [{ url: "/" }],
     security: [{ bearer: [] }],
@@ -71,7 +71,7 @@ export const buildSpec = (): Schema => {
           name: "Idempotency-Key",
           in: "header",
           required: true,
-          description: "UUID. A retry with the same key and body replays the first response.",
+          description: "UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR.",
           schema: { type: "string", format: "uuid" },
         },
       },

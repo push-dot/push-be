@@ -135,18 +135,105 @@ const AUTH_COLUMNS = "auth.id, auth.display_name, auth.locale, auth.created_at, 
 export const AUTH_RATE_SQL = AUTH_RATE_PREFIX
   + "SELECT " + AUTH_COLUMNS + " FROM auth";
 
-export const LIST_SQL = AUTH_RATE_PREFIX
-  + ", page AS ("
-  + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, c.created_at, c.updated_at, "
+// Owner scope on conversations alias `pc` for list enrichment CTEs.
+export const personalOwnerPc = (ownerParam: string): string =>
+  `pc.user_id = ${ownerParam}::uuid AND pc.company_id IS NULL`;
+export const employerOwnerPc = (ownerParam: string): string =>
+  `pc.company_id = ${ownerParam}::uuid`;
+/** Join `live` inside aux CTEs (LIST_SQL); do not reference `live` only in a WHERE fragment. */
+export const liveOwnerJoin = "INNER JOIN live ON live.id = pc.user_id AND pc.company_id IS NULL";
+
+type ConversationListAux = { ownerWhere: string; liveJoin?: string };
+
+/** One owner-scoped scan of pending jobs; queue_position counts jobs, not conversations. */
+export function conversationListAuxCtes(spec: ConversationListAux | string): string {
+  const ownerWhere = typeof spec === "string" ? spec : spec.ownerWhere;
+  const liveJoin = typeof spec === "string" ? "" : (spec.liveJoin ?? "");
+  const ownerTail = ownerWhere ? ` AND ${ownerWhere}` : "";
+  const pcJobs = "INNER JOIN conversations pc ON pc.id = j.conversation_id" + (liveJoin ? ` ${liveJoin}` : "");
+  const pcApprovals = "INNER JOIN conversations pc ON pc.id = a.conversation_id" + (liveJoin ? ` ${liveJoin}` : "");
+  return "owner_pending AS ("
+    + "SELECT j.id, j.conversation_id, j.created_at FROM chat_jobs j " + pcJobs + " "
+    + "WHERE j.status = 'PENDING'" + ownerTail
+    + "), queue_rank AS ("
+    + "SELECT cm.conversation_id, COUNT(op.id)::int AS queue_position "
+    + "FROM (SELECT conversation_id, MIN(created_at) AS at FROM owner_pending GROUP BY conversation_id) cm "
+    + "LEFT JOIN owner_pending op ON op.created_at < cm.at "
+    + "GROUP BY cm.conversation_id"
+    + "), needs_approval AS ("
+    + "SELECT DISTINCT a.conversation_id FROM approvals a " + pcApprovals + " "
+    + "WHERE a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())" + ownerTail
+    + "), active_chat AS ("
+    + "SELECT DISTINCT j.conversation_id FROM chat_jobs j " + pcJobs + " "
+    + "WHERE j.status IN ('PENDING', 'RUNNING')" + ownerTail
+    + ")";
+}
+
+/** LIST_SQL auth+list path: owner filter comes from joining `live`, not a bare `live.id` predicate. */
+export const conversationListAuxCtesForLive = (): string =>
+  conversationListAuxCtes({ ownerWhere: "", liveJoin: liveOwnerJoin });
+
+export const LAST_MSG_LATERAL = "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
+  + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true ";
+
+export const CONVERSATION_ENRICHMENT_JOINS = "LEFT JOIN queue_rank qr ON qr.conversation_id = c.id "
+  + "LEFT JOIN needs_approval na ON na.conversation_id = c.id "
+  + "LEFT JOIN active_chat ac ON ac.conversation_id = c.id "
+  + "LEFT JOIN LATERAL ("
+  + "SELECT NULLIF(a.title, '') AS title FROM approvals a "
+  + "WHERE a.conversation_id = c.id AND a.status = 'PENDING' "
+  + "AND (a.expires_at IS NULL OR a.expires_at > now()) ORDER BY a.created_at DESC LIMIT 1"
+  + ") appr_last ON true "
+  + "LEFT JOIN LATERAL ("
+  + "SELECT j.id AS job_id FROM chat_jobs j "
+  + "WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING') "
+  + "ORDER BY j.created_at DESC LIMIT 1"
+  + ") active_j ON true "
+  + "LEFT JOIN LATERAL ("
+  + "SELECT NULLIF(COALESCE(NULLIF(concat_ws(' · ', NULLIF(e.payload->>'summary', ''), NULLIF(e.payload->>'target', '')), ''), "
+  + "e.payload->>'text'), '') AS line FROM chat_events e "
+  + "WHERE e.job_id = active_j.job_id AND e.type IN ('status', 'tool') ORDER BY e.id DESC LIMIT 1"
+  + ") event_last ON true ";
+
+// A waiting card's title first, else the newest progress line of a queued or running job.
+export const LAST_LINE = "COALESCE(appr_last.title, event_last.line) AS last_line";
+
+export const CONVERSATION_STATUS = "CASE WHEN na.conversation_id IS NOT NULL THEN 'NEEDS_APPROVAL' "
+  + "WHEN ac.conversation_id IS NOT NULL THEN 'RUNNING' "
+  + "ELSE 'DONE' END AS status";
+
+export const QUEUE_POSITION = "qr.queue_position";
+
+const CONVERSATION_LIST_SELECT = "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
+  + "c.created_at, c.updated_at, "
   + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
   + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-  + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
-  + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-  + "ELSE 'DONE' END AS status "
+  + CONVERSATION_STATUS + ", " + LAST_LINE + ", " + QUEUE_POSITION + " ";
+
+const CONVERSATION_LIST_FROM = "FROM conversations c "
+  + "LEFT JOIN users cu ON cu.id = c.user_id "
+  + LAST_MSG_LATERAL
+  + CONVERSATION_ENRICHMENT_JOINS;
+
+/** Standalone list/get query with timestamps formatted for JSON. */
+export function conversationRowSelect(ownerPcSql: string): string {
+  return "WITH " + conversationListAuxCtes(ownerPcSql) + " "
+    + "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
+    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
+    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
+    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
+    + CONVERSATION_STATUS + ", " + LAST_LINE + ", qr.queue_position "
+    + CONVERSATION_LIST_FROM;
+}
+
+export const LIST_SQL = AUTH_RATE_PREFIX
+  + ", " + conversationListAuxCtesForLive()
+  + ", page AS ("
+  + CONVERSATION_LIST_SELECT
   + "FROM conversations c JOIN live ON live.id = c.user_id "
   + "LEFT JOIN users cu ON cu.id = c.user_id "
-  + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
-  + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
+  + LAST_MSG_LATERAL
+  + CONVERSATION_ENRICHMENT_JOINS
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
   + "AND c.company_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
@@ -158,7 +245,8 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "'title', page.title, 'pinned', page.pinned, 'created_at', " + tsText("page.created_at") + ", "
   + "'updated_at', " + tsText("page.updated_at") + ", "
   + "'posting_id', page.posting_id, 'display_name', page.display_name, "
-  + "'last_message_preview', page.last_message_preview, 'status', page.status"
+  + "'last_message_preview', page.last_message_preview, 'status', page.status, "
+  + "'last_line', page.last_line, 'queue_position', page.queue_position"
   + ") ORDER BY page.updated_at DESC, page.id DESC) FROM page), '[]'::json) AS rows FROM auth";
 
 /** A `page` CTE of messages as one JSON array column, newest first. */

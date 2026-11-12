@@ -1,5 +1,5 @@
 import type { StoreReceipts } from "./billing/stores.ts";
-import type { Query } from "./db.ts";
+import type { Query, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 import type { SmsSender } from "./sms/sender.ts";
 
@@ -14,10 +14,10 @@ export interface CoreEnv {
   /** Same value as the VPS AI_SHARED_SECRET. Sent on the wake request. */
   AI_SHARED_SECRET?: string;
   APP_ENV?: string;
+  PAYMENTS_ENABLED?: string;
   DEV_AUTH_TOKEN?: string;
   DEV_USER_ID?: string;
   MANAGED_AI?: string;
-  MANAGED_GO?: string;
   TOKEN_ENCRYPTION_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -36,8 +36,7 @@ export interface CoreEnv {
   STRIPE_PRICE_EMPLOYER_PRO?: string;
   STRIPE_PRICE_EMPLOYER_ULTRA?: string;
   STRIPE_PRICE_TOPUP?: string;
-  STRIPE_SUCCESS_URL?: string;
-  STRIPE_CANCEL_URL?: string;
+  STRIPE_RETURN_ORIGINS?: string;
   STRIPE_PORTAL_RETURN_URL?: string;
   MAIL_FROM?: string;
   RESEND_API_KEY?: string;
@@ -58,10 +57,12 @@ export interface CoreEnv {
   IAP_TOPUP_CREDITS?: string;
   APPLE_BUNDLE_ID?: string;
   APPLE_ROOT_PEM?: string;
+  APPLE_IAP_KEY?: string;
+  APPLE_IAP_KEY_ID?: string;
+  APPLE_ISSUER_ID?: string;
   GOOGLE_PLAY_KEY?: string;
   GOOGLE_PLAY_PACKAGE?: string;
   GOOGLE_OIDC_AUDIENCE?: string;
-  GOOGLE_OIDC_KEY?: string;
   EMAIL?: {
     send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
   };
@@ -69,8 +70,10 @@ export interface CoreEnv {
 
 export interface Deps {
   query: Query;
+  transaction?: Transaction;
   now?: () => Date;
   fetch?: typeof fetch;
+  waitUntil?: (promise: Promise<unknown>) => void;
   mailer?: Mailer;
   sms?: SmsSender;
   stores?: StoreReceipts;

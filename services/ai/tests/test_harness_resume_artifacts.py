@@ -81,15 +81,30 @@ async def test_final_resume_is_stored_in_the_database(tmp_path, monkeypatch):
     assert file_id
     assert docs.created
     assert docs.created[0].id
-    event = next(item for item in events if item["type"] == "file")
-    assert event["name"] == "05_final_resume.md"
-    assert event["mime"] == "text/markdown"
-    assert event["fileId"] == file_id
-    assert event["documentId"] == str(docs.created[0].id)
-    assert event["downloadUrl"] == (
-        f"/conversations/{conversation_id}/artifacts/05_final_resume.md"
-    )
+    assert not [item for item in events if item.get("type") == "file"]
     UUID(file_id)
+
+
+@pytest.mark.asyncio
+async def test_markdown_artifacts_never_emit_a_file_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("PUSH_RESUME_DIR", str(tmp_path))
+    events = []
+    monkeypatch.setattr(
+        "app.harness.tools.get_stream_writer",
+        lambda: events.append,
+    )
+    ctx = ToolContext(
+        user_id=str(uuid4()),
+        company_id=None,
+        conversation_id=str(uuid4()),
+        job_id="job-1",
+        tool_call_id="call-1",
+        db=_Files(),
+        core=None,
+    )
+    await save_artifact(ctx, "03_draft_resume_v1.md", "# 초안")
+    await save_artifact(ctx, "02_strategy.json", "{\"fit\": 1}")
+    assert events == []
 
 
 def test_resume_get_posting_rejects_path_ids():

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import {
+  CONVERSATION_STATUS, conversationListAuxCtesForLive, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
+  personalOwnerPc,
+} from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -28,6 +32,8 @@ type Fixture = {
   display_name: string | null;
   preview: string;
   status: string;
+  last_line: string | null;
+  queue_position: number | null;
 };
 
 const FIXTURES: Fixture[] = [
@@ -43,6 +49,8 @@ const FIXTURES: Fixture[] = [
     display_name: "Ada",
     preview: "still going",
     status: "RUNNING",
+    last_line: "이력서 읽기 · 김서준_이력서.pdf",
+    queue_position: 3,
   },
   {
     id: NEEDS_ID,
@@ -56,6 +64,8 @@ const FIXTURES: Fixture[] = [
     display_name: "Bea",
     preview: LONG_PREVIEW,
     status: "NEEDS_APPROVAL",
+    last_line: "이 공고에 지원해요",
+    queue_position: null,
   },
   {
     id: DONE_ID,
@@ -69,6 +79,8 @@ const FIXTURES: Fixture[] = [
     display_name: null,
     preview: "",
     status: "DONE",
+    last_line: null,
+    queue_position: null,
   },
 ];
 
@@ -77,7 +89,6 @@ const env = (): FrontEnv => ({
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   SSE_MAX_POLLS: "3",
 });
 
@@ -108,6 +119,8 @@ const rowsFor = (sql: string): Record<string, unknown>[] => {
     display_name: row.display_name,
     last_message_preview: cut ? row.preview.slice(0, 140) : row.preview,
     status: row.status,
+    last_line: row.last_line,
+    queue_position: row.queue_position,
   }));
 };
 
@@ -136,14 +149,28 @@ const listQuery = (seen: Array<[string, unknown[]]>): Query => {
   };
 };
 
+const assertQueuePositionSql = (sql: string): void => {
+  assert.match(sql, /owner_pending AS \(/);
+  assert.match(sql, /queue_rank AS \(/);
+  assert.match(sql, /LEFT JOIN owner_pending op ON op\.created_at < cm\.at/);
+  assert.match(sql, /COUNT\(op\.id\)::int AS queue_position/);
+  assert.match(sql, /LEFT JOIN queue_rank qr ON qr\.conversation_id = c\.id/);
+  assert.doesNotMatch(sql, /ROW_NUMBER\(\) OVER \(ORDER BY created_at\)/);
+};
+
 const assertStatusSql = (sql: string): void => {
+  assert.ok(sql.includes(CONVERSATION_STATUS), "status uses the shared CASE");
   const needs = sql.indexOf("THEN 'NEEDS_APPROVAL'");
   const running = sql.indexOf("THEN 'RUNNING'");
   assert.ok(needs >= 0 && running > needs);
-  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM approvals a WHERE a\.conversation_id = c\.id AND a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)\) THEN 'NEEDS_APPROVAL'/);
-  assert.match(sql, /WHEN EXISTS \(SELECT 1 FROM chat_jobs j WHERE j\.conversation_id = c\.id AND j\.status IN \('PENDING', 'RUNNING'\)\) THEN 'RUNNING'/);
-  assert.match(sql, /ELSE 'DONE' END AS status/);
-  assert.match(sql, /LEFT JOIN LATERAL \(SELECT m\.text FROM messages m WHERE m\.conversation_id = c\.id ORDER BY m\.created_at DESC, m\.id DESC LIMIT 1\) last_msg ON true/);
+  assert.match(sql, /needs_approval AS \(/);
+  assert.match(sql, /active_chat AS \(/);
+  assert.match(sql, /LEFT JOIN needs_approval na ON na\.conversation_id = c\.id/);
+  assert.match(sql, /LEFT JOIN active_chat ac ON ac\.conversation_id = c\.id/);
+  assert.ok(sql.includes(LAST_LINE), "last_line uses the shared fragment");
+  assert.match(sql, /COALESCE\(appr_last\.title, event_last\.line\)/);
+  assertQueuePositionSql(sql);
+  assert.match(sql, new RegExp(LAST_MSG_LATERAL.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(sql, /m\.text ILIKE/);
   assert.match(sql, /COALESCE\(last_msg\.text, ''\) ILIKE/);
   assert.match(sql, /c\.title ILIKE/);
@@ -200,6 +227,8 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-15T00:00:00Z",
       updatedAt: "2026-10-17T00:00:00Z",
       status: "NEEDS_APPROVAL",
+      queuePosition: null,
+      lastLine: "이 공고에 지원해요",
       lastMessagePreview: "가".repeat(140),
       createdBy: { displayName: "Bea" },
       postingId: POSTING_ID,
@@ -213,6 +242,8 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-18T00:00:00Z",
       updatedAt: "2026-10-16T00:00:00Z",
       status: "RUNNING",
+      queuePosition: 3,
+      lastLine: "이력서 읽기 · 김서준_이력서.pdf",
       lastMessagePreview: "still going",
       createdBy: { displayName: "Ada" },
       postingId: null,
@@ -226,6 +257,8 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
       createdAt: "2026-10-14T00:00:00Z",
       updatedAt: "2026-10-14T00:00:00Z",
       status: "DONE",
+      queuePosition: null,
+      lastLine: null,
       lastMessagePreview: "",
       createdBy: { displayName: "" },
       postingId: null,
@@ -309,10 +342,118 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
 });
 
 test("an expired approval card does not flag the conversation as NEEDS_APPROVAL", async () => {
-  const { LIST_SQL } = await import("../src/middleware/ratelimit.ts");
-  const { readFile } = await import("node:fs/promises");
-  const inline = await readFile(new URL("../src/routes/conversations.ts", import.meta.url), "utf8");
-  for (const sql of [LIST_SQL, inline]) {
+  const { LIST_SQL, conversationListAuxCtes } = await import("../src/middleware/ratelimit.ts");
+  for (const sql of [LIST_SQL, conversationListAuxCtes(personalOwnerPc("$1"))]) {
     assert.match(sql, /a\.status = 'PENDING' AND \(a\.expires_at IS NULL OR a\.expires_at > now\(\)\)/);
   }
+});
+
+test("list uses one database round trip on the standalone list path", async () => {
+  resetLimits();
+  const devEnv = env();
+  devEnv.APP_ENV = "development";
+  devEnv.DEV_AUTH_TOKEN = "secret-token";
+  devEnv.DEV_USER_ID = USER;
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request(
+    "https://push-be.example/api/v1/conversations",
+    { headers: { authorization: "Bearer secret-token" } },
+  ), devEnv, deps(listQuery(seen)));
+  assert.equal(res.status, 200);
+  const listCalls = seen.filter(([sql]) => sql.includes("FROM conversations") && !sql.includes("access_tokens"));
+  assert.equal(listCalls.length, 1);
+  assert.ok(listCalls[0][0].includes(personalOwnerPc("$1")));
+});
+
+test("combined auth+list uses owner-scoped queue_rank CTE", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await handle(new Request(
+    "https://push-be.example/api/v1/conversations",
+    { headers: { authorization: "Bearer secret-token" } },
+  ), env(), deps(listQuery(seen)));
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  const listSql = String(seen[0][0]);
+  assert.ok(listSql.includes(liveOwnerJoin), "live is joined inside aux CTEs");
+  assert.doesNotMatch(listSql, /pc\.user_id = live\.id[^)]*\) WHERE j\.status/);
+  assertQueuePositionSql(listSql);
+});
+
+const getQuery = (seen: Array<[string, unknown[]]>, ownerId = USER): Query => {
+  const base = listQuery([]);
+  return async (sql, params) => {
+    if (!sql.includes("WHERE c.id = $1::uuid")) return base(sql, params);
+    seen.push([sql, params]);
+    if (params[1] !== ownerId) return [];
+    return rowsFor(sql).filter((row) => row.id === params[0]);
+  };
+};
+
+const getOne = (id: string, query: Query) => handle(new Request(
+  `https://push-be.example/api/v1/conversations/${id}`,
+  { headers: { authorization: "Bearer secret-token" } },
+), env(), deps(query));
+
+test("get one returns the list item shape for the caller's own conversation", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne(NEEDS_ID, getQuery(seen));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { data: {
+    id: NEEDS_ID,
+    revision: 4,
+    applicationId: null,
+    title: "승인 대기",
+    pinned: true,
+    createdAt: "2026-10-15T00:00:00Z",
+    updatedAt: "2026-10-17T00:00:00Z",
+    status: "NEEDS_APPROVAL",
+    queuePosition: null,
+    lastLine: "이 공고에 지원해요",
+    lastMessagePreview: "가".repeat(140),
+    createdBy: { displayName: "Bea" },
+    postingId: POSTING_ID,
+  } });
+  assert.deepEqual(seen[0][1], [NEEDS_ID, USER]);
+  assert.doesNotMatch(String(seen[0][0]), /archived/);
+  assert.match(String(seen[0][0]), /THEN 'NEEDS_APPROVAL'.*THEN 'RUNNING'.*ELSE 'DONE' END AS status/);
+});
+
+test("get one carries queuePosition for a conversation waiting in the queue", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne(RUNNING_ID, getQuery(seen));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { status: string; queuePosition: number | null } };
+  assert.equal(body.data.status, "RUNNING");
+  assert.equal(body.data.queuePosition, 3);
+  assertQueuePositionSql(String(seen[0][0]));
+});
+
+test("get one is 404 for another user's or a missing conversation", async () => {
+  resetLimits();
+  const foreign = await getOne(NEEDS_ID, getQuery([], "99999999-9999-4999-8999-999999999999"));
+  assert.equal(foreign.status, 404);
+  resetLimits();
+  const missing = await getOne("11111111-1111-4111-8111-111111111111", getQuery([]));
+  assert.equal(missing.status, 404);
+});
+
+test("get one is 400 for a non-UUID id and never reaches the database", async () => {
+  resetLimits();
+  const seen: Array<[string, unknown[]]> = [];
+  const res = await getOne("not-a-uuid", getQuery(seen));
+  assert.equal(res.status, 400);
+  assert.equal(seen.length, 0);
+});
+
+test("get one needs a token and /internal stays hidden", async () => {
+  resetLimits();
+  const anon = await handle(new Request(`https://push-be.example/api/v1/conversations/${NEEDS_ID}`), env(), deps(getQuery([])));
+  assert.equal(anon.status, 401);
+  const hidden = await handle(new Request(`https://push-be.example/internal/api/v1/conversations/${NEEDS_ID}`, {
+    headers: { authorization: "Bearer secret-token", "x-push-internal": "1" },
+  }), env(), deps(getQuery([])));
+  assert.equal(hidden.status, 404);
 });

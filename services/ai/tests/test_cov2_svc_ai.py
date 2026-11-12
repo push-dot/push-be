@@ -258,7 +258,7 @@ async def test_settle_failure_does_not_fail_the_completion():
 
 async def test_provider_failure_releases_reservation_even_if_release_fails():
     class Usage(StubAiUsageStore):
-        async def release(self, id_):
+        async def release(self, id_, generation=None):
             raise RuntimeError("db")
 
     g = _gate(chat=StubChatCompleter(err=RuntimeError("x")), usage=Usage())
@@ -267,14 +267,12 @@ async def test_provider_failure_releases_reservation_even_if_release_fails():
 
 
 async def test_web_search_needs_managed_router_key():
-    go = StubChatCompleter(text="go")
-    g = AIGate(FakeDB(), "", StubChatCompleter(), go_chat=go,
-               go_key="sk-go",
-               config=Config(model_free="opencode-go/deepseek-v4.1-flash"))
+    chat = StubChatCompleter(text="answer")
+    g = AIGate(FakeDB(), "", chat, config=Config())
     g.users = StubUserStore(_user("FREE"))
     g.usage = StubAiUsageStore()
     err = await _code(g.complete(uuid4(), _ai(web_search=True), "", "hi"))
-    assert err.code == "NOT_CONFIGURED" and go.got == {}
+    assert err.code == "NOT_CONFIGURED" and chat.got == {}
 
 
 @pytest.mark.parametrize("err,code", [
@@ -429,3 +427,35 @@ async def test_cancelled_completion_releases_its_reservation():
     with pytest.raises(asyncio.CancelledError):
         await g.complete(uuid4(), _ai(), "", "hi")
     assert [u.status for u in g.usage.items] == [ent.USAGE_RELEASED]
+
+
+class _ClosedJobUsage(StubAiUsageStore):
+    """The job was cancelled or failed while its call ran: the settle is refused."""
+
+    async def settle(self, id_, input_tokens, output_tokens, cost, generation=None):
+        raise LostClaim()
+
+
+@pytest.mark.parametrize("call", ["complete", "stream"])
+async def test_a_refused_settle_stops_the_job_without_a_provider_error(call):
+    g = _gate(usage=_ClosedJobUsage())
+    run = (g.complete(uuid4(), _ai(), "", "hi") if call == "complete"
+           else _drain(g.stream(uuid4(), _ai(), "", "hi", {})))
+    # LostClaim, not PROVIDER_ERROR: the worker acks the job as lost and the user sees no error event.
+    with pytest.raises(LostClaim):
+        await run
+    (row,) = g.usage.items
+    assert row.status == ent.USAGE_RELEASED and row.cost_micro_credits == 0
+
+
+async def test_queue_meter_rows_join_their_job(monkeypatch):
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    seen = []
+
+    class Usage(StubAiUsageStore):
+        async def create_for_job(self, row, job_id):
+            seen.append((row.status, job_id))
+
+    job = uuid4()
+    await _gate(usage=Usage())._meter(uuid4(), "m", 4, 2, job)
+    assert seen == [(ent.USAGE_SETTLED, job)]

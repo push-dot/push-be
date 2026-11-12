@@ -14,7 +14,8 @@ export const deliverPush = async (
   if (!token) return;
   let rows;
   try {
-    rows = await query(ctx.deps.query, "SELECT token FROM user_devices WHERE user_id = $1", [userId]);
+    // No push during the 30-day deletion grace period.
+    rows = await query(ctx.deps.query, "SELECT d.token FROM user_devices d JOIN users u ON u.id = d.user_id WHERE d.user_id = $1 AND u.deletion_requested_at IS NULL", [userId]);
   } catch (err) {
     if (isMissingRelation(err)) return;
     throw err;

@@ -25,12 +25,22 @@ import {
   countWhere,
   relevance,
   NOT_DELETING,
+  assertSearchCursor,
+  stampSearchCursor,
   offerDto,
   OFFER_SQL,
   notify,
 } from "./recruiting-shared.ts";
 
-const TENURE = new Map<string, [number, number]>([["0-2", [0, 2]], ["3-5", [3, 5]], ["6-9", [6, 9]], ["10+", [10, 80]]]);
+// Board buckets, plus legacy 0-2 so an old client still filters.
+const TENURE = new Map<string, [number, number]>([
+  ["0", [0, 0]],
+  ["1-2", [1, 2]],
+  ["3-5", [3, 5]],
+  ["6-9", [6, 9]],
+  ["10+", [10, 80]],
+  ["0-2", [0, 2]],
+]);
 
 const CAREER_STATUS = new Set(["satisfied", "seeking", "feedback"]);
 
@@ -116,6 +126,9 @@ const sameCompanyHidden = (row: Record<string, unknown>, viewerId: string, viewe
 
 async function listProfiles(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
+  const onSearch = ctx.url.pathname === "/api/v1/search";
+  const sort = onSearch && ctx.url.searchParams.get("sort") === "latest" ? "latest" : "relevance";
+  if (onSearch) assertSearchCursor(ctx.url, sort);
   const categories = enumList(ctx.url, "category", JOB_CATEGORIES, "category");
   const tenures = splitList(ctx.url, "tenure");
   for (const token of tenures) {
@@ -126,7 +139,9 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     if (!CAREER_STATUS.has(token)) throw unprocessable("status", "unsupported status");
   }
   const explore = ctx.url.searchParams.get("explore");
-  if (explore && explore !== "recommended" && explore !== "offers") throw unprocessable("explore", "unsupported explore");
+  if (explore && explore !== "recommended" && explore !== "offers" && explore !== "received") {
+    throw unprocessable("explore", "unsupported explore");
+  }
   const viewer = await viewerCompanyOf(ctx);
   const params: unknown[] = [ctx.user.id, viewer.domain, viewer.freeMail];
   let sql = profileSelect(`, (
@@ -169,6 +184,9 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
   if (explore === "offers") {
     sql += " AND EXISTS (SELECT 1 FROM offers o WHERE o.sender_id = $1 AND o.profile_user_id = p.user_id)";
   }
+  if (explore === "received") {
+    sql += " AND EXISTS (SELECT 1 FROM offers o WHERE o.profile_user_id = $1 AND o.sender_id = p.user_id)";
+  }
   const q = ctx.url.searchParams.get("q") || "";
   let rank = "";
   if (q) {
@@ -188,6 +206,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     )`;
     rank = relevance("u.display_name", "p.headline", "$" + raw, "$" + cho, "$" + hangul) + ", ";
   }
+  if (sort === "latest") rank = "";
   const total = await countWhere(ctx, sql, " FROM profiles p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -202,7 +221,8 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     id: String(row.user_id),
   }));
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+  const next = onSearch ? stampSearchCursor(paged.nextCursor, sort) : paged.nextCursor;
+  return pageBody(paged.items.map((row) => row.item), next, paged.hasMore, ctx.rid, total);
 }
 
 export async function searchPeople(ctx: Ctx, q: string): Promise<Response> {
@@ -346,6 +366,8 @@ async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
      FROM profiles p LEFT JOIN user_settings s ON s.user_id = p.user_id WHERE p.user_id = $1`,
     [id]);
   if (!profile || !asBool(profile.profile_public)) throw notFound();
+  const blocked = await one(ctx.deps.query, "SELECT 1 AS blocked FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [id, ctx.user.id]);
+  if (blocked) throw new HttpError(403, "BLOCKED", "this user is not accepting offers from you");
   if (!asBool(profile.open_to_offers)) throw new HttpError(403, "FORBIDDEN", "profile is not accepting offers");
   const offerId = crypto.randomUUID();
   const now = ctx.now.toISOString();

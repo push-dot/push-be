@@ -56,11 +56,11 @@ test("links: list is scoped to the caller, filters by kind and paginates", async
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, [{ id: rows[0].id, kind: "github", url: "https://github.com/a", title: "", status: "READ", fitCount: 0, aiRead: true, createdAt: "2026-10-02T00:00:00Z" }]);
   assert.equal(res.body.page?.hasMore, true);
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT \$3$/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT \$3$/);
   assert.deepEqual(w.seen.at(-1)!.params, [ME, "github", 2]);
 
   await w.call("GET", `/api/v1/me/links?cursor=${res.body.page!.nextCursor}`);
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND \(created_at, id\) < \(\$2, \$3\)/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND \(created_at, id\) < \(\$2, \$3\)/);
 
   const bad = await w.call("GET", "/api/v1/me/links?kind=video");
   assert.equal(bad.status, 422);
@@ -104,7 +104,7 @@ test("links: create validates url, kind, managed fields and aiRead", async () =>
 
 test("links: patch and delete only touch the caller's link", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("UPDATE user_links") || sql.startsWith("DELETE FROM user_links")) {
+    if (sql.startsWith("UPDATE user_links")) {
       return params[1] === ME && params[0] === LINK ? [{ id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fit_count: 2, ai_read: false, created_at: "2026-10-01T00:00:00Z" }] : [];
     }
     return undefined;
@@ -112,7 +112,7 @@ test("links: patch and delete only touch the caller's link", async () => {
   const patched = await w.call("PATCH", `/api/v1/me/links/${LINK}`, { kind: "blog", title: "t", url: "https://b.example", aiRead: false });
   assert.equal(patched.status, 200);
   assert.equal(patched.body.data.fitCount, 2);
-  assert.match(w.seen.at(-1)!.sql, /WHERE id = \$1 AND user_id = \$2 RETURNING/);
+  assert.match(w.seen.at(-1)!.sql, /WHERE id = \$1 AND user_id = \$2 AND deleted_at IS NULL RETURNING/);
   assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME, "t", "blog", "https://b.example", false]);
 
   const missing = await w.call("PATCH", `/api/v1/me/links/${OTHER}`, { title: "x" });
@@ -126,9 +126,46 @@ test("links: patch and delete only touch the caller's link", async () => {
 
   const removed = await w.call("DELETE", `/api/v1/me/links/${LINK}`);
   assert.equal(removed.status, 204);
-  assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME]);
+  assert.match(w.seen.at(-1)!.sql, /^UPDATE user_links SET deleted_at = \$3 WHERE id = \$1 AND user_id = \$2 AND deleted_at IS NULL/);
+  assert.deepEqual(w.seen.at(-1)!.params, [LINK, ME, NOW.toISOString()]);
+  assert.equal(w.seen.some((c) => c.sql.startsWith("DELETE FROM user_links")), false);
   const notMine = await w.call("DELETE", `/api/v1/me/links/${OTHER}`);
   assert.equal(notMine.status, 404);
+});
+
+test("links: restore undoes a delete, repeats safely and stays scoped to the caller", async () => {
+  const links = new Map<string, { owner: string; deletedAt: unknown }>([[LINK, { owner: ME, deletedAt: null }]]);
+  const w = world((sql, params) => {
+    const link = links.get(String(params[0]));
+    const mine = link != null && link.owner === params[1];
+    if (sql.startsWith("UPDATE user_links SET deleted_at = $3")) {
+      if (!mine || link.deletedAt != null) return [];
+      link.deletedAt = params[2];
+      return [{ id: LINK }];
+    }
+    if (sql.startsWith("UPDATE user_links SET deleted_at = NULL")) {
+      if (!mine) return [];
+      link.deletedAt = null;
+      return [{ id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fit_count: 1, ai_read: true, created_at: "2026-10-01T00:00:00Z" }];
+    }
+    if (sql.startsWith("UPDATE user_links SET title")) return mine && link.deletedAt == null ? [{ id: LINK }] : [];
+    return undefined;
+  });
+  assert.equal((await w.call("DELETE", `/api/v1/me/links/${LINK}`)).status, 204);
+  assert.equal((await w.call("DELETE", `/api/v1/me/links/${LINK}`)).status, 404);
+  assert.equal((await w.call("PATCH", `/api/v1/me/links/${LINK}`, { title: "x" })).status, 404);
+
+  const restored = await w.call("POST", `/api/v1/me/links/${LINK}/restore`);
+  assert.equal(restored.status, 200);
+  assert.deepEqual(restored.body.data, { id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fitCount: 1, aiRead: true, createdAt: "2026-10-01T00:00:00Z" });
+  assert.equal(links.get(LINK)!.deletedAt, null);
+  assert.equal((await w.call("POST", `/api/v1/me/links/${LINK}/restore`)).status, 200);
+  assert.equal((await w.call("PATCH", `/api/v1/me/links/${LINK}`, { title: "x" })).status, 200);
+
+  links.set(OTHER, { owner: OTHER, deletedAt: "2026-10-01T00:00:00Z" });
+  assert.equal((await w.call("POST", `/api/v1/me/links/${OTHER}/restore`)).status, 404);
+  assert.equal(links.get(OTHER)!.deletedAt, "2026-10-01T00:00:00Z");
+  assert.equal((await w.call("POST", "/api/v1/me/links/not-a-uuid/restore")).status, 400);
 });
 
 // --- devices & notifications --------------------------------------------
@@ -198,7 +235,9 @@ test("notifications: mark all, mark ids, and reject non-array ids", async () => 
 
 const offerRow = (extra: Row = {}): Row => ({
   id: OFFER, sender_id: ME, sender_name: "Ada", profile_user_id: OTHER, recipient_name: "Bob", message: "join us",
-  posting_id: POSTING, posting_title: "Backend", posting_company: "Acme", posting_image: "logo.png", status: "SENT", read_at: null,
+  posting_id: POSTING, posting_title: "Backend", posting_company: "Acme", posting_image: "logo.png",
+  posting_location: "서울 강남구", posting_career_min: 5, posting_career_max: null, posting_deadline: "2026-11-20T00:00:00.000Z",
+  status: "SENT", read_at: null,
   created_at: "2026-10-22T00:00:00Z", sender_headline: null, sender_avatar: "me.png", sender_company: "", ...extra,
 });
 
@@ -216,15 +255,26 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
   const res = await w.call("POST", `/api/v1/profiles/${OTHER}/offer`, { message: "join us", postingId: POSTING });
   assert.equal(res.status, 201);
   assert.deepEqual(res.body.data, {
-    id: OFFER, sender: { id: ME, displayName: "Ada", companyName: null, headline: "", avatarUrl: "/api/v1/uploads/images/me.png" },
-    recipient: { id: OTHER, displayName: "Bob" }, message: "join us",
-    posting: { id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png" },
-    status: "SENT", readAt: null, createdAt: "2026-10-22T00:00:00Z",
+    id: OFFER, sender: { id: ME, displayName: "Ada", kind: "PERSON", companyName: null, headline: "", avatarUrl: "/api/v1/uploads/images/me.png" },
+    recipient: { id: OTHER, displayName: "Bob", kind: "PERSON", companyName: null, headline: "", avatarUrl: null }, message: "join us",
+    posting: {
+      id: POSTING, title: "Backend", company: "Acme", imageUrl: "/api/v1/uploads/images/logo.png",
+      location: "서울 강남구", careerMin: 5, careerMax: null, deadline: "2026-11-20",
+    },
+    status: "SENT", readAt: null, respondedAt: null, canSend: false, createdAt: "2026-10-22T00:00:00Z", archivedAt: null,
   });
   const insert = w.seen.find((c) => c.sql.startsWith("INSERT INTO offers"))!;
   assert.deepEqual(insert.params.slice(1, 5), [ME, OTHER, "join us", POSTING]);
   const note = w.seen.find((c) => c.sql.startsWith("INSERT INTO notifications"))!;
   assert.deepEqual(note.params.slice(1, 5), [OTHER, "OFFER", "새 제안", "join us"]);
+});
+
+test("offers: a sender that belongs to a company is a COMPANY party", async () => {
+  const w = world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [offerRow({ sender_company: "그린티켓" })] : undefined));
+  const res = await w.call("GET", `/api/v1/me/offers/${OFFER}`);
+  assert.equal(res.status, 200);
+  const offer = res.body.data as unknown as { sender: { kind: string; companyName: string }; recipient: { kind: string } };
+  assert.deepEqual([offer.sender.kind, offer.sender.companyName, offer.recipient.kind], ["COMPANY", "그린티켓", "PERSON"]);
 });
 
 test("offers: a recipient who muted offer notifications gets no notification row", async () => {
@@ -259,7 +309,7 @@ test("offers: sending is refused for self, closed postings, hidden or closed pro
 
 test("offers: messages are listed only for a participant and paginate", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("SELECT o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
     if (sql.includes("FROM offer_messages m")) {
       return [
         { id: "f3000000-0000-4000-8000-000000000002", offer_id: OFFER, sender_id: OTHER, sender_name: "Bob", body: "hey", created_at: "2026-10-22T00:00:02Z" },
@@ -272,7 +322,7 @@ test("offers: messages are listed only for a participant and paginate", async ()
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, [{ id: "f3000000-0000-4000-8000-000000000002", offerId: OFFER, sender: { id: OTHER, displayName: "Bob" }, body: "hey", createdAt: "2026-10-22T00:00:02Z" }]);
   assert.equal(res.body.page?.hasMore, true);
-  const lookup = w.seen.find((c) => c.sql.startsWith("SELECT o.id"))!;
+  const lookup = w.seen.find((c) => c.sql.startsWith("SELECT oa.archived_at, o.id"))!;
   assert.match(lookup.sql, /WHERE o\.id = \$1 AND \(o\.sender_id = \$2 OR o\.profile_user_id = \$2\)$/);
   await w.call("GET", `/api/v1/me/offers/${OFFER}/messages?cursor=${res.body.page!.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /AND \(m\.created_at, m\.id\) < \(\$2, \$3\)/);
@@ -324,7 +374,7 @@ test("a second accept that loses the race gets 409 instead of overwriting the de
   const { handle } = await import("../src/handler.ts");
   const OFFER = "60000000-0000-4000-8000-000000000001";
   const { query } = recorder((sql) => {
-    if (sql.startsWith("SELECT o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
     if (sql.startsWith("UPDATE offers")) return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];
     return null;
   });

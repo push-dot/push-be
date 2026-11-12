@@ -7,7 +7,8 @@ const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:10Z");
 const env = { APP_ENV: "production" } as FrontEnv;
 
-test("returning another token's stale lease does not hold up this request", async () => {
+// The release query never settles before the end, so a request that waited on it would hang until the timeout fails the test.
+test("returning another token's stale lease does not hold up this request", { timeout: 10_000 }, async () => {
   resetLimits();
   let now = NOW;
   let openRelease: () => void = () => {};
@@ -31,9 +32,7 @@ test("returning another token's stale lease does not hold up this request", asyn
 
   assert.equal((await me("token-a")).status, 200);
   now = new Date(NOW.getTime() + 6_000);
-  const late = await Promise.race([me("token-b"), new Promise<string>((r) => setTimeout(() => r("blocked"), 50))]);
-  assert.notEqual(late, "blocked");
-  assert.equal((late as Response).status, 200);
+  assert.equal((await me("token-b")).status, 200);
   assert.deepEqual(released.map((params) => params[1]), [3]);
   openRelease();
   assert.ok(background.length >= 1);

@@ -227,6 +227,42 @@ async def test_without_a_request_scope_one_connection_is_reused(monkeypatch):
     assert opened[0].closed is True
 
 
+async def test_without_request_scope_concurrent_tasks_use_separate_connections(monkeypatch):
+    opened: list[_FakeConn] = []
+    peak = 0
+    active = 0
+    lock = asyncio.Lock()
+
+    async def fake_connect(url, transport="tcp"):
+        conn = _FakeConn(len(opened) + 1, opened)
+        opened.append(conn)
+
+        async def fetchval(sql, *args):
+            nonlocal peak, active
+            async with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                await asyncio.sleep(0.08)
+                return conn.n
+            finally:
+                async with lock:
+                    active -= 1
+
+        conn.fetchval = fetchval
+        await asyncio.sleep(0)
+        return conn
+
+    monkeypatch.setattr("app.pgproto.connect", fake_connect)
+    pool = PgPool("postgresql://user:pass@localhost/db", max_size=4)
+    a, b = await asyncio.gather(pool.fetchval("SELECT 1"), pool.fetchval("SELECT 1"))
+    assert a != b
+    assert len(opened) == 2
+    assert peak == 2
+    await pool.close()
+    assert all(c.closed for c in opened)
+
+
 _SSL_REQUEST = struct.pack("!II", 8, 80877103)
 
 

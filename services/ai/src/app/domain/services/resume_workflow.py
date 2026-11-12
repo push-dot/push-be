@@ -18,9 +18,6 @@ from app.domain.services.job import JobService
 from app.infrastructure.store_operations import OperationStore
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 class ResumeWorkflowService:
     def __init__(self, db: DB, applications: ApplicationService,
@@ -91,7 +88,7 @@ class ResumeWorkflowService:
             user_id, d.id, doc["revision"], version_id, fa.id)
         export = await self.documents.create_export(
             user_id, d.id, version_id, "PDF", "v1")
-        now = _now()
+        now = utcnow()
         op = ent.Operation(
             id=uuid4(), user_id=user_id, type=ent.OP_RESUME_WORKFLOW,
             application_id=app.id, status=ent.OP_SUCCEEDED,

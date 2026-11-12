@@ -17,24 +17,17 @@ from app.config import Config, load_config
 from app.db import DB, NotFoundError, create_pool, migrations_dir, run_migrations
 from app.jobs import runs_local_chat_worker
 from app.domain.errors import DomainError
-from app.infrastructure.crypto import new_key_cipher
-from app.infrastructure.google_client import GoogleClient
-from app.infrastructure.oauth import OAuthClient, provider_configs
 from app.infrastructure.openai_client import OpenAIClient
-from app.infrastructure.stripe_client import StripeClient
 from app.infrastructure.store_auth import IdempotencyStore, UserStore
 from app.infrastructure.store_evidence import SourceStore
 from app.domain.services.ai import AIGate, AIService
 from app.domain.services.application import ApplicationService
 from app.domain.services.approval import ApprovalService
 from app.domain.services.auth import AuthService
-from app.domain.services.billing import BillingService
-from app.domain.services.calendar import CalendarService
 from app.domain.services.conversation import ConversationService
 from app.domain.services.document import DocumentService
 from app.domain.services.evidence import EvidenceService
 from app.domain.services.experiment import ExperimentService
-from app.domain.services.google import GoogleService
 from app.domain.services.resume_workflow import ResumeWorkflowService
 from app.domain.services.interview import InterviewService
 from app.domain.services.job import JobService
@@ -58,7 +51,6 @@ class ConfigView:
     google_configured: bool = False
     gmail_beta: bool = False
     managed_ai: bool = False
-    managed_go: bool = False
     stripe_configured: bool = False
     job_site_adapters: dict[str, Any] = field(default_factory=dict)
 
@@ -72,14 +64,11 @@ class Deps:
     documents: DocumentService
     projects: ProjectService
     interviews: InterviewService
-    calendar: CalendarService
     conversations: ConversationService
     resume_workflow: ResumeWorkflowService
     approvals: ApprovalService
     operations: OperationService
     ai: AIService
-    google: GoogleService
-    billing: BillingService
     experiments: ExperimentService
     sources: SourceStore
     idem: IdempotencyStore
@@ -119,22 +108,11 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
             except NotFoundError:
                 await UserStore(db).upsert_dev_user(cfg.dev_user_id)
 
-        cipher = new_key_cipher(cfg.token_encryption_key) if cfg.token_encryption_key else None
-        oauth = OAuthClient()
-        stack.push_async_callback(oauth.aclose)
         openai = OpenAIClient(base_url=cfg.ai_base_url, config=cfg)
         stack.push_async_callback(openai.aclose)
-        openai_go = OpenAIClient(base_url=cfg.opencode_go_base_url)
-        stack.push_async_callback(openai_go.aclose)
-        gapi = GoogleClient(cfg.google.client_id, cfg.google.client_secret)
-        stack.push_async_callback(gapi.aclose)
-        stripe = StripeClient(cfg.stripe_secret)
-        stack.push_async_callback(stripe.aclose)
 
-        gate = AIGate(db, cfg.managed_ai_key, openai,
-                      go_chat=openai_go, go_key=cfg.opencode_go_key, config=cfg)
-        auths = AuthService(db, oauth, provider_configs(cfg), cfg.app_env,
-                            cfg.dev_auth_token, cfg.dev_user_id)
+        gate = AIGate(db, cfg.managed_ai_key, openai, config=cfg)
+        auths = AuthService(db, cfg.app_env, cfg.dev_auth_token, cfg.dev_user_id)
         approvals = ApprovalService(db)
         evidence_svc = EvidenceService(db)
         applications = ApplicationService(db, approvals,
@@ -143,17 +121,8 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         documents = DocumentService(db, approvals, gate)
         projects = ProjectService(db, approvals, gate)
         interviews = InterviewService(db, gate)
-        calendar = CalendarService(db)
         ai_svc = AIService(db, gate)
         operations = OperationService(db, evidence_svc)
-        google = GoogleService(
-            db, cipher, gapi, cfg.google.client_id, cfg.google.client_secret,
-            "https://accounts.google.com/o/oauth2/v2/auth", cfg.gmail_beta)
-        billing = BillingService(
-            db, stripe, bool(cfg.stripe_secret),
-            {"PRO": cfg.stripe_price_pro, "ULTRA": cfg.stripe_price_ultra},
-            cfg.stripe_success_url, cfg.stripe_cancel_url,
-            cfg.stripe_portal_url, cfg.stripe_webhook_secret)
         experiments_svc = ExperimentService(db)
         await experiments_svc.seed(cfg.experiments)
 
@@ -169,17 +138,15 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
             google_configured=bool(cfg.google.client_id
                                    and cfg.google.client_secret),
             gmail_beta=cfg.gmail_beta, managed_ai=bool(cfg.managed_ai_key),
-            managed_go=bool(cfg.opencode_go_key),
             stripe_configured=bool(cfg.stripe_secret),
             job_site_adapters=cfg.job_site_adapters)
         app.state.deps = Deps(
             auth=auths, evidence=evidence_svc, jobs=jobs_svc,
             applications=applications, documents=documents,
-            projects=projects, interviews=interviews, calendar=calendar,
+            projects=projects, interviews=interviews,
             conversations=conversations, resume_workflow=resume_workflow,
             approvals=approvals,
-            operations=operations, ai=ai_svc, google=google,
-            billing=billing, experiments=experiments_svc,
+            operations=operations, ai=ai_svc, experiments=experiments_svc,
             sources=SourceStore(db),
             idem=IdempotencyStore(db), cfg=view,
             storage_dir=cfg.storage_dir)

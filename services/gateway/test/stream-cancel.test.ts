@@ -13,7 +13,6 @@ const env = (): FrontEnv => ({
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   SSE_MAX_POLLS: "3",
 });
 
@@ -81,7 +80,7 @@ test("active job cancels, records the event, and the next SSE read ends", async 
   assert.deepEqual(await res.json(), { data: { jobId: JOB, status: "CANCELLED" } });
   const writes = sqls.filter((sql) => sql.includes("UPDATE chat_jobs") || sql.includes("INSERT INTO chat_events"));
   assert.equal(writes.length, 1);
-  assert.match(writes[0], /UPDATE chat_jobs SET status = 'CANCELLED'.*WHERE id = \(SELECT id FROM job\) AND status IN \('PENDING', 'RUNNING'\)/);
+  assert.match(writes[0], /UPDATE chat_jobs SET status = 'CANCELLED'.*WHERE id = \(SELECT id FROM job\) AND user_id = \$2::uuid AND status IN \('PENDING', 'RUNNING'\)/);
   assert.match(writes[0], /INSERT INTO chat_events \(job_id, type, payload\) SELECT id, 'cancelled', '\{\}'::jsonb FROM cancelled/);
   const stream = await handle(new Request(
     `https://push-be.example/api/v1/conversations/${CONV}/messages/stream/active`,

@@ -1,5 +1,5 @@
 import type { Route, Schema } from "./shared.ts";
-import { get, post, patch, del, ok, okPage, obj, arr, str, int, num, bool, uuid, dateTime, date, nullable, ref, body, pathParam, query, pageParams, enumOf, noContent, redirect } from "./shared.ts";
+import { get, post, patch, del, ok, okPage, obj, closed, arr, str, int, num, bool, uuid, dateTime, date, nullable, ref, body, pathParam, query, pageParams, enumOf, noContent, redirect } from "./shared.ts";
 
 const stage = enumOf("DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN");
 const cliProvider = enumOf("CODEX", "CLAUDE_CODE", "GROK_BUILD");
@@ -7,9 +7,13 @@ const runState = enumOf("DRAFT", "APPROVAL_REQUIRED", "RUNNING", "VERIFYING", "V
 const launchStatus = enumOf("NOT_CLAIMED", "CLAIMED", "STARTED", "UNKNOWN", "FINISHED");
 const rfc3339 = { type: "string", description: "RFC3339 timestamp; naive values are treated as UTC" };
 const processInfo = nullable(obj({ pid: int, startedAt: rfc3339 }));
-const expectedRevision = obj({ expectedRevision: int });
+const expectedRevision = closed({ expectedRevision: int });
 const aiOpt = { ai: nullable(ref("CareerAiOptions")) };
-const companySourceIn = obj({ sourceUrl: { type: "string", format: "uri" }, sourceText: { type: "string", minLength: 1, maxLength: 20000 }, accessedAt: rfc3339 });
+const companySourceIn = closed({
+  sourceUrl: { type: "string", description: "http or https URL with a hostname and no username or password" },
+  sourceText: { type: "string", minLength: 1, maxLength: 20000 },
+  accessedAt: { ...rfc3339, description: "RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future." },
+});
 const companySourcesIn = { type: "array", maxItems: 10, items: companySourceIn };
 const op = { 202: ok(ref("Operation"), "Accepted") };
 const projectRun = [pathParam("id"), pathParam("runId")];
@@ -18,21 +22,21 @@ export const routes: Route[] = [
   get("core", "/api/v1/applications", {
     tag: "applications",
     summary: "List applications",
-    params: [...pageParams, query("stage", stage), query("query", str, "Case-insensitive match on company or title")],
+    params: [...pageParams, query("stage", stage), query("query", str, "Case-insensitive match on company or title"), query("applied", enumOf("true", "false"), "true keeps only submitted applications: appliedAt set, or stage APPLIED, SCREENING, INTERVIEW, OFFER, ACCEPTED, REJECTED or WITHDRAWN. page.total is then included and counts every match, not just this page.")],
     responses: { 200: okPage(ref("Application")) },
   }),
   post("core", "/api/v1/applications", {
     tag: "applications",
     summary: "Create an application for a saved job",
     description: "Copies company and title from the job; starts in DISCOVERED.",
-    body: body(obj({ jobId: uuid, notes: str }, ["jobId"])),
+    body: body(closed({ jobId: uuid, notes: str }, ["jobId"])),
     responses: { 201: ok(ref("Application"), "Created") },
   }),
   post("core", "/api/v1/applications/import", {
     tag: "applications",
     summary: "Record a past application",
     description: "Creates an imported application at the given stage (not DISCOVERED). confirmed must be true.",
-    body: body(obj({
+    body: body(closed({
       jobId: uuid,
       stage: enumOf("PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN"),
       appliedAt: rfc3339,
@@ -52,7 +56,7 @@ export const routes: Route[] = [
     summary: "Update an application",
     description: "Stage moves one step forward, or to REJECTED/WITHDRAWN; terminal stages are final. APPLIED is reached only through submissions. nextActionAt null clears it.",
     params: [pathParam("id")],
-    body: body(obj({ expectedRevision: int, stage: nullable(stage), notes: nullable(str), nextActionAt: nullable(rfc3339) }, ["expectedRevision"])),
+    body: body(closed({ expectedRevision: int, stage: nullable(stage), notes: nullable(str), nextActionAt: nullable(rfc3339) }, ["expectedRevision"])),
     responses: { 200: ok(ref("Application")) },
   }),
   get("core", "/api/v1/applications/{id}/timeline", {
@@ -70,9 +74,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/applications/{id}/submission-drafts", {
     tag: "applications",
     summary: "Create a submission draft",
-    description: "Only MANUAL_RECORD is enabled (ADAPTER returns 403 FEATURE_DISABLED). Every document version must belong to this application and be its document's finalized version (422 DOCUMENT_NOT_FINALIZED).",
+    description: "Only MANUAL_RECORD is enabled (ADAPTER returns 403 FEATURE_DISABLED). Every document version must belong to this application and be its document's finalized version (422 DOCUMENT_NOT_FINALIZED). A version of an archived document is 409 INVALID_TRANSITION.",
     params: [pathParam("id")],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       mode: enumOf("MANUAL_RECORD", "ADAPTER"),
       adapter: { type: "null" },
@@ -90,16 +94,17 @@ export const routes: Route[] = [
   post("core", "/api/v1/applications/{id}/submissions", {
     tag: "applications",
     summary: "Submit an application",
-    description: "Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft, records a SUCCEEDED submission and moves the application to APPLIED. Manual drafts need confirmedSubmitted. Errors: 409 APPROVAL_REQUIRED, APPROVAL_STALE, INVALID_TRANSITION, REVISION_CONFLICT.",
+    description: "Consumes an APPROVED APPLICATION_SUBMIT approval whose target is the draft and records a SUCCEEDED submission. Stage becomes APPLIED only from DISCOVERED, PREPARING, or READY. APPLIED, SCREENING, INTERVIEW, and OFFER stay and still record the submission. ACCEPTED, REJECTED, and WITHDRAWN are 409 INVALID_TRANSITION. Manual drafts need confirmedSubmitted. Also 409 APPROVAL_REQUIRED, APPROVAL_STALE, and REVISION_CONFLICT.",
     params: [pathParam("id")],
-    body: body(obj({ expectedRevision: int, draftId: uuid, approvalId: uuid })),
+    body: body(closed({ expectedRevision: int, draftId: uuid, approvalId: uuid })),
     responses: { 201: ok(ref("CareerSubmission"), "Created") },
   }),
   post("ai", "/api/v1/applications/{id}/resume-run", {
     tag: "applications",
     summary: "Run the resume workflow for an application",
+    description: "When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED. No usable evidence is 400 VALIDATION_ERROR.",
     params: [pathParam("id")],
-    body: body(obj(aiOpt, [])),
+    body: body(closed(aiOpt, [])),
     responses: op,
   }),
 
@@ -155,9 +160,9 @@ export const routes: Route[] = [
   post("ai", "/api/v1/jobs/{id}/analyze", {
     tag: "jobs",
     summary: "Analyze a job against career evidence",
-    description: "Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS.",
+    description: "Produces a gap analysis (AI_ASSISTED when ai is given, else RULE_BASED). Operation type JOB_ANALYSIS. 409 APPROVAL_REQUIRED when evidence lacks an approved EVIDENCE_USE. When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
     params: [pathParam("id")],
-    body: body(obj({ applicationId: uuid, expectedRevision: int, evidenceIds: { type: "array", maxItems: 100, items: uuid }, ...aiOpt }, ["applicationId", "expectedRevision"])),
+    body: body(closed({ applicationId: uuid, expectedRevision: int, evidenceIds: { type: "array", maxItems: 100, items: uuid }, ...aiOpt }, ["applicationId", "expectedRevision"])),
     responses: op,
   }),
 
@@ -171,7 +176,7 @@ export const routes: Route[] = [
     tag: "interviews",
     summary: "Schedule an interview",
     description: "Also creates a LOCAL INTERVIEW calendar event and an INTERVIEW timeline event.",
-    body: body(obj({
+    body: body(closed({
       applicationId: uuid,
       title: { type: "string", minLength: 1, maxLength: 300 },
       scheduledAt: rfc3339,
@@ -194,7 +199,7 @@ export const routes: Route[] = [
     summary: "Update an interview",
     description: "Null or absent fields are left unchanged. Changing scheduledAt moves the linked calendar event.",
     params: [pathParam("id")],
-    body: body(obj({
+    body: body(closed({
       expectedRevision: int,
       title: nullable({ type: "string", minLength: 1, maxLength: 300 }),
       scheduledAt: nullable(rfc3339),
@@ -207,8 +212,9 @@ export const routes: Route[] = [
   post("ai", "/api/v1/interviews/{id}/prepare", {
     tag: "interviews",
     summary: "Generate interview preparation",
+    description: "When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
     params: [pathParam("id")],
-    body: body(obj({ expectedRevision: int, ...aiOpt }, ["expectedRevision"])),
+    body: body(closed({ expectedRevision: int, ...aiOpt }, ["expectedRevision"])),
     responses: op,
   }),
 
@@ -221,7 +227,8 @@ export const routes: Route[] = [
   post("ai", "/api/v1/projects/blueprints", {
     tag: "projects",
     summary: "Generate project blueprints from a gap analysis",
-    body: body(obj({ applicationId: uuid, gapAnalysisId: uuid, ...aiOpt }, ["applicationId", "gapAnalysisId"])),
+    description: "403 PLAN_REQUIRED over the cap (ULTRA unlimited, PRO 20, otherwise 5). When ai is set, 403 FEATURE_DISABLED or 503 NOT_CONFIGURED.",
+    body: body(closed({ applicationId: uuid, gapAnalysisId: uuid, ...aiOpt }, ["applicationId", "gapAnalysisId"])),
     responses: op,
   }),
   get("core", "/api/v1/projects/{id}", {
@@ -233,7 +240,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/projects/{id}/select", {
     tag: "projects",
     summary: "Select a project blueprint",
-    description: "Allowed from DRAFT or SELECTED. Returns the blueprint and a starter file manifest.",
+    description: "Allowed from DRAFT or SELECTED. Any other state is 409 INVALID_TRANSITION. Returns the blueprint and a starter file manifest.",
     params: [pathParam("id")],
     body: body(expectedRevision),
     responses: { 200: ok(obj({ blueprint: ref("Project"), manifest: ref("CareerProjectManifest") })) },
@@ -247,9 +254,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/projects/{id}/evidence", {
     tag: "projects",
     summary: "Submit project evidence for a run",
-    description: "The run must be VERIFYING or VERIFIED. Evidence starts PENDING.",
+    description: "The run must be VERIFYING or VERIFIED. Any other state is 409 INVALID_TRANSITION. Evidence starts PENDING.",
     params: [pathParam("id")],
-    body: body(obj({
+    body: body(closed({
       runId: uuid,
       commitUrl: { type: "string", format: "uri", description: "http(s) URL" },
       testCommand: str,
@@ -263,7 +270,7 @@ export const routes: Route[] = [
   post("ai", "/api/v1/projects/{id}/evidence/{evidenceId}/verify", {
     tag: "projects",
     summary: "Verify project evidence",
-    description: "Marks PENDING evidence VERIFIED when its recorded tests passed, and advances the run and blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.",
+    description: "Marks PENDING evidence VERIFIED when its recorded tests passed. 409 INVALID_TRANSITION when already verified or exitCode is not 0. Advances a VERIFYING run to VERIFIED, and an IN_PROGRESS blueprint to VERIFIED. Operation type PROJECT_VERIFY; result.value is the evidence.",
     params: [pathParam("id"), pathParam("evidenceId")],
     body: body(expectedRevision),
     responses: op,
@@ -277,33 +284,33 @@ export const routes: Route[] = [
   post("core", "/api/v1/projects/{id}/runs", {
     tag: "projects",
     summary: "Create a CLI run",
-    description: "Blueprint must be SELECTED or IN_PROGRESS; a SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.",
+    description: "Blueprint must be SELECTED or IN_PROGRESS; any other state is 409 INVALID_TRANSITION. A SELECTED blueprint moves to IN_PROGRESS. The run starts APPROVAL_REQUIRED.",
     params: [pathParam("id")],
-    body: body(obj({ provider: cliProvider, workingDirectory: { type: "string", description: "Absolute path" }, prompt: { type: "string", minLength: 1 } })),
+    body: body(closed({ provider: cliProvider, workingDirectory: { type: "string", description: "Absolute path" }, prompt: { type: "string", minLength: 1 } })),
     responses: { 201: ok(ref("ProjectRun"), "Created") },
   }),
   post("core", "/api/v1/projects/{id}/runs/{runId}/start", {
     tag: "projects",
     summary: "Start a CLI run",
-    description: "Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING.",
+    description: "Consumes an APPROVED CLI_EXECUTE approval targeting the run and binds it to a device. Run moves APPROVAL_REQUIRED to RUNNING. Any other state is 409 INVALID_TRANSITION. A payload hash or target revision mismatch is 409 APPROVAL_STALE. A missing or unapproved approval is 409 APPROVAL_REQUIRED.",
     params: projectRun,
-    body: body(obj({ expectedRevision: int, approvalId: uuid, detectedVersion: { type: "string", minLength: 1 }, deviceId: { type: "string", minLength: 1 } })),
+    body: body(closed({ expectedRevision: int, approvalId: uuid, detectedVersion: { type: "string", minLength: 1 }, deviceId: { type: "string", minLength: 1 } })),
     responses: { 200: ok(ref("ProjectRun")) },
   }),
   post("core", "/api/v1/projects/{id}/runs/{runId}/launch", {
     tag: "projects",
     summary: "Report CLI run launch status",
-    description: "Called by the bound device. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.",
+    description: "Called by the bound device. 409 INVALID_TRANSITION when the run is not RUNNING, the device differs, or the launch status move is not allowed. 409 APPROVAL_STALE when payloadHash differs. Transitions NOT_CLAIMED to CLAIMED, CLAIMED to STARTED or UNKNOWN, STARTED to UNKNOWN. STARTED requires process.",
     params: projectRun,
-    body: body(obj({ expectedRevision: int, deviceId: str, payloadHash: str, launchStatus: enumOf("CLAIMED", "STARTED", "UNKNOWN"), process: processInfo }, ["expectedRevision", "deviceId", "payloadHash", "launchStatus"])),
+    body: body(closed({ expectedRevision: int, deviceId: str, payloadHash: str, launchStatus: enumOf("CLAIMED", "STARTED", "UNKNOWN"), process: processInfo }, ["expectedRevision", "deviceId", "payloadHash", "launchStatus"])),
     responses: { 200: ok(ref("ProjectRun")) },
   }),
   post("core", "/api/v1/projects/{id}/runs/{runId}/recover", {
     tag: "projects",
     summary: "Recover a CLI run with unknown launch status",
-    description: "REATTACH needs process (launch becomes STARTED); MARK_FAILED needs failureReason (run becomes FAILED).",
+    description: "409 INVALID_TRANSITION unless launchStatus is UNKNOWN and the device matches. REATTACH needs process with pid greater than 0 (launch becomes STARTED). MARK_FAILED needs failureReason (run becomes FAILED).",
     params: projectRun,
-    body: body(obj({ expectedRevision: int, deviceId: str, decision: enumOf("REATTACH", "MARK_FAILED"), process: processInfo, failureReason: nullable(str) }, ["expectedRevision", "deviceId", "decision"])),
+    body: body(closed({ expectedRevision: int, deviceId: str, decision: enumOf("REATTACH", "MARK_FAILED"), process: processInfo, failureReason: nullable(str) }, ["expectedRevision", "deviceId", "decision"])),
     responses: { 200: ok(ref("ProjectRun")) },
   }),
   post("core", "/api/v1/projects/{id}/runs/{runId}/result", {
@@ -311,7 +318,7 @@ export const routes: Route[] = [
     summary: "Report a CLI run result",
     description: "Requires a RUNNING run with STARTED launch. Exit code 0 moves the run to VERIFYING, otherwise FAILED.",
     params: projectRun,
-    body: body(obj({ expectedRevision: int, exitCode: int, commitSha: nullable(str), stdoutHash: str, stderrHash: str }, ["expectedRevision", "exitCode", "stdoutHash", "stderrHash"])),
+    body: body(closed({ expectedRevision: int, exitCode: int, commitSha: nullable(str), stdoutHash: str, stderrHash: str }, ["expectedRevision", "exitCode", "stdoutHash", "stderrHash"])),
     responses: { 200: ok(ref("ProjectRun")) },
   }),
 
@@ -329,8 +336,8 @@ export const routes: Route[] = [
   post("core", "/api/v1/integrations/google/connect", {
     tag: "integrations",
     summary: "Start Google OAuth connection",
-    description: "Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes.",
-    body: body(obj({
+    description: "Returns the Google authorization URL (Gmail readonly and Calendar events scopes). State expires in 10 minutes. 503 NOT_CONFIGURED when the client credentials or the token cipher are missing.",
+    body: body(closed({
       codeChallenge: { type: "string", minLength: 1 },
       codeChallengeMethod: enumOf("S256"),
       redirectUri: { type: "string", description: "push://integrations/google/callback or http(s)://localhost|127.0.0.1[:port]/integrations/google/callback" },
@@ -340,7 +347,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/integrations/google/callback", {
     tag: "integrations",
     summary: "Google OAuth callback",
-    description: "Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds).",
+    description: "Google redirects here. Redirects to the client redirectUri with ?code=<integrationCode> (valid 60 seconds). 503 NOT_CONFIGURED when Google is not configured. Token exchange failure is 502 PROVIDER_ERROR.",
     auth: "public",
     params: [query("state"), query("code")],
     responses: { 302: redirect("Redirect to the client redirectUri with an integration code") },
@@ -348,33 +355,35 @@ export const routes: Route[] = [
   post("core", "/api/v1/integrations/google/complete", {
     tag: "integrations",
     summary: "Complete Google connection",
-    description: "Exchanges the one-time integration code with the PKCE verifier and stores the tokens.",
-    body: body(obj({ integrationCode: str, codeVerifier: str })),
+    description: "Exchanges the one-time integration code with the PKCE verifier and stores the tokens. 503 NOT_CONFIGURED when Google is not configured.",
+    body: body(closed({ integrationCode: str, codeVerifier: str })),
     responses: { 200: ok(ref("GoogleIntegration")) },
   }),
   post("core", "/api/v1/integrations/google/sync", {
     tag: "integrations",
     summary: "Sync Gmail and Google Calendar",
-    description: "Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. 409 INTEGRATION_REQUIRED when not connected; 502 PROVIDER_ERROR on Google failures.",
+    description: "Runs synchronously; the returned GOOGLE_SYNC operation is already SUCCEEDED with result.value {messages, events, lastSyncedAt}. messages and events are integer counts. 503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected. 502 PROVIDER_ERROR on Google failures.",
     responses: op,
   }),
   get("core", "/api/v1/integrations/google/messages", {
     tag: "integrations",
     summary: "List synced Gmail messages",
-    description: "403 FEATURE_DISABLED unless Gmail beta is enabled.",
+    description: "503 NOT_CONFIGURED when Google is not configured, then 403 FEATURE_DISABLED unless Gmail beta is enabled, then 409 INTEGRATION_REQUIRED when not connected.",
     params: [...pageParams, query("applicationId", uuid)],
     responses: { 200: okPage(ref("CareerGoogleMessage")) },
   }),
   post("core", "/api/v1/integrations/google/messages/{id}/link", {
     tag: "integrations",
     summary: "Link a Gmail message to an application",
+    description: "503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.",
     params: [pathParam("id")],
-    body: body(obj({ applicationId: uuid })),
+    body: body(closed({ applicationId: uuid })),
     responses: { 200: ok(ref("CareerGoogleMessage")) },
   }),
   get("core", "/api/v1/integrations/google/events", {
     tag: "integrations",
     summary: "List synced Google Calendar events",
+    description: "503 NOT_CONFIGURED when Google is not configured. 409 INTEGRATION_REQUIRED when not connected.",
     params: [...pageParams, query("from", rfc3339, "startsAt lower bound"), query("to", rfc3339, "startsAt upper bound")],
     responses: { 200: okPage(ref("CareerGoogleCalendarEvent")) },
   }),
@@ -382,8 +391,8 @@ export const routes: Route[] = [
   post("ai", "/api/v1/ai/generate", {
     tag: "ai",
     summary: "Generate free-form AI text for an application",
-    description: "Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations}.",
-    body: body(obj({ ai: ref("CareerAiOptions"), prompt: { type: "string", minLength: 1, maxLength: 20000 }, applicationId: uuid, evidenceIds: arr(uuid) }, ["ai", "prompt", "applicationId"])),
+    description: "Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations, usage}. usage has inputTokens and outputTokens. 403 FEATURE_DISABLED when the monthly limit is reached or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI or web search is not configured. Web search failure is 502 PROVIDER_ERROR.",
+    body: body(closed({ ai: ref("CareerAiOptions"), prompt: { type: "string", minLength: 1, maxLength: 20000 }, applicationId: uuid, evidenceIds: arr(uuid) }, ["ai", "prompt", "applicationId"])),
     responses: op,
   }),
 ];
@@ -393,11 +402,12 @@ export const schemas: Record<string, Schema> = {
     ...obj({
       provider: str,
       model: str,
-      effort: enumOf("LOW", "MEDIUM", "HIGH", "MAX"),
+      effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Must be LOW, MEDIUM, HIGH, or MAX. The server replaces it with the plan lever." },
       ultraResume: { type: "boolean", default: false, description: "ULTRA plan only" },
       webSearch: { type: "boolean", default: false },
       models: { type: "object", additionalProperties: true },
     }, ["provider", "model", "effort"]),
+    additionalProperties: false,
     description: "Client provider and model are ignored; the plan selects the managed model.",
   },
   Application: obj({
@@ -411,10 +421,27 @@ export const schemas: Record<string, Schema> = {
     appliedAt: nullable(dateTime),
     nextActionAt: nullable(dateTime),
     imported: bool,
-    fitScore: { type: "number", description: "Latest gap analysis fit score; omitted when none" },
+    fitScore: { ...nullable(num), description: "Latest gap analysis fit score. Omitted when none on career application routes. POST /postings/{id}/apply always sends null." },
+    fit: {
+      ...obj({
+        fitScore: num,
+        parts: obj({ techStack: num, experienceLink: num, careerLevel: num, keyword: num, domain: num }),
+        topGap: str,
+        plan: str,
+        reachable: num,
+        documentId: uuid,
+        documentTitle: nullable(str),
+      }),
+      description: "Stored posting fit for GET /api/v1/applications/{id} only. Omitted when no cache row. fitScore here is the cached decimal. The integer fitScore beside it stays the gap score. reachable is the stored score if the weakest part were 10. Employer applicant payloads do not include fit.",
+    },
     createdAt: dateTime,
     updatedAt: dateTime,
-  }, ["id", "revision", "jobId", "company", "title", "stage", "notes", "appliedAt", "nextActionAt", "imported", "createdAt", "updatedAt"]),
+    stageEnteredAt: {
+      type: "object",
+      additionalProperties: dateTime,
+      description: "When each stage was first entered. A missing history uses the current stage at createdAt.",
+    },
+  }, ["id", "revision", "jobId", "company", "title", "stage", "notes", "appliedAt", "nextActionAt", "imported", "createdAt", "updatedAt", "stageEnteredAt"]),
   CareerApplicationEvent: obj({
     id: uuid,
     applicationId: uuid,

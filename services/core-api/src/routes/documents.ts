@@ -1,19 +1,21 @@
 import { strictBody, strictObject } from "../body.ts";
-import { one, query } from "../db.ts";
+import { isMissingRelation, one, query } from "../db.ts";
+import { searchFields } from "../hangul.ts";
 import {
   blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
   type Block,
 } from "../document-content.ts";
-import { HttpError, data, fieldError, hashJson, parseUuid, requireUuid } from "../http.ts";
+import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, randomToken, requireUuid, sha256Hex } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
-import { listPage, pageOf, ts } from "../page.ts";
+import { listPage, pageOf, pageResult, ts } from "../page.ts";
+import { httpsUrl, unprocessable } from "./recruiting-shared.ts";
 import type { Ctx } from "../types.ts";
 
 const DOC_COLS = "id, user_id, revision, application_id, title, kind, template, language, status, latest_version_id, finalized_version_id, created_at, updated_at";
 const VERSION_COLS = "id, user_id, document_id, application_id, number, content, blocks, change_note, quality, created_at";
 const PROPOSAL_COLS = "id, user_id, document_id, source_version_id, source_revision, selection, replacement, evidence_refs, claim_status, applied_at, created_at";
 const EXPORT_COLS = "id, user_id, document_id, version_id, format, template, language, content, blocks, content_hash, status, renderer_version, result, created_at, updated_at";
-const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT"]);
+const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT", "HUB_PROFILE"]);
 const TEMPLATE_ALIASES: Record<string, string> = { CLASSIC: "SIMPLE", COMPACT: "ATS" };
 const TEMPLATES = new Set(["SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT"]);
 const TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT";
@@ -41,6 +43,13 @@ const documentDto = (row: Row): Row => ({
   finalizedVersionId: str(row.finalized_version_id),
   createdAt: ts(row.created_at),
   updatedAt: ts(row.updated_at),
+});
+
+/** Archived list rows only. purgeAt is updated_at plus the 30-day retention window. */
+const archivedDocumentDto = (row: Row): Row => ({
+  ...documentDto(row),
+  archivedAt: ts(row.updated_at),
+  purgeAt: ts(row.purge_at),
 });
 
 const versionDto = (row: Row): Row => ({
@@ -94,10 +103,15 @@ const loadDocument = async (ctx: Ctx, id: string): Promise<Row> => {
   return row;
 };
 
+/** Archived documents take no new work: writes, shares, exports, AI jobs, submission drafts, chat context. */
+export const rejectArchived = (row: Row | null | undefined): void => {
+  if (row?.status === "ARCHIVED") throw transition("document is archived");
+};
+
 /** `_get_mutable`: archived documents take no writes. */
 const loadMutable = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await loadDocument(ctx, id);
-  if (row.status === "ARCHIVED") throw transition("document is archived");
+  rejectArchived(row);
   return row;
 };
 
@@ -201,8 +215,7 @@ const blockInputs = (value: unknown): Block[] => {
   });
 };
 
-export const listDocuments = async (ctx: Ctx): Promise<Response> => {
-  const page = pageOf(ctx.url);
+const listFilters = (ctx: Ctx): { applicationId: string | null; kind: string | null } => {
   const appRaw = ctx.url.searchParams.get("applicationId");
   let applicationId: string | null = null;
   if (appRaw) {
@@ -211,7 +224,39 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
   }
   const kind = ctx.url.searchParams.get("kind") || null;
   if (kind !== null && !KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
-  const where = ["user_id = $1"];
+  return { applicationId, kind };
+};
+
+/** Own documents archived within 30 days, newest by updated_at. archivedAt and purgeAt are on these rows only. */
+const listArchivedDocuments = async (ctx: Ctx): Promise<Response> => {
+  const page = pageOf(ctx.url);
+  const { applicationId, kind } = listFilters(ctx);
+  const where = ["user_id = $1", "status = 'ARCHIVED'", "updated_at > now() - interval '30 days'"];
+  const params: unknown[] = [ctx.user.id];
+  for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
+    if (value === null) continue;
+    params.push(value);
+    where.push(`${column} = $${params.length}`);
+  }
+  if (page.cursor) {
+    params.push(page.cursor.createdAt, page.cursor.id);
+    where.push(`(updated_at, id) < ($${params.length - 1}, $${params.length})`);
+  }
+  params.push(page.limit + 1);
+  const rows = await query(ctx.deps.query,
+    `SELECT ${DOC_COLS}, updated_at + interval '30 days' AS purge_at FROM documents WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id DESC LIMIT $${params.length}`,
+    params);
+  const paged = pageResult(rows.rows, page.limit, (row) => ({ createdAt: row.updated_at, id: String(row.id) }));
+  return pageBody(paged.items.map(archivedDocumentDto), paged.nextCursor, paged.hasMore, ctx.rid);
+};
+
+export const listDocuments = async (ctx: Ctx): Promise<Response> => {
+  const archived = ctx.url.searchParams.get("archived");
+  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
+  if (archived === "1") return listArchivedDocuments(ctx);
+  const page = pageOf(ctx.url);
+  const { applicationId, kind } = listFilters(ctx);
+  const where = ["user_id = $1", "status <> 'ARCHIVED'"];
   const params: unknown[] = [ctx.user.id];
   for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
     if (value === null) continue;
@@ -235,7 +280,7 @@ export const createDocument = async (ctx: Ctx): Promise<Response> => {
   const kind = String(values.kind);
   const template = String(values.template ?? "");
   if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
-  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT");
+  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE");
   if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
   const now = ts(ctx.now);
   const row: Row = {
@@ -433,6 +478,25 @@ export const archiveDocument = async (ctx: Ctx, idRaw: string): Promise<Response
   return data(200, documentDto({ ...doc, revision: expected + 1, status: "ARCHIVED", updated_at: now }), ctx.rid);
 };
 
+const RESTORE_SQL = `UPDATE documents SET revision = revision + 1,
+    status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, updated_at = $3
+  WHERE id = $1 AND user_id = $2 AND revision = $4 AND status = 'ARCHIVED'
+  RETURNING status`;
+
+export const restoreDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
+  const expected = Number(values.expectedRevision);
+  const doc = await loadDocument(ctx, id);
+  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+  if (doc.status !== "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
+  const now = ts(ctx.now);
+  const updated = await one(ctx.deps.query, RESTORE_SQL, [id, ctx.user.id, now, expected]);
+  if (!updated) await failedUpdate(ctx, "documents", id);
+  await enqueueIngest(ctx, { documentId: id });
+  return data(200, documentDto({ ...doc, revision: expected + 1, status: String(updated!.status), updated_at: now }), ctx.rid);
+};
+
 export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const { values } = await strictBody(ctx.request, {
@@ -443,9 +507,12 @@ export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const format = String(values.format);
   if (format !== "PDF" && format !== "DOCX") throw fieldError("format", "must be PDF or DOCX");
   if (!values.rendererVersion) throw fieldError("rendererVersion", "required");
-  const doc = await loadDocument(ctx, id);
+  const doc = await loadMutable(ctx, id);
   const version = await loadVersion(ctx, id, String(values.versionId));
-  if (doc.finalized_version_id == null || String(doc.finalized_version_id) !== String(version.id)) {
+  const hubLatest = String(doc.kind) === "HUB_PROFILE"
+    && doc.latest_version_id != null
+    && String(doc.latest_version_id) === String(version.id);
+  if (!hubLatest && (doc.finalized_version_id == null || String(doc.finalized_version_id) !== String(version.id))) {
     throw new HttpError(422, "DOCUMENT_NOT_FINALIZED", "only the finalized version can be exported");
   }
   const now = ts(ctx.now);
@@ -503,6 +570,386 @@ export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: str
   return data(200, exportDto({ ...row, status, result, updated_at: now }), ctx.rid);
 };
 
+const clip = (value: string, max: number): string => {
+  const points = Array.from(value);
+  return points.length <= max ? value : points.slice(0, max).join("");
+};
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+type DocNode = { type?: unknown; text?: unknown; content?: unknown };
+type SectionName = "intro" | "careers" | "skills" | "links" | "headline" | "skip";
+
+const nodeText = (node: DocNode): string => {
+  const own = typeof node.text === "string" ? node.text : "";
+  const nested = Array.isArray(node.content) ? node.content.map((child) => nodeText(child as DocNode)).join("") : "";
+  return own + nested;
+};
+
+const sectionLines = (content: unknown): { heading: boolean; text: string }[] => {
+  const lines: { heading: boolean; text: string }[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const typed = node as DocNode;
+    const type = typeof typed.type === "string" ? typed.type : "";
+    if (type === "heading" || type === "paragraph" || type === "listItem") {
+      lines.push({ heading: type === "heading", text: nodeText(typed).trim() });
+      return;
+    }
+    if (Array.isArray(typed.content)) for (const child of typed.content) visit(child);
+  };
+  visit(content);
+  return lines;
+};
+
+const sectionName = (label: string): SectionName => {
+  const key = label.trim().replace(/[:：]\s*$/, "").toLowerCase();
+  if (key === "소개" || key === "intro") return "intro";
+  if (key === "경력" || key === "careers" || key === "career") return "careers";
+  if (key === "기술" || key === "기술 스택" || key === "skills" || key === "skill") return "skills";
+  if (key === "링크" || key === "links" || key === "link") return "links";
+  if (key === "한 줄" || key === "헤드라인" || key === "headline") return "headline";
+  // shortcut: projects and education have no profile column, drop them until a migration adds one.
+  return "skip";
+};
+
+const careerOf = (line: string): { company: string; role: string; startedOn: string | null; endedOn: string | null; description: string } | null => {
+  const parts = line.split("|").map((part) => part.trim());
+  if (parts.length >= 2 && parts[0] && parts[1]) {
+    return {
+      company: clip(parts[0], 200),
+      role: clip(parts[1], 200),
+      startedOn: DATE.test(parts[2] ?? "") ? parts[2] : null,
+      endedOn: DATE.test(parts[3] ?? "") ? parts[3] : null,
+      description: clip(parts[4] ?? "", 500),
+    };
+  }
+  const name = clip(line.trim(), 200);
+  if (!name) return null;
+  return { company: name, role: name, startedOn: null, endedOn: null, description: "" };
+};
+
+const linkKind = (url: string): string => {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return "other"; }
+  if (host === "github.com" || host.endsWith(".github.com")) return "github";
+  if (/(^|\.)((velog\.io)|(tistory\.com)|(medium\.com)|(blogspot\.com)|(brunch\.co\.kr))$/.test(host)) return "blog";
+  if (/(^|\.)((notion\.site)|(notion\.so)|(behance\.net)|(dribbble\.com))$/.test(host)) return "portfolio";
+  return "other";
+};
+
+const linkOf = (line: string): { id: string; kind: string; url: string; title: string } | null => {
+  const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
+  const url = clip(parts.length >= 2 ? parts[parts.length - 1] : parts[0] ?? "", 2000);
+  if (!httpsUrl(url)) return null;
+  const title = parts.length >= 2 ? parts.slice(0, -1).join(" | ") : "";
+  return { id: crypto.randomUUID(), kind: linkKind(url), url, title: clip(title, 300) };
+};
+
+const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; intro: string; careers: unknown[]; skills: string[]; links: { id: string; kind: string; url: string; title: string }[]; replaceLinks: boolean; replaceCareers: boolean; replaceSkills: boolean; replaceIntro: boolean } => {
+  const lines = sectionLines(content);
+  const sawHeading = lines.some((line) => line.heading);
+  const buckets: Record<Exclude<SectionName, "skip">, string[]> = { intro: [], careers: [], skills: [], links: [], headline: [] };
+  let current: SectionName = "skip";
+  let headed = false;
+  for (const line of lines) {
+    if (line.heading) {
+      headed = true;
+      current = sectionName(line.text);
+      continue;
+    }
+    const text = line.text.replace(/^•\s*/, "").trim();
+    if (!text) continue;
+    if (!headed) buckets.intro.push(text);
+    else if (current !== "skip") buckets[current].push(text);
+  }
+  const introLines = sawHeading ? buckets.intro : blocksOf(blocks).map((block) => block.text).filter(Boolean);
+  const skills = buckets.skills.flatMap((line) => line.split(/[,·、]/)).map((item) => clip(item.trim(), 40)).filter(Boolean).slice(0, 50);
+  return {
+    headline: buckets.headline.join("\n"),
+    intro: introLines.join("\n"),
+    careers: buckets.careers.map(careerOf).filter((career) => career != null).slice(0, 30),
+    skills,
+    links: buckets.links.map(linkOf).filter((link) => link != null),
+    replaceLinks: lines.some((line) => line.heading && sectionName(line.text) === "links"),
+    replaceCareers: lines.some((line) => line.heading && sectionName(line.text) === "careers"),
+    replaceSkills: lines.some((line) => line.heading && sectionName(line.text) === "skills"),
+    replaceIntro: lines.some((line) => line.heading && sectionName(line.text) === "intro") || (!sawHeading && introLines.length > 0),
+  };
+};
+
+const REPLACE_PROFILE = `WITH replaced AS (
+  INSERT INTO profiles (user_id, headline, intro, careers, skills, search_text, search_choseong, search_jamo, created_at, updated_at)
+  VALUES ($1::uuid, $2::text, $3::text, $4::jsonb, $5::jsonb, $6::text, $7::text, $8::text, $9::timestamptz, $9::timestamptz)
+  ON CONFLICT (user_id) DO UPDATE SET
+    headline = CASE WHEN $15::boolean THEN EXCLUDED.headline ELSE profiles.headline END,
+    intro = CASE WHEN $14::boolean THEN EXCLUDED.intro ELSE profiles.intro END,
+    careers = CASE WHEN $12::boolean THEN EXCLUDED.careers ELSE profiles.careers END,
+    skills = CASE WHEN $13::boolean THEN EXCLUDED.skills ELSE profiles.skills END,
+    search_text = EXCLUDED.search_text,
+    search_choseong = EXCLUDED.search_choseong,
+    search_jamo = EXCLUDED.search_jamo,
+    updated_at = EXCLUDED.updated_at
+  RETURNING user_id
+), cleared AS (
+  DELETE FROM user_links
+  WHERE user_id = (SELECT user_id FROM replaced) AND $10::boolean
+  RETURNING id
+)
+INSERT INTO user_links (id, user_id, kind, url, title, status, fit_count, ai_read, created_at)
+SELECT link.id::uuid, replaced.user_id, link.kind, link.url, link.title, 'READ', 0, false, $9::timestamptz
+FROM replaced
+JOIN jsonb_to_recordset($11::jsonb) AS link(id text, kind text, url text, title text) ON $10::boolean`;
+
+const profileSkills = async (ctx: Ctx): Promise<string[]> => {
+  const current = await one(ctx.deps.query, "SELECT skills FROM profiles WHERE user_id = $1", [ctx.user.id]);
+  return Array.isArray(current?.skills) ? current.skills.map(String) : [];
+};
+
+const PROFILE_SECTIONS = ["headline", "intro", "careers", "skills", "links"];
+
+const sectionsOf = (value: unknown): string[] => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw unprocessable("sections", "unsupported section");
+  const out: string[] = [];
+  for (const item of value) {
+    if (!PROFILE_SECTIONS.includes(item)) throw unprocessable("sections", "unsupported section");
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+};
+
+const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: string[] | null): Promise<{ documentId: string; profileUserId: string; applied: string[] }> => {
+  const nowIso = ctx.now.toISOString();
+  const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false, replaceCareers: false, replaceSkills: false, replaceIntro: false };
+  const version = doc.latest_version_id == null ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
+  const parsed = version == null ? empty : sectionsFrom(version.content, version.blocks);
+  const allow = (key: string): boolean => sections == null || sections.includes(key);
+  const replaceLinks = parsed.replaceLinks && allow("links");
+  const replaceCareers = parsed.replaceCareers && allow("careers");
+  const replaceSkills = parsed.replaceSkills && allow("skills");
+  const replaceIntro = parsed.replaceIntro && allow("intro");
+  const replaceHeadline = allow("headline");
+  const applied = PROFILE_SECTIONS.filter((key) => (
+    key === "headline" ? replaceHeadline
+      : key === "intro" ? replaceIntro
+        : key === "careers" ? replaceCareers
+          : key === "skills" ? replaceSkills
+            : replaceLinks
+  ));
+  if (!applied.length) return { documentId: id, profileUserId: ctx.user.id, applied };
+  const headline = clip(parsed.headline || String(doc.title), 120);
+  const intro = clip(parsed.intro, 2000);
+  const currentSkills = replaceSkills ? parsed.skills : await profileSkills(ctx);
+  const fields = searchFields([ctx.user.displayName, headline, currentSkills.join(" ")].join(" "));
+  await query(ctx.deps.query, REPLACE_PROFILE, [
+    ctx.user.id, headline, intro, JSON.stringify(parsed.careers), JSON.stringify(parsed.skills),
+    fields.text, fields.choseong, fields.jamo, nowIso, replaceLinks, JSON.stringify(parsed.links),
+    replaceCareers, replaceSkills, replaceIntro, replaceHeadline,
+  ]);
+  return { documentId: id, profileUserId: ctx.user.id, applied };
+};
+
+const TEXT_SOURCE = new Set(["text/plain", "text/markdown"]);
+
+const sourceText = (value: unknown): string => {
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  if (typeof value !== "string" || value === "") return "";
+  return Buffer.from(value, "base64").toString("utf8");
+};
+
+const mdToDoc = (md: string): { content: { type: "doc"; content: unknown[] }; blocks: Block[] } => {
+  const nodes: unknown[] = [];
+  const blocks: Block[] = [];
+  const add = (kind: string, extra: Record<string, unknown>, text: string): void => {
+    const bid = "block-" + (blocks.length + 1);
+    nodes.push({ type: kind, attrs: { blockId: bid, ...extra }, content: [{ type: "text", text }] });
+    blocks.push({ id: bid, text, evidenceRefs: [], claimStatus: "UNSUPPORTED" });
+  };
+  for (const raw of md.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line) continue;
+    const heading = /^(#{1,4})\s+(.*)/.exec(line);
+    const item = /^\s*[-*]\s+(.*)/.exec(line);
+    if (heading) add("heading", { level: heading[1].length }, heading[2]);
+    else if (item) add("paragraph", {}, "• " + item[1]);
+    else add("paragraph", {}, line);
+  }
+  if (!nodes.length) add("paragraph", {}, "");
+  return { content: { type: "doc", content: nodes }, blocks };
+};
+
+const insertProfileDocument = async (
+  ctx: Ctx, title: string, version: { id: string; content: unknown; blocks: Block[] } | null,
+): Promise<string> => {
+  const now = ts(ctx.now);
+  const docId = crypto.randomUUID();
+  const versionId = version?.id ?? null;
+  if (!version) {
+    await query(ctx.deps.query,
+      `INSERT INTO documents (${DOC_COLS}) VALUES ($1,$2,1,NULL,$3,$4,'SIMPLE','ko','DRAFT',NULL,NULL,$5,$5)`,
+      [docId, ctx.user.id, title, "HUB_PROFILE", now]);
+    return docId;
+  }
+  const quality = computeQuality(version.blocks);
+  await query(ctx.deps.query,
+    `WITH doc AS (
+       INSERT INTO documents (${DOC_COLS}) VALUES ($1,$2,1,NULL,$3,$4,'SIMPLE','ko','DRAFT',$5,NULL,$6,$6)
+       RETURNING id
+     )
+     INSERT INTO document_versions (${VERSION_COLS})
+     SELECT $5, $2, doc.id, NULL, 1, $7::jsonb, $8::jsonb, 'source', $9::jsonb, $6 FROM doc`,
+    [docId, ctx.user.id, title, "HUB_PROFILE", versionId, now, JSON.stringify(version.content), JSON.stringify(version.blocks), JSON.stringify(quality)]);
+  return docId;
+};
+
+const convertOwnedSource = async (ctx: Ctx, id: string): Promise<Response> => {
+  const source = await one(ctx.deps.query,
+    "SELECT id, file_name, mime_type, content FROM sources WHERE id = $1 AND user_id = $2",
+    [id, ctx.user.id]);
+  if (!source) throw notFound();
+  const title = clip(String(source.file_name || "프로필"), 300);
+  const mime = String(source.mime_type || "");
+  if (TEXT_SOURCE.has(mime)) {
+    const built = mdToDoc(sourceText(source.content));
+    const documentId = await insertProfileDocument(ctx, title, { id: crypto.randomUUID(), ...built });
+    return data(200, { target: "application", documentId, applicationId: null }, ctx.rid);
+  }
+  const documentId = await insertProfileDocument(ctx, title, null);
+  // shortcut: pdf/docx shell has no version until the ingest job finishes, fill inline when the worker is in this process
+  const { jobId } = await enqueueIngest(ctx, { sourceId: id, profileDocumentId: documentId });
+  return data(202, { target: "application", documentId, jobId, applicationId: null }, ctx.rid);
+};
+
+const convertHubDocument = async (
+  ctx: Ctx, id: string, doc: Row, target: string, values: Record<string, unknown>, present: Set<string>,
+): Promise<Response> => {
+  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
+  if (target === "application") {
+    if (!present.has("applicationId")) return data(200, { target, documentId: id, applicationId: null }, ctx.rid);
+    if (!present.has("expectedRevision")) throw fieldError("expectedRevision", "required");
+    const expected = Number(values.expectedRevision);
+    if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+    const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
+    if (!app) throw notFound();
+    const now = ts(ctx.now);
+    const updated = await one(ctx.deps.query,
+      "UPDATE documents SET application_id = $3, revision = revision + 1, updated_at = $4 WHERE id = $1 AND user_id = $2 AND revision = $5 RETURNING id",
+      [id, ctx.user.id, values.applicationId, now, expected]);
+    if (!updated) await failedUpdate(ctx, "documents", id);
+    return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
+  }
+  const copied = await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null);
+  return data(200, { target, ...copied }, ctx.rid);
+};
+
+export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values, present } = await strictBody(ctx.request, {
+    target: { kind: "str" },
+    applicationId: { kind: "uuid" },
+    expectedRevision: { kind: "int" },
+    sections: { kind: "any" },
+  });
+  const target = present.has("target") ? String(values.target) : "application";
+  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
+  if (present.has("sections") && target !== "hub") throw unprocessable("sections", "unsupported section");
+  const doc = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
+  rejectArchived(doc);
+  if (doc) return convertHubDocument(ctx, id, doc, target, values, present);
+  return convertOwnedSource(ctx, id);
+};
+
+export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const { values, present } = await strictBody(ctx.request, { sections: { kind: "any" } });
+  const doc = await loadMutable(ctx, id);
+  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be the base profile");
+  return data(200, await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null), ctx.rid);
+};
+
+const sharingUnavailable = (): HttpError => new HttpError(404, "SHARING_UNAVAILABLE", "sharing unavailable");
+
+const jsonValue = (value: unknown): unknown => {
+  if (typeof value !== "string" || value === "") return value ?? null;
+  try { return JSON.parse(value); } catch { return value; }
+};
+
+const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const raw = await ctx.request.text();
+  let versionId = "";
+  if (raw.trim()) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
+    const body = strictObject(parsed, { versionId: { kind: "uuid" } });
+    if (body.present.has("versionId")) versionId = String(body.values.versionId);
+  }
+  const doc = await loadMutable(ctx, id);
+  const pinned = versionId || (doc.latest_version_id == null ? "" : String(doc.latest_version_id));
+  if (!pinned) throw notFound();
+  await loadVersion(ctx, id, pinned);
+  const token = randomToken();
+  const now = ts(ctx.now);
+  try {
+    await query(ctx.deps.query,
+      `WITH revoked AS (
+         UPDATE document_shares SET revoked_at = $6::timestamptz
+         WHERE document_id = $2::uuid AND revoked_at IS NULL
+         RETURNING id
+       )
+       INSERT INTO document_shares (id, document_id, version_id, token_hash, created_by, created_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::timestamptz)`,
+      [crypto.randomUUID(), id, pinned, await sha256Hex(token), ctx.user.id, now]);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+  return data(200, { token, path: `/api/v1/documents/shared/${token}`, versionId: pinned, createdAt: now }, ctx.rid);
+};
+
+const revokeShare = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  await loadDocument(ctx, id);
+  try {
+    const row = await one(ctx.deps.query,
+      `UPDATE document_shares SET revoked_at = $3::timestamptz
+       WHERE document_id = $1::uuid AND created_by = $2::uuid AND revoked_at IS NULL
+       RETURNING id`,
+      [id, ctx.user.id, ts(ctx.now)]);
+    return data(200, { revoked: Boolean(row) }, ctx.rid);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+};
+
+const readShare = async (ctx: Ctx, token: string): Promise<Response> => {
+  let row: Row | null;
+  try {
+    row = await one(ctx.deps.query,
+      `SELECT d.title, d.kind, v.content, v.blocks
+       FROM document_shares s
+       JOIN document_versions v ON v.id = s.version_id
+       JOIN documents d ON d.id = s.document_id
+       WHERE s.token_hash = $1::text AND s.revoked_at IS NULL AND d.status <> 'ARCHIVED'`,
+      [await sha256Hex(token)]);
+  } catch (err) {
+    if (isMissingRelation(err)) throw sharingUnavailable();
+    throw err;
+  }
+  if (!row) throw notFound();
+  return data(200, {
+    title: String(row.title ?? ""),
+    kind: String(row.kind),
+    content: jsonValue(row.content),
+    blocks: blocksOf(jsonValue(row.blocks)),
+  }, ctx.rid);
+};
+
 export const isDocumentEdit = (method: string, path: string): boolean =>
   method === "POST" && /^\/api\/v1\/documents\/[^/]+\/edits$/.test(path);
 
@@ -524,7 +971,16 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (apply && method === "POST") return applyRevision(ctx, apply[1], apply[2]);
   const result = path.match(/^\/api\/v1\/documents\/([^/]+)\/exports\/([^/]+)\/result$/);
   if (result && method === "POST") return recordExportResult(ctx, result[1], result[2]);
-  const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|exports))?$/);
+  const shared = path.match(/^\/api\/v1\/documents\/shared\/([^/]+)$/);
+  if (shared && method === "GET") return readShare(ctx, shared[1]);
+  const share = path.match(/^\/api\/v1\/documents\/([^/]+)\/share$/);
+  if (share && method === "POST") return shareDocument(ctx, share[1]);
+  if (share && method === "DELETE") return revokeShare(ctx, share[1]);
+  const baseProfile = path.match(/^\/api\/v1\/documents\/([^/]+)\/base-profile$/);
+  if (baseProfile && method === "POST") return setBaseProfile(ctx, baseProfile[1]);
+  const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);
+  if (profile && method === "POST") return convertProfile(ctx, profile[1]);
+  const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|restore|exports))?$/);
   if (!m) return null;
   const [, id, sub] = m;
   if (!sub && method === "GET") return getDocument(ctx, id);
@@ -533,6 +989,7 @@ export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Respons
   if (sub === "review" && method === "POST") return reviewDocument(ctx, id);
   if (sub === "finalize" && method === "POST") return finalizeDocument(ctx, id);
   if (sub === "archive" && method === "POST") return archiveDocument(ctx, id);
+  if (sub === "restore" && method === "POST") return restoreDocument(ctx, id);
   if (sub === "exports" && method === "GET") return listExports(ctx, id);
   if (sub === "exports" && method === "POST") return createExport(ctx, id);
   return null;

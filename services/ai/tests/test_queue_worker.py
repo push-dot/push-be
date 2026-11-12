@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 from fakeredis.aioredis import FakeRedis
 
+from app.claimctx import LostClaim
 from app.queue.fairness import SLOT_STALE_S, try_slot
 from app.queue.streams import StreamQueue
 from app.queue.worker import JobContext, Worker
@@ -323,14 +324,16 @@ async def _no_sleep(_seconds):
 
 
 @pytest.mark.asyncio
-async def test_failure_after_job_left_running_is_not_retried():
+# LostClaim: the call's usage was refused because the job closed meanwhile (store_ai.py _OPEN_JOB).
+@pytest.mark.parametrize("err", [RuntimeError("provider 500"), LostClaim()])
+async def test_failure_after_job_left_running_is_not_retried(err):
     redis = FakeRedis(decode_responses=True)
     db = MemoryJobs()
     db.jobs[FIRST] = queued(FIRST)
 
     async def cancelled_meanwhile(ctx):
         db.jobs[FIRST]["status"] = "CANCELLED"  # admin cancel while the LLM call runs
-        raise RuntimeError("provider 500")
+        raise err
 
     box = worker(redis, db, {"chat": cancelled_meanwhile})
     assert await box.process(await _read_one(box, FIRST)) == "lost"
@@ -363,6 +366,33 @@ async def test_long_job_heartbeats_and_renews_conversation_lock():
     assert beats, "no heartbeat while the handler ran"
     # The beat after the first renew sees the full TTL again.
     assert max(beats) > 1
+
+
+_MISSING_KEY = (
+    "Missing credentials. Please pass an `api_key`, `workload_identity`, "
+    "`admin_api_key`."
+)
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_key_fails_without_retry():
+    redis = FakeRedis(decode_responses=True)
+    db = MemoryJobs()
+    db.jobs[FIRST] = queued(FIRST)
+
+    async def missing(_ctx):
+        raise RuntimeError(_MISSING_KEY)
+
+    box = worker(redis, db, {"chat": missing})
+    assert await box.process(await _read_one(box, FIRST)) == "failed"
+    assert db.jobs[FIRST]["status"] == "FAILED"
+    assert db.jobs[FIRST]["attempts"] == 0
+    assert await redis.zcard("q:delayed") == 0
+    assert db.events[FIRST] == [("error", {"error": {
+        "code": "NOT_CONFIGURED",
+        "message": "managed AI is not configured",
+        "details": None,
+    }})]
 
 
 @pytest.mark.asyncio

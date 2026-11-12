@@ -1,5 +1,5 @@
-import { isUndefinedColumn, one, query } from "../db.ts";
-import { asBool, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
+import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
+import { asBool, data, fieldError, jsonList, noContent, pageBody, parseUuid, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import {
@@ -55,7 +55,7 @@ async function listLinks(ctx: Ctx): Promise<Response> {
   const kind = ctx.url.searchParams.get("kind");
   if (kind && !LINK_KINDS.has(kind)) throw unprocessable("kind", "unsupported kind");
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT id, kind, url, title, status, fit_count, ai_read, created_at FROM user_links WHERE user_id = $1";
+  let sql = "SELECT id, kind, url, title, status, fit_count, ai_read, created_at FROM user_links WHERE user_id = $1 AND deleted_at IS NULL";
   if (kind) {
     params.push(kind);
     sql += ` AND kind = $${params.length}`;
@@ -92,9 +92,16 @@ async function createLink(ctx: Ctx): Promise<Response> {
 
 async function deleteLink(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "DELETE FROM user_links WHERE id = $1 AND user_id = $2 RETURNING id", [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = $3 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id", [id, ctx.user.id, ctx.now.toISOString()]);
   if (!row) throw notFound();
   return noContent(ctx.rid);
+}
+
+async function restoreLink(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
+  if (!row) throw notFound();
+  return data(200, linkDto(row), ctx.rid);
 }
 
 const updateLink = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -108,7 +115,7 @@ const updateLink = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const title = "title" in body ? textOf(body.title ?? "", "title", 0, 300) : null;
   const aiRead = "aiRead" in body ? boolOf(body.aiRead, "aiRead") : null;
   const row = await one(ctx.deps.query,
-    `UPDATE user_links SET title = COALESCE($3, title), kind = COALESCE($4, kind), url = COALESCE($5, url), ai_read = COALESCE($6, ai_read) WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at`,
+    `UPDATE user_links SET title = COALESCE($3, title), kind = COALESCE($4, kind), url = COALESCE($5, url), ai_read = COALESCE($6, ai_read) WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id, kind, url, title, status, fit_count, ai_read, created_at`,
     [id, ctx.user.id, title, kind, url, aiRead]);
   if (!row) throw notFound();
   return data(200, linkDto(row), ctx.rid);
@@ -320,6 +327,259 @@ async function listBookmarks(ctx: Ctx): Promise<Response> {
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
 }
 
+const viewStamp = (value: unknown): string => {
+  if (value instanceof Date) return value.toISOString();
+  const text = String(value ?? "");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T00:00:00.000Z`;
+  return text;
+};
+
+const listPostingViews = async (ctx: Ctx): Promise<Response> => {
+  try {
+    const loaded = await withPublicStatus(async (withStatus) => {
+      const page = pageOf(ctx.url);
+      const params: unknown[] = [ctx.user.id];
+      const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
+      const flags = `EXISTS (SELECT 1 FROM bookmarks b WHERE b.user_id = $1 AND b.posting_id = p.id) AS bookmarked,
+        EXISTS (SELECT 1 FROM jobs j JOIN applications a ON a.job_id = j.id AND a.user_id = $1 WHERE j.source_posting_id = p.id) AS applied`;
+      const open = openClause(withStatus);
+      const totalRow = await one(ctx.deps.query,
+        `SELECT count(*)::int AS total FROM (
+           SELECT pv.posting_id FROM posting_views pv JOIN job_postings p ON p.id = pv.posting_id
+           WHERE pv.user_id = $1::uuid AND ${open} GROUP BY pv.posting_id
+         ) cards`,
+        params.slice());
+      let sql = `SELECT ${cols}, v.viewed_on, ${flags}
+        FROM (
+          SELECT pv.posting_id, max(pv.viewed_on) AS viewed_on
+          FROM posting_views pv WHERE pv.user_id = $1::uuid GROUP BY pv.posting_id
+        ) v
+        JOIN job_postings p ON p.id = v.posting_id
+        WHERE ${open}`;
+      if (page.cursor) {
+        params.push(page.cursor.createdAt, page.cursor.id);
+        sql += ` AND (v.viewed_on, p.id) < ($${params.length - 1}::date, $${params.length}::uuid)`;
+      }
+      params.push(page.limit + 1);
+      sql += ` ORDER BY v.viewed_on DESC, p.id DESC LIMIT $${params.length}`;
+      const rows = await query(ctx.deps.query, sql, params);
+      return { rows, page, total: Number(totalRow?.total ?? 0) };
+    });
+    const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: viewStamp(row.viewed_on), id: String(row.id) }));
+    const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
+    return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
+  } catch (err) {
+    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+    return pageBody([], null, false, ctx.rid, 0);
+  }
+};
+
+const DOC_STATUS_LABEL: Record<string, string> = { NONE: "서류 없음", DRAFT: "초안 있음", READY: "서류 준비됨" };
+
+const postingIdsOf = (url: URL): string[] => {
+  const all = url.searchParams.getAll("postingIds");
+  if (all.length !== 1) throw fieldError("postingIds", "required");
+  const tokens = all[0].split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+  if (!tokens.length) throw fieldError("postingIds", "required");
+  const ids: string[] = [];
+  for (const token of tokens) {
+    const id = parseUuid(token);
+    if (!id) throw fieldError("postingIds", "must be a UUID");
+    if (!ids.includes(id)) ids.push(id);
+  }
+  if (ids.length > 50) throw fieldError("postingIds", "too many ids");
+  return ids;
+};
+
+const atStamp = (value: unknown): string => value instanceof Date ? value.toISOString() : String(value ?? "");
+
+const listPostingDocumentStatus = async (ctx: Ctx): Promise<Response> => {
+  const ids = postingIdsOf(ctx.url);
+  const apps = await query(ctx.deps.query,
+    `SELECT a.id AS application_id, j.source_posting_id AS posting_id
+     FROM applications a JOIN jobs j ON j.id = a.job_id
+     WHERE a.user_id = $1::uuid AND j.source_posting_id = ANY($2::uuid[])`,
+    [ctx.user.id, ids]);
+  const byPosting = new Map<string, string[]>();
+  for (const row of apps.rows) {
+    const postingId = String(row.posting_id);
+    const list = byPosting.get(postingId) ?? [];
+    list.push(String(row.application_id));
+    byPosting.set(postingId, list);
+  }
+  const appIds = apps.rows.map((row) => String(row.application_id));
+  const docs = appIds.length
+    ? await query(ctx.deps.query,
+      `SELECT d.application_id, d.status, d.updated_at, d.id, d.user_id
+       FROM documents d
+       WHERE d.user_id = $1::uuid AND d.status <> 'ARCHIVED' AND d.application_id = ANY($2::uuid[])`,
+      [ctx.user.id, appIds])
+    : { rows: [] as Record<string, unknown>[] };
+  const snaps = appIds.length
+    ? await query(ctx.deps.query,
+      `SELECT s.application_id FROM application_snapshots s WHERE s.application_id = ANY($1::uuid[])`,
+      [appIds])
+    : { rows: [] as Record<string, unknown>[] };
+  const snapSet = new Set(snaps.rows.map((row) => String(row.application_id)));
+  const best = new Map<string, { status: string; updatedAt: string; id: string }>();
+  for (const row of docs.rows) {
+    if (String(row.user_id ?? ctx.user.id) !== ctx.user.id) continue;
+    if (String(row.status) === "ARCHIVED") continue;
+    const appId = String(row.application_id);
+    const postingId = [...byPosting.entries()].find(([, list]) => list.includes(appId))?.[0];
+    if (!postingId) continue;
+    const pick = { status: String(row.status), updatedAt: atStamp(row.updated_at), id: String(row.id) };
+    const current = best.get(postingId);
+    if (!current || pick.updatedAt > current.updatedAt || (pick.updatedAt === current.updatedAt && pick.id > current.id)) best.set(postingId, pick);
+  }
+  const items = ids.map((postingId) => {
+    const doc = best.get(postingId);
+    let status = "NONE";
+    if (doc) status = doc.status === "FINALIZED" ? "READY" : doc.status === "DRAFT" ? "DRAFT" : "NONE";
+    else if ((byPosting.get(postingId) ?? []).some((appId) => snapSet.has(appId))) status = "READY";
+    return { postingId, status, label: DOC_STATUS_LABEL[status] };
+  });
+  return data(200, { items }, ctx.rid);
+};
+
+const clipText = (value: string, max: number): string => {
+  const points = Array.from(value);
+  return points.length <= max ? value : points.slice(0, max).join("");
+};
+
+const textItems = (value: unknown): string[] => jsonList(value).map((item) => (typeof item === "string" ? item : ""));
+
+const listSuggestedExperiences = async (ctx: Ctx): Promise<Response> => {
+  let rows: Record<string, unknown>[] = [];
+  try {
+    const result = await query(ctx.deps.query,
+      `SELECT g.id, g.preferred_missing, g.missing, g.application_id, j.company, j.title, j.source_posting_id
+       FROM gap_analyses g
+       JOIN applications a ON a.id = g.application_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE g.user_id = $1::uuid AND a.user_id = $1::uuid
+       ORDER BY g.created_at DESC, g.id DESC`,
+      [ctx.user.id]);
+    rows = result.rows;
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+  }
+  const seen = new Set<string>();
+  const items: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const groups: [string, unknown][] = [["preferred", row.preferred_missing], ["missing", row.missing]];
+    for (const [kind, raw] of groups) {
+      textItems(raw).forEach((text, index) => {
+        if (items.length >= 5) return;
+        const title = text.trim();
+        if (!title || seen.has(title)) return;
+        seen.add(title);
+        const company = String(row.company ?? "").trim();
+        const job = String(row.title ?? "").trim();
+        items.push({
+          id: `${String(row.id)}:${kind}:${index}`,
+          title: clipText(title, 80),
+          sub: kind === "preferred" ? "우대 사항" : "자격 요건",
+          meta: company && job ? `${company} · ${job}` : company || job,
+          postingId: row.source_posting_id == null || row.source_posting_id === "" ? null : String(row.source_posting_id),
+          applicationId: String(row.application_id),
+        });
+      });
+    }
+    if (items.length >= 5) break;
+  }
+  return data(200, { items }, ctx.rid);
+};
+
+const CATEGORY_LABEL: Record<string, string> = {
+  dev: "개발", data: "데이터", design: "디자인", plan: "기획", marketing: "마케팅", sales: "영업", hr: "인사", ops: "운영",
+};
+
+const categoryLabel = (value: unknown): string => CATEGORY_LABEL[String(value ?? "")] ?? "커리어";
+
+const objectList = (value: unknown): Record<string, unknown>[] =>
+  jsonList(value).filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+
+const nonBlank = (value: unknown): string => typeof value === "string" ? value.trim() : "";
+
+const listCareerTopics = async (ctx: Ctx): Promise<Response> => {
+  const items: { id: string; title: string; sub: string; source: string }[] = [];
+  let category: unknown = null;
+  try {
+    const profile = await one(ctx.deps.query, "SELECT job_category, careers FROM profiles WHERE user_id = $1::uuid", [ctx.user.id]);
+    if (profile) {
+      category = profile.job_category;
+      const career = objectList(profile.careers).find((row) => nonBlank(row.role) || nonBlank(row.description));
+      if (career) {
+        const role = nonBlank(career.role);
+        const description = nonBlank(career.description);
+        items.push({
+          id: "career",
+          title: role || clipText(description, 40),
+          sub: `${categoryLabel(profile.job_category)} · 이력서 경력에서`,
+          source: "career",
+        });
+      }
+    }
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+  }
+  try {
+    const app = await one(ctx.deps.query,
+      `SELECT title FROM applications WHERE user_id = $1::uuid AND stage <> 'REJECTED' AND stage <> 'WITHDRAWN' ORDER BY updated_at DESC, id DESC LIMIT 1`,
+      [ctx.user.id]);
+    const title = nonBlank(app?.title);
+    if (title) items.push({ id: "application", title: `${title} 준비`, sub: "커리어 · 지원 현황에서", source: "application" });
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+  }
+  try {
+    const gaps = await query(ctx.deps.query,
+      `SELECT missing FROM gap_analyses WHERE user_id = $1::uuid ORDER BY created_at DESC, id DESC`,
+      [ctx.user.id]);
+    const gap = gaps.rows.map((row) => textItems(row.missing)[0] ?? "").find((text) => text.trim());
+    if (gap) {
+      items.push({
+        id: "gap",
+        title: clipText(gap.trim(), 80),
+        sub: `${categoryLabel(category)} · 역량 보완에서`,
+        source: "gap",
+      });
+    }
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+  }
+  return data(200, { items: items.slice(0, 3) }, ctx.rid);
+};
+
+const TENURE_CHIP: Record<string, string> = {
+  "0-2": "경력 0–2년",
+  "3-5": "경력 3–5년",
+  "6-9": "경력 6–9년",
+  "10+": "경력 10년+",
+};
+
+const listMatchChips = async (ctx: Ctx): Promise<Response> => {
+  const profile = await one(ctx.deps.query,
+    "SELECT job_category, tenure_years, skills, careers FROM profiles WHERE user_id = $1::uuid",
+    [ctx.user.id]);
+  if (!profile) return data(200, { chips: [] }, ctx.rid);
+  const chips: string[] = [];
+  const label = CATEGORY_LABEL[String(profile.job_category ?? "")];
+  const role = objectList(profile.careers).map((row) => nonBlank(row.role)).find((text) => text);
+  if (label && role) chips.push(`${label} · ${role}`);
+  else if (label) chips.push(label);
+  const tenure = TENURE_CHIP[String(profile.tenure_years ?? "")];
+  if (tenure) chips.push(tenure);
+  for (const skill of textItems(profile.skills)) {
+    const text = skill.trim();
+    if (!text || chips.includes(text)) continue;
+    chips.push(text);
+    if (chips.length >= 8) break;
+  }
+  return data(200, { chips: chips.slice(0, 8) }, ctx.rid);
+};
+
 export const dispatchMe = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/me/links" && method === "GET") return listLinks(ctx);
@@ -327,6 +587,8 @@ export const dispatchMe = async (ctx: Ctx, path: string): Promise<Response | nul
   const link = path.match(/^\/api\/v1\/me\/links\/([^/]+)$/);
   if (link && method === "PATCH") return updateLink(ctx, link[1]);
   if (link && method === "DELETE") return deleteLink(ctx, link[1]);
+  const restore = path.match(/^\/api\/v1\/me\/links\/([^/]+)\/restore$/);
+  if (restore && method === "POST") return restoreLink(ctx, restore[1]);
   if (path === "/api/v1/me/devices" && method === "POST") return registerDevice(ctx);
   const device = path.match(/^\/api\/v1\/me\/devices\/([^/]+)$/);
   if (device && method === "DELETE") return deleteDevice(ctx, device[1]);
@@ -336,5 +598,10 @@ export const dispatchMe = async (ctx: Ctx, path: string): Promise<Response | nul
   if (path === "/api/v1/me/settings" && method === "GET") return getSettings(ctx);
   if (path === "/api/v1/me/settings" && method === "PATCH") return patchSettings(ctx);
   if (path === "/api/v1/me/bookmarks" && method === "GET") return listBookmarks(ctx);
+  if (path === "/api/v1/me/posting-views" && method === "GET") return listPostingViews(ctx);
+  if (path === "/api/v1/me/posting-document-status" && method === "GET") return listPostingDocumentStatus(ctx);
+  if (path === "/api/v1/me/suggested-experiences" && method === "GET") return listSuggestedExperiences(ctx);
+  if (path === "/api/v1/me/career-topics" && method === "GET") return listCareerTopics(ctx);
+  if (path === "/api/v1/me/match-chips" && method === "GET") return listMatchChips(ctx);
   return null;
 };

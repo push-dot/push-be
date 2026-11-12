@@ -34,6 +34,40 @@ const ACT_AS_ROUTES: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
   [/^\/api\/v1\/documents\/[^/]+\/edits$/, new Set(["POST"])],
 ];
 
+// AI calls that commit the user need the TOOL_ACTION card the user approved for the same target, in
+// every access mode (약관 9조3항). services/ai/src/app/harness/policy.py ALWAYS_ASK_TOOLS asks for them.
+// [method, path, tool, path keys, body keys]: every key must equal the approved tool_args.
+const APPROVAL_ROUTES: ReadonlyArray<readonly [string, RegExp, string, readonly string[], readonly string[]]> = [
+  ["POST", /^\/api\/v1\/postings\/([^/]+)\/apply$/, "apply_to_posting", ["posting_id"], []],
+  ["POST", /^\/api\/v1\/me\/offers\/([^/]+)\/accept$/, "accept_offer", ["offer_id"], []],
+  ["PATCH", /^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)$/, "change_applicant_stage", ["posting_id", "application_id"], ["stage"]],
+];
+
+const bodyFields = async (request: Request, keys: readonly string[]): Promise<Record<string, unknown>> => {
+  if (!keys.length) return {};
+  const body = await request.clone().json().catch(() => null) as Record<string, unknown> | null;
+  // A missing field stays null, which no approved card contains.
+  return Object.fromEntries(keys.map((key) => [key, body?.[key] ?? null]));
+};
+
+const APPROVED_TOOL = `SELECT 1 FROM approvals WHERE id = $1 AND user_id = $2 AND kind = 'TOOL_ACTION'
+  AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve' AND tool_args @> $4::jsonb`;
+
+const requireApproval = async (request: Request, path: string, userId: string, query: Query): Promise<void> => {
+  for (const [method, pattern, tool, keys, bodyKeys] of APPROVAL_ROUTES) {
+    const match = request.method === method ? pattern.exec(path) : null;
+    if (!match) continue;
+    const approvalId = parseUuid(request.headers.get("x-push-approval") || "");
+    const target = {
+      ...Object.fromEntries(keys.map((key, i) => [key, decodeURIComponent(match[i + 1])])),
+      ...await bodyFields(request, bodyKeys),
+    };
+    if (!approvalId || !(await one(query, APPROVED_TOOL, [approvalId, userId, tool, JSON.stringify(target)]))) {
+      throw new HttpError(403, "APPROVAL_REQUIRED", "the user has not approved this action");
+    }
+  }
+};
+
 export const actAsAllowed = (method: string, path: string): boolean =>
   ACT_AS_ROUTES.some(([pattern, methods]) => methods.has(method) && pattern.test(path));
 
@@ -88,6 +122,7 @@ export const actAs = async (request: Request, env: CoreEnv, query: Query): Promi
     const member = await one(query, "SELECT 1 FROM company_members WHERE user_id = $1 AND company_id = $2", [userId, companyId]);
     if (!member) throw new HttpError(403, "FORBIDDEN", "not a member of this company");
   }
+  await requireApproval(request, new URL(request.url).pathname, userId, query);
   return { userId, companyId };
 };
 

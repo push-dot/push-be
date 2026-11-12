@@ -2,6 +2,7 @@ import { HttpError, sha256Hex } from "../http.ts";
 import { one, query } from "../db.ts";
 import type { Ctx } from "../types.ts";
 import { completePersonalSocial } from "./auth.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const CALLBACK_PATH = "/api/v1/auth/apple/callback";
 const NATIVE_PATH = "/api/v1/auth/apple/native";
@@ -54,21 +55,6 @@ const signEs256 = async (pem: string, kid: string, payload: Record<string, unkno
   const input = `${header}.${body}`;
   const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(input)));
   return `${input}.${bytesToB64url(sig)}`;
-};
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
 };
 
 const requireText = (body: Record<string, unknown>, key: string): string => {
@@ -240,7 +226,7 @@ export const appleCallback = async (ctx: Ctx): Promise<Response> => {
 export const appleNative = async (ctx: Ctx): Promise<Response> => {
   const bundleId = ctx.env.APPLE_BUNDLE_ID || "";
   if (!bundleId) throw new HttpError(503, "NOT_CONFIGURED", "oauth provider apple is not configured");
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const identityToken = requireText(body, "identityToken");
   const nonce = requireText(body, "nonce");
   const identity = await verifyIdentity(ctx, identityToken, bundleId, nonce);

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.config import Config
+from app.config import load_config
 from app.domain import entities as ent
 from app.domain.plan_levers import levers_for
 from app.domain.posting_fit import fit_inputs, fit_view, plan_name
@@ -42,7 +42,7 @@ async def judge_fit(
 
     who = (audience or "PERSONAL").strip().upper()
     tier = _tier(who, plan)
-    app_config = config or Config()
+    app_config = config if config is not None else load_config()
     levers = levers_for(who, tier, app_config)
     model = chat_model_for(levers, streaming=False, config=app_config, cls=cls)
     posting, document = fit_inputs(requirements, keywords, description, content)
@@ -55,17 +55,22 @@ async def judge_fit(
         ai = ent.AiOptions(provider="OPENAI", model=levers.model, effort=levers.effort)
         owned = await gate._reserve(
             user_id, ai, _SYSTEM, f"{posting}\n{document}", job_id, purpose="fit")
-        usage = (getattr(gate, "usage", None), user_id, job_id, owned)
+        if owned is not None:
+            usage = (
+                getattr(gate, "usage", None), user_id, job_id,
+                getattr(owned, "id", owned), getattr(owned, "generation", None),
+            )
     invoke = {}
     if usage is not None:
-        store, usage_user, usage_job, reservation_id = usage
-        callback = AiUsageCallback(store, usage_user, usage_job, reservation_id)
+        store, usage_user, usage_job, reservation_id, *rest = usage
+        generation = rest[0] if rest else None
+        callback = AiUsageCallback(store, usage_user, usage_job, reservation_id, generation)
         invoke["config"] = {"callbacks": [callback]}
     try:
         _raw, scores = await astructured_reply(model, FitDimensions, messages, **invoke)
     except BaseException:
         if owned is not None:
-            await gate._release(owned)
+            await gate._release(getattr(owned, "id", owned), getattr(owned, "generation", None))
         raise
     if scores is None:
         raise ValueError("fit judge returned an unreadable answer")

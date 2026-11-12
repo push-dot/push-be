@@ -2,10 +2,11 @@ import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError } from "../http.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const PATH = "/api/v1/me/consents";
 const TERMS_PATH = "/api/v1/me/consents/terms";
-const TERMS_VERSION = "2026-10-29";
+export const TERMS_VERSION = "1.0";
 const REQUIRED = ["age14", "serviceTerms", "privacy"] as const;
 const SELECT = "SELECT reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at, marketing, marketing_at FROM user_consents WHERE user_id = $1";
 // Every parameter is cast: $2 is both a VALUES column and a CASE branch, and without
@@ -18,21 +19,20 @@ const TERMS_UPSERT = "INSERT INTO user_consents (user_id, reference_data, update
   + "privacy_at = COALESCE(user_consents.privacy_at, EXCLUDED.privacy_at), "
   + "marketing = CASE WHEN $5::boolean THEN $6::boolean ELSE user_consents.marketing END, "
   + "marketing_at = CASE WHEN $5::boolean THEN $2::timestamptz ELSE user_consents.marketing_at END";
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-};
+// A different terms_version is a new agreement. The previous row is the proof, so it is copied
+// before the live row is overwritten. The same version stays on TERMS_UPSERT (COALESCE).
+const REPLACE_TERMS = "WITH previous AS ("
+  + "SELECT user_id, terms_version, age14_at, service_terms_at, privacy_at FROM user_consents "
+  + "WHERE user_id = $1::uuid AND terms_version IS NOT NULL AND terms_version IS DISTINCT FROM $3::text), "
+  + "archived AS ("
+  + "INSERT INTO user_consent_history (id, user_id, terms_version, age14_at, service_terms_at, privacy_at, replaced_at) "
+  + "SELECT $6::uuid, user_id, terms_version, age14_at, service_terms_at, privacy_at, $2::timestamptz FROM previous "
+  + "RETURNING user_id) "
+  + "UPDATE user_consents SET terms_version = $3::text, age14_at = $2::timestamptz, "
+  + "service_terms_at = $2::timestamptz, privacy_at = $2::timestamptz, "
+  + "marketing = CASE WHEN $4::boolean THEN $5::boolean ELSE user_consents.marketing END, "
+  + "marketing_at = CASE WHEN $4::boolean THEN $2::timestamptz ELSE user_consents.marketing_at END "
+  + "WHERE user_id = $1::uuid AND user_id IN (SELECT user_id FROM archived)";
 
 const termsOf = (row: Record<string, unknown> | null) => ({
   version: row?.terms_version == null ? null : String(row.terms_version),
@@ -59,7 +59,7 @@ const getConsents = async (ctx: Ctx): Promise<Response> => {
 };
 
 const putConsents = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   if (typeof body.referenceData !== "boolean") throw fieldError("referenceData", "must be a boolean");
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
@@ -72,7 +72,7 @@ const putConsents = async (ctx: Ctx): Promise<Response> => {
 };
 
 const putTerms = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const allowed = new Set(["age14", "serviceTerms", "privacy", "marketing", "termsVersion"]);
   for (const key of Object.keys(body)) {
     if (!allowed.has(key)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -100,9 +100,19 @@ const putTerms = async (ctx: Ctx): Promise<Response> => {
   if (marketingSet && typeof body.marketing !== "boolean") throw fieldError("marketing", "must be a boolean");
   if (!agree && !marketingSet) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
   const now = ctx.now.toISOString();
-  await query(ctx.deps.query, TERMS_UPSERT, [
-    ctx.user.id, now, agree, version, marketingSet, marketingSet ? body.marketing : false,
-  ]);
+  const marketing = marketingSet ? body.marketing : false;
+  let replaced = false;
+  if (agree && version != null) {
+    const existing = await load(ctx);
+    const stored = existing?.terms_version == null ? null : String(existing.terms_version);
+    if (stored != null && stored !== version) {
+      await query(ctx.deps.query, REPLACE_TERMS, [ctx.user.id, now, version, marketingSet, marketing, crypto.randomUUID()]);
+      replaced = true;
+    }
+  }
+  if (!replaced) {
+    await query(ctx.deps.query, TERMS_UPSERT, [ctx.user.id, now, agree, version, marketingSet, marketing]);
+  }
   return getConsents(ctx);
 };
 

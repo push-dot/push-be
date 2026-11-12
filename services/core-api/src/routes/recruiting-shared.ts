@@ -1,6 +1,7 @@
 import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, fieldError, jsonList } from "../http.ts";
 import { ts } from "../page.ts";
+import { decodeCursor, encodeCursor } from "../time.ts";
 import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
 
@@ -171,6 +172,7 @@ export function postingDto(row: Record<string, unknown>, detail: boolean, member
     dto.newApplicantCount = Number(row.new_applicant_count ?? 0);
     const createdName = row.created_by_name == null || row.created_by_name === "" ? "" : String(row.created_by_name);
     dto.createdBy = createdName ? { displayName: createdName } : null;
+    dto.draftSource = row.draft_source == null || row.draft_source === "" ? null : String(row.draft_source);
   } else if (row.status != null && row.status !== "") {
     dto.status = String(row.status);
   }
@@ -211,10 +213,35 @@ export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: 
     const fallback = countSql
       .replaceAll(" LEFT JOIN company_members cm ON cm.user_id = u.id", "")
       .replaceAll(" LEFT JOIN company_members sm ON sm.user_id = o.sender_id", "")
+      .replaceAll(" LEFT JOIN company_members rm ON rm.user_id = o.profile_user_id", "")
       .replaceAll(" LEFT JOIN companies co ON co.id = cm.company_id", "")
-      .replaceAll(" LEFT JOIN companies sc ON sc.id = sm.company_id", "");
+      .replaceAll(" LEFT JOIN companies sc ON sc.id = sm.company_id", "")
+      .replaceAll(" LEFT JOIN companies rc ON rc.id = rm.company_id", "");
     return read(fallback);
   }
+};
+
+export type SearchSort = "relevance" | "latest";
+
+export const searchSortMode = (url: URL): SearchSort => {
+  const raw = url.searchParams.get("sort");
+  if (raw == null || raw === "relevance") return "relevance";
+  if (raw === "latest") return "latest";
+  throw unprocessable("sort", "unsupported sort");
+};
+
+export const assertSearchCursor = (url: URL, sort: SearchSort): void => {
+  const encoded = url.searchParams.get("cursor");
+  if (!encoded) return;
+  const marked = decodeCursor(encoded).sort ?? "relevance";
+  if (sort === "latest" && marked !== "latest") throw fieldError("cursor", "cursor does not match sort");
+  if (sort === "relevance" && marked === "latest") throw fieldError("cursor", "cursor does not match sort");
+};
+
+export const stampSearchCursor = (cursor: string | null, sort: SearchSort): string | null => {
+  if (!cursor) return null;
+  const decoded = decodeCursor(cursor);
+  return encodeCursor(decoded.createdAt, decoded.id, sort);
 };
 
 export function relevance(title: string, extra: string, raw = "$2", cho = "$3", hangul = "$5"): string {
@@ -239,34 +266,57 @@ export function offerDto(row: Record<string, unknown>): Record<string, unknown> 
     id: String(row.id),
     sender: {
       ...person(row, "sender_id", "sender_name"),
+      kind: row.sender_company == null || row.sender_company === "" ? "PERSON" : "COMPANY",
       companyName: row.sender_company == null || row.sender_company === "" ? null : String(row.sender_company),
       headline: row.sender_headline == null ? "" : String(row.sender_headline),
       avatarUrl: imageUrl(row.sender_avatar),
     },
-    recipient: person(row, "profile_user_id", "recipient_name"),
+    recipient: {
+      ...person(row, "profile_user_id", "recipient_name"),
+      kind: row.recipient_company == null || row.recipient_company === "" ? "PERSON" : "COMPANY",
+      companyName: row.recipient_company == null || row.recipient_company === "" ? null : String(row.recipient_company),
+      headline: row.recipient_headline == null ? "" : String(row.recipient_headline),
+      avatarUrl: imageUrl(row.recipient_avatar),
+    },
     message: String(row.message ?? ""),
     posting: row.posting_id == null ? null : {
       id: String(row.posting_id),
       title: String(row.posting_title ?? ""),
       company: String(row.posting_company ?? ""),
       imageUrl: imageUrl(row.posting_image),
+      location: String(row.posting_location ?? ""),
+      careerMin: Number(row.posting_career_min ?? 0),
+      careerMax: row.posting_career_max == null ? null : Number(row.posting_career_max),
+      deadline: row.posting_deadline == null || row.posting_deadline === "" ? null : String(row.posting_deadline).slice(0, 10),
     },
     status: String(row.status ?? "SENT"),
     readAt: ts(row.read_at),
+    respondedAt: ts(row.responded_at),
+    canSend: String(row.status) === "ACCEPTED" && !asBool(row.blocked_me),
     createdAt: ts(row.created_at),
+    archivedAt: ts(row.archived_at),
   };
 }
 
-export const OFFER_SQL = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
+export const OFFER_COLS = `o.id, o.sender_id, su.display_name AS sender_name, o.profile_user_id, ru.display_name AS recipient_name,
   o.message, o.posting_id, jp.title AS posting_title, jp.company AS posting_company, jp.image_key AS posting_image,
-  o.status, o.read_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company
+  jp.location AS posting_location, jp.career_min AS posting_career_min, jp.career_max AS posting_career_max, jp.deadline AS posting_deadline,
+  o.status, o.read_at, to_jsonb(o)->>'responded_at' AS responded_at, o.created_at, sp.headline AS sender_headline, sp.avatar_key AS sender_avatar, sc.name AS sender_company,
+  rp.headline AS recipient_headline, rp.avatar_key AS recipient_avatar, rc.name AS recipient_company`;
+
+export const OFFER_FROM = `
   FROM offers o
   JOIN users su ON su.id = o.sender_id
   JOIN users ru ON ru.id = o.profile_user_id
   LEFT JOIN profiles sp ON sp.user_id = o.sender_id
   LEFT JOIN company_members sm ON sm.user_id = o.sender_id
   LEFT JOIN companies sc ON sc.id = sm.company_id
+  LEFT JOIN profiles rp ON rp.user_id = o.profile_user_id
+  LEFT JOIN company_members rm ON rm.user_id = o.profile_user_id
+  LEFT JOIN companies rc ON rc.id = rm.company_id
   LEFT JOIN job_postings jp ON jp.id = o.posting_id`;
+
+export const OFFER_SQL = OFFER_COLS + OFFER_FROM;
 
 export async function notify(ctx: Ctx, userId: string, type: string, title: string, body: string, target: Record<string, unknown>): Promise<void> {
   if (userId === ctx.user.id) return;

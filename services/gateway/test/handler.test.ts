@@ -14,7 +14,6 @@ function env(core?: NonNullable<FrontEnv["CORE"]>): FrontEnv {
     CORE: core ?? { async fetch() { throw new Error("core should not be called"); } },
     APP_ENV: "production",
     MANAGED_AI: "1",
-    MANAGED_GO: "0",
     SSE_MAX_POLLS: "3",
     MODEL_CACHE_TTL: "600",
     JOB_SITES_CACHE_TTL: "3600",
@@ -290,15 +289,15 @@ test("model catalog follows the deployed flags and validates provider", async ()
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   const body = JSON.parse(await first.text()) as { data: { model: string; available: boolean }[] };
-  assert.equal(body.data.length, 5);
-  assert.equal(body.data.find((m) => m.model.startsWith("opencode-go/"))?.available, false);
-  assert.equal(body.data.find((m) => m.model === "openai/gpt-5.6-sol")?.available, true);
+  assert.equal(body.data.length, 1);
+  assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/") || m.model.startsWith("openai/")), false);
+  assert.equal(body.data.find((m) => m.model === "deepseek/deepseek-v4.1-flash")?.available, true);
   const second = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
-  }), { ...env(), MANAGED_GO: "1" }, d);
+  }), { ...env(), MANAGED_AI: "0" }, d);
   assert.equal(second.status, 200);
   const flagged = JSON.parse(await second.text()) as typeof body;
-  assert.equal(flagged.data.find((m) => m.model.startsWith("opencode-go/"))?.available, true);
+  assert.equal(flagged.data.every((m) => !m.available), true);
   const bad = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=NOPE", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -1135,6 +1134,7 @@ test("email auth posts are owned by core", () => {
   for (const path of [
     "/api/v1/auth/email/signup",
     "/api/v1/auth/email/verify",
+    "/api/v1/auth/email/verify/resend",
     "/api/v1/auth/email/login",
     "/api/v1/auth/email/password-reset",
     "/api/v1/auth/email/password-reset/confirm",
@@ -1144,6 +1144,8 @@ test("email auth posts are owned by core", () => {
     assert.equal(ownerOf("POST", path), "core");
   }
   assert.equal(ownerOf("GET", "/api/v1/auth/phone/send"), "deny");
+  assert.equal(ownerOf("GET", "/api/v1/auth/email/password-reset/tok_en-1"), "core");
+  assert.equal(ownerOf("DELETE", "/api/v1/auth/email/password-reset/tok_en-1"), "deny");
 });
 
 test("company routes are owned by core", () => {
@@ -1174,6 +1176,7 @@ test("billing top-up, iap, and store webhooks are owned by core", () => {
   assert.equal(ownerOf("GET", "/api/v1/internal/notifications/run"), "deny");
   assert.equal(ownerOf("GET", "/api/v1/search/counts"), "core");
   assert.equal(ownerOf("GET", "/api/v1/search/trending"), "core");
+  assert.equal(ownerOf("GET", "/api/v1/skills"), "core");
   assert.equal(ownerOf("GET", "/api/v1/billing/topup"), "deny");
 });
 

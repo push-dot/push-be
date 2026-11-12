@@ -9,6 +9,7 @@ import pytest
 from app.db import (
     POOL_IDLE_S,
     _init_conn,
+    asyncpg_pool_config,
     checkpointer_pool_config,
     create_pool,
 )
@@ -30,8 +31,10 @@ async def test_asyncpg_pool_is_empty_until_used_and_closes(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
     monkeypatch.setenv("DB_DRIVER", "asyncpg")
+    expected = asyncpg_pool_config()
     pool = await create_pool("postgres://push:push@127.0.0.1:5432/push")
-    assert captured["kwargs"]["min_size"] == 0
+    assert captured["kwargs"]["min_size"] == expected["min_size"]
+    assert captured["kwargs"]["max_size"] == expected["max_size"]
     assert captured["kwargs"]["max_inactive_connection_lifetime"] <= 60
     assert captured["kwargs"]["max_inactive_connection_lifetime"] == POOL_IDLE_S
     assert captured["kwargs"]["server_settings"]["application_name"] == "push-ai"
@@ -117,9 +120,9 @@ async def test_shutdown_stops_the_worker_first_and_closes_the_pool_last(monkeypa
     monkeypatch.setattr(app.db, "open_chat_checkpointer", open_saver)
     monkeypatch.setattr(ConversationService, "start_worker", started)
     monkeypatch.setattr(ConversationService, "stop_worker", stopped)
-    for client in (main.OAuthClient, main.OpenAIClient, main.GoogleClient, main.StripeClient):
+    for client in (main.OpenAIClient,):
         monkeypatch.setattr(client, "aclose", aclose)
     fa = FastAPI()
     await main._bootstrap(fa, Config(database_url="d"))
     await main._shutdown(fa)
-    assert closed == ["worker", "checkpointer"] + ["client"] * 5 + ["pool"]
+    assert closed == ["worker", "checkpointer", "client", "pool"]

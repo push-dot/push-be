@@ -5,6 +5,7 @@ import { ts } from "../page.ts";
 import { createSmsSender, smsConfigured } from "../sms/sender.ts";
 import type { Ctx, UserRow } from "../types.ts";
 import { clearDeletion, issue, resolveUser } from "./auth.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const SEND_PATH = "/api/v1/auth/phone/send";
 const VERIFY_PATH = "/api/v1/auth/phone/verify";
@@ -28,21 +29,6 @@ const ME = "SELECT id, provider, provider_subject, is_employer FROM users WHERE 
 const LIST_PROVIDERS = "SELECT provider FROM user_identities WHERE user_id = $1";
 const IDENTITY = "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2";
 const INSERT_IDENTITY = "INSERT INTO user_identities (user_id, provider, provider_subject, created_at) VALUES ($1,$2,$3,$4)";
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-};
 
 const envInt = (value: string | undefined, fallback: number, max: number): number => {
   if (value == null || value.trim() === "") return fallback;
@@ -78,12 +64,16 @@ const callerOf = async (ctx: Ctx): Promise<UserRow | null> => {
   return user;
 };
 
+// conflict names what is already linked elsewhere: the phone itself, or the pending social identity.
+const taken = (provider: string): HttpError =>
+  new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account", { conflict: provider === "phone" ? "PHONE" : "IDENTITY", provider });
+
 const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject: string): Promise<void> => {
   if (!provider || !subject) return;
   const existing = await one(ctx.deps.query, IDENTITY, [provider, subject]);
   if (existing) {
     if (String(existing.user_id) === userId) return;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(provider);
   }
   try {
     await query(ctx.deps.query, INSERT_IDENTITY, [userId, provider, subject, ctx.now.toISOString()]);
@@ -91,7 +81,7 @@ const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject:
     if (!isUnique(err)) throw err;
     const again = await one(ctx.deps.query, IDENTITY, [provider, subject]);
     if (again && String(again.user_id) === userId) return;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(provider);
   }
 };
 
@@ -122,7 +112,7 @@ const pendingOf = async (ctx: Ctx, body: Record<string, unknown>): Promise<Pendi
 };
 
 const sendPhone = async (ctx: Ctx): Promise<Response> => {
-  const phone = phoneOf(await readJson(ctx.request));
+  const phone = phoneOf(await readObject(ctx.request));
   await callerOf(ctx);
   const cooldown = envInt(ctx.env.PHONE_CODE_COOLDOWN_SEC, DEFAULT_COOLDOWN, 3600);
   const ttl = envInt(ctx.env.PHONE_CODE_TTL_SEC, DEFAULT_TTL, 3600);
@@ -160,15 +150,15 @@ const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, pho
   if (existing.length > 0) {
     throw new HttpError(409, "PHONE_ALREADY_REGISTERED", "phone is already registered", { existingProviders: existing });
   }
-  const taken = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
-  if (taken && String(taken.user_id) !== userId) {
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+  const holder = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
+  if (holder && String(holder.user_id) !== userId) {
+    throw taken(pending.provider);
   }
   try {
     await query(ctx.deps.query, SET_SOCIAL, [userId, pending.provider, pending.subject]);
   } catch (err) {
     if (!isUnique(err)) throw err;
-    throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    throw taken(pending.provider);
   }
   await bindIdentity(ctx, userId, pending.provider, pending.subject);
   await bindIdentity(ctx, userId, "phone", phone);
@@ -188,14 +178,14 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
     if (!isUnique(err)) throw err;
     const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (raced) return linkOrBlock(ctx, String(raced.id), pending, phone);
-    if (!pending.email) throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+    if (!pending.email) throw taken(pending.provider);
     try {
       await insertSocial(ctx, userId, pending, phone, null);
     } catch (err2) {
       if (!isUnique(err2)) throw err2;
       const again = await one(ctx.deps.query, BY_PHONE, [phone]);
       if (again) return linkOrBlock(ctx, String(again.id), pending, phone);
-      throw new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account");
+      throw taken(pending.provider);
     }
   }
   await bindIdentity(ctx, userId, pending.provider, pending.subject);
@@ -203,7 +193,7 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
 };
 
 const verifyPhone = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const phone = phoneOf(body);
   const code = codeOf(body);
   const max = envInt(ctx.env.PHONE_CODE_MAX_ATTEMPTS, DEFAULT_ATTEMPTS, 20);
@@ -213,10 +203,13 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
     throw new HttpError(400, "PHONE_CODE_EXPIRED", "code is expired");
   }
-  if (Number(row.attempts) >= max) throw new HttpError(429, "RATE_LIMITED", "too many attempts");
+  if (Number(row.attempts) >= max) {
+    throw new HttpError(429, "RATE_LIMITED", "too many attempts", { reason: "TOO_MANY_ATTEMPTS", maxAttempts: max });
+  }
   if (await sha256Hex(`${String(row.id)}:${code}`) !== String(row.code_hash)) {
-    await query(ctx.deps.query, BUMP, [String(row.id)]);
-    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
+    const bumped = await one(ctx.deps.query, BUMP, [String(row.id)]);
+    const used = Number(bumped?.attempts ?? Number(row.attempts) + 1);
+    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid", { attemptsLeft: Math.max(0, max - used) });
   }
   const pending = await pendingOf(ctx, body);
   await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);

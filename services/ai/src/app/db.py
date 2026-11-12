@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio
+
 import contextvars
 import json
 import logging
@@ -23,12 +23,58 @@ class ConflictError(Exception):
         self.current = current
 
 
-POOL_MIN_SIZE = 0
-POOL_MAX_SIZE = 10
 POOL_IDLE_S = 30.0
 APP_NAME = "push-ai"
 CHECKPOINTER_IDLE_S = 60.0
-CHECKPOINTER_MAX_SIZE = 4
+
+# Defaults assume VPS runtime DATABASE_URL uses Neon’s pooled host (-pooler in the
+# hostname). Several compose services (ai-worker, ingest-worker, dispatcher, …)
+# each open an asyncpg pool (max default below) plus a small checkpointer pool;
+# PgBouncer multiplexes those clients onto far fewer Postgres connections. Do not
+# raise DB_POOL_MAX_SIZE against a direct (non-pooler) endpoint—max_connections is
+# tied to compute size. push-be-core on Cloudflare Workers uses app.pgproto with
+# per-request scope, not these pool env vars.
+_DEFAULT_POOL_MIN_SIZE = 0
+_DEFAULT_POOL_MAX_SIZE = 10
+_DEFAULT_CHECKPOINTER_POOL_MAX_SIZE = 4
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer >= 0") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return value
+
+
+def _env_pool_max_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer >= 1") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return value
+
+
+def asyncpg_pool_config() -> dict[str, int]:
+    min_size = _env_non_negative_int("DB_POOL_MIN_SIZE", _DEFAULT_POOL_MIN_SIZE)
+    max_size = _env_pool_max_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
+    if min_size > max_size:
+        raise ValueError("DB_POOL_MIN_SIZE must be <= DB_POOL_MAX_SIZE")
+    return {"min_size": min_size, "max_size": max_size}
+
+
+def neon_pool_max_size() -> int:
+    return _env_pool_max_int("DB_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
 
 
 async def _init_conn(conn) -> None:
@@ -47,9 +93,11 @@ async def _init_conn(conn) -> None:
 
 
 def checkpointer_pool_config() -> dict:
+    max_size = _env_pool_max_int(
+        "CHECKPOINTER_POOL_MAX_SIZE", _DEFAULT_CHECKPOINTER_POOL_MAX_SIZE)
     return {
         "min_size": 0,
-        "max_size": CHECKPOINTER_MAX_SIZE,
+        "max_size": max_size,
         "max_idle": CHECKPOINTER_IDLE_S,
         "kwargs": {
             "autocommit": True,
@@ -203,14 +251,19 @@ async def create_pool(database_url: str):
     driver = database_driver(database_url)
     if driver == "neon":
         from app.pgproto import PgPool
-        return PgPool(database_url, transport=pg_transport())
+        return PgPool(
+            database_url,
+            transport=pg_transport(),
+            max_size=neon_pool_max_size(),
+        )
     import asyncpg
+    cfg = asyncpg_pool_config()
     url = database_url.replace("?sslmode=disable", "").replace("&sslmode=disable", "")
     return await asyncpg.create_pool(
         url,
         init=_init_conn,
-        min_size=POOL_MIN_SIZE,
-        max_size=POOL_MAX_SIZE,
+        min_size=cfg["min_size"],
+        max_size=cfg["max_size"],
         max_inactive_connection_lifetime=POOL_IDLE_S,
         server_settings={"application_name": APP_NAME},
     )

@@ -1,7 +1,8 @@
 # Hostinger KVM 2 (2 vCPU / 8 GB), bootstrapped by harden.sh. No panel, no docker.sock.
 # Traefik in this file terminates TLS for ${AI_HOST} and ${DISPATCH_HOST}; it is the
 # only service with published ports (80, 443). Everything else stays on internal networks.
-# This file does not run Postgres: DATABASE_URL points at Neon. Migrations stay manual
+# This file does not run Postgres: DATABASE_URL points at Neon (pooled -pooler host
+# recommended—several services below each run an asyncpg pool). Migrations stay manual
 # (RUN_MIGRATIONS=0).
 # QUEUE_BACKEND=redis runs AI jobs in ai-worker from Redis Streams.
 # QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller (also in ai-worker).
@@ -51,7 +52,6 @@ x-ai-env: &ai-env
   PLAYWRIGHT_NO_SANDBOX: "1"
   AI_SHARED_SECRET: ${AI_SHARED_SECRET:?AI_SHARED_SECRET is required}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
   GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -75,7 +75,7 @@ services:
   # One-shot: hands the two volume roots whose images ship them root-owned to the
   # non-root users that write them. Only CAP_CHOWN, no network, then exits.
   volume-init:
-    image: busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+    image: busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
     user: "0:0"
     restart: "no"
     read_only: true
@@ -93,7 +93,7 @@ services:
 
   proxy:
     <<: *hardened
-    image: traefik:v3.7.16@sha256:c8a121e4bb1347e8fd52657fab12f2cb70b68f8a018895e2068f92c9e519b9c2
+    image: traefik:v3.7.17@sha256:f4bb143d1135a579b630ed491e17ec50f6f7c9c6a30585ff3d385471d2a86f5a
     user: "65532:65532"
     command: ["--configFile=/etc/traefik/traefik.yml"]
     mem_limit: 128m
@@ -217,7 +217,7 @@ services:
 
   redis:
     <<: *hardened
-    image: redis:8.10.2-alpine@sha256:0bf6577d7774e592b29d093e3ac9390eb91e13d72c21e506afce736de5e0eeb0
+    image: redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
     # The image's entrypoint skips its chown/su-exec step when not started as root.
     user: redis
     command:

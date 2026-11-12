@@ -23,9 +23,9 @@ class _CountingUsage(StubAiUsageStore):
         self.settles += 1
         await super().settle(*args)
 
-    async def release(self, id_):
+    async def release(self, id_, generation=None):
         self.releases += 1
-        await super().release(id_)
+        await super().release(id_, generation)
 
 
 class _StreamModel(BaseChatModel):
@@ -100,6 +100,28 @@ async def test_streamed_reply_with_usage_metadata_settles_one_row():
     assert (settled.input_tokens, settled.output_tokens) == (11, 7)
 
 
+async def test_callback_settles_with_the_generation_the_attempt_reserved():
+    from app.framework.llm import AiUsageCallback
+
+    class Recording(_CountingUsage):
+        def __init__(self):
+            super().__init__()
+            self.args: tuple = ()
+
+        async def settle(self, *args):
+            self.args = args
+            await super().settle(*args)
+
+    user_id = uuid4()
+    store = Recording()
+    row = _reserved(user_id)
+    await store.create(row)
+    callback = AiUsageCallback(store, user_id, "job-1", row.id, 4)
+    await _stream(_StreamModel(), callback)
+    assert store.args[0] == row.id
+    assert store.args[-1] == 4
+
+
 async def test_exception_mid_stream_releases_reservation_and_writes_no_settled_row():
     from app.framework.llm import AiUsageCallback
 
@@ -125,7 +147,7 @@ class _Recording:
         self.kwargs = kwargs
 
 
-def test_free_plan_request_carries_deepseek_provider_order_and_ignore():
+def test_langchain_requests_pin_us_providers_and_exa_search():
     from app.config import Config
     from app.framework.llm import chat_model_for
 
@@ -135,12 +157,15 @@ def test_free_plan_request_carries_deepseek_provider_order_and_ignore():
     body = model.kwargs["extra_body"]
     assert model.kwargs["model"] == "deepseek/deepseek-v4.1-flash:online"
     assert body["provider"] == {
-        "ignore": ["DeepSeek"],
-        "order": ["Together", "Fireworks", "Novita"],
+        "only": ["together", "fireworks", "novita"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
     }
+    assert body["plugins"] == [{"id": "web", "engine": "exa"}]
     assert body["reasoning"] == {"effort": "low"}
     assert model.kwargs["timeout"] == 60
     assert model.kwargs["max_retries"] == 1
     assert model.kwargs["base_url"] == "https://openrouter.ai/api/v1"
     pro = chat_model_for(levers_for("PERSONAL", "PRO", config), config=config, cls=_Recording)
-    assert "provider" not in (pro.kwargs.get("extra_body") or {})
+    assert pro.kwargs["extra_body"]["provider"]["only"] == ["anthropic"]
+    assert "plugins" not in pro.kwargs["extra_body"]

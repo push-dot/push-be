@@ -2,21 +2,9 @@ import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError, requireUuid, sha256Hex } from "../http.ts";
 import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const readObject = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-};
 
 const sameSecret = async (left: string, right: string): Promise<boolean> => {
   const a = await sha256Hex(left);

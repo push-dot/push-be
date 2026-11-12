@@ -8,7 +8,7 @@ import { resetLimits } from "../src/ratelimit.ts";
 const NIL = "00000000-0000-0000-0000-000000000000";
 const POSTING = "11111111-1111-4111-8111-111111111111";
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
 type Call = { sql: string; params: unknown[] };
 
@@ -43,6 +43,58 @@ test("guest locations are public", async () => {
   assert.ok(locations);
   assert.match(locations.sql, /\$1::uuid/);
   assert.equal(locations.params[0], NIL);
+});
+
+test("locations group by city only when asked and reject other levels", async () => {
+  const city = await run("/api/v1/postings/locations?level=city");
+  assert.equal(city.res.status, 200);
+  const grouped = city.calls.find((call) => call.sql.includes("regexp_split_to_array"));
+  assert.ok(grouped);
+  assert.match(grouped.sql, /GROUP BY 1 ORDER BY 2 DESC, 1 ASC/);
+
+  const district = await run("/api/v1/postings/locations?level=district");
+  assert.equal(district.res.status, 200);
+  assert.ok(district.calls.find((call) => call.sql.includes("GROUP BY p.location ORDER BY count DESC, p.location ASC")));
+
+  const bad = await run("/api/v1/postings/locations?level=country");
+  assert.equal(bad.res.status, 400);
+  assert.equal(await codeOf(bad.res), "VALIDATION_ERROR");
+});
+
+test("city locations return summed counts from the grouped rows", async () => {
+  resetLimits();
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("regexp_split_to_array")) return { rows: [{ location: "서울", count: 5 }, { location: "경기", count: 2 }], rowCount: 2 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/locations?level=city"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await res.json() as { data: unknown }).data, [{ location: "서울", count: 5 }, { location: "경기", count: 2 }]);
+});
+
+test("employmentType facet lists every type with zeros and ignores its own filter", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("GROUP BY p.employment_type")) return { rows: [{ id: "intern", count: 4 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/postings/facets?employmentType=full_time&category=dev"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { employmentType: { id: string; count: number }[] } };
+  assert.deepEqual(body.data.employmentType, [
+    { id: "full_time", count: 0 }, { id: "contract", count: 0 }, { id: "intern", count: 4 },
+    { id: "freelance", count: 0 }, { id: "dispatch", count: 0 },
+  ]);
+  const own = seen.find((call) => call.sql.includes("GROUP BY p.employment_type"));
+  assert.ok(own);
+  assert.doesNotMatch(own.sql, /p\.employment_type = ANY/);
+  assert.match(own.sql, /p\.job_category = ANY/);
+  const category = seen.find((call) => call.sql.includes("GROUP BY p.job_category"));
+  assert.ok(category);
+  assert.match(category.sql, /p\.employment_type = ANY/);
 });
 
 test("guest posting detail is not unauthenticated", async () => {
@@ -107,3 +159,33 @@ test("a guest can open a public posting without writing a view row for the nil u
 });
 }
 
+
+test("guest skill search is public and binds the query and limit", async () => {
+  const { res, calls } = await run("/api/v1/skills?q=%20Kot%20&limit=5");
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { data: unknown[] }).data, []);
+  const call = calls.find((c) => c.sql.includes("jsonb_array_elements_text"))!;
+  assert.deepEqual(call.params, [NIL, "Kot", 5]);
+  assert.match(call.sql, /strpos\(lower\(sk\), lower\(\$2::text\)\) > 0/);
+});
+
+test("skill search defaults to 20 skills and rejects a bad limit or a long query", async () => {
+  const { calls } = await run("/api/v1/skills");
+  assert.deepEqual(calls.find((c) => c.sql.includes("jsonb_array_elements_text"))!.params, [NIL, "", 20]);
+  for (const path of ["/api/v1/skills?limit=0", "/api/v1/skills?limit=51", "/api/v1/skills?limit=x", "/api/v1/skills?q=" + "a".repeat(41)]) {
+    const { res } = await run(path);
+    assert.equal(res.status, 400, path);
+    assert.equal(await codeOf(res), "VALIDATION_ERROR");
+  }
+});
+
+test("skill search maps rows to name and postingCount", async () => {
+  resetLimits();
+  const query: Deps["query"] = async (sql) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("jsonb_array_elements_text")) return { rows: [{ name: "Kotlin", posting_count: 12 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  const res = await handle(new Request("https://core.example/api/v1/skills?q=kot"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await res.json() as { data: unknown }).data, [{ name: "Kotlin", postingCount: 12 }]);
+});

@@ -10,7 +10,8 @@ from langgraph.types import Command
 from app.domain.services.conversation import ConversationService
 from app.harness.core_client import CoreClient
 from app.harness.graph import astream_harness, build_harness_graph
-from app.harness.policy import Tier
+from app.harness.approval import approval_id_for
+from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
 from app.harness.tools import HarnessSpec, ToolContext
@@ -19,6 +20,7 @@ from tests.stubs import FakeDB
 
 _TIERS = {
     "search_postings": Tier.READ,
+    "find_matching_postings": Tier.READ,
     "get_posting": Tier.READ,
     "list_bookmarks": Tier.READ,
     "list_applications": Tier.READ,
@@ -28,6 +30,7 @@ _TIERS = {
     "get_offer": Tier.READ,
     "list_calendar_events": Tier.READ,
     "get_my_profile": Tier.READ,
+    "search_profiles": Tier.READ,
     "list_posts": Tier.READ,
     "get_fit_score": Tier.READ,
     "search_career_context": Tier.READ,
@@ -42,6 +45,7 @@ _TIERS = {
     "accept_offer": Tier.RISKY_WRITE,
     "decline_offer": Tier.RISKY_WRITE,
     "send_offer_message": Tier.RISKY_WRITE,
+    "send_offer": Tier.RISKY_WRITE,
     "create_post": Tier.RISKY_WRITE,
     "create_comment": Tier.RISKY_WRITE,
     "follow_user": Tier.RISKY_WRITE,
@@ -58,6 +62,7 @@ _PYTHON = {
     "prepare_interview",
     "search_career_context",
     "start_document",
+    "find_matching_postings",
 }
 
 P = "11111111-1111-4111-8111-111111111111"
@@ -78,6 +83,7 @@ _CORE = {
     "accept_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/accept")),
     "decline_offer": ({"offer_id": O}, ("POST", f"/api/v1/me/offers/{O}/decline")),
     "send_offer_message": ({"offer_id": O, "body": "hi"}, ("POST", f"/api/v1/me/offers/{O}/messages")),
+    "send_offer": ({"profile_id": U, "message": "커피챗 하실래요?"}, ("POST", f"/api/v1/profiles/{U}/offer")),
     "list_calendar_events": ({}, ("GET", "/api/v1/calendar/events")),
     "create_calendar_event": ({"type": "INTERVIEW", "title": "면접", "starts_at": "2026-10-23T01:00:00Z", "ends_at": "2026-10-23T02:00:00Z"}, ("POST", "/api/v1/calendar/events")),
     "update_calendar_event": ({"event_id": E, "title": "면접"}, ("PATCH", f"/api/v1/calendar/events/{E}")),
@@ -87,6 +93,7 @@ _CORE = {
     "create_comment": ({"post_id": T, "body": "hi"}, ("POST", f"/api/v1/posts/{T}/comments")),
     "follow_user": ({"user_id": U}, ("POST", f"/api/v1/users/{U}/follow")),
     "get_my_profile": ({}, ("GET", "/api/v1/me/profile")),
+    "search_profiles": ({"q": "이하은"}, ("GET", "/api/v1/profiles")),
     "update_my_profile": ({"display_name": "김"}, ("PATCH", "/api/v1/me/profile")),
 }
 
@@ -120,13 +127,15 @@ async def test_core_tool_paths(name):
     )
     await tool.run(ctx, tool.args_model.model_validate(args))
     assert (seen[0].method, seen[0].url.path) == expected
+    assert seen[0].headers.get("x-push-approval") == (
+        approval_id_for("job-1", "call-1") if name in ALWAYS_ASK_TOOLS else None)
     if expected[0] in _WRITES:
         assert seen[0].headers["idempotency-key"]
     if seen[0].content:
         assert set(json.loads(seen[0].content)) <= _CORE_FIELDS
 
 
-_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline"}
+_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline", "message"}
 
 
 async def test_calendar_and_profile_bodies_use_core_names():
@@ -368,7 +377,7 @@ async def test_start_document_marks_resume_active():
 
 
 _PHASES = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+    "mode_select", "intake", "analyze", "strategy", "craft", "review", "present",
 )
 _JOB = "job-1"
 
@@ -583,3 +592,13 @@ async def test_edit_document_id_cannot_rewrite_the_path():
     assert seen == []
     state = await graph.aget_state({"configurable": {"thread_id": "conv-1"}})
     assert '"INVALID_ARGS"' in state.values["messages"][-2].content
+
+
+async def test_edit_document_approval_previews_the_diff():
+    events = await _events(_edit_graph("ALWAYS_ASK", _Approvals()), "ALWAYS_ASK")
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["hunks"] == [
+        {"line": None, "sign": "-", "text": "이전"},
+        {"line": None, "sign": "+", "text": "이후"},
+    ]
+    assert not any(event.get("type") == "diff" for event in events)

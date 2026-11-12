@@ -18,7 +18,7 @@ const NOW = "2026-10-21T00:00:00.000Z";
 type Call = { sql: string; params: unknown[] };
 type Err = { error: { code: string; details: { currentRevision?: unknown } } };
 
-const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0" });
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
@@ -312,6 +312,12 @@ test("apply snapshots document json and a second apply does not snapshot again",
   assert.equal(created.data.fitScore, null);
   const snapshot = seen.find((call) => call.sql.includes("INSERT INTO application_snapshots"));
   assert.ok(snapshot);
+  const wrote = seen.find((call) => call.sql.includes("INSERT INTO applications"));
+  assert.match(wrote!.sql, /applicant_snapshot/);
+  assert.match(wrote!.sql, /'headline', p\.headline/);
+  assert.match(wrote!.sql, /'jobCategory', p\.job_category/);
+  assert.match(wrote!.sql, /'tenureYears', p\.tenure_years/);
+  assert.match(wrote!.sql, /'capturedAt', \$9::timestamptz/);
   const snapshots = JSON.parse(String(snapshot.params[13])) as { document_id: string; content: string }[];
   assert.deepEqual(snapshots, [{ document_id: DOC, title: "Resume", content: JSON.stringify({ summary: "hi" }) }]);
   const second = await handle(
@@ -395,6 +401,32 @@ test("a stage jump to OFFER notifies the applicant", async () => {
   assert.ok(update);
   assert.match(update.sql, /revision/);
   assert.equal(update.params.includes("OFFER"), true);
+});
+
+test("employer stage update falls back when stage_entered_at is missing", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
+  const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
+    const member = await memberPosting(sql);
+    if (member) return member;
+    if (sql.includes("UPDATE") && sql.includes("stage_entered_at")) throw missing;
+    if (sql.includes("UPDATE") && sql.includes("applications")) {
+      return { rows: [{ ...applicationRow("OFFER"), revision: 2 }], rowCount: 1 };
+    }
+    if (sql.includes("applications")) return { rows: [applicationRow("APPLIED")], rowCount: 1 };
+    if (sql.includes("user_settings")) return empty;
+    return empty;
+  })));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { data: { stage: string; revision: number } };
+  assert.equal(body.data.stage, "OFFER");
+  assert.equal(body.data.revision, 2);
+  const updates = seen.filter((call) => call.sql.includes("UPDATE") && call.sql.includes("applications"));
+  assert.equal(updates.length, 2);
+  assert.match(updates[0].sql, /stage_entered_at/);
+  assert.match(updates[1].sql, /^UPDATE/);
+  assert.equal(updates[1].sql.includes("stage_entered_at"), false);
 });
 
 test("application stage notifications respect the settings switch", async () => {
@@ -1441,6 +1473,47 @@ test("apply checks every document and source in one query each and writes in one
   assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT INTO ai_jobs")).length, 1);
 });
 
+test("apply falls back when stage_entered_at is missing", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS") && sql.includes("stage_entered_at")) throw missing;
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000a"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const writes = calls.filter((c) => c.sql.startsWith("WITH job AS"));
+  assert.equal(writes.length, 2);
+  assert.match(writes[0].sql, /stage_entered_at/);
+  assert.equal(writes[1].sql.includes("stage_entered_at"), false);
+  const body = await res.json() as { data: { stageEnteredAt: Record<string, string> } };
+  assert.equal(body.data.stageEnteredAt.APPLIED, "2026-10-21T00:00:00Z");
+});
+
+test("apply keeps stage_entered_at when only applicant_snapshot is missing", async () => {
+  const { handle } = await import("../src/handler.ts");
+  const missing = Object.assign(new Error('column "applicant_snapshot" of relation "applications" does not exist'), { code: "42703" });
+  const { calls, query } = recorder((sql) => {
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
+    if (sql.startsWith("WITH job AS") && sql.includes("applicant_snapshot")) throw missing;
+    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
+    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    return null;
+  });
+  const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000b"),
+    ENV, { query, now: () => NOW });
+  assert.equal(res.status, 201);
+  const writes = calls.filter((c) => c.sql.startsWith("WITH job AS"));
+  assert.equal(writes.length, 2);
+  assert.match(writes[0].sql, /applicant_snapshot/);
+  assert.match(writes[1].sql, /stage_entered_at/);
+  assert.equal(writes[1].sql.includes("applicant_snapshot"), false);
+});
+
 test("apply answers with the winning application when a simultaneous apply hits the unique index", async () => {
   const { handle } = await import("../src/handler.ts");
   let lookups = 0;
@@ -1455,21 +1528,37 @@ test("apply answers with the winning application when a simultaneous apply hits 
   assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
 });
 
-test("posting facets run their four counts in parallel", async () => {
+test("posting facets run their five counts in parallel", async () => {
   const { handle } = await import("../src/handler.ts");
   let inFlight = 0;
   let peak = 0;
+  let started = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fallback = setTimeout(release, 200);
   const query: Deps["query"] = async (sql) => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     inFlight += 1;
+    started += 1;
     peak = Math.max(peak, inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (started === 5) {
+      clearTimeout(fallback);
+      release();
+    }
+    await gate;
     inFlight -= 1;
     return { rows: [], rowCount: 0 };
   };
-  const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
-  assert.equal(res.status, 200);
-  assert.equal(peak, 4);
+  try {
+    const res = await handle(new Request("https://core.example/api/v1/postings/facets"), ENV, { query, now: () => NOW });
+    assert.equal(res.status, 200);
+    assert.equal(peak, 5);
+  } finally {
+    clearTimeout(fallback);
+    release();
+  }
 });
 }
 

@@ -27,6 +27,10 @@ class RecordingDb:
     async def execute(self, sql, *args):
         self.sql.append((sql, args))
 
+    async def fetchval(self, sql, *args):
+        self.sql.append((sql, args))
+        return 1
+
     async def run(self, fn):
         return await fn()
 

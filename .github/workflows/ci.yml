@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
@@ -131,7 +131,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
@@ -173,7 +173,7 @@ jobs:
 
   test-db:
     needs: changes
-    if: needs.changes.outputs.db == 'true'
+    if: needs.changes.outputs.db == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.gateway == 'true' || needs.changes.outputs.ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -194,13 +194,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
       - name: Install dependencies
         working-directory: services/ai
-        run: uv sync --locked --no-dev --extra migrate --python 3.12
+        # test: the services/ai suite runs below to capture its SQL.
+        run: uv sync --locked --extra migrate --extra test --python 3.12
       - name: Apply migrations
         working-directory: services/ai
         env:
@@ -211,6 +212,60 @@ jobs:
         run: uv run --no-sync python scripts/migrate.py
       - name: Check schema invariants
         run: psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f db/tests/schema_checks.sql
+      # The core and gateway tests run on in-memory fakes that accept any SQL. Capture every
+      # statement they send and PREPARE it here, on the migrated schema, so a parameter
+      # type conflict or a missing column fails CI instead of production.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install workers
+        run: npm ci
+      # BILLING_PG_URL: the billing money tests (core-api test/billing-money.test.ts, ai tests/test_credits_settle_pg.py) and the
+      # archived-document tests (core-api test/documents-archived-pg.test.ts, ai tests/test_archived_documents_pg.py) run on
+      # this migrated schema here and skip elsewhere; -rs lists every ai skip, so a lost URL shows.
+      - name: Capture SQL from the core, gateway and ai tests
+        env:
+          SQL_CAPTURE: ${{ runner.temp }}/sql.jsonl
+          BILLING_PG_URL: postgres://push:push@localhost:5432/push
+        run: |
+          set -euo pipefail
+          register="$GITHUB_WORKSPACE/scripts/sql-check/register.mjs"
+          (cd services/core-api && node --expose-gc --experimental-strip-types --import "$register" --test 'test/**/*.ts')
+          (cd services/gateway && node --experimental-strip-types --import "$register" --test 'test/**/*.ts')
+          (cd services/ai && PYTHONPATH="$GITHUB_WORKSPACE/scripts/sql-check" uv run --no-sync pytest -q -rs -p sql_capture)
+      # The retention purge on the migrated schema (skipped elsewhere); -rs prints a skip if the URL is lost.
+      - name: Retention purge tests
+        working-directory: services/ai
+        env:
+          RETENTION_PG_URL: postgres://push:push@localhost:5432/push
+        run: uv run --no-sync python -m pytest -q -rs tests/test_retention_pg.py
+      # Constant SQL is checked without a test. Every runtime-built call site and every
+      # SQL-looking string must land in a checked statement, or the job fails.
+      - name: Extract constant SQL and check coverage
+        env:
+          SITES: ${{ runner.temp }}/sites.jsonl
+          FRAGMENTS: ${{ runner.temp }}/fragments.jsonl
+        run: |
+          set -euo pipefail
+          node scripts/sql-check/extract-ts.mjs services/core-api/tsconfig.json services/gateway/tsconfig.json \
+            > "$RUNNER_TEMP/static-ts.jsonl"
+          (cd services/ai && uv run --no-sync python "$GITHUB_WORKSPACE/scripts/sql-check/extract-py.py" src) \
+            > "$RUNNER_TEMP/static-py.jsonl"
+          node scripts/sql-check/coverage.mjs --sites "$SITES" --fragments "$FRAGMENTS" \
+            --checked "$RUNNER_TEMP/static-ts.jsonl" "$RUNNER_TEMP/static-py.jsonl" "$RUNNER_TEMP/sql.jsonl"
+          cat "$RUNNER_TEMP/static-ts.jsonl" "$RUNNER_TEMP/static-py.jsonl" >> "$RUNNER_TEMP/sql.jsonl"
+      - name: PREPARE every captured statement
+        run: |
+          # The pre-#198 terms upsert must still be rejected, or the check has stopped working.
+          if node scripts/sql-check/prepare.mjs scripts/sql-check/known-bad.jsonl \
+            | psql postgres://push:push@localhost:5432/push -q -v ON_ERROR_STOP=1 -f - >/dev/null 2>&1; then
+            echo "::error::sql-check accepted a statement it must reject"
+            exit 1
+          fi
+          node scripts/sql-check/prepare.mjs "$RUNNER_TEMP/sql.jsonl" --source "$RUNNER_TEMP/fragments.jsonl" "$RUNNER_TEMP/sites.jsonl" \
+            | psql postgres://push:push@localhost:5432/push -v ON_ERROR_STOP=1 -f -
 
   test-core:
     needs: changes
@@ -285,6 +340,33 @@ jobs:
           persist-credentials: false
       - name: Check infra/vps
         run: infra/vps/test/run.sh
+
+  # harden.sh's log purge against the real logrotate, rsyslog, fail2ban and auditd of the VPS's
+  # Ubuntu release. On a pull request the base's purge runs first and must fail if it lacks the fix.
+  test-vps-logs:
+    needs: changes
+    if: needs.changes.outputs.vps == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install the VPS log packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq rsyslog logrotate fail2ban auditd
+      - name: Purge logs with the real logrotate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          old=()
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git show HEAD^1:infra/vps/harden.sh >"$RUNNER_TEMP/base-harden.sh"
+            old=("$RUNNER_TEMP/base-harden.sh")
+          fi
+          sudo CI=true infra/vps/test/real-logrotate.sh "${old[@]}"
 
   deploy:
     needs: [changes, test-ai, test-gateway, test-core, test-db, test-vps, bundle-core, bundle-gateway]
@@ -384,7 +466,6 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
@@ -437,7 +518,7 @@ jobs:
           jq -nr '
             env
             | {DATABASE_URL, REDIS_PASSWORD, AI_SHARED_SECRET, INTERNAL_API_SECRET, DISPATCH_SECRET,
-               ADMIN_TOKEN, TOKEN_ENCRYPTION_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, EMBEDDING_API_KEY,
+               ADMIN_TOKEN, TOKEN_ENCRYPTION_KEY, OPENROUTER_API_KEY, EMBEDDING_API_KEY,
                STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY,
                DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, DEV_AUTH_TOKEN, STAGING_AI_HOST,
@@ -507,6 +588,10 @@ jobs:
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
           STRIPE_PRICE_PRO: ${{ vars.STRIPE_PRICE_PRO }}
           STRIPE_PRICE_ULTRA: ${{ vars.STRIPE_PRICE_ULTRA }}
+          STRIPE_PRICE_EMPLOYER_BASIC: ${{ vars.STRIPE_PRICE_EMPLOYER_BASIC }}
+          STRIPE_PRICE_EMPLOYER_PRO: ${{ vars.STRIPE_PRICE_EMPLOYER_PRO }}
+          STRIPE_PRICE_EMPLOYER_ULTRA: ${{ vars.STRIPE_PRICE_EMPLOYER_ULTRA }}
+          STRIPE_PRICE_TOPUP: ${{ vars.STRIPE_PRICE_TOPUP }}
         run: |
           set -euo pipefail
           umask 077
@@ -516,7 +601,8 @@ jobs:
                     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
                     GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA,
-                    DEV_AUTH_TOKEN}
+                    STRIPE_PRICE_EMPLOYER_BASIC, STRIPE_PRICE_EMPLOYER_PRO, STRIPE_PRICE_EMPLOYER_ULTRA,
+                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN}
                  | with_entries(select((.value // "") != ""))' >"$file"
           npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"

@@ -11,7 +11,10 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -20,7 +23,10 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000002",
@@ -29,7 +35,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Platform Engineer"
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -38,16 +47,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
-    },
-    {
-     "id": "f1000000-0000-4000-8000-000000000003",
-     "fileName": "old.md",
-     "mimeType": "text/markdown",
-     "size": 3,
-     "pageCount": null,
-     "createdAt": "2026-09-30T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Backend Engineer"
     }
    ],
    "page": {
@@ -68,7 +71,10 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -77,16 +83,10 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
-    },
-    {
-     "id": "f1000000-0000-4000-8000-000000000003",
-     "fileName": "old.md",
-     "mimeType": "text/markdown",
-     "size": 3,
-     "pageCount": null,
-     "createdAt": "2026-09-30T00:00:00Z",
-     "origin": "AI"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     }
    ],
    "page": {
@@ -107,7 +107,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Platform Engineer"
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -116,7 +119,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Backend Engineer"
     }
    ],
    "page": {
@@ -151,7 +157,10 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -160,7 +169,10 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     }
    ],
    "page": {
@@ -181,7 +193,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Platform Engineer"
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -190,12 +205,15 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Backend Engineer"
     }
    ],
    "page": {
-    "nextCursor": "MjAyNi0xMC0wMlQwMDowMDowMFp8ZDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
-    "hasMore": true
+    "nextCursor": null,
+    "hasMore": false
    }
   }
  },
@@ -286,7 +304,10 @@
     "code": "INVALID_TRANSITION",
     "message": "source is referenced by evidence",
     "requestId": "parity",
-    "details": null
+    "details": {
+     "reason": "REFERENCED_BY_EVIDENCE",
+     "evidenceCount": 1
+    }
    }
   }
  },
@@ -1086,7 +1107,10 @@
      "size": 20,
      "pageCount": null,
      "createdAt": "2026-10-22T12:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": "RESUME",
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000001",
@@ -1095,7 +1119,10 @@
      "size": 12,
      "pageCount": null,
      "createdAt": "2026-10-03T00:00:00.500000Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "f1000000-0000-4000-8000-000000000002",
@@ -1104,7 +1131,10 @@
      "size": 9,
      "pageCount": 2,
      "createdAt": "2026-10-03T00:00:00Z",
-     "origin": "UPLOAD"
+     "origin": "UPLOAD",
+     "kind": null,
+     "company": null,
+     "postingTitle": null
     },
     {
      "id": "d0000000-0000-4000-8000-000000000002",
@@ -1113,7 +1143,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Platform Engineer"
     },
     {
      "id": "d0000000-0000-4000-8000-000000000001",
@@ -1122,7 +1155,10 @@
      "size": 0,
      "pageCount": null,
      "createdAt": "2026-10-02T00:00:00Z",
-     "origin": "AI"
+     "origin": "AI",
+     "kind": "RESUME",
+     "company": "Acme",
+     "postingTitle": "Backend Engineer"
     }
    ],
    "page": {

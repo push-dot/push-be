@@ -23,6 +23,7 @@ test("source, image and career evidence routes go to core except file parsing", 
   assert.equal(ownerOf("GET", "/api/v1/sources"), "core");
   assert.equal(ownerOf("POST", "/api/v1/sources"), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}`), "core");
+  assert.equal(ownerOf("PATCH", `/api/v1/sources/${ID}`), "core");
   assert.equal(ownerOf("DELETE", `/api/v1/sources/${ID}`), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/content`), "core");
   assert.equal(ownerOf("GET", `/api/v1/sources/${ID}/profile-draft`), "python");
@@ -81,7 +82,7 @@ test("document routes go to core except rendering and the AI revision proposal",
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}`), "core");
-  for (const sub of ["review", "finalize", "archive"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
+  for (const sub of ["review", "finalize", "archive", "restore"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions/${ID}/apply`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/exports`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/exports`), "core");
@@ -89,4 +90,15 @@ test("document routes go to core except rendering and the AI revision proposal",
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}/export`), "python");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions`), "python");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/edits`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/profile`), "core");
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/base-profile`), "core");
+  assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/base-profile`), "deny");
+});
+
+test("ownerOf sends the share routes to core", () => {
+  assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/share`), "core");
+  assert.equal(ownerOf("DELETE", `/api/v1/documents/${ID}/share`), "core");
+  assert.equal(ownerOf("GET", "/api/v1/documents/shared/tok"), "core");
+  assert.notEqual(ownerOf("GET", "/api/v1/documents/shared/tok"), "deny");
+  assert.notEqual(ownerOf("GET", "/api/v1/documents/shared/tok"), "python");
 });

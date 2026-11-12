@@ -1,5 +1,6 @@
 import { base64ToBytes } from "../crypto.ts";
 import { enqueueResumeJob } from "../ai-jobs.ts";
+import { scheduleChatJob } from "../conversations/schedule-chat-job.ts";
 import { one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
@@ -7,6 +8,7 @@ import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { rejectArchived } from "./documents.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
@@ -28,8 +30,14 @@ const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 27_000_000, ULTR
 const INTENTS = new Set([
   "posting", "review", "interview", "general",
   "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
 ]);
-const PERSONAL_INTENTS = new Set(["match_posting", "fit", "gaps", "experience", "boost"]);
+const PERSONAL_INTENTS = new Set([
+  "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
+]);
 const CANONICAL_ACCESS: Record<string, string> = {
   ALWAYS_ASK: "ALWAYS_ASK",
   AUTO: "AUTO",
@@ -39,7 +47,7 @@ const CANONICAL_ACCESS: Record<string, string> = {
 };
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
 const FORM_OVERHEAD_BYTES = 64 * 1024;
-const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) RETURNING id)";
+const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) AND EXISTS (SELECT 1 FROM msg) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE", "EMPLOYER_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
 const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
@@ -48,7 +56,7 @@ const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, r
   + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
   + ` AND e.id NOT IN (${EVIDENCE_REFS} AND m.conversation_id <> $2)`;
 
-async function requireAgentConsent(ctx: Ctx): Promise<void> {
+export async function requireAgentConsent(ctx: Ctx): Promise<void> {
   const row = await one(ctx.deps.query, AGENT_CONSENT, [ctx.user.id]);
   if (!asBool(row?.reference_data)) {
     throw new HttpError(403, "CONSENT_REQUIRED", "reference data consent is required");
@@ -77,7 +85,7 @@ function forbidExtra(body: Record<string, unknown>, allowed: string[]): void {
   }
 }
 
-function convDto(row: Record<string, unknown>): Record<string, unknown> {
+export function convDto(row: Record<string, unknown>): Record<string, unknown> {
   return {
     id: String(row.id),
     revision: Number(row.revision),
@@ -305,33 +313,7 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<
   }
 }
 
-async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
-  const fetchImpl = ctx.deps.fetch ?? fetch;
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    "x-push-internal": "1",
-    "x-request-id": ctx.rid,
-  };
-  const secret = (ctx.env.AI_SHARED_SECRET || "").trim();
-  if (secret) headers["x-push-ai-secret"] = secret;
-  try {
-    const scheduled = await fetchImpl(origin + "/internal/chat/schedule", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ jobId }),
-    });
-    if (!scheduled.ok) console.error("vps chat wake failed", scheduled.status);
-  } catch {
-    console.error("vps chat wake failed");
-  }
-}
-
-// The VPS claims the inserted row. An empty origin is a configuration error.
-export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
-  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
-  if (!origin) throw new HttpError(500, "NOT_CONFIGURED", "ai origin is not configured");
-  await wakeVps(ctx, origin, jobId);
-};
+export { scheduleChatJob };
 
 const enqueueChatMessage = async (
   ctx: Ctx,
@@ -348,9 +330,9 @@ const enqueueChatMessage = async (
   const type = companyId ? "employer_ai" : "chat";
   const audience = companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(type, plan, audience);
-  const pressure = await checkBackpressure(ctx.deps.query, queue, plan);
+  const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id, companyId });
   if (!pressure.ok) {
-    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec });
+    throw new HttpError(429, "QUEUE_BUSY", "queue is busy", { retryAfterSec: pressure.retryAfterSec, ahead: pressure.ahead });
   }
   const headerKey = (ctx.request.headers.get("idempotency-key") || "").trim();
   const { jobId } = await enqueueJob(ctx.deps.query, {
@@ -361,13 +343,17 @@ const enqueueChatMessage = async (
     payload,
     idempotencyKey: headerKey || undefined,
     conversationId,
-  });
+  }, ctx.deps.transaction);
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM conv RETURNING job_id) SELECT conv.id FROM conv",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
+    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM msg RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  await withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  const kick = withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
+  if (ctx.deps.waitUntil) ctx.deps.waitUntil(kick);
+  else await kick;
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
@@ -421,15 +407,20 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  const [saved, owned] = await Promise.all([
+  const contextDocumentId = context.documentId == null ? null : String(context.documentId);
+  const [saved, owned, contextDocument] = await Promise.all([
     access ? null : one(ctx.deps.query,
       "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
       [ctx.user.id]),
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
+    contextDocumentId == null ? null : one(ctx.deps.query, "SELECT status FROM documents WHERE id = $1 AND user_id = $2", [contextDocumentId, ctx.user.id]),
   ]);
   if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  // The worker reads context.documentId into the prompt; only the caller's live documents may go there.
+  if (contextDocumentId != null && !contextDocument) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  rejectArchived(contextDocument);
   if (owned.company_id == null) await requireAgentConsent(ctx);
   await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
@@ -451,7 +442,10 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), " + REJECT_WAITING + ", job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    + "job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), "
+    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
+    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   await scheduleChatJob(ctx, jobId);
@@ -499,7 +493,7 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   await query(ctx.deps.query,
     "INSERT INTO conversation_attachments (id, conversation_id, company_id, file_name, mime_type, content) VALUES ($1,$2,$3,$4,$5,$6)",
     [id, conversationId, String(row.company_id), file.name, file.type, content]);
-  return data(201, { id, fileName: file.name, mimeType: file.type }, ctx.rid);
+  return data(201, { id, fileName: file.name, mimeType: file.type, size: content.byteLength }, ctx.rid);
 };
 
 const cardOptionIds = (raw: unknown): string[] => {

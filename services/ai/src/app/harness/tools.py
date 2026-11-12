@@ -51,6 +51,8 @@ class ToolSpec:
     run: Callable[[ToolContext, BaseModel], Awaitable[dict]]
     summarize: Callable[[BaseModel], str]
     approval_kind: str = "TOOL_ACTION"
+    # display(args, db) -> rows for the approval card. None for every tool but one.
+    display: Callable[[Any, Any], Awaitable[list]] | None = None
 
 
 def emit(event: dict) -> None:
@@ -114,3 +116,18 @@ async def call_structured(spec: ToolSpec, args: BaseModel, ctx: ToolContext) -> 
     config = merge_configs(ensure_config(), {"configurable": {"tool_context": ctx}})
     done = await to_structured_tool(spec).ainvoke(args.model_dump(mode="json"), config)
     return done.result, done.ok
+
+
+RETRY_WARNING = "시간이 오래 걸려서 한 번 더 시도했어요"
+
+
+async def call_retrying(
+    spec: ToolSpec,
+    args: BaseModel,
+    ctx: ToolContext,
+) -> tuple[dict, bool, bool]:
+    result, ok = await call_structured(spec, args, ctx)
+    if ok or spec.tier is not Tier.READ or result.get("error") != "TOOL_FAILED":
+        return result, ok, False
+    result, ok = await call_structured(spec, args, ctx)
+    return result, ok, True

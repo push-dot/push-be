@@ -23,11 +23,9 @@
   "vars": {
     "APP_ENV": "production",
     // Availability flags for GET /ai/models. These are not secrets.
-    // Set MANAGED_AI to "0" when the Python worker has neither
-    // OPENROUTER_API_KEY nor OPENAI_API_KEY. Set MANAGED_GO to "1"
-    // when OPENCODE_GO_API_KEY is set on the Python worker.
+    // Set MANAGED_AI to "0" when the Python worker has no
+    // OPENROUTER_API_KEY.
     "MANAGED_AI": "1",
-    "MANAGED_GO": "0",
     "SSE_MAX_POLLS": "20",
     "MODEL_CACHE_TTL": "600",
     "JOB_SITES_CACHE_TTL": "3600",
@@ -48,7 +46,6 @@
         // The AI service seeds this user at startup when DEV_AUTH_TOKEN is set.
         "DEV_USER_ID": "00000000-0000-4000-8000-000000000001",
         "MANAGED_AI": "1",
-        "MANAGED_GO": "0",
         "SSE_MAX_POLLS": "20",
         "MODEL_CACHE_TTL": "600",
         "JOB_SITES_CACHE_TTL": "3600",

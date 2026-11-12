@@ -42,6 +42,7 @@ function isPython(method: string, path: string): boolean {
   if (method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/share$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/shared\/[^/]+$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/artifacts$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/turns$/.test(path)) return true;
   return false;
 }
 
@@ -53,13 +54,15 @@ function isCore(method: string, path: string): boolean {
   }
   if (method === "POST" && (
     path === "/api/v1/auth/email/signup"
-    || path === "/api/v1/auth/email/verify"
+    ||     path === "/api/v1/auth/email/verify"
+    || path === "/api/v1/auth/email/verify/resend"
     || path === "/api/v1/auth/email/login"
     || path === "/api/v1/auth/email/password-reset"
     || path === "/api/v1/auth/email/password-reset/confirm"
     || path === "/api/v1/auth/phone/send"
     || path === "/api/v1/auth/phone/verify"
   )) return true;
+  if (method === "GET" && /^\/api\/v1\/auth\/email\/password-reset\/[^/]+$/.test(path)) return true;
   if (path === "/api/v1/auth/me") return false;
   if (path === "/api/v1/conversations") return method === "POST";
   if (/^\/api\/v1\/conversations\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
@@ -88,12 +91,16 @@ function isCore(method: string, path: string): boolean {
   if (path === "/api/v1/documents") return method === "GET" || method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH";
   if (/^\/api\/v1\/documents\/[^/]+\/(versions|exports)$/.test(path)) return method === "GET" || method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/profile$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/base-profile$/.test(path)) return method === "POST";
+  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
+  if (/^\/api\/v1\/documents\/[^/]+\/share$/.test(path)) return method === "POST" || method === "DELETE";
   if (/^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+$/.test(path)) return method === "GET";
-  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive)$/.test(path)) return method === "POST";
+  if (/^\/api\/v1\/documents\/[^/]+\/(review|finalize|archive|restore)$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/revisions\/[^/]+\/apply$/.test(path)) return method === "POST";
   if (/^\/api\/v1\/documents\/[^/]+\/exports\/[^/]+\/result$/.test(path)) return method === "POST";
   if (path === "/api/v1/sources") return method === "GET" || method === "POST";
-  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
+  if (/^\/api\/v1\/sources\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH" || method === "DELETE";
   if (/^\/api\/v1\/sources\/[^/]+\/content$/.test(path)) return method === "GET";
   if (path === "/api/v1/uploads/images") return method === "POST";
   if (/^\/api\/v1\/uploads\/images\/[^/]+$/.test(path)) return method === "GET";
@@ -132,10 +139,12 @@ function isCore(method: string, path: string): boolean {
 
 function isRecruiting(path: string): boolean {
   if (path === "/api/v1/postings" || path.startsWith("/api/v1/postings/")) return true;
+  if (path === "/api/v1/skills") return true;
   if (path === "/api/v1/search" || path === "/api/v1/search/counts" || path === "/api/v1/search/trending") return true;
   if (path === "/api/v1/profiles" || path.startsWith("/api/v1/profiles/")) return true;
   if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
   if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;
+  if (path === "/api/v1/bots" || path.startsWith("/api/v1/bots/")) return true;
   if (path === "/api/v1/posts" || path.startsWith("/api/v1/posts/")) return true;
   return false;
 }

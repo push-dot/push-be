@@ -9,7 +9,7 @@ const employmentType = enumOf("full_time", "contract", "intern", "freelance", "d
 const postingStatus = enumOf("DRAFT", "OPEN", "CLOSED");
 const applicationStage = enumOf("DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN");
 const csv = (description: string): Schema => ({ type: "string", description });
-const imageKey: Schema = { type: ["string", "null"], pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key returned by the image upload endpoint; null or empty clears it" };
+const imageKey: Schema = { type: ["string", "null"], pattern: "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", description: "Key returned by the image upload endpoint. Null or empty clears it. A key must not contain .." };
 const sourceUrl: Schema = { type: ["string", "null"], format: "uri", minLength: 1, maxLength: 2000, description: "http(s) URL without credentials" };
 const textList = (maxItems: number, maxLength: number): Schema => ({ type: "array", maxItems, items: { type: "string", minLength: 1, maxLength } });
 const careerYears: Schema = { type: "integer", minimum: 0, maximum: 80 };
@@ -43,6 +43,7 @@ const postingWriteFields: Record<string, Schema> = {
   sourceUrl,
   deadline: nullable(date),
   status: enumOf("DRAFT", "OPEN"),
+  draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Create only; null or omitted stores null. Anything else is 400." },
 };
 
 export const routes: Route[] = [
@@ -62,7 +63,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings", {
     tag: "postings",
     summary: "Create a posting",
-    description: "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy).",
+    description: "Requires membership in a verified company (403 otherwise). Response includes member fields (status, applicantCount, newApplicantCount, createdBy, draftSource).",
     body: body(obj(postingWriteFields, ["title", "jobCategory", "careerMin", "location", "employmentType", "description"])),
     responses: { 201: ok(ref("PostingDetail"), "Created") },
   }),
@@ -70,29 +71,41 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Filter facet counts for open postings",
     auth: "optional",
-    description: "Each facet ignores its own filter (career ignores careerYears, category ignores category, skills ignores skills); location ignores location. category lists every category, location and skills only non-zero ones.",
+    description: "Each facet ignores its own filter (career ignores careerYears, category ignores category, employmentType ignores employmentType, skills ignores skills); location ignores location. category and employmentType list every value including zero counts, location and skills only non-zero ones.",
     params: filterParams(true),
-    responses: { 200: ok(obj({ career: arr(facetItem), category: arr(facetItem), location: arr(facetItem), skills: arr(facetItem) })) },
+    responses: { 200: ok(obj({ career: arr(facetItem), category: arr(facetItem), employmentType: arr(facetItem), location: arr(facetItem), skills: arr(facetItem) })) },
+  }),
+  get("core", "/api/v1/skills", {
+    tag: "postings",
+    summary: "Search skills used by open postings",
+    auth: "optional",
+    description: "Skill names from open postings, matched case-insensitively as a substring of q. Names that start with q come first, then by postingCount. An empty q lists the most common skills.",
+    params: [
+      query("q", { type: "string", maxLength: 40 }, "Substring to match"),
+      query("limit", { type: "integer", minimum: 1, maximum: 50, default: 20 }, "Maximum skills to return"),
+    ],
+    responses: { 200: okList(obj({ name: str, postingCount: int })) },
   }),
   get("core", "/api/v1/postings/locations", {
     tag: "postings",
     summary: "Open posting counts by location",
     auth: "optional",
-    params: filterParams(false),
+    description: "level=city groups by the first whitespace-separated token of location (\"서울 강남구\" counts under \"서울\") with summed counts, ordered by count desc then name. Omitted or level=district lists each full location. Any other level is 400.",
+    params: [...filterParams(false), query("level", enumOf("district", "city"), "Grouping level; default district")],
     responses: { 200: okList(obj({ location: str, count: int })) },
   }),
   get("core", "/api/v1/postings/{id}", {
     tag: "postings",
     summary: "Get a posting",
     auth: "optional",
-    description: "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). Member fields are present only for company members. Records a view for signed-in users.",
+    description: "Open postings are visible to everyone. Closed or draft postings are visible only to members of the owning company (404 otherwise). status is also sent to non-members when the column is present. newApplicantCount and createdBy are member-only, and on this route they are 0 and null because the query does not load them. Records a view for signed-in users.",
     params: [pathParam("id")],
     responses: { 200: ok(ref("PostingDetail")) },
   }),
   patch("core", "/api/v1/postings/{id}", {
     tag: "postings",
     summary: "Update a posting",
-    description: "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN.",
+    description: "Verified company members only. Optimistic concurrency via expectedRevision (409 REVISION_CONFLICT with details.currentRevision). A closed posting cannot be set back to OPEN. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
     params: [pathParam("id")],
     body: body(obj({ expectedRevision: int, ...postingWriteFields }, ["expectedRevision"])),
     responses: { 200: ok(ref("PostingDetail")) },
@@ -108,7 +121,7 @@ export const routes: Route[] = [
   get("core", "/api/v1/postings/{id}/applicants", {
     tag: "postings",
     summary: "List applicants of a posting",
-    description: "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total.",
+    description: "Company members of the posting only (404 otherwise). Ordered by appliedAt desc. No page.total. An unknown stage is an empty page, not an error.",
     params: [pathParam("id"), ...pageParams, query("stage", applicationStage, "Exact stage filter")],
     responses: { 200: okPage(ref("Applicant")) },
   }),
@@ -122,7 +135,7 @@ export const routes: Route[] = [
   patch("core", "/api/v1/postings/{id}/applicants/{applicationId}", {
     tag: "postings",
     summary: "Change an applicant's stage",
-    description: "Company members of the posting only. Same stage returns the application unchanged. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
+    description: "Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
     params: [pathParam("id"), pathParam("applicationId")],
     body: body(obj({ stage: enumOf("SCREENING", "INTERVIEW", "OFFER", "REJECTED") })),
     responses: { 200: ok(ref("PostingsApplicantApplication")) },
@@ -137,7 +150,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/apply", {
     tag: "postings",
     summary: "Apply to a posting",
-    description: "Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise).",
+    description: "Archived documents cannot be attached: they are 404 like an unknown documentId. Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.",
     params: [pathParam("id")],
     body: body(obj({ documentIds: arr(uuid), sourceIds: arr(uuid) }, [])),
     responses: { 201: ok(ref("Application"), "Created") },
@@ -158,7 +171,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/postings/{id}/close", {
     tag: "postings",
     summary: "Close a posting",
-    description: "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale.",
+    description: "Verified company members only. Sets status CLOSED and closedAt. 409 REVISION_CONFLICT when already closed or expectedRevision is stale. The response sets bookmarked and applied to false, newApplicantCount to 0, and createdBy to null.",
     params: [pathParam("id")],
     body: body(obj({ expectedRevision: int })),
     responses: { 200: ok(ref("PostingDetail")) },
@@ -174,13 +187,14 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Search postings, people or posts",
     auth: "optional",
-    description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending.",
+    description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending. sort is optional. Omitted and relevance keep that order. latest orders postings and posts by createdAt and people by updatedAt, with no relevance term. The cursor encodes sort; an omitted sort is stored as relevance, so a cursor minted before sort still continues the default page. sort=latest rejects a cursor with no sort or with relevance. sort=relevance and an omitted sort reject a cursor marked latest. latest does not continue a relevance page.",
     params: [
-      requiredQuery("q", { type: "string", minLength: 1 }, "Search term (must not be blank)"),
+      requiredQuery("q", { type: "string", minLength: 1, pattern: "\\S" }, "Search term. Whitespace-only is 400. No max length on this route."),
       query("type", { type: "string", enum: ["postings", "people", "posts"], default: "postings" }),
+      query("sort", { type: "string", enum: ["relevance", "latest"] }, "Omitted matches relevance. Any other value, including an empty string, is 422."),
       ...pageParams,
       query("category", csv("type=people only: comma-separated job categories")),
-      query("tenure", csv("type=people only: comma-separated tenure buckets: 0-2, 3-5, 6-9, 10+")),
+      query("tenure", csv("type=people only: comma-separated tenure buckets: 0, 1-2, 3-5, 6-9, 10+. Legacy 0-2 is still accepted.")),
       query("status", csv("type=people only: comma-separated career statuses: satisfied, seeking, feedback")),
       query("explore", enumOf("recommended", "offers"), "type=people only"),
     ],
@@ -190,7 +204,8 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Result counts per search type",
     auth: "optional",
-    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200 }, "Search term (must not be blank)")],
+    description: "Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.",
+    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" }, "Search term. Whitespace-only is 400. Max 200 code points.")],
     responses: { 200: ok(obj({ postings: int, people: int, posts: int })) },
   }),
   get("core", "/api/v1/search/trending", {
@@ -207,6 +222,7 @@ const memberFields: Record<string, Schema> = {
   applicantCount: int,
   newApplicantCount: { type: "integer", description: "Applicants the company has not opened yet" },
   createdBy: nullable(obj({ displayName: str })),
+  draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed." },
 };
 
 export const schemas: Record<string, Schema> = {
@@ -241,7 +257,7 @@ export const schemas: Record<string, Schema> = {
         ...memberFields,
       }, ["description", "requirements", "workConditions", "preferred", "applicantCount"]),
     ],
-    description: "status, newApplicantCount and createdBy are present only for members of the owning company (always present on create, update and close responses).",
+    description: "status is present for members, and also for non-members when the status column was selected. newApplicantCount and createdBy are member-only. Create and the company list load them. Get, update, and close return newApplicantCount 0 and createdBy null.",
   },
   PostingsCompanyPosting: {
     allOf: [ref("Posting"), obj(memberFields)],
@@ -256,8 +272,10 @@ export const schemas: Record<string, Schema> = {
       avatarUrl: nullable(str),
     }),
     documents: arr(obj({ title: str, pages: nullable(int) })),
+    documentKinds: { type: "array", items: enumOf("PROFILE", "PDF", "FILE"), description: "Distinct kinds in fixed order: PROFILE (a hub profile snapshot), PDF (an attached PDF), FILE (any other attached file)" },
     stage: applicationStage,
     appliedAt: dateTime,
+    isNew: { type: "boolean", description: "True until any member of the company opens this applicant. Clears on the first GET of the detail." },
   }),
   PostingsApplicantApplication: obj({
     id: uuid,
@@ -276,12 +294,18 @@ export const schemas: Record<string, Schema> = {
   ApplicantDetail: obj({
     application: ref("PostingsApplicantApplication"),
     documents: arr(obj({ id: uuid, title: str, content: str })),
+    files: { ...arr(obj({ id: uuid, fileName: str, mimeType: str, size: int, pageCount: nullable(int) })), description: "Files attached at apply time. Download with GET postings/{id}/applicants/{applicationId}/files/{fileId}" },
     applicant: obj({
       displayName: str,
       email: str,
       headline: str,
+      jobCategory: nullable(str),
+      tenureYears: nullable(int),
       careers: arr(any),
       skills: arr(str),
+      hubProfileId: { ...nullable(uuid), description: "The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null" },
+      profileSource: { ...enumOf("SUBMITTED", "CURRENT"), description: "SUBMITTED is the profile captured at apply time. CURRENT is the live profile, for an application with no snapshot." },
+      capturedAt: { ...nullable(dateTime), description: "When the submitted profile was captured. Null when profileSource is CURRENT." },
     }),
   }),
   SearchResult: {

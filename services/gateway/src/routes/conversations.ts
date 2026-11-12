@@ -6,7 +6,10 @@ import {
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
-import { LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL, queryToleratingCompany, rateParams, STREAM_SQL, tsText } from "../middleware/ratelimit.ts";
+import {
+  conversationRowSelect, employerOwnerPc, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL,
+  personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL,
+} from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
@@ -46,24 +49,33 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
   const ownerSql = audience === "EMPLOYER"
     ? "company_id = $1::uuid"
     : "user_id = $1::uuid AND company_id IS NULL";
+  const ownerPc = audience === "EMPLOYER" ? employerOwnerPc("$1") : personalOwnerPc("$1");
   const rows = await deps.query(
-    "SELECT c.id, c.revision, c.application_id, c.title, c.pinned, "
-    + tsText("c.created_at") + " AS created_at, " + tsText("c.updated_at") + " AS updated_at, "
-    + "c.posting_id, COALESCE(cu.display_name, '') AS display_name, "
-    + "COALESCE(left(last_msg.text, 140), '') AS last_message_preview, "
-    + "CASE WHEN EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' AND (a.expires_at IS NULL OR a.expires_at > now())) THEN 'NEEDS_APPROVAL' "
-    + "WHEN EXISTS (SELECT 1 FROM chat_jobs j WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')) THEN 'RUNNING' "
-    + "ELSE 'DONE' END AS status "
-    + "FROM conversations c "
-    + "LEFT JOIN users cu ON cu.id = c.user_id "
-    + "LEFT JOIN LATERAL (SELECT m.text FROM messages m WHERE m.conversation_id = c.id "
-    + "ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_msg ON true "
+    conversationRowSelect(ownerPc)
     + "WHERE " + ownerSql + " AND c.archived = " + (archived ? "true" : "false")
     + filterSql
     + ` ORDER BY c.updated_at DESC, c.id DESC LIMIT $${params.length}`,
     params,
   );
   return jsonResponse(200, pageBody(rows, limit, conversationJson), rid);
+}
+
+export async function getConversation(request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
+  const id = parseUuid(rawId);
+  if (!id) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  try {
+    const rows = await deps.query(
+      conversationRowSelect(personalOwnerPc("$2"))
+      + "WHERE c.id = $1::uuid AND c.user_id = $2::uuid AND c.company_id IS NULL",
+      [id, user.id],
+    );
+    if (!rows[0]) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    return await freshRead(jsonResponse(200, { data: conversationJson(rows[0]) }, rid), request, rid);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
 }
 
 export async function listConversations(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -143,6 +155,8 @@ function conversationJson(row: Record<string, unknown>): Record<string, unknown>
     createdAt: formatJsonTimestamp(row.created_at),
     updatedAt: formatJsonTimestamp(row.updated_at),
     status: row.status == null || row.status === "" ? "DONE" : String(row.status),
+    queuePosition: row.queue_position == null ? null : Number(row.queue_position),
+    lastLine: row.last_line == null || row.last_line === "" ? null : String(row.last_line),
     lastMessagePreview: String(row.last_message_preview ?? "").slice(0, 140),
     createdBy: { displayName: String(row.display_name ?? "") },
     postingId: row.posting_id == null || row.posting_id === "" ? null : String(row.posting_id),
@@ -171,21 +185,32 @@ const ACTIVE_JOB = "SELECT j.id FROM chat_jobs j JOIN found ON found.id = j.conv
 const ACTIVE_JOB_SQL = SCOPED_FOUND
   + " SELECT (SELECT id FROM found) AS conversation_id, (" + ACTIVE_JOB + ") AS job_id";
 
+// A company conversation is visible to every member, but only the member who
+// created the job may cancel it. `mine` is false when the running job belongs
+// to someone else, and null when there is no running job.
+const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid) AS mine FROM chat_jobs j "
+  + "JOIN found ON found.id = j.conversation_id "
+  + "WHERE j.status IN ('PENDING', 'RUNNING') "
+  + "ORDER BY j.created_at DESC LIMIT 1";
+
 // The cancel and its event commit together, so a stream always sees the
 // terminal event. A job that finished in the meantime updates no row.
-const CANCEL_SQL = SCOPED_FOUND + ", job AS (" + ACTIVE_JOB + "), cancelled AS ("
+const CANCEL_SQL = SCOPED_FOUND + ", active AS (" + CANCEL_JOB + "), job AS ("
+  + "SELECT id FROM active WHERE mine), cancelled AS ("
   + "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
-  + "WHERE id = (SELECT id FROM job) AND status IN ('PENDING', 'RUNNING') RETURNING id"
+  + "WHERE id = (SELECT id FROM job) AND user_id = $2::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id"
   + "), recorded AS ("
   + "INSERT INTO chat_events (job_id, type, payload) SELECT id, 'cancelled', '{}'::jsonb FROM cancelled RETURNING job_id"
-  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id";
+  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id, "
+  + "(SELECT mine FROM active) AS mine";
 
 const present = (value: unknown): boolean => value != null && value !== "";
 
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
   if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  return jsonResponse(200, pageBody(jsonRows(rows[0].rows), limit, messageJson), rid);
+  const page = jsonRows(rows[0].rows);
+  return jsonResponse(200, pageBody(page, limit, messageJson(await storedFiles(deps, id, page))), rid);
 }
 
 export async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -228,7 +253,8 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     if (conversationId == null || conversationId === "") {
       return errorResponse(404, "NOT_FOUND", "resource not found", rid);
     }
-    const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, messageJson));
+    const messages = jsonRows(rows[0]?.rows);
+    const text = pyJson(pageBody(messages, page.limit, messageJson(await storedFiles(deps, String(conversationId), messages))));
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
@@ -241,28 +267,118 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
   }
 }
 
-function messageJson(row: Record<string, unknown>): Record<string, unknown> {
-  let attachments = row.attachments ?? [];
+type StoredFile = { fileName: string; size: number };
+type ApplicationChip = { title: string; documentTitles: string[] };
+type StoredAttachments = { files: Map<string, StoredFile>; applications: Map<string, ApplicationChip> };
+
+// Company conversations only. A personal conversation has a null company_id, so the join matches nothing.
+const APPLICATION_CHIPS_SQL = `SELECT a.id, u.display_name,
+  COALESCE((
+    SELECT json_agg(docs.title ORDER BY docs.ord, docs.title)
+    FROM (
+      SELECT s.title, 0 AS ord FROM application_snapshots s WHERE s.application_id = a.id
+      UNION
+      SELECT f.file_name, 1 AS ord FROM application_files f WHERE f.application_id = a.id
+    ) docs
+  ), '[]'::json) AS document_titles
+ FROM applications a
+ JOIN jobs j ON j.id = a.job_id
+ JOIN job_postings p ON p.id = j.source_posting_id
+ JOIN conversations c ON c.id = $1::uuid AND c.company_id IS NOT NULL AND c.company_id = p.company_id
+ JOIN users u ON u.id = a.user_id
+ WHERE a.id = ANY($2::uuid[])`;
+
+function chipTitles(value: unknown): string[] {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => String(item ?? ""));
+}
+
+function attachmentList(raw: unknown): unknown[] {
+  let attachments = raw ?? [];
   if (typeof attachments === "string") {
     try { attachments = JSON.parse(attachments); } catch { attachments = []; }
   }
-  const cleaned = Array.isArray(attachments) ? attachments.map(attachmentJson) : [];
-  return {
-    id: String(row.id),
-    conversationId: String(row.conversation_id),
-    role: String(row.role),
-    text: String(row.text ?? ""),
-    attachments: cleaned,
-    operationId: row.operation_id == null ? null : String(row.operation_id),
-    createdAt: formatJsonTimestamp(row.created_at),
-  };
+  return Array.isArray(attachments) ? attachments : [];
 }
 
-function attachmentJson(raw: unknown): Record<string, unknown> {
+async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredAttachments> {
+  const files: Map<string, StoredFile> = new Map();
+  const applications: Map<string, ApplicationChip> = new Map();
+  const ids = new Set<string>();
+  const applicationIds = new Set<string>();
+  for (const message of messages) {
+    for (const raw of attachmentList(message.attachments)) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      const id = parseUuid(String(item.id ?? ""));
+      if (!id) continue;
+      ids.add(id);
+      if (String(item.type ?? "") === "APPLICATION") applicationIds.add(id);
+    }
+  }
+  if (ids.size) {
+    try {
+      const rows = await deps.query(
+        "SELECT id, file_name, octet_length(content) AS size FROM conversation_attachments WHERE conversation_id = $1::uuid AND id = ANY($2::uuid[])",
+        [conversationId, [...ids]],
+      );
+      for (const row of rows) files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });
+    } catch {
+      // names and sizes are extras; the page is still served without them
+    }
+  }
+  if (applicationIds.size) {
+    try {
+      const rows = await deps.query(APPLICATION_CHIPS_SQL, [conversationId, [...applicationIds]]);
+      for (const row of rows) {
+        applications.set(String(row.id).toLowerCase(), {
+          title: String(row.display_name ?? ""),
+          documentTitles: chipTitles(row.document_titles),
+        });
+      }
+    } catch {
+      // titles are extras; the page is still served without them
+    }
+  }
+  return { files, applications };
+}
+
+const messageJson = (stored: StoredAttachments) => (row: Record<string, unknown>): Record<string, unknown> => ({
+  id: String(row.id),
+  conversationId: String(row.conversation_id),
+  role: String(row.role),
+  text: String(row.text ?? ""),
+  attachments: attachmentList(row.attachments)
+    .map((raw) => attachmentJson(raw, stored))
+    .filter((item): item is Record<string, unknown> => item !== null),
+  operationId: row.operation_id == null ? null : String(row.operation_id),
+  createdAt: formatJsonTimestamp(row.created_at),
+});
+
+function attachmentJson(raw: unknown, stored: StoredAttachments): Record<string, unknown> | null {
   const a = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
+  const title = a.title == null ? "" : String(a.title);
+  const name = String(a.name ?? a.fileName ?? "");
+  const mime = String(a.mime ?? a.mimeType ?? "");
+  if (title.toLowerCase().endsWith(".md") || name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown") {
+    return null;
+  }
   const out: Record<string, unknown> = { type: String(a.type ?? ""), id: String(a.id ?? "") };
   if (a.documentId != null) out.documentId = String(a.documentId);
   if (a.title != null) out.title = String(a.title);
+  const file = stored.files.get(parseUuid(String(out.id)) ?? "");
+  if (file) Object.assign(out, file);
+  if (String(out.type) === "APPLICATION") {
+    const chip = stored.applications.get(parseUuid(String(out.id)) ?? "");
+    if (chip) {
+      out.title = chip.title;
+      out.documentTitles = chip.documentTitles;
+    }
+  }
   return out;
 }
 
@@ -294,7 +410,13 @@ export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, 
   try {
     const rows = await deps.query(CANCEL_SQL, [id, user.id, user.companyId]);
     if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    if (!present(rows[0].job_id)) return errorResponse(409, "CONFLICT", "no active stream", rid);
+    if (!present(rows[0].job_id)) {
+      const mine = rows[0].mine;
+      if (mine === false || mine === "f" || mine === "false") {
+        return errorResponse(403, "FORBIDDEN", "forbidden", rid);
+      }
+      return errorResponse(409, "CONFLICT", "no active stream", rid);
+    }
     return jsonResponse(200, { data: { jobId: String(rows[0].job_id), status: "CANCELLED" } }, rid);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -395,16 +517,20 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
           let terminal = false;
           for (const row of rows) {
             after = Number(row.id);
+            if (hiddenMarkdownFile(row)) continue;
             send(sseFrame(row));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
             }
           }
-          if (terminal) break;
+          if (terminal || !open) break;
           if (rows.length >= EVENT_PAGE) continue;
           idle = rows.length ? 0 : idle + 1;
-          if (i + 1 < polls) await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          if (i + 1 < polls) {
+            if (rows.length === 0) send(": ping\n\n");
+            await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
+          }
         }
       } catch {
         send("data: " + pyJson({
@@ -427,6 +553,18 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
     },
   });
 };
+
+function hiddenMarkdownFile(row: Record<string, unknown>): boolean {
+  if (row.type !== "file") return false;
+  let payload = row.payload ?? {};
+  if (typeof payload === "string") {
+    try { payload = JSON.parse(payload); } catch { payload = {}; }
+  }
+  const p = (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+  const name = String(p.name ?? p.fileName ?? "");
+  const mime = String(p.mime ?? p.mimeType ?? "");
+  return name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown";
+}
 
 function sseFrame(row: Record<string, unknown>): string {
   const seq = Number(row.id);

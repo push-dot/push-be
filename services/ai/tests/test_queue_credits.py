@@ -235,7 +235,7 @@ async def test_redis_reserve_records_usage_without_a_second_hold(monkeypatch):
 
     gate = AIGate.__new__(AIGate)
     gate.usage = Usage()
-    ai = ent.AiOptions(provider="OPENAI", model="openai/gpt-5.6-sol", effort="low")
+    ai = ent.AiOptions(provider="OPENAI", model="deepseek/deepseek-v4.1-flash", effort="low")
     usage_id = await gate._reserve(USER, ai, "system", "user", JOB)
     assert usage_id is not None
     assert seen[0][1] == JOB
@@ -254,6 +254,9 @@ async def test_pg_settle_and_release_round_trip():
     await maint.execute(f'CREATE DATABASE "{name}"')
     conn = await asyncpg.connect(user="cyjoon", database=name, host="/tmp")
     try:
+        # settle_job takes the owner row lock first.
+        await conn.execute("CREATE TABLE users (id uuid PRIMARY KEY)")
+        await conn.execute("INSERT INTO users (id) VALUES ($1)", USER)
         await conn.execute(
             "CREATE TABLE credit_reservations ("
             "job_id uuid PRIMARY KEY, user_id uuid NOT NULL, company_id uuid NULL, "
@@ -266,6 +269,8 @@ async def test_pg_settle_and_release_round_trip():
             "input_tokens int NULL, output_tokens int NULL, "
             "cost_micro_credits bigint NOT NULL, status text NOT NULL, "
             "created_at timestamptz NULL, job_id uuid NULL)")
+        await conn.execute("CREATE TABLE ai_jobs (id uuid PRIMARY KEY, status text NOT NULL)")
+        await conn.execute("INSERT INTO ai_jobs (id, status) VALUES ($1, 'RUNNING'), ($2, 'RUNNING')", JOB, AGAIN)
         await conn.execute(
             "INSERT INTO credit_reservations (job_id, user_id, amount_micro, status) "
             "VALUES ($1, $2, 80, 'RESERVED')", JOB, USER)
@@ -283,12 +288,13 @@ async def test_pg_settle_and_release_round_trip():
         await release_job(conn, AGAIN, NOW + timedelta(seconds=1))
         released = await conn.fetchval("SELECT status FROM credit_reservations WHERE job_id=$1", AGAIN)
         assert released == "RELEASED"
-        await conn.execute(
-            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9,
-            "RESERVED", NOW, JOB)
-        await conn.execute(
-            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9,
-            "RESERVED", NOW, AGAIN)
+        # A closed reservation takes no more usage.
+        assert await conn.fetchval(
+            _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9, "RESERVED", NOW, JOB) is False
+        await conn.execute("UPDATE credit_reservations SET status = 'RESERVED'")
+        for job in (JOB, AGAIN):
+            assert await conn.fetchval(
+                _USAGE_JOB_SQL, USAGE, USER, None, "OPENAI", "m", True, 1, 2, 9, "RESERVED", NOW, job) is True
         kept = await conn.fetchval("SELECT job_id FROM ai_usage WHERE id=$1", USAGE)
         assert kept == JOB
     finally:

@@ -3,6 +3,7 @@ import { HttpError, data, jsonList, pageBody, requireUuid } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const KINDS = new Set(["URL", "TEXT", "DOM"]);
 
@@ -38,19 +39,6 @@ function jobDto(row: Record<string, unknown>): Record<string, unknown> {
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
-}
-
-async function readObject(request: Request): Promise<Record<string, unknown>> {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
 }
 
 function validateJob(company: string, title: string, kind: string, sourceUrl: string | null, sourceText: string): void {

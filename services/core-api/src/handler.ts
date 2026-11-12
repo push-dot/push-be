@@ -25,12 +25,16 @@ import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
 import { dispatchMe } from "./routes/me.ts";
+import { dispatchBlocks } from "./routes/blocks.ts";
 import { dispatchOffers } from "./routes/offers.ts";
 import { dispatchPostings } from "./routes/postings.ts";
 import { dispatchPosts } from "./routes/posts.ts";
 import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
+import { dispatchBots } from "./routes/bots.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
+
+const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
 
 const PUBLIC = new Set([
   "/api/v1/auth/exchange",
@@ -43,6 +47,7 @@ const PUBLIC = new Set([
 const EMAIL_PUBLIC = new Set([
   "/api/v1/auth/email/signup",
   "/api/v1/auth/email/verify",
+  "/api/v1/auth/email/verify/resend",
   "/api/v1/auth/email/login",
   "/api/v1/auth/email/password-reset",
   "/api/v1/auth/email/password-reset/confirm",
@@ -61,6 +66,7 @@ const isGuestRead = (method: string, path: string): boolean => {
   return path === "/api/v1/postings"
     || path === "/api/v1/postings/locations"
     || path === "/api/v1/postings/facets"
+    || path === "/api/v1/skills"
     || path === "/api/v1/search"
     || path === "/api/v1/search/counts"
     || path === "/api/v1/search/trending"
@@ -137,11 +143,13 @@ function isPublic(method: string, path: string, authorization = ""): boolean {
   if (PUBLIC.has(path)) return true;
   if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
   if (method === "POST" && PHONE_PUBLIC.has(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/auth\/email\/password-reset\/[^/]+$/.test(path)) return true;
   if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
   if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
   if (isImageRead(method, path)) return true;
   if (isGoogleCallback(method, path)) return true;
+  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
   return authorization === "" && isGuestRead(method, path);
 }
 
@@ -182,6 +190,10 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
   if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
 
+  // 약관 4조·11조7항: no payment is taken until PAYMENTS_ENABLED=1 (off in production until 사업자등록).
+  if (method === "POST" && PAYMENT_PATHS.has(path) && ctx.env.PAYMENTS_ENABLED !== "1") {
+    throw new HttpError(503, "PAYMENTS_DISABLED", "payments are not open yet");
+  }
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
   if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
@@ -212,10 +224,14 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (postings) return postings;
   const search = await dispatchSearch(ctx, path);
   if (search) return search;
+  const bots = await dispatchBots(ctx, path);
+  if (bots) return bots;
   const profiles = await dispatchProfiles(ctx, path);
   if (profiles) return profiles;
   const offers = await dispatchOffers(ctx, path);
   if (offers) return offers;
+  const blocks = await dispatchBlocks(ctx, path);
+  if (blocks) return blocks;
   const posts = await dispatchPosts(ctx, path);
   if (posts) return posts;
   const mine = await dispatchMe(ctx, path);

@@ -22,10 +22,24 @@
 | 무차별 대입 | fail2ban `sshd`(3회 실패 시 1시간, 반복하면 최대 1주), `recidive`. 방화벽에서도 SSH 새 연결을 출처당 분당 6개로 제한한다. 프록시 jail은 두지 않는다. 호출자가 Cloudflare Worker라서 공유 IP를 막으면 서비스가 멈춘다 | `harden.sh` |
 | 커널 | `rp_filter`, 리다이렉트 거부, `tcp_syncookies`, `kptr_restrict=2`, `dmesg_restrict`, `ptrace_scope=2`, 비특권 BPF 금지, `/dev/shm` `noexec` 등 | `harden.sh` |
 | 감사 | auditd가 `/etc/systemd`, `/etc/cron*`, `/etc/ssh`, `/root/.ssh`, `/home/*/.ssh`, `/usr/local/bin`, `/etc/docker`, 계정 파일, `/tmp`·`/dev/shm` 실행을 기록한다. `ausearch -k push-ssh`처럼 키로 찾는다 | `harden.sh` |
+| 로그 보관 | IP가 남는 로그는 14일까지만 둔다. journald는 `MaxRetentionSec=14day`, `MaxFileSec=1day`. `fail2ban.log`, rsyslog(`auth.log`, `kern.log` 등), `wtmp`, `btmp`는 빈 날에도 매일 회전하고(`ifempty`) 13개만 남긴다. 처음 실행할 때 한 번, 지금 쓰는 파일까지 강제로 회전한 뒤(Ubuntu가 `/etc/logrotate.conf`에만 두는 `su root adm`을 임시 설정 파일로 함께 넘긴다) 회전된 파일을 모두 지운다. 지우는 대상은 rsyslog 기본 설정이 쓰는 `syslog`, `auth.log`, `kern.log`, `mail.*`, `user.log`, `cron.log`, `daemon.log`, `debug`, `messages`, `lpr.log`와 `fail2ban.log`, `wtmp`, `btmp`, auditd의 `audit.log.N`이다. 회전이 끝나지 않으면(logrotate 실패, 10초 안에 새 `audit.log.1`이 없음) 마커 없이 멈추므로 `harden.sh`를 다시 돌린다(마커 `/var/lib/push/retention-14d-v2`). 마지막 접속 IP가 남는 `lastlog`는 매일 비운다. auditd는 매일 cron으로 회전하고 `num_logs = 14`. fail2ban 차단 DB는 `dbpurgeage = 1d`. 패키지 설정 파일을 직접 고치므로 업그레이드 때 로컬 값을 유지한다(`--force-confold`) | `harden.sh` |
 | 업데이트 | unattended-upgrades가 Ubuntu 보안 업데이트와 Docker CE를 매일 설치하고, 필요하면 04:30(UTC)에 재부팅한다 | `harden.sh` |
 | 감시 | `push-watchdog.timer`가 5분마다 확인한다. 아래 [경보 대응](#경보-대응)을 본다 | `bin/push-watchdog` |
 
 Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileges`, `live-restore`, `icc: false`, `userland-proxy: false`, 주소 풀 `172.30.0.0/16`, `local` 로그 드라이버(20 MB × 5)를 쓴다. snapd, cups, avahi, rpcbind, ModemManager, postfix, exim4 등 쓰지 않는 서비스는 끄고 mask한다.
+
+`harden.sh`를 다시 돌린 뒤 root 콘솔에서 아래를 확인한다. 하나라도 어긋나면 `harden.sh`가 중간에 멈춘 것이니 출력의 마지막 오류를 보고 다시 돌린다. 로그 항목(앞의 두 줄)은 마커 `retention-14d-v2`를 처음 쓰는 실행 직후에만 맞다. 그 뒤로는 매일 회전된 `.1` 파일이 정상으로 남는다. 회전 파일 이름은 Ubuntu 기본값(`dateext` 꺼짐)의 숫자 확장자를 전제로 한다. `dateext`를 켠 호스트라면 `-20261109` 같은 파일은 지워지지 않는다.
+
+```bash
+ls -l /var/log/audit/                                   # audit.log 하나만 있다
+ls /var/log/{syslog,kern.log,auth.log,mail.*,user.log,cron.log,daemon.log,debug,messages,lpr.log,fail2ban.log,wtmp,btmp}.[0-9]* 2>&1   # 예전 회전 파일이 없다 (No such file)
+stat -c '%n %a %U:%G' /var/log/wtmp /var/log/btmp       # 664 root:utmp, 660 root:utmp
+journalctl | head -1                                    # 가장 오래된 줄이 14일 안이다
+ls /var/lib/push/retention-14d-v2 && systemctl is-active rsyslog fail2ban auditd   # 마커가 있고 모두 active
+systemctl status push-watchdog.timer --no-pager | head -3   # active (waiting)
+ls /etc/cron.daily/push-lastlog-clear                   # 있다
+# 그리고 harden.sh 출력 끝에 `harden.sh finished.` 요약이 있다 (다시 돌린 경우 watchdog은 이전 실행 덕에 active일 수 있다)
+```
 
 `deploy`는 `docker` 그룹이라 사실상 root와 같다. 그래서 CI 키는 강제 명령에 묶었고, 관리자 키는 따로 둔다.
 
@@ -52,7 +66,7 @@ Docker는 공식 저장소에서 설치한다. `daemon.json`은 `no-new-privileg
 | `GOOGLE_CLIENT_SECRET` | VPS, `push-be-core` |
 | `GH_OAUTH_CLIENT_SECRET` | VPS, `push-be-core` (`GITHUB_CLIENT_SECRET`으로 들어간다) |
 
-선택 시크릿(비어 있으면 건너뛴다): `RESEND_API_KEY`(VPS, `push-be-core`), `DISCORD_ALERT_WEBHOOK_URL`, `OPENAI_API_KEY`, `EMBEDDING_API_KEY`, `EXPO_ACCESS_TOKEN`.
+선택 시크릿(비어 있으면 건너뛴다): `RESEND_API_KEY`(VPS, `push-be-core`), `DISCORD_ALERT_WEBHOOK_URL`, `EMBEDDING_API_KEY`, `EXPO_ACCESS_TOKEN`.
 
 필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `VPS_SSH_HOST_KEY`(`harden.sh`가 출력한 `ssh-ed25519 AAAA…`. CI는 이 키만 믿는다. 처음 본 키를 믿지 않는다).
 
@@ -63,6 +77,19 @@ CI가 하는 일:
 1. VPS: 저장소 tar를 `/opt/push-be/releases/<sha>`에 풀고, 위 값으로 `/opt/push-be/.env`(0600, `deploy` 소유)를 새로 쓴 뒤 `check-compose`를 통과하면 `docker compose up -d --build`를 실행한다. 값은 로그에 찍지 않는다. 작은따옴표나 줄바꿈이 든 값은 거부한다. 최근 릴리스 3개만 남긴다.
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
 3. `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다.
+
+## Neon 연결과 DB 풀
+
+Postgres는 Neon이다. VPS는 compose로 AI를 돌리고 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 접속한다. `push-be-core`는 Cloudflare Workers에서 `DATABASE_URL`로 같은 DB를 쓰되, Workers 런타임 규칙 때문에 `app.pgproto`가 **요청마다 ContextVar로 한 연결**만 연다(프로세스 단위 asyncpg 풀과 분리).
+
+VPS에서는 `ai-worker`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다.
+
+| Neon 엔드포인트 | 용도 |
+| --- | --- |
+| **Pooled** (`…-pooler…neon.tech`, Neon 콘솔의 Pooled connection) | VPS `DATABASE_URL`, Workers 런타임. PgBouncer가 많은 클라이언트 연결을 적은 서버 연결로 묶는다. `DB_POOL_MAX_SIZE`를 올릴 때는 이 URL을 써야 한다. |
+| **Direct** (pooler 없는 호스트) | compute당 `max_connections`가 작다. 여러 VPS 컨테이너 풀 + Workers 동시 호출이 겹치면 `too many connections`가 날 수 있다. `migrate.yml`처럼 마이그레이션 전용으로만 쓰는 편이 낫다. |
+
+Neon 문서: [Connection pooling](https://neon.com/docs/connect/connection-pooling). 풀 크기 튜닝은 `DB_POOL_*`, `CHECKPOINTER_POOL_MAX_SIZE` env로 한다. 기본 10/4는 풀러 URL을 전제로 한 보수적인 상한이다.
 
 ## 테스트 서버 (staging)
 
@@ -111,7 +138,7 @@ install -m 0755 /opt/push-be/current/infra/vps/bin/check-compose /usr/local/lib/
 
 `harden.sh`는 다시 실행해도 안전하다. VPS의 `check-compose`와 `push-watchdog`은 root 소유 사본이라 저장소에서 바꿔도 `harden.sh`를 다시 실행해야 반영된다. Docker 저장소 키는 공개된 지문(`9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`)과 다르면 설치를 멈춘다. 실행할 때마다 키 목록을 통째로 바꾸고, 설정 파일을 다시 쓰고, 감시 기준선을 새로 잡는다. root가 필요하므로 Hostinger 콘솔에서 실행한다.
 
-Neon 스키마는 여전히 수동이다. `db/migrations/0028_fk_actions_hot_indexes.sql`까지 적용한다. 0027·0028은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
+Neon 스키마는 여전히 수동이다. `services/ai/scripts/migrate.py` 또는 마이그레이션 워크플로로 `db/migrations/` 전체를 순서대로 적용한다. 0027·0028은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
 ```bash
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml \
   exec ai-worker python scripts/migrate_blobs_to_db.py
@@ -142,6 +169,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | `listeners` | 호스트에 새 리스닝 소켓이 생겼다 |
 | `containers` | 처음 보는 컨테이너가 떴거나, 컨테이너의 이미지·privileged·호스트 네임스페이스·추가 권한이 바뀌었다. 이미지 다이제스트를 올린 배포 직후 한 번은 정상이다 |
 | `procs` | `/tmp`, `/var/tmp`, `/dev/shm`, `/root`, `/home`에서 실행 중인 프로세스나 masscan·xmrig 같은 이름이 있다 |
+| `confold` | 업그레이드가 `/etc` 아래 `*.dpkg-dist`를 남겼다. `--force-confold`가 우리가 고친 설정을 지키고 새 기본값을 옆에 둔 것이다. `diff <파일> <파일>.dpkg-dist`로 보고, 필요한 변경만 옮긴 뒤 `.dpkg-dist`를 지운다 |
 | `firewall` | 방화벽이 나가는 연결을 버렸다. `*-LIMIT`은 연결 속도 초과(스캐너), `*-DROP`은 SMTP·사설망 시도다. `PUSH chains are missing`은 규칙이 사라졌다는 뜻이다 |
 
 알림은 Discord 웹훅으로 먼저 보내고, 실패하면 Resend로 `ALERT_EMAIL_TO`에 메일을 보낸다. 항상 저널(`journalctl -t push-watchdog`)에도 남는다. 같은 변화는 한 번만 알린다.
@@ -177,8 +205,9 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | `volume-init` | 배포할 때 한 번 돌고 끝난다. `traefik-acme`, `tei-models` 볼륨의 최상위 디렉터리 소유자를 non-root 사용자로 바꾼다. `CHOWN` 권한 하나만 있고 네트워크가 없다 | — |
 | 합계 | | 5,184 MB |
 
-- `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔 `embed`를 멈추거나 VPS를 올린 뒤 `--profile rerank`로 `rerank`를 띄우고 `RERANK_PROVIDER=tei`를 넣는다.
+- `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔(아래 경고 참고) `embed`를 멈추거나 VPS를 올린 뒤 `--profile rerank`로 `rerank`를 띄우고 `RERANK_PROVIDER=tei`를 넣는다.
 - `embed`가 메모리 부족으로 재시작되면 `EMBEDDING_PROVIDER=api`로 바꾸고 `embed`를 멈춘다. 그러면 합계가 2,368 MB로 줄어든다.
+  > **경고:** `EMBEDDING_PROVIDER=api`는 서류 조각 텍스트를 OpenRouter를 거쳐 OpenAI로 보낸다. 개인정보 처리방침의 국외 이전 표(7·8항)에 OpenAI를 먼저 추가하고 문서를 새로 시행한 뒤에만 켠다. 그 전에 켜면 처리방침이 사실과 달라진다.
 
 배포한 뒤 `docker stats`로 실제 사용량을 확인한다.
 
@@ -187,7 +216,7 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 | 변수 | 값 | 되돌리기 |
 | --- | --- | --- |
 | `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
-| `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다 |
+| `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다. 처리방침 국외 이전 표에 OpenAI를 먼저 올린 뒤에만 켠다 |
 | `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
 
 기존 업로드를 `rag_nodes`에 다시 색인하려면 `q:ingest`에 `{"reindex": true}`를 넣는다. 그다음 `run_eval.py`로 검색 품질을 본다.
@@ -201,7 +230,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml exec ingest-worker python eval/rag/run_eval.py --engine llamaindex
 ```
 
-`meetsTarget`이 `false`면 VPS를 올리거나 `EMBEDDING_PROVIDER=api`를 기본으로 둔다.
+`meetsTarget`이 `false`면 VPS를 올리거나 `EMBEDDING_PROVIDER=api`를 기본으로 둔다. `api`는 처리방침 국외 이전 표(7·8항)에 OpenAI를 올리고 문서를 시행한 뒤에만 쓴다.
 
 ## 관리 엔드포인트
 
@@ -211,8 +240,10 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 | --- | --- |
 | `GET /admin/queue/stats` | 스트림별 `{length, oldestAgeSec, pending}`, 작업 종류별 24시간 `{waitP50, waitP95, runP50, runP95, failRate, dead}`, `neon:{dbSizeBytes, ragNodes}` |
 | `GET /admin/jobs?status=DEAD` | 작업 목록 (최대 200건) |
-| `POST /admin/jobs/{id}/retry` | `DEAD`·`FAILED` 작업을 `QUEUED`로 되돌리고 크레딧을 다시 예약한다 |
-| `POST /admin/jobs/{id}/cancel` | `QUEUED`·`RETRY`·`RUNNING` 작업을 취소하고 예약을 해제한다 |
+| `POST /admin/jobs/{id}/retry` | `DEAD`·`FAILED` 작업을 `QUEUED`로 되돌리고 크레딧을 다시 예약한다. 아래 응답은 아무것도 바꾸지 않는다. 대상이 `DEAD`·`FAILED`가 아니면 `409` |
+| `402 INSUFFICIENT_CREDITS` | 사용 가능 잔액이 예약액보다 적다. 잔액이 채워진 뒤 다시 부른다 |
+| `503 BILLING_BUSY` | 결제 처리가 소유자 행을 3초 넘게 잡고 있다. 잠시 뒤 다시 부른다 |
+| `POST /admin/jobs/{id}/cancel` | `QUEUED`·`RETRY`·`RUNNING` 작업을 취소하고 예약을 해제한다. 실행 중이던 워커가 취소 뒤에 남기는 사용량은 기록되지 않는다 |
 | `POST /admin/queues/{name}/pause`, `/resume` | 워커가 그 스트림을 읽지 않게 하거나 다시 읽게 한다 |
 
 ## 경보

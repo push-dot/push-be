@@ -29,6 +29,7 @@ test("python gets only the routes its FastAPI app mounts", () => {
     ["POST", `/api/v1/conversations/${ID}/share`],
     ["GET", "/api/v1/conversations/shared/tok_abc"],
     ["GET", `/api/v1/conversations/${ID}/artifacts`],
+    ["GET", `/api/v1/conversations/${ID}/turns`],
   ];
   for (const [method, path] of python) assert.equal(ownerOf(method, path), "python", `${method} ${path}`);
 });

@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
+from app.claimctx import LostClaim, claim_job, claim_token
 from app.domain.entities import AiUsage
 from app.domain.pagination import Cursor, Page
 from app.infrastructure.store_common import Conds, Store, list_page
@@ -21,30 +22,70 @@ _USAGE_UPSERT = (
         f"{c} = CASE WHEN ai_usage.status = 'SETTLED' AND EXCLUDED.status = 'SETTLED' "
         f"THEN ai_usage.{c} + EXCLUDED.{c} ELSE EXCLUDED.{c} END, "
         for c in ("input_tokens", "output_tokens", "cost_micro_credits"))
-    + "status = EXCLUDED.status "
+    + "reservation_gen = CASE WHEN EXCLUDED.status = 'RESERVED' "
+    "THEN ai_usage.reservation_gen + 1 ELSE ai_usage.reservation_gen END, "
+    "status = EXCLUDED.status "
     "WHERE (ai_usage.status <> 'SETTLED' OR EXCLUDED.status = 'SETTLED')"
 )
+# A queue job's usage is written only while the job runs and its reservation is open. FOR SHARE makes a close
+# (queue/credits.py _close) wait for the write to commit and count it; a write after the close finds no open job.
+_OPEN_JOB = ("SELECT r.job_id FROM credit_reservations r JOIN ai_jobs j ON j.id = r.job_id "
+             "WHERE r.job_id = {} AND r.status = 'RESERVED' AND j.status = 'RUNNING' FOR SHARE OF r")
 _USAGE_JOB_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '$12::uuid')}), ins AS ("
     f"INSERT INTO ai_usage ({_USAGE_COLS}, job_id) "
-    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+    "SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,job_id FROM open_job"
     + _USAGE_UPSERT.replace(
         "status = EXCLUDED.status WHERE",
         "status = EXCLUDED.status, "
         "job_id = COALESCE(ai_usage.job_id, EXCLUDED.job_id) WHERE",
         1)
+    + " RETURNING reservation_gen) "
+    "SELECT EXISTS (SELECT 1 FROM open_job), (SELECT reservation_gen FROM ins)"
+)
+_SETTLE_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '(SELECT job_id FROM ai_usage WHERE id = $1)')}), upd AS ("
+    "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, cost_micro_credits = $4, status = 'SETTLED' "
+    "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED') "
+    "AND (job_id IS NULL OR job_id IN (SELECT job_id FROM open_job)) RETURNING id) "
+    "SELECT job_id IS NULL OR EXISTS (SELECT 1 FROM open_job) FROM ai_usage WHERE id = $1"
+)
+# generation is the reservation_gen this attempt reserved. A retry bumps the column,
+# so a stale settle matches nothing and the caller sees LostClaim, the same as a closed job.
+_SETTLE_GEN_SQL = (
+    f"WITH open_job AS ({_OPEN_JOB.replace('{}', '(SELECT job_id FROM ai_usage WHERE id = $1)')}), upd AS ("
+    "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, cost_micro_credits = $4, status = 'SETTLED' "
+    "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED') AND reservation_gen = $5 "
+    "AND (job_id IS NULL OR job_id IN (SELECT job_id FROM open_job)) RETURNING id) "
+    "SELECT CASE WHEN (SELECT reservation_gen FROM ai_usage WHERE id = $1) IS DISTINCT FROM $5 "
+    "THEN false ELSE job_id IS NULL OR EXISTS (SELECT 1 FROM open_job) END "
+    "FROM ai_usage WHERE id = $1"
 )
 
 
+def _as_gen(raw: object) -> int | None:
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    return None
+
+
 class AiUsageStore(Store):
-    async def create_for_job(self, u: AiUsage, job_id) -> None:
-        await self.q().execute(
+    async def create_for_job(self, u: AiUsage, job_id) -> int | None:
+        """Raises LostClaim when the job is not running or has no open reservation: its usage would go uncapped.
+
+        Returns the reservation generation. A retry of the same usage id bumps it, so the
+        caller can release only the hold it created.
+        """
+        row = await self.q().fetchrow(
             _USAGE_JOB_SQL,
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
             u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
             u.created_at, job_id)
+        if not row or not row[0]:
+            raise LostClaim()
+        return _as_gen(row[1])
 
-    async def create(self, u: AiUsage) -> None:
-        from app.claimctx import LostClaim, claim_job, claim_token
+    async def create(self, u: AiUsage) -> int | None:
         values = (
             u.id, u.user_id, u.operation_id, u.provider, u.model, u.managed,
             u.input_tokens, u.output_tokens, u.cost_micro_credits, u.status,
@@ -55,28 +96,30 @@ class AiUsageStore(Store):
             token = claim_token.get()
             job = claim_job.get()
         if token and job:
-            tag = await self.q().execute(
+            gen = _as_gen(await self.q().fetchval(
                 f"INSERT INTO ai_usage ({_USAGE_COLS}) "
                 "SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 FROM chat_jobs "
                 "WHERE id=$12::uuid AND status='RUNNING' "
                 "AND checkpoint->>'claim'=$13"
                 + _USAGE_UPSERT
                 + " AND EXISTS (SELECT 1 FROM chat_jobs WHERE id=$12::uuid "
-                "AND status='RUNNING' AND checkpoint->>'claim'=$13)",
-                *values, UUID(str(job)), token)
-            if str(tag).split()[-1] != "0":
-                return
+                "AND status='RUNNING' AND checkpoint->>'claim'=$13)"
+                + " RETURNING reservation_gen",
+                *values, UUID(str(job)), token))
+            if gen is not None:
+                return gen
             owned = await self.q().fetchval(
                 "SELECT EXISTS(SELECT 1 FROM chat_jobs WHERE id=$1::uuid "
                 "AND status='RUNNING' AND checkpoint->>'claim'=$2)",
                 UUID(str(job)), token)
             if not owned:
                 raise LostClaim()
-            return
-        await self.q().execute(
+            return None
+        return _as_gen(await self.q().fetchval(
             f"INSERT INTO ai_usage ({_USAGE_COLS}) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)" + _USAGE_UPSERT,
-            *values)
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)" + _USAGE_UPSERT
+            + " RETURNING reservation_gen",
+            *values))
 
     async def sum_cost_since(self, user_id: UUID, since: datetime) -> int:
         return await self.q().fetchval(
@@ -91,17 +134,34 @@ class AiUsageStore(Store):
             "SELECT pg_advisory_xact_lock(hashtext($1::text))", str(user_id))
 
     async def settle(self, id_: UUID, input_tokens: int, output_tokens: int,
-                     cost_micro_credits: int) -> None:
-        await self.q().execute(
-            "UPDATE ai_usage SET input_tokens = $2, output_tokens = $3, "
-            "cost_micro_credits = $4, status = 'SETTLED' "
-            "WHERE id = $1 AND status IN ('RESERVED', 'SETTLED')",
-            id_, input_tokens, output_tokens, cost_micro_credits)
+                     cost_micro_credits: int, generation: int | None = None) -> None:
+        """Raises LostClaim when the row belongs to a queue job that was closed meanwhile (see _OPEN_JOB).
 
-    async def release(self, id_: UUID) -> None:
+        When generation is set, the update also requires reservation_gen = that value.
+        A mismatch raises LostClaim and leaves the newer reservation in place.
+        """
+        if generation is None:
+            matched = await self.q().fetchval(
+                _SETTLE_SQL, id_, input_tokens, output_tokens, cost_micro_credits)
+        else:
+            matched = await self.q().fetchval(
+                _SETTLE_GEN_SQL, id_, input_tokens, output_tokens,
+                cost_micro_credits, generation)
+        if matched is False:
+            raise LostClaim()
+
+    async def release(self, id_: UUID, generation: int | None = None) -> None:
+        # generation is the reservation_gen returned when this attempt reserved.
+        # A retry bumps the column, so a stale attempt's release matches nothing.
+        if generation is None:
+            await self.q().execute(
+                "UPDATE ai_usage SET cost_micro_credits = 0, status = 'RELEASED' "
+                "WHERE id = $1 AND status = 'RESERVED'", id_)
+            return
         await self.q().execute(
             "UPDATE ai_usage SET cost_micro_credits = 0, status = 'RELEASED' "
-            "WHERE id = $1 AND status = 'RESERVED'", id_)
+            "WHERE id = $1 AND status = 'RESERVED' AND reservation_gen = $2",
+            id_, generation)
 
     async def attach_operations(self, operation_id: UUID,
                                 usage_ids: list) -> int:

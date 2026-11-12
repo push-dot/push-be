@@ -91,11 +91,6 @@ export function asBool(value: unknown): boolean {
   return value === true || value === "t" || value === "true" || value === 1;
 }
 
-export function asString(value: unknown): string | null {
-  if (value == null) return null;
-  return String(value);
-}
-
 export function jsonList(value: unknown): unknown[] {
   let raw = value;
   if (typeof raw === "string") {

@@ -15,8 +15,9 @@ type Call = { sql: string; params: unknown[] };
 type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; details: unknown } };
 
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
-  APP_ENV: "production", STRIPE_SECRET_KEY: "sk_test", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_PRICE_PRO: "price_pro",
-  STRIPE_PRICE_ULTRA: "price_ultra", STRIPE_PRICE_TOPUP: "price_topup", STRIPE_PORTAL_RETURN_URL: "https://app.example/billing", ...extra,
+  APP_ENV: "production", PAYMENTS_ENABLED: "1", STRIPE_SECRET_KEY: "sk_test", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_PRICE_PRO: "price_pro",
+  STRIPE_PRICE_ULTRA: "price_ultra", STRIPE_PRICE_TOPUP: "price_topup", STRIPE_PORTAL_RETURN_URL: "https://app.example/billing",
+  STRIPE_RETURN_ORIGINS: "https://web.example", ...extra,
 });
 
 type Who = { employer?: boolean; role?: string | null; customer?: string | null };
@@ -94,17 +95,17 @@ test("billing ledger: personal ledger is scoped to the caller and paginated", as
   const first = await read(await handle(request("GET", "/api/v1/billing/ledger?limit=2"), envOf(), { query: w.query, now: () => NOW }));
   assert.equal(first.status, 200);
   assert.deepEqual(first.body.data, [
-    { id: "f1000000-0000-4000-8000-000000000003", type: "PURCHASE", amountMicroCredits: 5000, balanceAfter: 9000, referenceId: "cs_1", createdAt: "2026-10-03T00:00:00Z" },
-    { id: "f1000000-0000-4000-8000-000000000002", type: "USAGE", amountMicroCredits: -100, balanceAfter: 4000, referenceId: null, createdAt: "2026-10-02T00:00:00Z" },
+    { id: "f1000000-0000-4000-8000-000000000003", type: "PURCHASE", amountMicroCredits: 5000, balanceAfter: 9000, referenceId: "cs_1", createdAt: "2026-10-03T00:00:00Z", description: null, amountUsd: null, receiptUrl: null },
+    { id: "f1000000-0000-4000-8000-000000000002", type: "USAGE", amountMicroCredits: -100, balanceAfter: 4000, referenceId: null, createdAt: "2026-10-02T00:00:00Z", description: null, amountUsd: null, receiptUrl: null },
   ]);
   assert.equal(first.body.page?.hasMore, true);
   const sql = w.seen.at(-1)!;
-  assert.match(sql.sql, /WHERE user_id = \$1 ORDER BY created_at DESC, id DESC LIMIT \$2$/);
+  assert.match(sql.sql, /WHERE user_id = \$1 ORDER BY seq DESC LIMIT \$2$/);
   assert.deepEqual(sql.params, [USER, 3]);
 
   await handle(request("GET", `/api/v1/billing/ledger?cursor=${first.body.page!.nextCursor}`), envOf(), { query: w.query, now: () => NOW });
-  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND \(created_at, id\) < \(\$2, \$3\)/);
-  assert.deepEqual(w.seen.at(-1)!.params, [USER, "2026-10-02T00:00:00Z", "f1000000-0000-4000-8000-000000000002", 51]);
+  assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND seq < \(SELECT seq FROM billing_ledger WHERE id = \$2\)/);
+  assert.deepEqual(w.seen.at(-1)!.params, [USER, "f1000000-0000-4000-8000-000000000002", 51]);
 });
 
 test("billing ledger: employer ledger reads the company rows only; no company is 404", async () => {
@@ -121,7 +122,7 @@ test("billing ledger: employer ledger reads the company rows only; no company is
 test("billing topup: employer admin buys for the company using the company's stripe customer", async () => {
   const w = world({ employer: true, role: "ADMIN" }, (sql) => sql.startsWith("SELECT stripe_customer_id FROM companies") ? [{ stripe_customer_id: "cus_co" }] : undefined);
   const calls: { url: string; method: string; body: string }[] = [];
-  const res = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 3 }), envOf(),
+  const res = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 3 }), envOf(),
     { query: w.query, now: () => NOW, fetch: stripeFetch(calls, () => json({ url: "https://pay.example/topup" })) }));
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.data, { url: "https://pay.example/topup" });
@@ -135,14 +136,14 @@ test("billing topup: employer admin buys for the company using the company's str
 
 test("billing topup: employer member is forbidden and a vanished company is 404", async () => {
   const noFetch = (() => { throw new Error("must not call stripe"); }) as unknown as typeof fetch;
-  const member = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: "MEMBER" }).query, now: () => NOW, fetch: noFetch }));
+  const member = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: "MEMBER" }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(member.status, 403);
   assert.equal(member.body.error?.code, "FORBIDDEN");
   resetLimits();
-  const orphan = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: null }).query, now: () => NOW, fetch: noFetch }));
+  const orphan = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: null }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(orphan.status, 404);
   resetLimits();
-  const gone = await read(await handle(request("POST", "/api/v1/billing/topup", { amount: 1 }), envOf(), { query: world({ employer: true, role: "ADMIN" }).query, now: () => NOW, fetch: noFetch }));
+  const gone = await read(await handle(request("POST", "/api/v1/billing/topup", { packs: 1 }), envOf(), { query: world({ employer: true, role: "ADMIN" }).query, now: () => NOW, fetch: noFetch }));
   assert.equal(gone.status, 404);
 });
 
@@ -159,25 +160,59 @@ for (const [price, plan] of [["price_pro", "PRO"], ["price_ultra", "ULTRA"], ["p
   test(`billing webhook: a personal subscription update on ${price} sets plan ${plan}`, async () => {
     const w = world({}, (sql) => {
       if (sql.startsWith("INSERT INTO stripe_events")) return [{ event_id: "evt_1" }];
-      if (sql.startsWith("UPDATE users")) return [{ id: USER }];
+      if (sql.startsWith("SELECT id FROM users")) return [{ id: USER }];
       return undefined;
     });
-    const res = await handle(await signed({
-      id: "evt_1", type: "customer.subscription.updated",
-      data: { object: { customer: "cus_1", status: "active", current_period_end: 1767225600, items: { data: [{ price: { id: price } }] } } },
-    }), envOf(), { query: w.query, now: () => NOW });
+    const sub = { id: "sub_1", customer: "cus_1", status: "active", items: { data: [{ price: { id: price }, current_period_end: 1767225600 }] } };
+    const res = await handle(await signed({ id: "evt_1", type: "customer.subscription.updated", data: { object: { ...sub, status: "past_due" } } }),
+      envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch([], () => json(sub)) });
     assert.equal(res.status, 200);
-    const update = w.seen.find((c) => c.sql.startsWith("UPDATE users"))!;
-    assert.deepEqual(update.params, ["cus_1", "ACTIVE", "2026-01-01T00:00:00.000Z", plan]);
+    const update = w.seen.find((c) => c.sql.includes("UPDATE users"))!;
+    assert.deepEqual(update.params, [USER, "ACTIVE", "2026-01-01T00:00:00.000Z", plan, NOW.toISOString()]);
   });
 }
 
-test("billing webhook: an update for an unknown customer fails and forgets the event so Stripe retries", async () => {
+test("billing webhook: an update for an unknown customer fails without a Stripe read and forgets the event so Stripe retries", async () => {
   const w = world({}, (sql) => sql.startsWith("INSERT INTO stripe_events") ? [{ event_id: "evt_2" }] : undefined);
+  const calls: { url: string; method: string; body: string }[] = [];
   const res = await read(await handle(await signed({
-    id: "evt_2", type: "customer.subscription.updated", data: { object: { customer: "cus_ghost", status: "active" } },
-  }), envOf(), { query: w.query, now: () => NOW }));
+    id: "evt_2", type: "customer.subscription.updated", data: { object: { id: "sub_ghost", customer: "cus_ghost", status: "active" } },
+  }), envOf(), { query: w.query, now: () => NOW, fetch: stripeFetch(calls, () => json({ id: "sub_ghost", customer: "cus_ghost", status: "active" })) }));
   assert.equal(res.status, 500);
+  assert.equal(calls.length, 0);
   const forget = w.seen.find((c) => c.sql.startsWith("DELETE FROM stripe_events"));
   assert.deepEqual(forget?.params, ["evt_2"]);
+});
+
+test("payments stay closed unless PAYMENTS_ENABLED is 1, and nothing reaches stripe or the ledger", async () => {
+  const noFetch = (() => { throw new Error("must not call stripe"); }) as unknown as typeof fetch;
+  const paths = [
+    ["/api/v1/billing/checkout", { plan: "PRO" }],
+    ["/api/v1/billing/topup", { quantity: 1 }],
+    ["/api/v1/billing/iap/verify", { platform: "ios", productId: "push.credits.topup", transactionId: "t1", receipt: "r" }],
+  ] as const;
+  for (const flag of [undefined, "0", "true"]) {
+    for (const [path, body] of paths) {
+      resetLimits();
+      const w = world({ employer: path.endsWith("topup"), role: path.endsWith("topup") ? "owner" : null });
+      const res = await read(await handle(request("POST", path, body), envOf({ PAYMENTS_ENABLED: flag }),
+        { query: w.query, now: () => NOW, fetch: noFetch }));
+      assert.equal(res.status, 503, `${path} with ${flag}`);
+      assert.equal(res.body.error?.code, "PAYMENTS_DISABLED");
+      assert.ok(!w.seen.some((call) => /billing_ledger|UPDATE users|UPDATE companies/.test(call.sql)), path);
+    }
+  }
+  for (const [flag, shown] of [[undefined, false], ["true", false], ["1", true]] as const) {
+    resetLimits();
+    const status = await read(await handle(request("GET", "/api/v1/billing"), envOf({ PAYMENTS_ENABLED: flag }),
+      { query: world().query, now: () => NOW, fetch: noFetch }));
+    assert.equal(status.status, 200);
+    assert.equal((status.body.data as { paymentsEnabled?: boolean }).paymentsEnabled, shown, String(flag));
+  }
+  for (const [path, body] of paths) {
+    resetLimits();
+    const open = await read(await handle(request("POST", path, body), envOf(),
+      { query: world({ employer: path.endsWith("topup"), role: "owner" }).query, now: () => NOW, fetch: stripeFetch([], () => json({})) }));
+    assert.notEqual(open.body.error?.code, "PAYMENTS_DISABLED", path);
+  }
 });

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 
-_GO_PREFIX = "opencode-go/"
 _CALLBACK = None
 
 
@@ -12,32 +11,18 @@ def chat_model_for(
     web_search: bool = False,
     streaming: bool = True,
     config,
-    session_id: str = "",
     cls=None,
 ):
-    from app.domain.plan_levers import provider_for
     from app.framework.models import chat_model
 
     model = levers.model
-    headers = None
-    if model.startswith(_GO_PREFIX):
-        model = model[len(_GO_PREFIX) :]
-        base_url = config.opencode_go_base_url
-        api_key = config.opencode_go_key
-        if session_id:
-            headers = {"x-opencode-session": session_id}
-    else:
-        base_url = config.ai_base_url
-        api_key = config.managed_ai_key
     if web_search and not model.endswith(":online"):
         model += ":online"
     return chat_model(
-        api_key=api_key,
+        api_key=config.managed_ai_key,
         model=model,
-        base_url=base_url,
+        base_url=config.ai_base_url,
         reasoning=(levers.effort or "").lower(),
-        headers=headers,
-        provider=provider_for(model, config),
         streaming=streaming,
         cls=cls,
     )
@@ -121,15 +106,19 @@ def _callback_type():
         return _CALLBACK
     from langchain_core.callbacks import AsyncCallbackHandler
 
+    from app.claimctx import LostClaim
     from app.domain.entities.ai_usage import ai_cost_micro_credits
 
     class _AiUsageCallback(AsyncCallbackHandler):
-        def __init__(self, store, user_id, job_id, reservation_id):
+        def __init__(self, store, user_id, job_id, reservation_id, generation=None):
             super().__init__()
             self.store = store
             self.user_id = user_id
             self.job_id = job_id
             self.reservation_id = reservation_id
+            # The generation this attempt reserved. A retry of the same row bumps it,
+            # and release matches only this value.
+            self.generation = generation
             self._runs: dict = {}
 
         async def _finish(self, run_id, status: str) -> bool:
@@ -137,6 +126,14 @@ def _callback_type():
                 return False
             self._runs[run_id] = status
             return self.reservation_id is not None and self.store is not None
+
+        async def _release(self) -> None:
+            try:
+                await self.store.release(self.reservation_id, self.generation)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "usage release failed id=%s", self.reservation_id
+                )
 
         async def on_llm_end(self, response, *, run_id, **kwargs):
             if not await self._finish(run_id, "settled"):
@@ -148,7 +145,12 @@ def _callback_type():
                     incoming,
                     outgoing,
                     ai_cost_micro_credits("OPENAI", "", incoming, outgoing),
+                    self.generation,
                 )
+            except LostClaim:
+                # Released here because the fit judge never settles after the call; gate paths still raise from their own settle.
+                await self._release()
+                return
             except Exception:
                 logging.getLogger(__name__).exception(
                     "usage settle failed id=%s", self.reservation_id
@@ -157,17 +159,12 @@ def _callback_type():
         async def on_llm_error(self, error, *, run_id, **kwargs):
             if not await self._finish(run_id, "released"):
                 return
-            try:
-                await self.store.release(self.reservation_id)
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "usage release failed id=%s", self.reservation_id
-                )
+            await self._release()
 
     _CALLBACK = _AiUsageCallback
     return _CALLBACK
 
 
 class AiUsageCallback:
-    def __new__(cls, store, user_id, job_id, reservation_id):
-        return _callback_type()(store, user_id, job_id, reservation_id)
+    def __new__(cls, store, user_id, job_id, reservation_id, generation=None):
+        return _callback_type()(store, user_id, job_id, reservation_id, generation)

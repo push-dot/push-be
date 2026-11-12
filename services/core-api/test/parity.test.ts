@@ -21,9 +21,8 @@ const VECTORS = JSON.parse(readFileSync(new URL("../../../packages/contracts/par
 
 function env(extra: Partial<CoreEnv> = {}): CoreEnv {
   return {
-    APP_ENV: "production",
+    APP_ENV: "production", PAYMENTS_ENABLED: "1",
     MANAGED_AI: "1",
-    MANAGED_GO: "0",
     TOKEN_ENCRYPTION_KEY: "test-master-key",
     STRIPE_SECRET_KEY: "sk_test",
     STRIPE_PRICE_PRO: "price_pro",

@@ -150,17 +150,20 @@ async def test_resume_reject_skips():
     assert json.loads(tool_messages[-1].content) == {"rejected": True}
 
 
-async def test_bypass_never_interrupts():
+async def test_bypass_runs_writes_but_asks_before_applying():
     runs = []
     model = ScriptedChat([
         {"tool_calls": [_call("bookmark_posting", "c1"), _call("apply_to_posting", "c2")]},
-        {"content": "done"},
+        {"content": "waiting"},
     ])
     graph, db = _graph(model, runs)
     events = await _events(graph, _input("BYPASS"))
+    assert runs == [("bookmark", "p1")]
+    assert len(db.rows) == 1
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["toolName"] == "apply_to_posting"
+    await _events(graph, Command(resume={"option_id": "approve"}))
     assert runs == [("bookmark", "p1"), ("apply", "p1")]
-    assert db.rows == []
-    assert not any(event.get("type") == "done" for event in events)
 
 
 async def test_always_ask_asks_safe_write():
@@ -174,6 +177,32 @@ async def test_always_ask_asks_safe_write():
     assert runs == []
     assert len(db.rows) == 1
     assert any(event.get("type") == "tool" and event.get("state") == "wait" and event.get("tier") == "SAFE_WRITE" for event in events)
+
+
+async def test_tool_run_is_emitted_before_ok():
+    runs = []
+    model = ScriptedChat([
+        {"tool_calls": [_call("bookmark_posting", "c1"), _call("apply_to_posting", "c2")]},
+        {"content": "done"},
+    ])
+    graph, _db = _graph(model, runs)
+    first = await _events(graph, _input("AUTO"))
+    def named(events, name):
+        return [
+            event for event in events
+            if event.get("type") == "tool" and event.get("name") == name
+        ]
+
+    bookmark = named(first, "bookmark_posting")
+    assert [event["state"] for event in bookmark] == ["run", "ok"]
+    assert "result" not in bookmark[0]
+    waiting = named(first, "apply_to_posting")
+    assert [event["state"] for event in waiting] == ["wait"]
+    second = await _events(graph, Command(resume={"option_id": "approve"}))
+    applied = named(second, "apply_to_posting")
+    assert [event["state"] for event in applied] == ["run", "ok"]
+    assert applied[1]["result"] == {"applied": True}
+    assert runs == [("bookmark", "p1"), ("apply", "p1")]
 
 
 async def test_tool_cap_8():

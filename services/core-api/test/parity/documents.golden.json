@@ -33,20 +33,6 @@
      "updatedAt": "2026-10-15T00:00:00Z"
     },
     {
-     "id": "d2000000-0000-4000-8000-000000000005",
-     "revision": 4,
-     "applicationId": "c0000000-0000-4000-8000-000000000001",
-     "title": "보관됨",
-     "kind": "PORTFOLIO",
-     "template": "CREATIVE",
-     "language": "",
-     "status": "ARCHIVED",
-     "latestVersionId": null,
-     "finalizedVersionId": null,
-     "createdAt": "2026-10-14T00:00:00Z",
-     "updatedAt": "2026-10-14T00:00:00Z"
-    },
-    {
      "id": "d2000000-0000-4000-8000-000000000004",
      "revision": 2,
      "applicationId": "c0000000-0000-4000-8000-000000000001",
@@ -143,20 +129,6 @@
   "body": {
    "data": [
     {
-     "id": "d2000000-0000-4000-8000-000000000005",
-     "revision": 4,
-     "applicationId": "c0000000-0000-4000-8000-000000000001",
-     "title": "보관됨",
-     "kind": "PORTFOLIO",
-     "template": "CREATIVE",
-     "language": "",
-     "status": "ARCHIVED",
-     "latestVersionId": null,
-     "finalizedVersionId": null,
-     "createdAt": "2026-10-14T00:00:00Z",
-     "updatedAt": "2026-10-14T00:00:00Z"
-    },
-    {
      "id": "d2000000-0000-4000-8000-000000000004",
      "revision": 2,
      "applicationId": "c0000000-0000-4000-8000-000000000001",
@@ -251,20 +223,6 @@
      "finalizedVersionId": null,
      "createdAt": "2026-10-16T00:00:00.500000Z",
      "updatedAt": "2026-10-16T00:00:00.500000Z"
-    },
-    {
-     "id": "d2000000-0000-4000-8000-000000000005",
-     "revision": 4,
-     "applicationId": "c0000000-0000-4000-8000-000000000001",
-     "title": "보관됨",
-     "kind": "PORTFOLIO",
-     "template": "CREATIVE",
-     "language": "",
-     "status": "ARCHIVED",
-     "latestVersionId": null,
-     "finalizedVersionId": null,
-     "createdAt": "2026-10-14T00:00:00Z",
-     "updatedAt": "2026-10-14T00:00:00Z"
     }
    ],
    "page": {
@@ -425,7 +383,7 @@
   "body": {
    "error": {
     "code": "VALIDATION_ERROR",
-    "message": "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT",
+    "message": "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE",
     "requestId": "parity",
     "details": {
      "field": "kind"
@@ -2331,20 +2289,6 @@
      "updatedAt": "2026-10-22T12:00:00Z"
     },
     {
-     "id": "d2000000-0000-4000-8000-000000000008",
-     "revision": 2,
-     "applicationId": null,
-     "title": "Portfolio",
-     "kind": "PORTFOLIO",
-     "template": "SIMPLE",
-     "language": "",
-     "status": "ARCHIVED",
-     "latestVersionId": null,
-     "finalizedVersionId": null,
-     "createdAt": "2026-10-16T00:00:00.500000Z",
-     "updatedAt": "2026-10-22T12:00:00Z"
-    },
-    {
      "id": "d2000000-0000-4000-8000-000000000006",
      "revision": 5,
      "applicationId": null,
@@ -2357,20 +2301,6 @@
      "finalizedVersionId": null,
      "createdAt": "2026-10-15T00:00:00Z",
      "updatedAt": "2026-10-22T12:00:00Z"
-    },
-    {
-     "id": "d2000000-0000-4000-8000-000000000005",
-     "revision": 4,
-     "applicationId": "c0000000-0000-4000-8000-000000000001",
-     "title": "보관됨",
-     "kind": "PORTFOLIO",
-     "template": "CREATIVE",
-     "language": "",
-     "status": "ARCHIVED",
-     "latestVersionId": null,
-     "finalizedVersionId": null,
-     "createdAt": "2026-10-14T00:00:00Z",
-     "updatedAt": "2026-10-14T00:00:00Z"
     },
     {
      "id": "d2000000-0000-4000-8000-000000000004",

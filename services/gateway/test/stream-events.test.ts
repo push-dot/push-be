@@ -12,7 +12,6 @@ const env = (): FrontEnv => ({
   CORE: { async fetch() { throw new Error("core should not be called"); } },
   APP_ENV: "production",
   MANAGED_AI: "1",
-  MANAGED_GO: "0",
   SSE_MAX_POLLS: "3",
 });
 
@@ -148,4 +147,20 @@ test("a done row that waits for the user keeps awaiting", async () => {
   ]));
   const done = framesOf(text).find((frame) => frame.type === "done");
   assert.deepEqual(done, { type: "done", operation: null, awaiting: "approval", seq: 21 });
+});
+
+test("replay skips markdown file cards and keeps other file cards", async () => {
+  resetLimits();
+  const text = await stream(authQuery(() => [
+    { id: 1, type: "file", payload: { name: "05_final_resume.md", mime: "text/markdown" } },
+    { id: 2, type: "file", payload: { name: "03_draft_resume_v1.md", mime: "text/plain" } },
+    { id: 3, type: "file", payload: { name: "김서준_모아페이_백엔드.pdf", mime: "application/pdf" } },
+    { id: 4, type: "done", payload: { operation: null } },
+  ]));
+  const frames = framesOf(text);
+  assert.equal(frames.some((frame) => String(frame.name ?? "").endsWith(".md")), false);
+  assert.deepEqual(
+    frames.find((frame) => frame.type === "file"),
+    { type: "file", name: "김서준_모아페이_백엔드.pdf", mime: "application/pdf", seq: 3 },
+  );
 });

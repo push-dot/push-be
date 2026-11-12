@@ -14,6 +14,8 @@
 
 채팅을 큐에 넣는 요청은 `202`와 작업 id를 바로 돌려준다. 개인 이력서 워크플로는 `app/harness/personal/resume`의 LangGraph가 `mode_select` → `intake` → `analyze` → `strategy` → `craft` → `review` → `publish` → `present` 순으로 가고, 게이트에서 사용자 입력을 기다린다. 기업 대화는 `app/harness/employer`다. 두 하네스 id는 `app/harness/registry.py`의 `personal`, `employer`다. 토큰과 상태 이벤트는 `chat_events`에 남고, 게이트웨이 SSE가 그 행을 다시 보낸다.
 
+스트림 이벤트는 v3다. 기존 이벤트에 `think`(단계에 걸린 초), `plan`, `paper`, 패널, 품질 게이트, 읽기 실패 이벤트를 더했고, 모두 선택 필드라 예전 클라이언트는 모르는 `type`을 버린다. 모델의 추론 토큰은 보내지 않고, 그래프가 이미 파싱한 단계 출력만 쓴다.
+
 ## 아키텍처
 
 ```
@@ -49,6 +51,14 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `GET /api/v1/integrations/job-sites` | 채용 사이트 체크리스트 |
 | `OPTIONS` | CORS |
 
+서류와 업로드 (`services/core-api`):
+
+| 메서드와 경로 | 내용 |
+| --- | --- |
+| `POST /api/v1/documents/:id/restore` | 보관된 서류를 되돌린다. `finalizedVersionId`가 있으면 `FINALIZED`, 없으면 `DRAFT`. `revision`은 1 증가하고 검색 색인을 다시 넣는다. 없거나 이미 지워졌거나 내 서류가 아니면 404. `expectedRevision`이 다르면 409. 보관 중이 아니면 200으로 그대로 둔다 |
+| `GET /api/v1/documents?archived=1` | 내가 최근 30일 안에 보관한 서류. `updatedAt`이 최근인 순. 각 항목에 `archivedAt`과 `purgeAt`(보관 시각 + 30일)이 붙는다 |
+| `DELETE /api/v1/sources/:id` | 경력 근거가 가리키면 409 `INVALID_TRANSITION`. `details.reason`은 `REFERENCED_BY_EVIDENCE`이고 `details.evidenceCount`는 그 근거 수다 |
+
 그 밖의 분기는 `services/gateway/src/routes/owner.ts`의 `ownerOf`다. Python으로 가는 예는 근거 가져오기, 공고·문서·면접·프로젝트의 AI 실행, `operations`, 승인 결정, 대화 공유와 아티팩트다. 인증, 대화 쓰기, 결제, 공고·지원·회사·소셜·프로필, 문서 enqueue, `GET /api/v1/ai/jobs/:id`는 코어다.
 
 코어가 채팅을 넣을 때는 `chat_jobs`에 쓴다. 그 밖의 AI 작업은 `ai_jobs`와 `outbox`에 쓴다. `QUEUE_BACKEND=redis`이면 디스패처가 outbox를 Redis Streams로 넘긴다. 스트림은 `q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`다. fit 작업도 `q:document`를 쓴다. `QUEUE_BACKEND=postgres`이면 프로세스 안 채팅 폴러가 `chat_jobs`를 가져간다. 그 폴러는 `CHAT_EXECUTOR=external`이거나 큐가 redis이면 켜지지 않는다 (`services/ai/src/app/jobs.py`).
@@ -63,10 +73,10 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | --- | --- |
 | Node | CI와 로컬 권장은 22 |
 | TypeScript | gateway·core 7.0.2 |
-| Wrangler | 4.152.0 |
+| Wrangler | 4.158.0 |
 | Neon 드라이버 | `@neondatabase/serverless` 1.2.0 |
 | Python | `requires-python >= 3.12`. Docker 이미지는 3.15.0. CI 테스트 매트릭스는 3.12와 3.15 |
-| 패키지 | uv. 잠금 파일 `services/ai/uv.lock`. CI의 setup-uv는 10.3.2 |
+| 패키지 | uv. 잠금 파일 `services/ai/uv.lock`. CI의 setup-uv는 10.3.3 |
 | HTTP | FastAPI, pydantic, uvicorn(`local` extra) |
 | 그래프 | langgraph, langgraph-checkpoint-postgres (`local` extra) |
 | DB 드라이버 | asyncpg, psycopg (`local` extra). 마이그레이션 extra는 asyncpg와 websockets |
@@ -91,7 +101,7 @@ services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
-db/migrations/          0001_init.sql … 0034_drop_legacy_rag.sql
+db/migrations/          0001_init.sql … 0052_bots.sql
 db/tests/               schema_checks.sql
 infra/docker-compose.yml
 infra/vps/              운영 compose, Traefik, env.example, 배포 스크립트
@@ -132,13 +142,13 @@ cd services/core-api && npx wrangler dev
 
 ### gateway (`FrontEnv`)
 
-`APP_ENV`, `AUTH_CACHE_TTL`, `AI_ORIGIN`, `AI_SHARED_SECRET`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `INTERNAL_API_SECRET`, `JOB_SITES_CACHE_TTL`, `MANAGED_AI`, `MANAGED_GO`, `MODEL_CACHE_TTL`, `SSE_MAX_POLLS`
+`APP_ENV`, `AUTH_CACHE_TTL`, `AI_ORIGIN`, `AI_SHARED_SECRET`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `INTERNAL_API_SECRET`, `JOB_SITES_CACHE_TTL`, `MANAGED_AI`, `MODEL_CACHE_TTL`, `SSE_MAX_POLLS`
 
-`MANAGED_AI`, `MANAGED_GO`, 캐시 TTL, `SSE_MAX_POLLS`는 `services/gateway/wrangler.jsonc`의 vars다. `DATABASE_URL`과 시크릿은 Worker 시크릿으로 둔다.
+`MANAGED_AI`, 캐시 TTL, `SSE_MAX_POLLS`는 `services/gateway/wrangler.jsonc`의 vars다. `DATABASE_URL`과 시크릿은 Worker 시크릿으로 둔다.
 
 ### core (`CoreEnv`)
 
-`AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_ROOT_PEM`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_KEY`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `MANAGED_GO`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_SECRET_KEY`, `STRIPE_SUCCESS_URL`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
+`AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_IAP_KEY_ID`, `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_RETURN_ORIGINS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
 
 `EMAIL`은 문자 환경 변수가 아니라 선택 Cloudflare Email 바인딩이다. `QUEUE_BACKEND`와 `DISPATCH_ORIGIN`의 운영 기본은 `services/core-api/wrangler.jsonc`의 vars다.
 
@@ -146,13 +156,13 @@ cd services/core-api && npx wrangler dev
 
 `load_config`와 워커가 읽는 이름:
 
-`ADMIN_TOKEN`, `AI_BASE_URL`, `AI_SHARED_SECRET`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `APP_ENV`, `BLOB_STORE`, `CHAT_EXECUTOR`, `CHECKPOINTER`, `CORE_ORIGIN`, `DATABASE_URL`, `DB_DRIVER`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISCORD_ALERT_WEBHOOK_URL`, `DISPATCH_PORT`, `DISPATCH_SECRET`, `EMBEDDING_API_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_API_MODEL`, `EMBEDDING_PROVIDER`, `EXPERIMENTS`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `INTERNAL_API_SECRET`, `LISTEN_ADDR`, `MODEL_EMPLOYER_ULTRA`, `MODEL_FREE`, `MODEL_PRO`, `MODEL_ULTRA`, `NEON_STORAGE_LIMIT_BYTES`, `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENCODE_GO_BASE_URL`, `OPENROUTER_API_KEY`, `OPENROUTER_DEEPSEEK_PROVIDERS`, `PGDATABASE`, `PGHOST`, `PGPASSWORD`, `PGPORT`, `PGUSER`, `PG_TRANSPORT`, `PLAYWRIGHT_NO_SANDBOX`, `PORT`, `PUSH_RESUME_DIR`, `QUEUE_BACKEND`, `QUEUE_CONCURRENCY`, `QUEUE_CONSUMER`, `QUEUE_GROUP`, `REDIS_URL`, `RERANK_PROVIDER`, `RESEND_API_KEY`, `RUN_MIGRATIONS`, `SERVE_API`, `STORAGE_DIR`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_SECRET_KEY`, `STRIPE_SUCCESS_URL`, `STRIPE_WEBHOOK_SECRET`, `TEI_EMBED_MODEL`, `TEI_EMBED_URL`, `TEI_RERANK_URL`, `TOKEN_ENCRYPTION_KEY`
+`ADMIN_TOKEN`, `AI_BASE_URL`, `AI_SHARED_SECRET`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `APP_ENV`, `BLOB_STORE`, `CHAT_EXECUTOR`, `CHECKPOINTER`, `CHECKPOINTER_POOL_MAX_SIZE`, `CORE_ORIGIN`, `DATABASE_URL`, `DB_DRIVER`, `DB_POOL_MAX_SIZE`, `DB_POOL_MIN_SIZE`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISCORD_ALERT_WEBHOOK_URL`, `DISPATCH_PORT`, `DISPATCH_SECRET`, `EMBEDDING_API_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_API_MODEL`, `EMBEDDING_PROVIDER`, `EXPERIMENTS`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `INTERNAL_API_SECRET`, `LISTEN_ADDR`, `MODEL_EMPLOYER_ULTRA`, `MODEL_FREE`, `MODEL_PRO`, `MODEL_ULTRA`, `NEON_STORAGE_LIMIT_BYTES`, `OPENROUTER_API_KEY`, `PGDATABASE`, `PGHOST`, `PGPASSWORD`, `PGPORT`, `PGUSER`, `PG_TRANSPORT`, `PLAYWRIGHT_NO_SANDBOX`, `PORT`, `PUSH_RESUME_DIR`, `QUEUE_BACKEND`, `QUEUE_CONCURRENCY`, `QUEUE_CONSUMER`, `QUEUE_GROUP`, `REDIS_URL`, `RERANK_PROVIDER`, `RESEND_API_KEY`, `RUN_MIGRATIONS`, `SERVE_API`, `STORAGE_DIR`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_SECRET_KEY`, `STRIPE_SUCCESS_URL`, `STRIPE_WEBHOOK_SECRET`, `TEI_EMBED_MODEL`, `TEI_EMBED_URL`, `TEI_RERANK_URL`, `TOKEN_ENCRYPTION_KEY`
 
 큐 시간 한도: `HEARTBEAT_LIMIT_CHAT_S`, `HEARTBEAT_LIMIT_EMPLOYER_AI_S`, `HEARTBEAT_LIMIT_DOCUMENT_S`, `HEARTBEAT_LIMIT_FIT_S`, `HEARTBEAT_LIMIT_INGEST_S`, `HEARTBEAT_LIMIT_NOTIFY_S`, `JOB_DEADLINE_CHAT_S`, `JOB_DEADLINE_EMPLOYER_AI_S`, `JOB_DEADLINE_DOCUMENT_S`, `JOB_DEADLINE_FIT_S`, `JOB_DEADLINE_INGEST_S`, `JOB_DEADLINE_NOTIFY_S`, `VISIBILITY_Q_CHAT_PRIORITY_S`, `VISIBILITY_Q_CHAT_S`, `VISIBILITY_Q_DOCUMENT_S`, `VISIBILITY_Q_INGEST_S`, `VISIBILITY_Q_NOTIFY_S`
 
 VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어간다), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
 
-운영 compose는 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. 절차와 한도는 `infra/vps/README.md`에 있다.
+운영 compose는 Hostinger VPS에서 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 Neon에 TCP 접속하고, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB는 Neon이고 VPS `DATABASE_URL`은 **풀러 호스트(`-pooler`)** 를 쓰는 것이 좋다. ai-worker·ingest-worker·dispatcher 등 여러 컨테이너가 각각 asyncpg 풀(기본 상한 `DB_POOL_MAX_SIZE=10`)과 checkpointer 풀(기본 `CHECKPOINTER_POOL_MAX_SIZE=4`)을 연다. 풀러 없이 direct 엔드포인트만 쓰면 compute `max_connections` 한도를 금방 쓴다. `DB_POOL_MAX_SIZE`를 올릴 때는 반드시 풀러 URL을 확인한다. `push-be-core`는 Cloudflare Workers에서 Neon `pgproto` **요청당 한 연결**(ContextVar)이라 이 풀 env와 무관하다. 절차와 한도는 `infra/vps/README.md`에 있다.
 
 ### GitHub Actions 배포
 
@@ -160,7 +170,7 @@ VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS
 
 `GH_OAUTH_CLIENT_ID`는 VPS와 코어에서 `GITHUB_CLIENT_ID`로, `GH_OAUTH_CLIENT_SECRET`은 `GITHUB_CLIENT_SECRET`으로 들어간다.
 
-배포가 값이 있을 때만 `.env`에 쓰는 추가 이름: `OPENAI_API_KEY`, `EMBEDDING_API_KEY`, `RESEND_API_KEY`, `DISCORD_ALERT_WEBHOOK_URL`, `EXPO_ACCESS_TOKEN`, `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RERANK_PROVIDER`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`
+배포가 값이 있을 때만 `.env`에 쓰는 추가 이름: `EMBEDDING_API_KEY`, `RESEND_API_KEY`, `DISCORD_ALERT_WEBHOOK_URL`, `EXPO_ACCESS_TOKEN`, `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RERANK_PROVIDER`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`
 
 브랜치 변수 `DEPLOY_BRANCH`가 비어 있으면 배포 브랜치는 `main`이다. 마이그레이션 워크플로는 시크릿 `DATABASE_URL`과 입력 `transport`(`tcp` 또는 `websocket`)를 쓴다.
 
@@ -201,10 +211,11 @@ DB 검사는 마이그레이션 뒤에 `db/tests/schema_checks.sql`을 실행한
 | `lint-ai` | ai 경로 | ruff, mypy. 실패해도 job은 넘어간다 |
 | `test-gateway` | gateway 경로 | `push-be-front` 테스트·타입체크 |
 | `test-core` | core 경로 | `push-be-core` |
-| `test-db` | db 경로 | `migrate.py` 후 `schema_checks.sql` |
+| `test-db` | db 경로, 또는 core·gateway·ai가 바뀐 경우 | `migrate.py` 후 `schema_checks.sql` |
 | `bundle-core`, `bundle-gateway` | 해당 경로 | `wrangler deploy --dry-run` |
 | `test-vps` | vps 경로 또는 배포 | `infra/vps/test/run.sh` |
-| `deploy` | `DEPLOY_BRANCH`(기본 `main`) push이고 필요한 테스트가 성공일 때 | VPS 이미지, `push-be-core`, `push-be` |
+| `test-vps-logs` | vps 경로 | `infra/vps/test/real-logrotate.sh`. PR이면 base의 `harden.sh`도 먼저 검사한다 |
+| `deploy` | `develop` push(스테이징) 또는 `DEPLOY_BRANCH`(기본 `main`) push이고, 필요한 테스트가 성공일 때 | 아래 「배포 대상」 |
 
 배포 명령은 워크플로와 같다.
 
@@ -217,6 +228,34 @@ npx wrangler deploy --var AI_ORIGIN:https://${AI_HOST}
 
 Python Worker `push-be-python`은 배포하지 않는다. 게이트웨이 `workers_dev`는 켜져 있고, 코어 `workers_dev`는 꺼져 있다. 코어 크론은 `15 * * * *`이다. 게이트웨이 크론 목록은 비어 있다.
 
-스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 전송 기본은 `tcp`다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
+스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 입력 `environment`는 `production` 또는 `staging`이고, 선택한 GitHub environment의 시크릿 `DATABASE_URL`을 쓴다. 전송 기본은 `tcp`이며, 입력 `transport`로 `websocket`을 고를 수 있다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
 
-`develop`에 대한 PR과 push는 바뀐 경로의 테스트만 돌린다. `DEPLOY_BRANCH`(기본 `main`) push는 ai, gateway, core, db 테스트를 모두 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다.
+`0046_rag_nodes_archived.sql`은 코드와 순서가 무관하다. 배포 전에 적용하면 이미 보관된 서류·경력 근거·저장 공고의 검색 노드가 바로 지워지고, 서류 노드의 `document_id`가 채워져 빠른 매칭이 서류 기준으로 동작한다. 되돌릴 때는 `DROP FUNCTION rag_nodes_drop_archived() CASCADE;`를 실행한다. 지운 노드와 채운 `document_id`는 되돌릴 필요가 없다.
+
+`0048_documents_purge_index_fit_cache_fk.sql`도 코드와 순서가 무관하다. 보관된 서류의 `updated_at` 부분 인덱스를 만들고, `posting_fit_cache`의 고아 행을 지운 뒤 `document_id`와 `posting_id`에 `ON DELETE CASCADE` 외래 키를 건다. 운영 적용은 이 파일 하나다. 번호가 더 큰 마이그레이션이 있으면 0048 다음에 번호 순으로 적용한다. 되돌릴 때는 헤더의 `DROP INDEX`와 두 `DROP CONSTRAINT`를 실행한다.
+
+`develop`으로 들어오는 PR은 바뀐 경로의 테스트만 돌린다.
+
+### 배포 대상
+
+저장소 변수 `DEPLOY_BRANCH`가 비어 있으면 프로덕션 배포 브랜치는 `main`이다. `DEPLOY_BRANCH`가 `develop`이 아닐 때, `develop` push는 스테이징을 배포한다.
+
+| 조건 | GitHub environment | Worker | VPS compose |
+| --- | --- | --- | --- |
+| `develop` push (`DEPLOY_BRANCH` ≠ `develop`) | `staging` | `push-be-staging`, `push-be-core-staging` (`wrangler deploy --env staging`) | `infra/vps/compose.staging.yaml` |
+| `DEPLOY_BRANCH`(기본 `main`) push | `production` | `push-be`, `push-be-core` | `infra/vps/compose.yaml` |
+
+두 경우 모두 ai·gateway·core·db 테스트를 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다. 스테이징 게이트웨이의 `workers_dev` 호스트는 `push-be-staging`이다.
+
+## 브랜치 규칙
+
+기본 브랜치는 `develop`이다. 작업 브랜치는 `develop`에서 만들고, PR은 `develop`으로 연다. `main`에는 릴리스 PR로만 반영한다.
+
+## 관련 저장소
+
+- [push-be](https://github.com/push-dot/push-be) — 이 저장소
+- [push-fe](https://github.com/push-dot/push-fe) — 웹·모바일 모노레포
+- [fo-web](https://github.com/push-dot/fo-web) — 웹 앱
+- [fo-mobile](https://github.com/push-dot/fo-mobile) — 모바일 앱
+- [push-workspace](https://github.com/push-dot/push-workspace) — 통합 워크스페이스와 제품 문서
+- [push-langdig](https://github.com/push-dot/push-langdig) — 랜딩 페이지

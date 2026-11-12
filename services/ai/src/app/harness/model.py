@@ -62,8 +62,10 @@ class GateModel:
             self.turn["model"] = self.ai.model
         if "usage_id" not in self.turn:
             text = "".join(str(getattr(message, "content", "")) for message in messages)
-            self.turn["usage_id"] = await self.gate._reserve(
+            hold = await self.gate._reserve(
                 self.user_id, self.ai, "", text, self.job_id)
+            self.turn["usage_id"] = getattr(hold, "id", hold)
+            self.turn["usage_generation"] = getattr(hold, "generation", None)
         if hasattr(self.gate, "_factory_config"):
             config = self.gate._factory_config(getattr(self.gate, "chat", None))
         elif hasattr(self.gate, "_levers_config"):
@@ -71,15 +73,16 @@ class GateModel:
         else:
             from app.config import Config
             config = Config()
-        web = bool(self.ai.web_search) and not str(self.ai.model).startswith("opencode-go/")
+        web = bool(self.ai.web_search)
         lc = chat_model_for(
             PlanLevers(self.ai.model, self.ai.effort, "", "", "", 0),
-            web_search=web, streaming=True, config=config,
-            session_id=str(self.user_id or ""), cls=self.cls)
+            web_search=web, streaming=True, config=config, cls=self.cls)
         store = getattr(self.gate, "usage", None)
         callback = None
         if store is not None and self.turn.get("usage_id") is not None:
-            callback = AiUsageCallback(store, self.user_id, self.job_id, self.turn["usage_id"])
+            callback = AiUsageCallback(
+                store, self.user_id, self.job_id,
+                self.turn["usage_id"], self.turn.get("usage_generation"))
         bind = tools and self.tools
         runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if bind else lc
         invoke = {"config": {"callbacks": [callback]}} if callback is not None else {}
@@ -149,9 +152,11 @@ async def settle_turn(gate, turn: dict, ok: bool) -> None:
     usage_id = turn.get("usage_id")
     if usage_id is None:
         return
+    generation = turn.get("usage_generation")
     # Tokens already spent are billed even when the turn fails; otherwise failures are free runs.
     if ok or turn.get("input_tokens", 0) or turn.get("output_tokens", 0):
         await gate._settle(usage_id, turn.get("model") or "",
-                           turn.get("input_tokens", 0), turn.get("output_tokens", 0))
+                           turn.get("input_tokens", 0), turn.get("output_tokens", 0),
+                           generation)
     else:
-        await gate._release(usage_id)
+        await gate._release(usage_id, generation)

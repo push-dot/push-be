@@ -313,18 +313,50 @@ async def test_gate_stream_frames_stay_token_strings(monkeypatch):
     assert usage["finish"] == "stop"
 
 
+def test_chat_model_refuses_an_empty_key_before_the_openai_sdk():
+    from app.domain.errors import DomainError
+    from app.framework.models import chat_model
+
+    try:
+        chat_model(api_key="", model="m", base_url="https://openrouter.ai/api/v1")
+    except DomainError as err:
+        assert err.code == "NOT_CONFIGURED"
+        assert err.message == "managed AI is not configured"
+        return
+    raise AssertionError("empty key built a client")
+
+
 def test_chat_model_sets_timeout_retries_and_provider_routing():
     from app.framework.models import chat_model
 
-    provider = {"ignore": ["DeepSeek"], "order": ["Together"]}
-    model = chat_model(api_key="k", model="m", base_url="u", reasoning="low",
-                       provider=provider, cls=_FakeChatModel)
+    pin = {"allow_fallbacks": False, "data_collection": "deny"}
+    free = "deepseek/deepseek-v4.1-flash"
+    model = chat_model(api_key="k", model=free, base_url="u", reasoning="low", cls=_FakeChatModel)
     assert model.kwargs["timeout"] == 60 and model.kwargs["max_retries"] == 1
-    assert model.kwargs["extra_body"] == {"reasoning": {"effort": "low"}, "provider": provider}
+    assert model.kwargs["extra_body"] == {
+        "reasoning": {"effort": "low"},
+        "provider": {"only": ["together", "fireworks", "novita"], **pin}}
+    online = chat_model(api_key="k", model="anthropic/claude-sonnet-5-5:online", base_url="u",
+                        cls=_FakeChatModel)
+    assert online.kwargs["extra_body"] == {
+        "provider": {"only": ["anthropic"], **pin},
+        "plugins": [{"id": "web", "engine": "exa"}]}
 
 
-async def test_langchain_paths_send_the_free_model_provider_routing(monkeypatch):
-    # The legacy OpenAIClient excluded DeepSeek's own endpoint for FREE; the LangChain path dropped it.
+def test_chat_model_refuses_a_model_without_pinned_providers():
+    from app.domain.errors import DomainError
+    from app.framework.models import chat_model
+
+    try:
+        chat_model(api_key="k", model="openai/gpt-test", base_url="u", cls=_FakeChatModel)
+    except DomainError as err:
+        assert "no approved provider" in err.message
+        return
+    raise AssertionError("an unpinned model built a client")
+
+
+async def test_langchain_paths_build_through_the_pinned_chat_model(monkeypatch):
+    # chat_model is the one place the provider pins are added; both helpers must go through it.
     from types import SimpleNamespace
 
     import app.framework.models as models
@@ -333,9 +365,7 @@ async def test_langchain_paths_send_the_free_model_provider_routing(monkeypatch)
     chat = SimpleNamespace(base_url="https://openrouter.ai/api/v1", config=SimpleNamespace())
     free = "deepseek/deepseek-v4.1-flash"
     await models.complete_langchain(chat, "k", free, "s", "u")
-    assert holder["kwargs"]["provider"]["ignore"] == ["DeepSeek"]
+    assert holder["kwargs"]["model"] == free
     async for _text in models.stream_langchain(chat, "k", free + ":online", "s", "u", {}):
         pass
-    assert holder["kwargs"]["provider"]["ignore"] == ["DeepSeek"]
-    await models.complete_langchain(chat, "k", "openai/gpt-test", "s", "u")
-    assert holder["kwargs"]["provider"] is None
+    assert holder["kwargs"]["model"] == free + ":online"

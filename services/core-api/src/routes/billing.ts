@@ -1,31 +1,24 @@
-import { DISPLAY_MICRO, ensureMonthlyGrant, grantMicro, iapTopupMicro } from "../billing/credits.ts";
+import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
-import { createStoreReceipts, type StoreReceipts } from "../billing/stores.ts";
+import { createStoreReceipts, googlePlayPubsub, type StoreReceipts } from "../billing/stores.ts";
 import { hmacSha256Hex } from "../crypto.ts";
-import { isMissingRelation, one, query } from "../db.ts";
+import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "../db.ts";
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
 const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
 const TOLERANCE = 300;
-const MAX_TOPUP = 100_000;
+const PACK_MICRO = 1500 * DISPLAY_MICRO;
+const MAX_PACKS = 20;
+const LIVE = new Set(["active", "trialing"]);
+const CANCELLABLE = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
+// Written on the cancel that refunds a replaced subscription's unused time, so the successor carries that period's credits.
+const REFUNDED = "push: replaced, unused time refunded";
 const UUID = /^[0-9a-f-]{36}$/i;
-
-async function readObject(request: Request): Promise<Record<string, unknown>> {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-}
 
 function configured(ctx: Ctx): boolean {
   return Boolean(ctx.env.STRIPE_SECRET_KEY);
@@ -43,8 +36,10 @@ const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): n
   return grantMicro(audience, named);
 };
 
-const EMPLOYER_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)";
-const PERSONAL_SPEND = "SELECT COALESCE(SUM(ai_usage.cost_micro_credits), 0) AS spent FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3";
+// Usage written off (WRITE_OFF rows) was never charged, so the month's spend leaves it out.
+// A write-off booked in the month after its usage would turn that month negative; spend is display only, so floor it at 0.
+const EMPLOYER_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE company_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
+const PERSONAL_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
 
 const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<number> => {
   try {
@@ -62,22 +57,109 @@ const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
   return null;
 };
 
-const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId: string): Promise<void> => {
+const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId: string, type = "PURCHASE"): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING",
-    [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString()]);
+    "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, $6::text, $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY seq DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING",
+    [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString(), type]);
 };
 
-const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string): Promise<void> => {
+type Payment = { description: string | null; amountUsdCents: number | null; receiptUrl: string | null };
+
+const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment, type = "PURCHASE"): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, NULL, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
-    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString()]);
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, $9::text, $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
+    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl, type]);
 };
 
+const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
+const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
+const TOPUP_DESCRIPTION = "크레딧 구매";
+const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
+
+// A refunded top-up takes its credits back, at most what is still unspent, so the balance stops at 0 (D18).
+// The REFUND row's reference is the purchase's, so a repeated refund notice writes nothing.
+const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: string }, micro: number, referenceId: string): Promise<void> => {
+  const companyId = "companyId" in owner ? owner.companyId : undefined;
+  const left = await availableMicro(ctx.deps.query, "userId" in owner ? owner.userId : "", companyId);
+  let deduct: bigint;
+  if (left <= 0n) deduct = 0n;
+  else if (left < BigInt(micro)) deduct = left;
+  else deduct = BigInt(micro);
+  const amount = -Number(deduct);
+  if (companyId) {
+    await companyLedger(ctx, companyId, amount, referenceId, { description: TOPUP_REFUND_DESCRIPTION, amountUsdCents: null, receiptUrl: null }, "REFUND");
+  }
+  else await userLedger(ctx, (owner as { userId: string }).userId, amount, referenceId, "REFUND");
+};
+const REFUND_DESCRIPTION = "요금제 변경 환급";
+
+type Alert = { companyId: string; kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED"; referenceId: string; detail: string };
+// A webhook's transaction ctx carries `alerts`: what it raised is raised again outside the transaction if that rolls back.
+type AlertCtx = Ctx & { alerts?: Alert[] };
+
+// Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
+const raiseAlert = async (ctx: AlertCtx, companyId: string, kind: Alert["kind"], referenceId: string, detail: string): Promise<void> => {
+  console.error(JSON.stringify({ billingAlert: kind, companyId, referenceId, detail }));
+  ctx.alerts?.push({ companyId, kind, referenceId, detail });
+  await query(ctx.deps.query,
+    "INSERT INTO billing_alerts (id, company_id, kind, reference_id, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, reference_id) DO UPDATE SET detail = EXCLUDED.detail, resolved_at = NULL",
+    [crypto.randomUUID(), companyId, kind, referenceId, detail, ctx.now.toISOString()]);
+};
+
+// Thrown to fail a webhook with an alert that must outlive the rolled-back transaction.
+class AlertingError extends Error {
+  readonly alert: Alert;
+  constructor(alert: Alert) {
+    super(alert.detail);
+    this.alert = alert;
+  }
+}
+
+const resolveCancelAlert = (ctx: Ctx, subscriptionId: string): Promise<unknown> => query(ctx.deps.query,
+  "UPDATE billing_alerts SET resolved_at = $2 WHERE kind = 'CANCEL_FAILED' AND reference_id = $1 AND resolved_at IS NULL",
+  [subscriptionId, ctx.now.toISOString()]);
+
+// Allowlist, never echo the Origin header: success_url must not carry an attacker-chosen origin.
+const returnOrigin = (ctx: Ctx): string => {
+  const allowed = (ctx.env.STRIPE_RETURN_ORIGINS ?? "").split(",").map((item) => item.trim().replace(/\/+$/, "")).filter((item) => {
+    try {
+      const url = new URL(item);
+      return (url.protocol === "https:" || url.protocol === "http:") && url.origin === item;
+    } catch {
+      return false;
+    }
+  });
+  const origin = ctx.request.headers.get("origin") ?? "";
+  if (allowed.includes(origin)) return origin;
+  if (!allowed[0]) throw new HttpError(503, "NOT_CONFIGURED", "billing return origin is not configured");
+  return allowed[0];
+};
+
+const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, string> => {
+  const plans = returnOrigin(ctx) + "/employer/plans?checkout=";
+  return { success_url: plans + success + "&session_id={CHECKOUT_SESSION_ID}", cancel_url: plans + "canceled" };
+};
+
+// Most reads find the month already granted and skip the owner lock, so they never wait on a webhook.
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
-  if (!plan) return;
-  await ensureMonthlyGrant(ctx.deps.query, { audience, plan, ownerId, now: ctx.now });
+  if (!plan || await monthGranted(ctx.deps.query, { audience, plan, ownerId, now: ctx.now })) return;
+  try {
+    await inTransactionOf(ctx)(async (q) => {
+      await boundTransaction(q, "3s");
+      await lockOwner(q, audience, ownerId);
+      await ensureMonthlyGrant(q, { audience, plan, ownerId, now: ctx.now });
+    });
+  } catch (err) {
+    // A webhook holds the owner row: show the balance now, the month's grant lands on the next read or enqueue.
+    if (!isLockTimeout(err)) throw err;
+  }
 };
+
+// In-memory test fakes have no transactions.
+const inTransactionOf = (ctx: Ctx): Transaction => ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
+
+// Same switch as the payment gate in handler.ts: apps hide buy buttons while it is off, since a store charges before verify.
+const paymentsEnabled = (ctx: Ctx): boolean => ctx.env.PAYMENTS_ENABLED === "1";
 
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
@@ -102,6 +184,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       spentMicroCredits,
       audience: "EMPLOYER",
       source: plan ? "STRIPE" : null,
+      paymentsEnabled: paymentsEnabled(ctx),
     }, ctx.rid);
   }
   const plan = ctx.user.plan || null;
@@ -127,8 +210,12 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     spentMicroCredits,
     audience: "PERSONAL",
     source,
+    paymentsEnabled: paymentsEnabled(ctx),
   }, ctx.rid);
 }
+
+// A webhook calls Stripe while it holds the company row lock, so a hung call must fail the event (Stripe retries it) rather than hold the lock.
+const STRIPE_TIMEOUT_MS = 10_000;
 
 async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchParams): Promise<Record<string, unknown>> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
@@ -140,11 +227,15 @@ async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchPa
       "content-type": "application/x-www-form-urlencoded",
     },
     body: form,
+    signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
   });
   const body = await res.json() as Record<string, unknown>;
   if (!res.ok) throw new Error("stripe");
   return body;
 }
+
+const subscriptionsOf = (list: Record<string, unknown>): Record<string, unknown>[] =>
+  Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
 
 const employerPrice = (env: CoreEnv, planId: string): string => {
   if (planId === "BASIC") return env.STRIPE_PRICE_EMPLOYER_BASIC || "";
@@ -182,8 +273,7 @@ export async function checkout(ctx: Ctx): Promise<Response> {
     mode: "subscription",
     "line_items[0][price]": price,
     "line_items[0][quantity]": "1",
-    success_url: ctx.env.STRIPE_SUCCESS_URL || "",
-    cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
+    ...returnUrls(ctx, "success"),
     client_reference_id: ctx.user.companyId,
     "metadata[audience]": "EMPLOYER",
     "metadata[plan]": body.planId,
@@ -200,8 +290,9 @@ export async function cancelSubscriptions(ctx: Ctx, customerId?: string): Promis
   try {
     // Without a status filter Stripe lists every subscription that is not already canceled.
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
-    const subs = Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
-    for (const sub of subs) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+    for (const sub of subscriptionsOf(list)) {
+      if (CANCELLABLE.has(String(sub.status))) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+    }
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "stripe subscription cancel failed");
   }
@@ -229,14 +320,16 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   if (employer && !ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const page = pageOf(ctx.url);
   const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
-  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at FROM billing_ledger WHERE "
+  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
+  // Commit order (seq), as balance_after runs: a row that waited for the owner lock can carry an earlier created_at.
+  // The cursor keeps its (createdAt, id) shape; only its id is used.
   if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (created_at, id) < ($${params.length - 1}, $${params.length})`;
+    params.push(page.cursor.id);
+    sql += ` AND seq < (SELECT seq FROM billing_ledger WHERE id = $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  sql += ` ORDER BY seq DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
   const mapped = rows.rows.map((row) => ({
     item: {
@@ -246,6 +339,9 @@ export async function ledger(ctx: Ctx): Promise<Response> {
       balanceAfter: Number(row.balance_after),
       referenceId: row.reference_id == null ? null : String(row.reference_id),
       createdAt: ts(row.created_at),
+      description: row.description == null ? null : String(row.description),
+      amountUsd: row.amount_usd_cents == null ? null : Number(row.amount_usd_cents) / 100,
+      receiptUrl: row.receipt_url == null ? null : String(row.receipt_url),
     },
     createdAt: row.created_at,
     id: String(row.id),
@@ -293,20 +389,34 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   let event: Record<string, unknown> = {};
   try { event = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>; } catch { event = {}; }
   if (!event.id) throw new HttpError(400, "VALIDATION_ERROR", "invalid webhook payload");
-  const fresh = await one(ctx.deps.query,
-    "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
-    [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
-  if (!fresh) return data(200, { received: true }, ctx.rid);
   const obj = ((event.data as { object?: Record<string, unknown> } | undefined)?.object) || {};
+  // One transaction per event: each handler locks the company (or user) row first, so the billing changes of one owner run one
+  // at a time and a failure rolls back the event row with the rest.
+  const alerts: Alert[] = [];
   try {
-    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-      await checkoutCompleted(ctx, obj);
-    }
-    else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
-      await subscriptionChanged(ctx, String(event.type), obj);
-    }
+    await inTransactionOf(ctx)(async (q) => {
+      // A timeout fails the event and Stripe retries it.
+      await boundTransaction(q, "15s");
+      const tx: AlertCtx = { ...ctx, deps: { ...ctx.deps, query: q }, alerts };
+      const fresh = await one(q,
+        "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+        [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
+      if (!fresh) return;
+      if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+        await checkoutCompleted(tx, obj);
+      }
+      else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+        await subscriptionChanged(tx, String(event.type), obj);
+      }
+      else if (event.type === "invoice.paid") await invoicePaid(tx, obj);
+      else if (event.type === "charge.refunded") await chargeRefunded(tx, obj);
+    });
   } catch (err) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
+    // A retry may not raise them again: a replaced subscription canceled before the failure is no longer listed.
+    for (const alert of err instanceof AlertingError ? [...alerts, err.alert] : alerts) {
+      await raiseAlert(ctx, alert.companyId, alert.kind, alert.referenceId, alert.detail);
+    }
     throw err;
   }
   return data(200, { received: true }, ctx.rid);
@@ -324,6 +434,197 @@ const positiveInt = (value: unknown): number | null => {
   return parsed;
 };
 
+const httpsUrl = (value: unknown): string | null => typeof value === "string" && value.startsWith("https://") ? value : null;
+
+// The receipt link is display data: a Stripe read failure must not block the credit grant.
+const receiptOf = async (ctx: Ctx, path: string, pick: (body: Record<string, unknown>) => unknown): Promise<string | null> => {
+  try {
+    return httpsUrl(pick(await stripe(ctx, "GET", path)));
+  } catch {
+    return null;
+  }
+};
+
+const invoiceReceipt = (ctx: Ctx, invoice: unknown): Promise<string | null> => typeof invoice === "string" && invoice
+  ? receiptOf(ctx, "/v1/invoices/" + encodeURIComponent(invoice), (body) => body.hosted_invoice_url)
+  : Promise.resolve(null);
+
+const chargeReceipt = (ctx: Ctx, intent: unknown): Promise<string | null> => typeof intent === "string" && intent
+  ? receiptOf(ctx, "/v1/payment_intents/" + encodeURIComponent(intent) + "?expand[]=latest_charge",
+    (body) => (body.latest_charge as { receipt_url?: unknown } | null | undefined)?.receipt_url)
+  : Promise.resolve(null);
+
+const usdCents = (obj: Record<string, unknown>, cents: number | null): number | null => {
+  if (cents == null || obj.currency === "usd") return cents;
+  console.error(`billing: ${String(obj.id)} paid in ${String(obj.currency)}, amount not stored`);
+  return null;
+};
+
+type Item = { price?: { id?: string }; current_period_start?: number; current_period_end?: number };
+const itemOf = (sub: Record<string, unknown>): Item | undefined => (sub.items as { data?: Item[] } | undefined)?.data?.[0];
+const priceOf = (sub: Record<string, unknown>): string => itemOf(sub)?.price?.id || "";
+
+// Subscriptions are ordered by (created, id), so two created in the same second still have one survivor.
+const olderThan = (sub: Record<string, unknown>, keep: { id: string; created: number }): boolean =>
+  Number(sub.created) < keep.created || (Number(sub.created) === keep.created && String(sub.id) < keep.id);
+
+// The expanded latest invoice is paid and bills the period the subscription is in now.
+const currentPeriodPaid = (env: CoreEnv, sub: Record<string, unknown>): boolean => {
+  const invoice = sub.latest_invoice;
+  if (!invoice || typeof invoice !== "object" || (invoice as Record<string, unknown>).status !== "paid") return false;
+  const start = planLine(env, invoice as Record<string, unknown>)?.start;
+  return start != null && start === positiveInt(itemOf(sub)?.current_period_start);
+};
+
+// A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
+// Unused time is refunded only while the replaced period's plan credits stay within the kept plan: after a downgrade the higher credits are already out.
+// Only a period whose invoice is paid is refunded: Stripe would credit unused time of an unpaid one. That rules out past_due and unpaid, and
+// also an active subscription that just renewed: Stripe keeps the renewal invoice a draft for about an hour before it charges it.
+// Any other cancel voids the open invoices first, so a late payment cannot land on a subscription the company left. Stripe itself turns off
+// auto_advance on the open and draft invoices of a canceled subscription, so the draft is never finalized or charged.
+// `calendar` is the company's subscription from before credit periods, whose credits are the month's.
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }, calendar: string): Promise<void> {
+  for (const customer of customers) {
+    const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&expand[]=data.latest_invoice&customer=" + encodeURIComponent(customer));
+    for (const sub of subscriptionsOf(list)) {
+      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
+      const id = String(sub.id);
+      const refundable = LIVE.has(String(sub.status))
+        && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
+      const refund = refundable && currentPeriodPaid(ctx.env, sub);
+      // Fail closed: with no readable invoice the period may be paid, so an operator checks it and refunds by hand.
+      const unread = refundable && (sub.latest_invoice == null || typeof sub.latest_invoice !== "object");
+      const path = "/v1/subscriptions/" + encodeURIComponent(id);
+      try {
+        if (refund) {
+          await stripe(ctx, "DELETE", path + "?" + new URLSearchParams({ prorate: "true", invoice_now: "true", "cancellation_details[comment]": REFUNDED }));
+        } else {
+          const open = await stripe(ctx, "GET", "/v1/invoices?status=open&limit=100&subscription=" + encodeURIComponent(id));
+          for (const invoice of subscriptionsOf(open)) await stripe(ctx, "POST", "/v1/invoices/" + encodeURIComponent(String(invoice.id)) + "/void");
+          await stripe(ctx, "DELETE", path);
+        }
+      } catch {
+        throw new AlertingError({ companyId, kind: "CANCEL_FAILED", referenceId: id, detail: `replaced subscription still billing, kept ${keep.id}` });
+      }
+      await resolveCancelAlert(ctx, id);
+      if (unread) await raiseAlert(ctx, companyId, "REFUND_SKIPPED", id, `latest_invoice unreadable (${typeof sub.latest_invoice}), canceled without refund, kept ${keep.id}`);
+    }
+  }
+}
+
+// The period whose unused time a replacing checkout refunded, read back from Stripe so a retry after a crash finds it too.
+async function refundedStart(ctx: Ctx, subscriptionId: string): Promise<number | null> {
+  const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+  const details = sub.cancellation_details as { comment?: unknown } | null | undefined;
+  return sub.status === "canceled" && details?.comment === REFUNDED ? positiveInt(itemOf(sub)?.current_period_start) : null;
+}
+
+// Acts on a live subscription of the paid plan only, and never moves the company to an older one than it has,
+// so a late or replayed checkout can neither point the company at an ended subscription nor cancel the live one.
+async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | "PRO" | "ULTRA", customer: string, subscriptionId: string): Promise<void> {
+  if (!customer || !subscriptionId) return;
+  const q = ctx.deps.query;
+  const before = await one(q, "SELECT plan, stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1 FOR NO KEY UPDATE", [companyId]);
+  if (!before) return;
+  const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+  if (!LIVE.has(String(sub.status)) || priceOf(sub) !== employerPrice(ctx.env, planId) || sub.customer !== customer) {
+    console.error(`billing: company ${companyId} checkout subscription ${subscriptionId} not adopted (${String(sub.status)})`);
+    if (LIVE.has(String(sub.status))) {
+      await raiseAlert(ctx, companyId, "NOT_ADOPTED", subscriptionId, `paid ${planId}, subscription price ${priceOf(sub)} customer ${String(sub.customer)}`);
+    }
+    return;
+  }
+  const start = new Date(Number(itemOf(sub)?.current_period_start ?? sub.created) * 1000);
+  const current = String(before.stripe_subscription_id ?? "");
+  const switching = current !== subscriptionId && !(current && olderThan(sub, { id: current, created: Number(before.created_unix) }));
+  const keepPlan = switching ? planId : employerPlanOf(before.plan);
+  const keep = switching ? { id: subscriptionId, created: Number(sub.created) } : { id: current, created: Number(before.created_unix) };
+  if (switching) {
+    await query(q,
+      "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = $6::timestamptz WHERE id = $1",
+      [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
+  }
+  const previous = before.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
+  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan }, before.period_unix == null ? current : "");
+  if (!switching) return;
+  // An upgrade or same-plan swap keeps the tiers of the period whose unused time was just refunded; a downgrade, or a replaced
+  // subscription that was not refunded, starts the new plan fresh. A company on calendar months carries the month its period starts in.
+  const refunded = before.period_unix == null ? null : current ? await refundedStart(ctx, current) : null;
+  const from = before.period_unix == null ? monthKey(start) : refunded ? periodKey(current, new Date(refunded * 1000)) : null;
+  const level = from ? await keyLevel(q, companyId, from) : 0;
+  await grantPeriod(q, { companyId, subscriptionId, periodStart: start, plan: planId, carry: level <= grantMicro("EMPLOYER", planId) ? level : 0, now: ctx.now });
+}
+
+const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
+  type Line = {
+    amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number };
+    parent?: { subscription_item_details?: { proration?: boolean } | null } | null;
+  };
+  const lines = ((obj.lines as { data?: Line[] } | undefined)?.data) || [];
+  for (const line of lines) {
+    // A proration line starts mid-period, so it never names the period the renewal opens.
+    if (!(Number(line.amount) > 0) || line.parent?.subscription_item_details?.proration) continue;
+    const plan = employerPlanByPrice(env, line.price?.id || line.pricing?.price_details?.price || "");
+    if (plan) return { plan, start: positiveInt(line.period?.start) };
+  }
+  return null;
+};
+
+// A paid cycle invoice grants its period, whatever order it arrives in: also one paid late after a newer period, and one of a
+// subscription the company has since left, unless that period is the one the replacing checkout refunded (its credits carried).
+// The total, not amount_paid, is the charge: a renewal paid from the Stripe balance has amount_paid 0.
+// The first invoice is the checkout row. A replaced subscription's final invoice is negative and becomes Stripe balance.
+async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
+  if (obj.billing_reason !== "subscription_cycle") return;
+  const total = Number(obj.total);
+  const customer = String(obj.customer || "");
+  if (!Number.isSafeInteger(total) || !customer || !obj.id) return;
+  const company = await one(ctx.deps.query, "SELECT id, plan, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
+  if (!company) return;
+  const companyId = String(company.id);
+  const line = planLine(ctx.env, obj);
+  const plan = line?.plan ?? employerPlanOf(company.plan);
+  await companyLedger(ctx, companyId, 0, String(obj.id), {
+    description: total < 0 ? REFUND_DESCRIPTION : plan ? planDescription(plan) : null,
+    amountUsdCents: usdCents(obj, total),
+    receiptUrl: httpsUrl(obj.hosted_invoice_url),
+  });
+  const subscriptionId = String((obj.parent as { subscription_details?: { subscription?: unknown } } | null | undefined)?.subscription_details?.subscription ?? "");
+  const current = subscriptionId === String(company.stripe_subscription_id ?? "");
+  if (total < 0 || !subscriptionId || (!current && total === 0)) return;
+  if (!line?.start) {
+    await raiseAlert(ctx, companyId, "NOT_GRANTED", String(obj.id), `paid renewal of ${subscriptionId} has no employer plan line`);
+    return;
+  }
+  if (!current && await refundedStart(ctx, subscriptionId) === line.start) return;
+  const periodStart = new Date(line.start * 1000);
+  await query(ctx.deps.query,
+    "UPDATE companies SET credit_period_start = $2::timestamptz WHERE id = $1 AND stripe_subscription_id = $3 AND (credit_period_start IS NULL OR credit_period_start < $2::timestamptz)",
+    [companyId, periodStart.toISOString(), subscriptionId]);
+  await grantPeriod(ctx.deps.query, { companyId, subscriptionId, periodStart, plan: line.plan, carry: 0, now: ctx.now });
+}
+
+// A fully refunded top-up checkout takes its credits back. Subscription refunds keep their credits (the replaced-period refund
+// in checkout carries them). shortcut: a partial refund changes nothing; the operator adjusts by hand until partial refunds are offered.
+async function chargeRefunded(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
+  if (obj.refunded !== true || typeof obj.payment_intent !== "string" || !obj.payment_intent) return;
+  const list = await stripe(ctx, "GET", "/v1/checkout/sessions?payment_intent=" + encodeURIComponent(obj.payment_intent));
+  const session = (Array.isArray(list.data) ? list.data[0] : null) as Record<string, unknown> | null;
+  const meta = session ? metaOf(session) : {};
+  const micro = positiveInt(meta.amountMicroCredits);
+  if (!session || micro == null) return;
+  const ownerId = String(meta.ownerId || session.client_reference_id || "");
+  if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+  if (String(meta.audience || "") === "EMPLOYER") {
+    await lockOwner(ctx.deps.query, "EMPLOYER", ownerId);
+    await takeBack(ctx, { companyId: ownerId }, micro, String(session.id));
+  }
+  else {
+    await lockOwner(ctx.deps.query, "PERSONAL", ownerId);
+    await takeBack(ctx, { userId: ownerId }, micro, String(session.id));
+  }
+}
+
 async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
   if (obj.payment_status === "unpaid") return;
   const meta = metaOf(obj);
@@ -333,57 +634,109 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     const ownerId = String(meta.ownerId || obj.client_reference_id || "");
     if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
     const reference = String(obj.id || "");
-    if (String(meta.audience || "") === "EMPLOYER") await companyLedger(ctx, ownerId, micro, reference);
-    else await userLedger(ctx, ownerId, micro, reference);
+    if (String(meta.audience || "") === "EMPLOYER") {
+      await lockOwner(ctx.deps.query, "EMPLOYER", ownerId);
+      await companyLedger(ctx, ownerId, micro, reference, {
+        description: TOPUP_DESCRIPTION,
+        amountUsdCents: usdCents(obj, positiveInt(obj.amount_total)),
+        receiptUrl: await chargeReceipt(ctx, obj.payment_intent),
+      });
+    }
+    else {
+      await lockOwner(ctx.deps.query, "PERSONAL", ownerId);
+      await userLedger(ctx, ownerId, micro, reference);
+    }
     return;
   }
   if (String(meta.audience || "") === "EMPLOYER") {
     const companyId = String(meta.ownerId || obj.client_reference_id || "");
     if (!UUID.test(companyId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
-    const planId = String(meta.plan || meta.planId || "");
-    if (!EMPLOYER_PLANS.has(planId)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
-    await query(ctx.deps.query,
-      "UPDATE companies SET plan = $2, stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id = $1",
-      [companyId, planId, String(obj.customer || "")]);
-    await companyLedger(ctx, companyId, grantMicro("EMPLOYER", planId), String(obj.id || ""));
+    const planId = employerPlanOf(meta.plan || meta.planId);
+    if (!planId) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+    await lockOwner(ctx.deps.query, "EMPLOYER", companyId);
+    await companyLedger(ctx, companyId, 0, String(obj.id || ""), {
+      description: planDescription(planId),
+      amountUsdCents: usdCents(obj, positiveInt(obj.amount_total)),
+      receiptUrl: await invoiceReceipt(ctx, obj.invoice),
+    });
+    await adoptSubscription(ctx, companyId, planId, String(obj.customer || ""), String(obj.subscription || ""));
     return;
   }
   const userId = String(obj.client_reference_id || "");
   if (!UUID.test(userId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
   const planId = String(meta.planId || "");
   if (!PLANS.has(planId) || planId === "FREE") throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
-  const credits = grantMicro("PERSONAL", planId);
-  const id = crypto.randomUUID();
+  // The lock is its own statement: a lock taken inside the INSERT would read the balance from the snapshot before the wait.
+  if (!await lockOwner(ctx.deps.query, "PERSONAL", userId)) return;
   await query(ctx.deps.query,
-    "WITH locked AS (SELECT id FROM users WHERE id = $1 FOR UPDATE), updated AS (UPDATE users SET plan = $2, subscription_status = 'ACTIVE', stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id IN (SELECT id FROM locked) RETURNING id), bal AS (SELECT COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1), 0) AS b) INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $4, updated.id, 'PURCHASE', $5, bal.b + $5, $6, $7 FROM updated, bal ON CONFLICT (user_id, type, reference_id) DO NOTHING",
-    [userId, planId, String(obj.customer || ""), id, credits, String(obj.id || ""), ctx.now.toISOString()]);
+    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id = $1",
+    [userId, planId, String(obj.customer || "")]);
+  await userLedger(ctx, userId, grantMicro("PERSONAL", planId), String(obj.id || ""));
 }
 
+// Subscription events arrive late and out of order. A delete is final; an update is read back from Stripe and applied only to
+// the company's current subscription, so a stale copy can neither revive the plan of an ended one nor end a live one.
+async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: string, currentId: string, subscriptionId: string): Promise<void> {
+  if (type !== "customer.subscription.deleted") {
+    if (!subscriptionId || subscriptionId !== currentId) return;
+    const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+    if (!ENDED.has(String(sub.status))) {
+      const plan = LIVE.has(String(sub.status)) ? employerPlanByPrice(ctx.env, priceOf(sub)) : null;
+      if (plan) await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2", [companyId, subscriptionId, plan]);
+      return;
+    }
+  }
+  await query(ctx.deps.query,
+    "UPDATE companies SET plan = NULL WHERE id = $1 AND (stripe_subscription_id IS NULL OR stripe_subscription_id = $2)",
+    [companyId, subscriptionId]);
+  await resolveCancelAlert(ctx, subscriptionId);
+}
+
+// Personal Stripe subscriptions are legacy; they follow the employer rules: an update is read back from Stripe, a delete is final.
+// An active, unexpired App Store or Google Play subscription owns the user's plan, so a late Stripe event leaves it alone. A store row
+// whose EXPIRED notification never arrived stops guarding at its expires_at.
 async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
   const customer = String(obj.customer || "");
-  if (!customer) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
-  const canceled = type === "customer.subscription.deleted" || ENDED.has(String(obj.status ?? ""));
-  const items = ((obj.items as { data?: { price?: { id?: string } }[] } | undefined)?.data) || [];
-  const priceId = items[0]?.price?.id || "";
-  const company = await one(ctx.deps.query,
-    canceled
-      ? "UPDATE companies SET plan = NULL WHERE stripe_customer_id = $1 RETURNING id"
-      : "UPDATE companies SET plan = COALESCE($2, plan) WHERE stripe_customer_id = $1 RETURNING id",
-    canceled ? [customer] : [customer, priceId ? employerPlanByPrice(ctx.env, priceId) : null]);
-  if (company) return;
-  const period = obj.current_period_end ? new Date(Number(obj.current_period_end) * 1000).toISOString() : null;
-  const status = canceled ? "CANCELED" : "ACTIVE";
+  const subscriptionId = String(obj.id || "");
+  if (!customer || !subscriptionId) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
+  const company = await one(ctx.deps.query, "SELECT id, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
+  if (company) {
+    await companySubscriptionChanged(ctx, type, String(company.id), String(company.stripe_subscription_id ?? ""), subscriptionId);
+    return;
+  }
+  const user = await one(ctx.deps.query, "SELECT id FROM users WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
+  if (!user) {
+    // An employer subscription whose customer no company holds: its checkout is not adopted yet (adoption reads the subscription
+    // itself), or the company moved to a newer customer and left it. Neither needs the event, and a retry would never find an owner.
+    if (employerPlanByPrice(ctx.env, priceOf(obj))) return;
+    throw new HttpError(500, "INTERNAL", "internal error");
+  }
+  const deleted = type === "customer.subscription.deleted";
+  const sub = deleted ? obj : await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+  const canceled = deleted || ENDED.has(String(sub.status ?? ""));
+  const priceId = priceOf(sub);
+  const end = itemOf(sub)?.current_period_end;
+  const period = end ? new Date(Number(end) * 1000).toISOString() : null;
   const plan = canceled ? "FREE" : priceId ? personalPlanByPrice(ctx.env, priceId) : null;
-  const updated = await one(ctx.deps.query,
-    "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE stripe_customer_id = $1 RETURNING id",
-    [customer, status, period, plan]);
-  if (!updated) throw new HttpError(500, "INTERNAL", "internal error");
+  await query(ctx.deps.query,
+    "UPDATE users SET subscription_status = $2, period_ends_at = COALESCE($3::timestamptz, period_ends_at), plan = COALESCE($4, plan) WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' AND (expires_at IS NULL OR expires_at > $5::timestamptz))",
+    [String(user.id), canceled ? "CANCELED" : "ACTIVE", period, plan, ctx.now.toISOString()]);
 }
 
+// Price ids this plan used before the current STRIPE_PRICE_EMPLOYER_* value.
+// planLine reads them, so a price rotation still refunds and grants invoices
+// created on the previous id. Add the old id here when the env value changes;
+// do not delete it. These are test-mode ids, never a live charge.
+const LEGACY_EMPLOYER_PRICES: Record<"BASIC" | "PRO" | "ULTRA", readonly string[]> = {
+  BASIC: [],
+  PRO: ["price_retired_employer_pro"],
+  ULTRA: [],
+};
+
 const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC) return "BASIC";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO) return "PRO";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA) return "ULTRA";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC || LEGACY_EMPLOYER_PRICES.BASIC.includes(priceId)) return "BASIC";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO || LEGACY_EMPLOYER_PRICES.PRO.includes(priceId)) return "PRO";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA || LEGACY_EMPLOYER_PRICES.ULTRA.includes(priceId)) return "ULTRA";
   return null;
 };
 
@@ -404,16 +757,16 @@ const productKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP"
 const storePort = (ctx: Ctx): StoreReceipts => ctx.deps.stores ?? createStoreReceipts(ctx.env, ctx.deps.fetch ?? fetch, ctx.now);
 
 // A store transaction belongs to the first account that verifies it; replaying it from another account is refused.
-const CLAIM_PURCHASE = "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = EXCLUDED.status, platform = EXCLUDED.platform WHERE iap_subscriptions.user_id = EXCLUDED.user_id RETURNING user_id";
+const CLAIM_PURCHASE = "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status, sandbox) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = EXCLUDED.status, platform = EXCLUDED.platform, sandbox = EXCLUDED.sandbox WHERE iap_subscriptions.user_id = EXCLUDED.user_id RETURNING user_id";
 
 const claimPurchase = async (
   ctx: Ctx,
   platform: "APP_STORE" | "GOOGLE_PLAY",
-  receipt: { productId: string; originalTransactionId: string; expiresAt: string | null },
+  receipt: { productId: string; originalTransactionId: string; expiresAt: string | null; sandbox?: boolean },
   status: "ACTIVE" | "CONSUMED",
 ): Promise<void> => {
   const row = await one(ctx.deps.query, CLAIM_PURCHASE,
-    [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt, status]);
+    [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt, status, receipt.sandbox === true]);
   if (!row) throw new HttpError(409, "CONFLICT", "purchase belongs to another account");
 };
 
@@ -427,34 +780,28 @@ const requireKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP"
 export const topup = async (ctx: Ctx): Promise<Response> => {
   if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   const body = await readObject(ctx.request);
-  const amount = body.amount;
-  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_TOPUP) {
-    throw new HttpError(400, "VALIDATION_ERROR", "must be a positive integer", { field: "amount" });
+  const packs = body.packs;
+  if (typeof packs !== "number" || !Number.isSafeInteger(packs) || packs < 1 || packs > MAX_PACKS) {
+    throw new HttpError(400, "VALIDATION_ERROR", "must be an integer from 1 to " + MAX_PACKS, { field: "packs" });
   }
+  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
   const price = ctx.env.STRIPE_PRICE_TOPUP;
   if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
-  let audience: "PERSONAL" | "EMPLOYER" = "PERSONAL";
-  let ownerId = ctx.user.id;
-  let customer = ctx.user.stripeCustomerId;
-  if (ctx.user.accountType === "EMPLOYER") {
-    if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
-    audience = "EMPLOYER";
-    ownerId = ctx.user.companyId;
-    const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
-    if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    customer = company.stripe_customer_id == null ? null : String(company.stripe_customer_id);
-  }
+  const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
+  if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  const customer = company.stripe_customer_id == null ? null : String(company.stripe_customer_id);
+  const ownerId = ctx.user.companyId;
   try {
     const form = new URLSearchParams({
       mode: "payment",
       "line_items[0][price]": price,
-      "line_items[0][quantity]": String(amount),
-      success_url: ctx.env.STRIPE_SUCCESS_URL || "",
-      cancel_url: ctx.env.STRIPE_CANCEL_URL || "",
+      "line_items[0][quantity]": String(packs),
+      ...returnUrls(ctx, "credits"),
       client_reference_id: ownerId,
-      "metadata[amountMicroCredits]": String(amount * DISPLAY_MICRO),
-      "metadata[audience]": audience,
+      "metadata[amountMicroCredits]": String(packs * PACK_MICRO),
+      "metadata[audience]": "EMPLOYER",
       "metadata[ownerId]": ownerId,
     });
     if (customer) form.set("customer", customer);
@@ -477,7 +824,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "productId" });
   }
   const kind = requireKind(ctx.env, body.productId);
-  if (kind !== "TOPUP" && ctx.user.subscriptionStatus === "ACTIVE") {
+  if (kind !== "TOPUP" && ctx.user.subscriptionStatus === "ACTIVE" && ctx.user.stripeCustomerId) {
     throw new HttpError(409, "ALREADY_SUBSCRIBED", "already subscribed");
   }
   if (platform === "APP_STORE" && (typeof body.signedTransaction !== "string" || !body.signedTransaction)) {
@@ -496,30 +843,78 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   if (kind !== "TOPUP" && receipt.expiresAt != null && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
     throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
   }
-  await claimPurchase(ctx, platform, receipt, kind === "TOPUP" ? "CONSUMED" : "ACTIVE");
-  if (kind === "TOPUP") {
-    await userLedger(ctx, ctx.user.id, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), receipt.originalTransactionId);
-    return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
-  }
-  await query(ctx.deps.query,
-    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
-    [ctx.user.id, kind, receipt.expiresAt]);
-  await userLedger(ctx, ctx.user.id, grantMicro("PERSONAL", kind), receipt.originalTransactionId);
+  await inTransactionOf(ctx)(async (q) => {
+    const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
+    await lockOwner(q, "PERSONAL", ctx.user.id);
+    await claimPurchase(tx, platform, receipt, kind === "TOPUP" ? "CONSUMED" : "ACTIVE");
+    if (kind === "TOPUP") {
+      await userLedger(tx, ctx.user.id, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), receipt.originalTransactionId);
+      return;
+    }
+    await query(q,
+      "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
+      [ctx.user.id, kind, receipt.expiresAt]);
+    await userLedger(tx, ctx.user.id, grantMicro("PERSONAL", kind), receipt.originalTransactionId);
+  });
+  if (kind === "TOPUP") return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
   return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
 };
 
-const grantNote = async (
+// One transaction per notice, holding the user row lock as the Stripe webhook does: a refund reads what is left and writes it
+// back, and enqueueJob takes the same lock, so a job cannot reserve credits in between.
+const grantNote = (
   ctx: Ctx,
   notificationType: string,
   transactionId: string,
   productId: string,
   expiresAt: string | null,
+  sandbox = false,
+): Promise<void> => {
+  return inTransactionOf(ctx)((q) => storeNote({ ...ctx, deps: { ...ctx.deps, query: q } }, notificationType, transactionId, productId, expiresAt, sandbox));
+};
+
+const lockUser = (ctx: Ctx, userId: unknown) => lockOwner(ctx.deps.query, "PERSONAL", String(userId));
+
+const currentStoreSubscription = async (ctx: Ctx, userId: string): Promise<string | null> => {
+  const row = await one(ctx.deps.query,
+    "SELECT original_transaction_id FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY expires_at DESC NULLS FIRST LIMIT 1",
+    [userId]);
+  return row?.original_transaction_id == null ? null : String(row.original_transaction_id);
+};
+
+const storeNote = async (
+  ctx: Ctx,
+  notificationType: string,
+  transactionId: string,
+  productId: string,
+  expiresAt: string | null,
+  sandbox: boolean,
 ): Promise<void> => {
   const upper = notificationType.toUpperCase();
-  if (upper === "REFUND" || upper === "EXPIRED") {
+  if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
+    // A top-up row is CONSUMED from verify (REFUNDED once refunded), whatever the product id is configured as today.
+    const row = await one(ctx.deps.query,
+      "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
+      [transactionId]);
+    if (row?.user_id) await lockUser(ctx, row.user_id);
+    let drivesPlan = false;
+    if (row?.user_id && row.topup !== true) {
+      drivesPlan = (await currentStoreSubscription(ctx, String(row.user_id))) === transactionId;
+    }
     await query(ctx.deps.query,
-      "UPDATE iap_subscriptions SET status = 'CANCELED', expires_at = COALESCE($2::timestamptz, expires_at) WHERE original_transaction_id = $1",
-      [transactionId, expiresAt]);
+      "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
+      [transactionId, expiresAt, sandbox]);
+    if (!row?.user_id) return;
+    // A refunded credit top-up is not the subscription: the plan stays and the pack's credits go.
+    if (row.topup === true) {
+      await takeBack(ctx, { userId: String(row.user_id) }, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
+      return;
+    }
+    if (drivesPlan) {
+      await query(ctx.deps.query,
+        "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
+        [String(row.user_id), expiresAt]);
+    }
     return;
   }
   const grants = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
@@ -530,24 +925,27 @@ const grantNote = async (
     [transactionId]);
   if (!row) return;
   const userId = String(row.user_id);
+  await lockUser(ctx, userId);
   if (kind === "TOPUP") {
     await userLedger(ctx, userId, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
     return;
   }
   await query(ctx.deps.query,
-    "UPDATE iap_subscriptions SET status = 'ACTIVE', product_id = $2, expires_at = COALESCE($3::timestamptz, expires_at) WHERE original_transaction_id = $1",
-    [transactionId, productId, expiresAt]);
-  await query(ctx.deps.query,
-    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
-    [userId, kind, expiresAt]);
-  await userLedger(ctx, userId, grantMicro("PERSONAL", kind), transactionId);
+    "UPDATE iap_subscriptions SET status = 'ACTIVE', product_id = $2, expires_at = COALESCE($3::timestamptz, expires_at), sandbox = $4 WHERE original_transaction_id = $1",
+    [transactionId, productId, expiresAt, sandbox]);
+  if ((await currentStoreSubscription(ctx, userId)) === transactionId) {
+    await query(ctx.deps.query,
+      "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
+      [userId, kind, expiresAt]);
+    await userLedger(ctx, userId, grantMicro("PERSONAL", kind), transactionId);
+  }
 };
 
 export const appleWebhook = async (ctx: Ctx): Promise<Response> => {
   const raw = await ctx.request.text();
   if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");
   const note = await storePort(ctx).decodeAppleNotification(raw);
-  await grantNote(ctx, note.notificationType, note.originalTransactionId, note.productId, note.expiresAt);
+  await grantNote(ctx, note.notificationType, note.originalTransactionId, note.productId, note.expiresAt, note.sandbox === true);
   return data(200, { received: true }, ctx.rid);
 };
 
@@ -561,6 +959,17 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
   const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
-  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, note.expiresAt);
+  let expiresAt = note.expiresAt;
+  const pushed = googlePlayPubsub(body);
+  const sub = pushed?.subscriptionNotification && typeof pushed.subscriptionNotification === "object"
+    ? pushed.subscriptionNotification as Record<string, unknown> : null;
+  if (sub) {
+    const upper = String(note.notificationType).toUpperCase();
+    const grant = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
+    if (grant && note.purchaseToken && note.productId) {
+      expiresAt = (await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true)).expiresAt;
+    }
+  }
+  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, expiresAt);
   return data(200, { received: true }, ctx.rid);
 };

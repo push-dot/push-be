@@ -18,8 +18,23 @@ def _msg(row) -> Message:
     return Message(**m)
 
 
+def _markdown_face(attachment: dict) -> bool:
+    labels = (
+        attachment.get("title"),
+        attachment.get("name"),
+        attachment.get("fileName"),
+        attachment.get("file_name"),
+    )
+    if any(isinstance(label, str) and label.lower().endswith(".md") for label in labels):
+        return True
+    mime = attachment.get("mime") or attachment.get("mimeType") or attachment.get("mime_type") or ""
+    return isinstance(mime, str) and mime.lower() == "text/markdown"
+
+
 def _artifact_item(attachment):
     if not isinstance(attachment, dict):
+        return None
+    if _markdown_face(attachment):
         return None
     document_id = attachment.get("documentId") or attachment.get("document_id")
     if attachment.get("type") != "DOCUMENT_VERSION" and not document_id:

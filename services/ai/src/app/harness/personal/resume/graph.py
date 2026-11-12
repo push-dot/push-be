@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
+import re
+import time
 from dataclasses import replace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -15,17 +18,61 @@ from app.framework.models import _content
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.personal.resume.booster import boost_cycle
-from app.harness.personal.resume.drafts import draft_text
+from app.harness.personal.resume.drafts import chosen_document_text, draft_text, drafts_from_chosen
+from app.harness.personal.resume.profile_document import (
+    load_document_markdown,
+    profile_card_names,
+    resolve_uploaded_source,
+    save_edited_file,
+    save_profile_document,
+)
+from app.harness.personal.resume.progress import (
+    analyze_steps,
+    apply_recommendations_line,
+    boost_fit,
+    boost_line,
+    done_summary,
+    feedback_line,
+    feedback_plan,
+    fit_card,
+    fit_failed_line,
+    fit_line,
+    github_line,
+    intake_panel,
+    paper_event,
+    posting_line,
+    quality_choice,
+    quality_diff,
+    quality_line,
+    resume_line,
+    strategy_line,
+    strategy_plan,
+    think_event,
+    todo_event,
+)
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
 from app.harness.policy import Tier
-from app.harness.tools import ToolContext, call_structured, emit, to_structured_tool
+from app.harness.tools import (
+    RETRY_WARNING,
+    ToolContext,
+    call_retrying,
+    emit,
+    to_structured_tool,
+)
 
 bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
 _ORDER = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "publish", "present",
+    "mode_select",
+    "intake",
+    "analyze",
+    "strategy",
+    "craft",
+    "review",
+    "publish",
+    "present",
 )
 _SKIP_C = {"strategy", "craft"}
 _TEMPLATES = {"CLASSIC", "MODERN", "COMPACT", "ATS"}
@@ -36,7 +83,12 @@ _TARGET_IDS = ("resume", "portfolio", "cover_letter")
 _APPROACH_IDS = ("bottleneck", "prevention")
 _LEVEL_IDS = ("L1", "L2", "L3")
 _PREVENTION_IDS = (
-    "performance", "security", "scalability", "reliability", "maintainability", "data_integrity",
+    "performance",
+    "security",
+    "scalability",
+    "reliability",
+    "maintainability",
+    "data_integrity",
 )
 _GATES = {
     "mode_select": {
@@ -70,17 +122,21 @@ _GATES = {
         ],
     },
     "intake": {
-        "title": "입력한 자료를 확인했어요. 분석을 시작할까요?",
+        "title": "이대로 분석을 시작할까요?",
         "recommended": "ready",
         "options": [
-            {"id": "ready", "label": "이 자료로 진행할게요"},
-            {"id": "C", "label": "시나리오 C로 갈게요"},
+            {"id": "ready", "label": "네, 시작해 주세요"},
+            {"id": "change", "label": "자료를 바꿀래요"},
         ],
     },
     "analyze": {
-        "title": "이 공고에 맞춰 고칠까요?",
+        "title": "이 공고에 맞춰 이력서를 고칠까요?",
         "recommended": "continue",
-        "options": [{"id": "continue", "label": "전략으로 갈게요"}],
+        "options": [
+            {"id": "continue", "label": "네, 맞춰서 고쳐 주세요"},
+            {"id": "feedback", "label": "피드백만 받을게요"},
+            {"id": "score", "label": "점수만 보고 끝낼게요"},
+        ],
     },
     "feedback": {
         "title": "피드백을 반영해서 수정할까요?",
@@ -102,21 +158,17 @@ _GATES = {
     },
     "review": {
         "title": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
+        "detail": "템플릿을 골라 주세요. 처음이라면 클래식을 추천해요.",
         "recommended": "CLASSIC",
         "options": [
-            {"id": "CLASSIC", "label": "클래식"},
+            {"id": "CLASSIC", "label": "클래식", "badge": "추천"},
             {"id": "MODERN", "label": "모던"},
             {"id": "COMPACT", "label": "컴팩트"},
             {"id": "ATS", "label": "ATS"},
         ],
     },
-    "publish": {
-        "title": "디자인을 적용했어요. PDF로 만들까요?",
-        "recommended": "confirm",
-        "options": [{"id": "confirm", "label": "이대로 마무리할게요"}],
-    },
     "present": {
-        "title": "PDF를 만들었어요. 결과를 확인할까요?",
+        "title": "Push 프로필에 저장했어요. 결과를 확인할까요?",
         "recommended": "done",
         "options": [{"id": "done", "label": "확인했어요"}],
     },
@@ -155,6 +207,20 @@ _GATES = {
         "recommended": "skip",
         "options": [{"id": "skip", "label": "기획만 볼게요"}],
     },
+    "quality": {
+        "title": "추천 수정도 반영할까요?",
+        "recommended": "rec1",
+        "multiple": True,
+    },
+    "read_failed": {
+        "title": "어떻게 할까요?",
+        "recommended": "paste",
+        "options": [
+            {"id": "paste", "label": "공고 내용을 붙여넣을게요"},
+            {"id": "proceed", "label": "이대로 진행해 주세요"},
+            {"id": "pick", "label": "Push 공고에서 고를게요"},
+        ],
+    },
     "validate_cap": {
         "title": "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?",
         "recommended": "retry",
@@ -182,6 +248,8 @@ class ResumeGraphState(TypedDict, total=False):
     drafts: dict
     review: dict
     template: str | None
+    profile_photo: bool
+    draft_version: int
     artifacts: dict
     output_targets: list
     tone: str | None
@@ -205,6 +273,12 @@ class ResumeGraphState(TypedDict, total=False):
     scores: list
     boost_acked: int
     boost_stopped: str
+    profile_document_id: str
+    source_saved: bool | None
+    intake_asks: int
+    gate_epoch: int
+    fit_from: float | None
+    fit_to: float | None
 
 
 _VALIDATE_CAP = 3
@@ -233,6 +307,39 @@ def _job_terms(analysis: dict) -> list:
     return terms
 
 
+def _jobs_node(analysis: dict) -> dict:
+    jobs = analysis.get("jobs") if isinstance(analysis, dict) else None
+    if isinstance(jobs, list):
+        jobs = next((item for item in jobs if isinstance(item, dict)), {})
+    return jobs if isinstance(jobs, dict) else {}
+
+
+def _read_error(analysis: dict) -> str:
+    reason = _jobs_node(analysis).get("read_error")
+    return reason.strip() if isinstance(reason, str) else ""
+
+
+def posting_unreadable(inputs: dict, analysis: dict | None) -> bool:
+    found = analysis if isinstance(analysis, dict) else {}
+    if _read_error(found):
+        return True
+    bag = inputs if isinstance(inputs, dict) else {}
+    steps, _added = analyze_steps(bag, found)
+    if not any(key == "posting" for key, _label in steps):
+        return False
+    return not _job_terms(found)
+
+
+_POSTING_ID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _posting_id_in(text: str) -> str:
+    found = _POSTING_ID.search(text or "")
+    return found.group(0) if found else ""
+
+
 def _page_text(inputs) -> str:
     pages = inputs.get("pages") if isinstance(inputs, dict) else None
     if isinstance(pages, dict):
@@ -241,9 +348,7 @@ def _page_text(inputs) -> str:
         chunks = pages
     else:
         return ""
-    return "\n".join(
-        chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()
-    )
+    return "\n".join(chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip())
 
 
 def _posting(state) -> tuple[list, str]:
@@ -303,7 +408,7 @@ def _after_analyze(state: dict) -> str:
         "B": "feedback",
         "C": "review",
         "D": "craft",
-        "E": "present",
+        "E": "craft",
         "F": "craft",
     }.get(_scenario_letter(state), "strategy")
 
@@ -323,7 +428,7 @@ def _next_phase(state: dict, phase: str) -> str | None:
 
 
 def _must_stop(state: dict, phase: str) -> bool:
-    if phase in {"mode_select", "validate_cap"}:
+    if phase in {"mode_select", "validate_cap", "read_failed"}:
         return True
     if (state.get("access_mode") or "AUTO") != "BYPASS":
         return True
@@ -333,6 +438,264 @@ def _must_stop(state: dict, phase: str) -> bool:
     return False
 
 
+_RESUME_EXT = (".pdf", ".docx", ".doc")
+_SAVED_LINE = "내 서류에 자동 저장됨"
+_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
+_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
+_FILE_TASK = "이력서 수정 · 올린 파일 · 경력"
+_PROFILE_TASK = "프로필 수정 · Push 프로필 · 경력"
+_PROFILE_SUB = "Push 프로필 · 방금 수정"
+_FILE_STEPS = (
+    "이력서 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
+_FILE_STEPS_OPEN = (
+    "이력서 읽기",
+    "고칠 점 찾기",
+    "경력 섹션 고치기",
+    "PDF로 만들기",
+)
+_PROFILE_STEPS = (
+    "프로필 읽기",
+    "공고 요건 정리",
+    "적합도 계산",
+    "경력 섹션 고치기",
+    "프로필에 저장",
+)
+_EXTERNAL_NOTE = (
+    "올린 파일을 고친 결과다. PDF를 만들어 내 서류에 저장한다. PDF로 만들지 묻지 않는다."
+)
+
+
+def _file_label(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _is_resume_file(name: str) -> bool:
+    return name.lower().endswith(_RESUME_EXT)
+
+
+def resume_source(state: dict) -> str:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    if inputs.get("source") == "external":
+        return "external"
+    for item in inputs.get("attachments") or []:
+        if isinstance(item, dict):
+            mime = str(item.get("mimeType") or item.get("mime_type") or item.get("mime") or "")
+            name = _file_label(item.get("fileName") or item.get("file_name") or item.get("name"))
+            lowered = mime.lower()
+            file_mime = "pdf" in lowered or "word" in lowered or "officedocument" in lowered
+            if file_mime or _is_resume_file(name):
+                return "external"
+        elif _is_resume_file(_file_label(item)):
+            return "external"
+    if _is_resume_file(_file_label(inputs.get("fileName") or inputs.get("file_name"))):
+        return "external"
+    return "profile"
+
+
+_ROLE_ENUM = {"dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"}
+_ROLE_WORDS = (
+    "프론트엔드",
+    "백엔드",
+    "풀스택",
+    "데이터",
+    "디자인",
+    "기획",
+    "마케팅",
+    "머신러닝",
+    "devops",
+    "ios",
+    "android",
+    "qa",
+)
+_NAME_CAP = 80
+_UNSAFE = set('/\\:*?"<>|')
+
+
+def _file_part(value: str) -> str:
+    kept = [ch for ch in value if ch not in _UNSAFE and ord(ch) >= 32 and not ch.isspace()]
+    return "".join(kept).strip("._")
+
+
+def _cap_stem(stem: str) -> str:
+    stem = stem.strip("._")
+    if len(stem) > _NAME_CAP:
+        stem = stem[:_NAME_CAP].rstrip("._")
+    return stem or "이력서"
+
+
+def _role_word(text: str) -> str:
+    lowered = text.lower()
+    for word in _ROLE_WORDS:
+        if word.lower() in lowered:
+            return word
+    return ""
+
+
+def _target_role(state: dict) -> str:
+    posting = _target_posting(state)
+    if not posting:
+        return ""
+    labeled = []
+    for key in ("role", "job_category", "jobCategory", "category"):
+        value = posting.get(key)
+        if isinstance(value, str) and value.strip():
+            labeled.append(value.strip())
+    title = posting.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    for field in labeled:
+        if field.lower() in _ROLE_ENUM:
+            continue
+        hit = _role_word(field)
+        if hit:
+            return hit
+        if len(field) <= 20 and not any(ch.isspace() for ch in field):
+            return _file_part(field)
+    return _role_word(title)
+
+
+def _original_stem(state: dict) -> str:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    raw = ""
+    for item in inputs.get("attachments") or []:
+        if isinstance(item, dict):
+            raw = _file_label(item.get("fileName") or item.get("file_name") or item.get("name"))
+        elif _is_resume_file(_file_label(item)):
+            raw = _file_label(item)
+        if raw:
+            break
+    if not raw:
+        raw = _file_label(inputs.get("fileName") or inputs.get("file_name")) or "이력서.pdf"
+    return raw.rsplit(".", 1)[0] if "." in raw else raw
+
+
+def edited_pdf_name(state: dict, display_name: str) -> str:
+    company = _file_part(_target_company(state))
+    if company:
+        parts = [_file_part(display_name), company, _file_part(_target_role(state))]
+        return _cap_stem("_".join(part for part in parts if part)) + ".pdf"
+    stem = _file_part(_original_stem(state)) or "이력서"
+    suffix = "_수정본"
+    room = _NAME_CAP - len(suffix)
+    if len(stem) > room:
+        stem = stem[:room].rstrip("._") or "이력서"
+    return _cap_stem(f"{stem}{suffix}") + ".pdf"
+
+
+def _target_posting(state: dict) -> dict | None:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    posting = inputs.get("posting")
+    if isinstance(posting, dict):
+        return posting
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    jobs = analysis.get("jobs")
+    if isinstance(jobs, dict):
+        return jobs
+    if isinstance(jobs, list):
+        for item in jobs:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
+def _target_company(state: dict) -> str:
+    posting = _target_posting(state)
+    if not posting:
+        return ""
+    company = posting.get("company")
+    return company.strip() if isinstance(company, str) else ""
+
+
+def _apply_fields(state: dict, follow: dict | None) -> dict:
+    actions = []
+    company = _target_company(state)
+    fields: dict = {}
+    if company:
+        fields["company"] = company
+        actions.append({"id": "apply", "label": f"{company}에 바로 지원하기"})
+    if follow:
+        actions.append(follow)
+    fields["actions"] = actions
+    return fields
+
+
+def _file_steps(state: dict) -> tuple[str, ...]:
+    return _FILE_STEPS if _target_posting(state) else _FILE_STEPS_OPEN
+
+
+def _todo(steps: tuple[str, ...]) -> dict:
+    return {
+        "type": "todo",
+        "items": [
+            {"id": str(index + 1), "text": text, "state": "done"}
+            for index, text in enumerate(steps)
+        ],
+    }
+
+
+def _file_result(saved: dict, state: dict) -> dict:
+    page = saved["pageLine"]
+    document_id = saved.get("documentId") or ""
+    event = {
+        "type": "result",
+        "source": "external",
+        "taskLine": _FILE_TASK,
+        "checklist": list(_file_steps(state)),
+        "fileName": saved["fileName"],
+        "pageLine": page,
+        "documentId": document_id,
+    }
+    follow = None
+    if saved.get("stored"):
+        event["savedLine"] = _SAVED_LINE
+        event["cardMeta"] = f"{page} · {_SAVED_LINE}"
+    else:
+        event["cardMeta"] = page
+    if saved.get("stored") and document_id:
+        follow = {
+            "id": "convert",
+            "label": "프로필로 전환",
+            "method": "POST",
+            "path": f"/api/v1/documents/{document_id}/profile",
+        }
+    return {**event, **_apply_fields(state, follow)}
+
+
+def _profile_title(name: str, headline: str) -> str:
+    parts = [part for part in (name, headline) if part]
+    return " · ".join(parts) if parts else "Push 프로필"
+
+
+def _profile_result(document_id: str, name: str, headline: str, state: dict) -> dict:
+    follow = {"id": "view", "label": "프로필 보기"} if document_id else None
+    return {
+        "type": "result",
+        "source": "profile",
+        "taskLine": _PROFILE_TASK,
+        "checklist": list(_PROFILE_STEPS),
+        "name": name,
+        "headline": headline,
+        "title": _profile_title(name, headline),
+        "subtitle": _PROFILE_SUB,
+        "documentId": document_id,
+        **_apply_fields(state, follow),
+    }
+
+
+def _done(state: dict, source: str) -> dict:
+    drafts = state.get("drafts") if isinstance(state.get("drafts"), dict) else {}
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    changes = drafts.get("changes")
+    bullets = changes if isinstance(changes, list) and changes else analysis.get("improvements")
+    if not isinstance(bullets, list):
+        bullets = []
+    return done_summary(source, state.get("fit_from"), state.get("fit_to"), bullets)
+
+
 def _cancelled(answer: dict) -> bool:
     if answer.get("option_id") == "cancel":
         return True
@@ -340,22 +703,109 @@ def _cancelled(answer: dict) -> bool:
     return text.startswith(("그만", "취소", "중단"))
 
 
-def _choice(
-    state: dict, phase: str, *, auto: bool, cycle: int | None = None, detail: str | None = None,
-) -> dict:
-    gate = _GATES[phase]
+def _feedback_text(state: dict) -> str:
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    for key in ("message", "summary", "feedback"):
+        value = analysis.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "피드백을 정리했어요."
+
+
+_THINK_PHASES = {"analyze", "strategy", "craft", "review", "blueprints"}
+_TEMPLATE_MAKE = {
+    "CLASSIC": "클래식으로 만들기",
+    "MODERN": "모던으로 만들기",
+    "COMPACT": "컴팩트로 만들기",
+    "ATS": "ATS로 만들기",
+}
+_READ_FAILED_WARN = (
+    "나머지 내용으로 진행할 수 있지만, 자격 요건이 빠지면 적합도가 정확하지 않을 수 있어요."
+)
+_READ_FAILED_PASTE = "공고 내용을 붙여 넣어 주세요."
+_READ_FAILED_PICK = "공고를 골라 주세요. @로 북마크 공고를 부를 수 있어요."
+_PASTED_POSTING = "붙여넣은 공고"
+
+
+def _choice_id(state: dict, phase: str, *, cycle: int | None = None) -> str:
     seed = f"push:resume-gate:{state.get('conversation_id')}:{state.get('job_id')}:{phase}"
+    epoch = int(state.get("gate_epoch") or 0)
+    if epoch:
+        seed = f"{seed}:e{epoch}"
     if cycle is not None:
         seed = f"{seed}:{cycle}"
+    return str(uuid5(NAMESPACE_URL, seed))
+
+
+def _review_sections() -> list[dict]:
+    return [
+        {
+            "id": "template",
+            "kind": "thumbnails",
+            "options": [
+                {"id": "CLASSIC", "label": "클래식", "badge": "추천"},
+                {"id": "MODERN", "label": "모던"},
+                {"id": "COMPACT", "label": "컴팩트"},
+                {"id": "ATS", "label": "ATS"},
+            ],
+            "selected": ["CLASSIC"],
+        },
+        {
+            "id": "photo",
+            "kind": "toggle",
+            "options": [
+                {
+                    "id": "photo",
+                    "label": "프로필 사진 넣기",
+                    "desc": "마이 › 프로필 사진을 써요 · 모든 템플릿",  # noqa: RUF001
+                }
+            ],
+            "selected": ["photo"],
+        },
+    ]
+
+
+def _choice(
+    state: dict,
+    phase: str,
+    *,
+    auto: bool,
+    cycle: int | None = None,
+    detail: str | None = None,
+) -> dict:
+    gate = _GATES[phase]
+    options = [*gate["options"]]
+    if phase != "analyze":
+        options.append(
+            {
+                "id": "cancel",
+                "label": "그만할게요" if phase == "intake" else "그만하기",
+            }
+        )
     event = {
         "type": "choice",
-        "id": str(uuid5(NAMESPACE_URL, seed)),
+        "id": _choice_id(state, phase, cycle=cycle),
         "kind": "RESUME_GATE",
         "title": gate["title"],
         "gate": phase,
         "recommended": gate["recommended"],
-        "options": [*gate["options"], {"id": "cancel", "label": "그만하기"}],
+        "options": options,
     }
+    if phase == "output_targets":
+        event["sections"] = intake_panel(state.get("inputs") or {}, state.get("analysis"))
+        event["submit"] = {"label": "다음"}
+    elif phase == "review":
+        event["sections"] = _review_sections()
+        event["submit"] = {"label": "만들기", "optionLabels": dict(_TEMPLATE_MAKE)}
+    if phase == "present" and resume_source(state) == "external":
+        event["title"] = _FILE_GATE if state.get("source_saved") is not False else _FILE_GATE_FAILED
+        if state.get("profile_document_id"):
+            event["documentId"] = state["profile_document_id"]
+    elif phase == "present":
+        event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
+        if state.get("profile_document_id"):
+            event["documentId"] = state["profile_document_id"]
+    detail = detail or gate.get("detail")
     if detail:
         event["detail"] = detail
     if gate.get("multiple"):
@@ -372,8 +822,7 @@ async def _save_choice(db, state: dict, event: dict) -> bool:
     row = await db.q().fetchrow("SELECT id FROM approvals WHERE id = $1", approval_id)
     if row is not None:
         return False
-    await insert_chat_approval(
-        db, state.get("user_id"), state.get("conversation_id"), event, None)
+    await insert_chat_approval(db, state.get("user_id"), state.get("conversation_id"), event, None)
     return True
 
 
@@ -387,10 +836,15 @@ def _artifact_body(name: str, output: dict) -> str:
 
 def _context(db, state: dict) -> ToolContext:
     return ToolContext(
-        user_id=str(state.get("user_id") or ""), company_id=None,
+        user_id=str(state.get("user_id") or ""),
+        company_id=None,
         conversation_id=str(state.get("conversation_id") or ""),
-        job_id=str(state.get("job_id") or ""), tool_call_id="", db=db,
-        core=bound_core.get(), inputs=dict(state.get("inputs") or {}))
+        job_id=str(state.get("job_id") or ""),
+        tool_call_id="",
+        db=db,
+        core=bound_core.get(),
+        inputs=dict(state.get("inputs") or {}),
+    )
 
 
 def _targets(state: dict) -> list[str]:
@@ -456,22 +910,84 @@ def _option_ids(answer: dict) -> list[str]:
     return [str(item) for item in raw if str(item)]
 
 
+def _has_submit(answer: dict) -> bool:
+    if str(answer.get("option_id") or "") == "submit":
+        return True
+    return "submit" in _option_ids(answer)
+
+
+def _answer_ids(answer: dict) -> list[str]:
+    ids = _option_ids(answer)
+    option_id = answer.get("option_id")
+    if option_id:
+        text = str(option_id)
+        if text and text not in ids:
+            return [text, *ids]
+    return ids
+
+
+def _section_answer(sections: list, answer: dict) -> dict[str, list[str]]:
+    """Bucket picks with the card the server built. Do not trust a client section label."""
+    submitted = _has_submit(answer)
+    picked = [item for item in _answer_ids(answer) if item != "submit"]
+    out: dict[str, list[str]] = {}
+    for section in sections:
+        if not isinstance(section, dict) or section.get("kind") == "rows":
+            continue
+        kind = section.get("kind")
+        offered = [
+            opt["id"]
+            for opt in (section.get("options") or [])
+            if isinstance(opt, dict) and opt.get("id")
+        ]
+        offered_set = set(offered)
+        if section.get("multiple"):
+            chosen = [item for item in picked if item in offered_set]
+        else:
+            chosen = [item for item in offered if item in picked]
+            if kind != "toggle":
+                chosen = chosen[:1]
+        if submitted:
+            if kind == "toggle":
+                chosen = [item for item in offered if item in picked]
+            elif not chosen:
+                chosen = [item for item in (section.get("selected") or []) if item in offered_set]
+        elif kind == "toggle" and not chosen:
+            chosen = [item for item in (section.get("selected") or []) if item in offered_set]
+        out[str(section.get("id") or "")] = chosen
+    return out
+
+
 def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
     update: dict = {}
     option_id = answer.get("option_id")
     if phase == "mode_select" and option_id in {"resume_based", "experience_blueprint"}:
         update["work_mode"] = option_id
-    if phase == "intake" and option_id == "C":
-        update["scenario"] = "C"
-    if phase == "review" and option_id in _TEMPLATES:
-        update["template"] = option_id
+    if phase == "review":
+        buckets = _section_answer(_review_sections(), answer)
+        template_ids = buckets.get("template") or []
+        if template_ids:
+            update["template"] = template_ids[0]
+        elif option_id in _TEMPLATES:
+            update["template"] = option_id
+        if "photo" in buckets:
+            update["profile_photo"] = "photo" in buckets["photo"]
     if phase == "output_targets":
-        picked = [item for item in _option_ids(answer) if item in _TARGET_IDS]
-        if not picked and option_id in _TARGET_IDS:
-            picked = [str(option_id)]
+        buckets = _section_answer(
+            intake_panel(state.get("inputs") or {}, state.get("analysis")),
+            answer,
+        )
+        picked = list(buckets.get("targets") or [])
+        if not picked:
+            picked = [item for item in _option_ids(answer) if item in _TARGET_IDS]
+            if not picked and option_id in _TARGET_IDS:
+                picked = [str(option_id)]
         if picked:
             update["output_targets"] = picked
-    if phase == "tone" and option_id:
+        tone_ids = buckets.get("tone") or []
+        if tone_ids:
+            update["tone"] = str(tone_ids[0])
+    if phase == "tone" and option_id and option_id != "submit":
         update["tone"] = str(option_id)
     if phase == "approach" and option_id in _APPROACH_IDS:
         update["approach"] = str(option_id)
@@ -502,6 +1018,9 @@ def merge_inputs(inputs: dict, extra: dict) -> dict:
         if item not in attachments:
             attachments.append(item)
     merged["attachments"] = attachments
+    document_id = extra.get("documentId")
+    if document_id:
+        merged["documentId"] = str(document_id)
     return merged
 
 
@@ -529,23 +1048,45 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
         args = tool.args_model.model_validate(call.get("args") or {})
     except ValidationError:
         return {"error": "INVALID_ARGS"}
-    result, _ok = await call_structured(tool, args, replace(ctx, tool_call_id=call["id"]))
-    emit({"type": "tool", "name": tool.name, "state": "err" if "error" in result else "ok",
-           "summary": tool.summarize(args), "tier": tool.tier.value})
+    result, _ok, retried = await call_retrying(tool, args, replace(ctx, tool_call_id=call["id"]))
+    line = {
+        "type": "tool",
+        "name": tool.name,
+        "state": "err" if "error" in result else "ok",
+        "summary": tool.summarize(args),
+        "tier": tool.tier.value,
+    }
+    if retried:
+        line["warning"] = RETRY_WARNING
+    emit(line)
     return result
 
 
 async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     if model is None:
         return {"summary": phase}
-    context = {key: state.get(key) for key in (
-        "phase", "work_mode", "scenario", "inputs", "analysis", "strategy", "drafts", "review",
-        "approach", "bottleneck_level", "prevention_categories")}
-    prompt = phase_prompt_for_harness(phase)
-    if phase == "strategy" and (state.get("strategy") or {}).get("focus") == "bottleneck":
-        prompt = f"{prompt}\n{_BOTTLENECK_STEPS}"
+    context = {
+        key: state.get(key)
+        for key in (
+            "phase",
+            "work_mode",
+            "scenario",
+            "inputs",
+            "analysis",
+            "strategy",
+            "drafts",
+            "review",
+            "approach",
+            "bottleneck_level",
+            "prevention_categories",
+        )
+    }
+    prompt = phase_instructions(phase, state)
     messages = [
-        SystemMessage(content=prompt + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."),
+        SystemMessage(
+            content=prompt
+            + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."
+        ),
         HumanMessage(content=json.dumps(context, ensure_ascii=False)),
     ]
     used = 0
@@ -562,7 +1103,9 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
         for call in calls:
             result = await _read_tool(call, ctx) if used < _CAP else {"error": "도구 호출 한도"}
             used += 1
-            messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=call["id"]))
+            messages.append(
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=call["id"])
+            )
 
 
 def _reply(phase: str, output: dict) -> str:
@@ -573,11 +1116,48 @@ def _reply(phase: str, output: dict) -> str:
     return _PHASE_DONE[phase]
 
 
+_IMPROVEMENTS_NOTE = (
+    "공고에 맞추려면 고칠 점을 짧은 문장 3개로 improvements 배열에 넣는다. "
+    "같은 내용을 feedback 배열({tag: 키워드|도메인|성과|기술|경력, problem, fix})로도 넣는다. "
+    "페이지를 읽지 못하면 jobs.read_error에 짧은 한국어 이유를 넣는다."
+)
+_STRATEGY_NOTE = (
+    "섹션별 전략을 sections 배열에 넣는다. 각 항목은 "
+    "{section, action(keep|modify|expand|add|condense|remove), reason, suggested_keywords}다."
+)
+_REVIEW_NOTE = (
+    "바로 고친 것을 auto_fixes 배열({line, before, after})에, 사용자가 고를 추천 수정을 "
+    "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다."
+)
 _BOTTLENECK_STEPS = (
     "이번에는 content-strategy Step 1–3만 수행한다"
     "(기술 스택 매칭, 적합도 산정, 프로젝트 경험 재평가). "
     "Step 4 이후 섹션 수정 전략과 자기소개서 전략은 쓰지 않는다."
 )
+
+
+def phase_instructions(phase: str, state: dict) -> str:
+    text = phase_prompt_for_harness(phase)
+    if phase == "strategy":
+        if (state.get("strategy") or {}).get("focus") == "bottleneck":
+            text = f"{text}\n{_BOTTLENECK_STEPS}"
+        text = f"{text}\n{_STRATEGY_NOTE}"
+    if phase in {"publish", "present"} and resume_source(state) == "external":
+        text = f"{text}\n{_EXTERNAL_NOTE}"
+    if phase == "publish":
+        review = state.get("review") if isinstance(state.get("review"), dict) else {}
+        apply = review.get("apply")
+        if isinstance(apply, list) and apply:
+            names = ", ".join(str(item) for item in apply if str(item).strip())
+            extra = "review.apply의 수정만 반영한다."
+            if names:
+                extra = f"{extra} {names}"
+            text = f"{text}\n{extra}"
+    if phase == "analyze":
+        text = f"{text}\n{_IMPROVEMENTS_NOTE}"
+    if phase == "review":
+        text = f"{text}\n{_REVIEW_NOTE}"
+    return text
 
 
 _PHASE_DONE = {
@@ -609,10 +1189,23 @@ _EXITS = {
     "g_level": "g_level",
     "g_prevention": "g_prevention",
     "p2x_validate": "p2x_validate",
+    "g4a": "g4a",
+    "g1": "g1",
+    "g_read_failed": "g_read_failed",
 }
 
 
-def _auto_answer(gate_id: str) -> dict:
+def _auto_answer(gate_id: str, state: dict | None = None) -> dict:
+    state = state or {}
+    if gate_id == "output_targets":
+        ids = ["submit"]
+        for section in intake_panel(state.get("inputs") or {}, state.get("analysis")):
+            if section.get("kind") == "rows":
+                continue
+            ids.extend(section.get("selected") or [])
+        return {"option_id": "submit", "option_ids": ids}
+    if gate_id == "review":
+        return {"option_id": "submit", "option_ids": ["submit", "CLASSIC", "photo"]}
     recommended = _GATES[gate_id]["recommended"]
     if _GATES[gate_id].get("multiple"):
         return {"option_id": recommended, "option_ids": [recommended]}
@@ -620,6 +1213,11 @@ def _auto_answer(gate_id: str) -> dict:
 
 
 def _advance(merged: dict, gate_id: str, update: dict) -> dict:
+    if gate_id == "output_targets":
+        goto = "g_intake" if merged.get("tone") else "g_tone"
+        return {**update, "status": "active", "phase": "intake", "goto": goto}
+    if gate_id == "quality":
+        return {**update, "status": "active", "phase": "review", "goto": "g4a"}
     if gate_id in _INTAKE_NEXT:
         return {**update, "status": "active", "phase": "intake", "goto": _INTAKE_NEXT[gate_id]}
     if gate_id == "approach":
@@ -640,6 +1238,14 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
         }
     if gate_id == "projects":
         return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
+    if gate_id == "analyze" and _scenario_letter(merged) == "E":
+        return {
+            **update,
+            "drafts": drafts_from_chosen(merged.get("drafts"), merged.get("inputs")),
+            "status": "active",
+            "phase": "craft",
+            "goto": "end",
+        }
     if gate_id == "strategy" and (merged.get("strategy") or {}).get("focus") == "bottleneck":
         return {**update, "status": "done", "phase": "strategy", "goto": "end"}
     phase = _GATE_PHASE.get(gate_id, gate_id)
@@ -652,6 +1258,37 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
     return landed
 
 
+async def _emit_papers(db, state: dict, stored: dict) -> None:
+    version = int(state.get("draft_version") or 1)
+    drafts = stored.get("drafts") if isinstance(stored.get("drafts"), dict) else {}
+    markdown = draft_text(drafts)
+    if not isinstance(markdown, str) or not markdown.strip():
+        return
+    name, headline = await profile_card_names(db, state)
+    fallback = " · ".join(part for part in (name, headline) if part)
+    for target in _targets(state):
+        event = paper_event(target, version, markdown, fallback)
+        if event is not None:
+            emit(event)
+
+
+def _quality_pending(state: dict) -> bool:
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    if "apply" in review:
+        return False
+    recs = review.get("recommendations")
+    return isinstance(recs, list) and any(
+        isinstance(item, dict) and str(item.get("label") or "").strip() for item in recs
+    )
+
+
+def _quality_labels(event: dict, answer: dict) -> list[str]:
+    sections = event.get("sections") or []
+    buckets = _section_answer(sections, answer)
+    picked = set(buckets.get("recs") or [])
+    return [opt["label"] for opt in (event.get("options") or []) if opt.get("id") in picked]
+
+
 def build_resume_graph(checkpointer, *, model=None, db=None):
     def current_of(state: ResumeGraphState) -> dict:
         return ResumeState.model_validate(state).model_dump()
@@ -659,16 +1296,56 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     def work_node(phase: str):
         async def node(state: ResumeGraphState) -> dict:
             current = {**current_of(state), "phase": phase}
-            output = await _output(turn_model.get() or model, phase, current, _context(db, current))
+            stamped: dict = {}
+            if phase in {"publish", "present"}:
+                stamped = await resolve_uploaded_source(db, current)
+                if stamped:
+                    current = {**current, **stamped}
+            if phase == "analyze":
+                emit(todo_event("analyze", analyze_steps(current.get("inputs") or {})[0], 0))
+            chat = turn_model.get() or model
+            started = time.monotonic()
+            output = await _output(chat, phase, current, _context(db, current))
+            if chat is not None and phase in _THINK_PHASES:
+                emit(think_event(phase, time.monotonic() - started))
             stored = await _store_output(db, current, phase, output)
+            if phase == "strategy" and output.get("valid") is not False:
+                plan = strategy_plan(output)
+                if plan is not None:
+                    emit(strategy_line(plan))
+                    emit(plan)
+            if phase == "craft":
+                await _emit_papers(db, current, stored)
+            if phase == "present":
+                view = {**current, **stored}
+                if resume_source(view) == "external":
+                    display_name, _headline = await profile_card_names(db, view)
+                    saved = await save_edited_file(db, view, edited_pdf_name(view, display_name))
+                    if saved.get("documentId"):
+                        stored["profile_document_id"] = saved["documentId"]
+                    stored["source_saved"] = bool(saved.get("stored"))
+                    emit(_todo(_file_steps(view)))
+                    emit({**_file_result(saved, view), **_done(view, "external")})
+                else:
+                    emit({"token": "Push 프로필에 저장하는 중…"})
+                    doc_id = await save_profile_document(view)
+                    if doc_id:
+                        stored["profile_document_id"] = doc_id
+                    name, headline = await profile_card_names(db, view)
+                    emit(_todo(_PROFILE_STEPS))
+                    card = _profile_result(doc_id, name, headline, view)
+                    emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
+            if stamped.get("inputs"):
+                stored["inputs"] = stamped["inputs"]
             retries = int((current.get("strategy") or {}).get("retries") or 0)
             if phase == "strategy" and output.get("valid") is False and retries < 2:
                 stored["strategy"] = {**stored["strategy"], "retries": retries + 1}
                 return {**stored, "phase": "strategy", "status": "active", "retry": True}
             return stored
+
         return node
 
     async def accepted(current: dict, gate_id: str, answer: dict) -> dict:
@@ -676,13 +1353,37 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         merged = {**current, **update}
         if gate_id == "intake":
             artifacts = dict(merged.get("artifacts") or {})
-            body = json.dumps({
+            body = json.dumps(
+                {
+                    "work_mode": merged.get("work_mode"),
+                    "output_targets": _targets(merged),
+                    "tone": merged.get("tone"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            artifacts["01_scenario.json"] = await save_artifact(
+                _context(db, merged), "01_scenario.json", body
+            )
+            update["artifacts"] = artifacts
+            merged = {**merged, "artifacts": artifacts}
+        if gate_id == "review":
+            artifacts = dict(merged.get("artifacts") or {})
+            scenario = {
                 "work_mode": merged.get("work_mode"),
                 "output_targets": _targets(merged),
                 "tone": merged.get("tone"),
-            }, ensure_ascii=False, indent=2)
+                "approach": merged.get("approach"),
+                "bottleneck_level": merged.get("bottleneck_level"),
+                "prevention_categories": list(merged.get("prevention_categories") or []),
+                "template": merged.get("template"),
+                "profile_photo": bool(merged.get("profile_photo", True)),
+            }
             artifacts["01_scenario.json"] = await save_artifact(
-                _context(db, merged), "01_scenario.json", body)
+                _context(db, merged),
+                "01_scenario.json",
+                json.dumps(scenario, ensure_ascii=False, indent=2),
+            )
             update["artifacts"] = artifacts
             merged = {**merged, "artifacts": artifacts}
         if gate_id in {"level", "prevention"}:
@@ -696,8 +1397,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 "prevention_categories": list(merged.get("prevention_categories") or []),
             }
             artifacts["01_scenario.json"] = await save_artifact(
-                _context(db, merged), "01_scenario.json",
-                json.dumps(scenario, ensure_ascii=False, indent=2))
+                _context(db, merged),
+                "01_scenario.json",
+                json.dumps(scenario, ensure_ascii=False, indent=2),
+            )
             update["artifacts"] = artifacts
             merged = {**merged, "artifacts": artifacts}
         return _advance(merged, gate_id, update)
@@ -705,34 +1408,63 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     def gate_node(gate_id: str):
         async def node(state: ResumeGraphState) -> dict:
             current = current_of(state)
+            if gate_id == "analyze" and _scenario_letter(current) == "E":
+                return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
                 if gate_id not in _INTAKE_NEXT:
                     emit(_choice(current, gate_id, auto=True))
-                return await accepted(current, gate_id, _auto_answer(gate_id))
-            event = _choice(current, gate_id, auto=False)
+                return await accepted(current, gate_id, _auto_answer(gate_id, current))
+            asks = int(current.get("intake_asks") or 0)
+            event = _choice(
+                current,
+                gate_id,
+                auto=False,
+                cycle=asks if gate_id == "intake" and asks else None,
+            )
             if await _save_choice(db, current, event):
                 emit(event)
-            answer = interrupt({
-                "approval_id": event["id"],
-                "awaiting": "choice",
-                "kind": "RESUME_GATE",
-                "gate": gate_id,
-            }) or {}
+            answer = (
+                interrupt(
+                    {
+                        "approval_id": event["id"],
+                        "awaiting": "choice",
+                        "kind": "RESUME_GATE",
+                        "gate": gate_id,
+                    }
+                )
+                or {}
+            )
             if _cancelled(answer):
                 return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if gate_id == "analyze" and answer.get("option_id") == "score":
+                return {"status": "done", "phase": "analyze", "goto": "end"}
+            if gate_id == "analyze" and answer.get("option_id") == "feedback":
+                return {"status": "active", "phase": "feedback", "goto": "end"}
+            if gate_id == "intake" and answer.get("option_id") == "change":
+                stayed = _apply_answer(current, gate_id, answer)
+                return {
+                    **stayed,
+                    "phase": "intake",
+                    "status": "active",
+                    "goto": "end",
+                    "intake_asks": int(current.get("intake_asks") or 0) + 1,
+                }
             if answer.get("text") and not answer.get("option_id") and not _option_ids(answer):
                 stayed = _apply_answer(current, gate_id, answer)
                 text = str(answer["text"])
                 stayed["phase"] = "strategy" if text.startswith("피드백만") else current["phase"]
                 stayed["status"] = "active"
                 stayed["goto"] = "end"
+                if stayed["phase"] == current["phase"]:
+                    stayed["gate_epoch"] = int(current.get("gate_epoch") or 0) + 1
                 return stayed
             if not answer.get("option_id") and not _option_ids(answer):
-                answer = {**answer, **_auto_answer(gate_id)}
+                answer = {**answer, **_auto_answer(gate_id, current)}
             return await accepted(current, gate_id, answer)
+
         return node
 
-    async def score_draft(state: dict) -> dict:
+    async def score_text(state: dict, text: str) -> dict:
         from app.framework.fit_judge import judge_fit
         from app.harness.personal.tools import current_ai_gate
         from app.infrastructure.posting_fit_cache import read_plan
@@ -745,32 +1477,107 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             terms,
             terms,
             description,
-            draft_text(state.get("drafts")),
+            text,
             plan,
             gate=current_ai_gate(),
             job_id=state.get("job_id") or None,
             user_id=user_id,
         )
 
+    async def score_draft(state: dict) -> dict:
+        return await score_text(state, draft_text(state.get("drafts")))
+
+    async def resume_text(state: dict) -> str:
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        return (
+            chosen_document_text(state.get("inputs"))
+            or await load_document_markdown(db, state)
+            or json.dumps(analysis.get("resume") or {}, ensure_ascii=False)
+        )
+
+    async def analyze_fit(state: dict) -> float | None:
+        from app.harness.personal.tools import current_ai_gate
+
+        if current_ai_gate() is None:
+            return None
+        text = await resume_text(state)
+        try:
+            view = await score_text(state, text)
+        except Exception:
+            logging.getLogger(__name__).warning("analyze fit failed", exc_info=True)
+            emit(fit_failed_line())
+            return None
+        score = float(view["fitScore"])
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        emit(fit_line(score))
+        emit(fit_card(view, _job_terms(analysis), text, analysis.get("improvements") or []))
+        return score
+
+    async def report_analysis(state: dict) -> float | None:
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+        steps, added = analyze_steps(inputs, analysis)
+        lines = {
+            "resume": lambda: resume_line(inputs, analysis),
+            "github": lambda: github_line(analysis),
+            "posting": lambda: posting_line(analysis),
+        }
+        failed = posting_unreadable(inputs, analysis)
+        fit_from = None
+        for index, (key, _text) in enumerate(steps):
+            if key == "fit":
+                if not failed:
+                    fit_from = await analyze_fit(state)
+            elif key == "posting" and failed:
+                emit(posting_line(analysis, failed=True))
+            else:
+                emit(lines[key]())
+            emit(todo_event("analyze", steps, index + 1, added))
+        return fit_from
+
     async def boost(state: ResumeGraphState) -> dict:
-        scores = [float(item) for item in (state.get("scores") or [])]
+        drafts = dict(state.get("drafts") or {})
+        if not draft_text(drafts):
+            body = chosen_document_text(state.get("inputs")) or await load_document_markdown(
+                db, state
+            )
+            if body:
+                drafts = {"markdown": body}
+        view_state = {**state, "drafts": drafts}
+        scores = [float(item) for item in (view_state.get("scores") or [])]
         if not scores:
-            base = await score_draft(state)
+            base = await score_draft(view_state)
             scores.append(float(base["fitScore"]))
-        current = {**state, "phase": "craft"}
-        ctx = _context(db, state)
-        output = await _output(turn_model.get() or model, "craft", current, ctx)
+        version = int(view_state.get("draft_version") or 1) + 1
+        current = {**view_state, "phase": "craft", "draft_version": version}
+        ctx = _context(db, view_state)
+        chat = turn_model.get() or model
+        started = time.monotonic()
+        output = await _output(chat, "craft", current, ctx)
+        if chat is not None:
+            emit(think_event("craft", time.monotonic() - started))
         stored = await _store_output(db, current, "craft", output)
-        view = await score_draft({**state, **stored})
+        await _emit_papers(db, current, stored)
+        view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
-        return {**stored, "scores": scores}
+        emit(boost_line(len(scores) - 1, scores[-2], scores[-1]))
+        emit(boost_fit(scores[0], scores[-1]))
+        return {**stored, "scores": scores, "draft_version": version}
 
     async def _finish_boost(state: ResumeGraphState, outcome: dict, stopped: str) -> dict:
         artifacts = dict(state.get("artifacts") or {})
         artifacts["05_boost_history.json"] = await save_named(
-            state, "05_boost_history.json", {"history": outcome["history"]},
+            state,
+            "05_boost_history.json",
+            {"history": outcome["history"]},
         )
+        fit = {}
+        if outcome["history"]:
+            fit["fit_to"] = outcome["score"]
+            if state.get("fit_from") is None:
+                fit["fit_from"] = outcome["history"][0]["before"]
         return {
+            **fit,
             "phase": "review",
             "scores": [],
             "boost_acked": 0,
@@ -781,11 +1588,13 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         }
 
     async def boost_gate(state: ResumeGraphState) -> dict:
-        outcome = boost_cycle({
-            "scores": state.get("scores") or [],
-            "acked": int(state.get("boost_acked") or 0),
-            "defer": True,
-        })
+        outcome = boost_cycle(
+            {
+                "scores": state.get("scores") or [],
+                "acked": int(state.get("boost_acked") or 0),
+                "defer": True,
+            }
+        )
         pending = outcome.get("pending")
         phase = state.get("phase") or "review"
         if pending is None:
@@ -810,16 +1619,21 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             event = _choice(state, "boost", auto=False, cycle=pending["cycle"], detail=detail)
             if await _save_choice(db, state, event):
                 emit(event)
-            answer = interrupt({
-                "approval_id": event["id"],
-                "awaiting": "choice",
-                "kind": "RESUME_GATE",
-                "gate": "boost",
-                "cycle": pending["cycle"],
-                "before": pending["before"],
-                "after": pending["after"],
-                "gain": pending["gain"],
-            }) or {}
+            answer = (
+                interrupt(
+                    {
+                        "approval_id": event["id"],
+                        "awaiting": "choice",
+                        "kind": "RESUME_GATE",
+                        "gate": "boost",
+                        "cycle": pending["cycle"],
+                        "before": pending["before"],
+                        "after": pending["after"],
+                        "gain": pending["gain"],
+                    }
+                )
+                or {}
+            )
         if _cancelled(answer):
             return {"status": "cancelled", "phase": phase, "goto": "end"}
         option = answer.get("option_id") or "continue"
@@ -861,14 +1675,146 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         artifacts["01_job_analyses.json"] = state.get("job_file") or ""
         fit_body = json.dumps({"fit": analysis.get("fit")}, ensure_ascii=False)
         artifacts["02_fit_score.json"] = await save_artifact(
-            _context(db, state), "02_fit_score.json", fit_body)
-        return {"scenario": str(scenario), "artifacts": artifacts}
+            _context(db, state), "02_fit_score.json", fit_body
+        )
+        update = {"scenario": str(scenario), "artifacts": artifacts}
+        fit_from = await report_analysis(state)
+        if fit_from is not None:
+            update["fit_from"] = fit_from
+        return update
 
     async def feedback_node(state: ResumeGraphState) -> dict:
         current = current_of(state)
-        reply = "피드백을 정리했어요."
+        plan = feedback_plan(current.get("analysis") or {})
+        if plan is not None:
+            emit(feedback_line(len(plan["rows"])))
+            emit(plan)
+            reply = "이 공고 기준으로 고칠 점이에요."
+        else:
+            reply = _feedback_text(current)
         emit({"token": reply})
         return {"reply": reply, "reply_job": current["job_id"], "phase": "feedback"}
+
+    async def quality_gate(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        review = current.get("review") if isinstance(current.get("review"), dict) else {}
+        fixes = [item for item in (review.get("auto_fixes") or []) if isinstance(item, dict)]
+        recs = [item for item in (review.get("recommendations") or []) if isinstance(item, dict)][
+            :6
+        ]
+        emit(quality_line(fixes, recs))
+        diff = quality_diff(fixes)
+        if diff is not None:
+            emit(diff)
+        if not recs:
+            return {"status": "active", "phase": "review", "goto": "g4a"}
+        event = quality_choice(recs)
+        if event is None:
+            return {"status": "active", "phase": "review", "goto": "g4a"}
+        event["id"] = _choice_id(current, "quality")
+        selected = list(event["sections"][0].get("selected") or [])
+        if not _must_stop(current, "quality"):
+            event["auto"] = True
+            emit(event)
+            answer = {"option_id": "submit", "option_ids": ["submit", *selected]}
+        else:
+            if await _save_choice(db, current, event):
+                emit(event)
+            answer = (
+                interrupt(
+                    {
+                        "approval_id": event["id"],
+                        "awaiting": "choice",
+                        "kind": "RESUME_GATE",
+                        "gate": "quality",
+                    }
+                )
+                or {}
+            )
+            if _cancelled(answer):
+                return {"status": "cancelled", "phase": "review", "goto": "end"}
+            if not answer.get("option_id") and not _option_ids(answer) and not answer.get("text"):
+                answer = {"option_id": "submit", "option_ids": ["submit", *selected]}
+        labels = _quality_labels(event, answer)
+        line = apply_recommendations_line(labels)
+        if line is not None:
+            emit(line)
+        return {
+            "review": {**review, "apply": labels},
+            "status": "active",
+            "phase": "review",
+            "goto": "g4a",
+        }
+
+    def _read_failed_event(current: dict) -> dict:
+        gate = _GATES["read_failed"]
+        return {
+            "type": "choice",
+            "id": _choice_id(current, "read_failed"),
+            "kind": "RESUME_GATE",
+            "title": gate["title"],
+            "gate": "read_failed",
+            "recommended": gate["recommended"],
+            "options": [dict(item) for item in gate["options"]],
+        }
+
+    async def read_failed_gate(state: ResumeGraphState) -> dict:
+        current = current_of(state)
+        intent = (current.get("inputs") or {}).get("read_intent")
+        if intent not in {"paste", "pick"}:
+            emit({"token": _READ_FAILED_WARN})
+        event = _read_failed_event(current)
+        if await _save_choice(db, current, event):
+            emit(event)
+        answer = (
+            interrupt(
+                {
+                    "approval_id": event["id"],
+                    "awaiting": "choice",
+                    "kind": "RESUME_GATE",
+                    "gate": "read_failed",
+                }
+            )
+            or {}
+        )
+        if _cancelled(answer):
+            return {"status": "cancelled", "phase": "analyze", "goto": "end"}
+        option = str(answer.get("option_id") or "")
+        text = str(answer.get("text") or "").strip()
+        if option == "proceed":
+            return {"status": "active", "phase": "analyze", "goto": "g1"}
+        if option in {"paste", "pick"}:
+            inputs = dict(current.get("inputs") or {})
+            inputs["read_intent"] = option
+            emit({"token": _READ_FAILED_PASTE if option == "paste" else _READ_FAILED_PICK})
+            return {
+                "inputs": inputs,
+                "gate_epoch": int(current.get("gate_epoch") or 0) + 1,
+                "status": "active",
+                "phase": "analyze",
+                "goto": "g_read_failed",
+            }
+        if text and not option and not _option_ids(answer):
+            inputs = merge_inputs(current.get("inputs") or {}, answer)
+            pages = dict(inputs.get("pages") or {})
+            if inputs.get("read_intent") == "pick":
+                posting_id = _posting_id_in(text)
+                if posting_id:
+                    inputs["postingId"] = posting_id
+                else:
+                    pages[_PASTED_POSTING] = text
+            else:
+                pages[_PASTED_POSTING] = text
+            inputs["pages"] = pages
+            inputs.pop("read_intent", None)
+            return {
+                "inputs": inputs,
+                "gate_epoch": int(current.get("gate_epoch") or 0) + 1,
+                "status": "active",
+                "phase": "analyze",
+                "goto": "end",
+            }
+        return {"status": "active", "phase": "analyze", "goto": "g1"}
 
     async def design_node(state: ResumeGraphState) -> dict:
         current = current_of(state)
@@ -881,7 +1827,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         reply = "접근 방식을 골라 주세요."
         emit({"token": reply})
         return {
-            "reply": reply, "reply_job": current["job_id"], "phase": "approach", "retry": False,
+            "reply": reply,
+            "reply_job": current["job_id"],
+            "phase": "approach",
+            "retry": False,
         }
 
     async def validate_node(state: ResumeGraphState) -> dict:
@@ -891,23 +1840,33 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             output = {"valid": True}
         else:
             messages = [
-                SystemMessage(content=(
-                    "선택한 접근 방식이 공고와 맞는지 JSON으로 판단한다. "
-                    "맞지 않으면 valid를 false로 둔다."
-                )),
-                HumanMessage(content=json.dumps({
-                    "phase": "validate",
-                    "approach": current.get("approach"),
-                    "bottleneck_level": current.get("bottleneck_level"),
-                    "prevention_categories": current.get("prevention_categories") or [],
-                    "analysis": current.get("analysis") or {},
-                }, ensure_ascii=False)),
+                SystemMessage(
+                    content=(
+                        "선택한 접근 방식이 공고와 맞는지 JSON으로 판단한다. "
+                        "맞지 않으면 valid를 false로 둔다."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "phase": "validate",
+                            "approach": current.get("approach"),
+                            "bottleneck_level": current.get("bottleneck_level"),
+                            "prevention_categories": current.get("prevention_categories") or [],
+                            "analysis": current.get("analysis") or {},
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
             ]
             output = _parsed(await chat.ainvoke(messages))
         if _invalid(output):
             return _fail_update(state, "approach")
         return {
-            "phase": "blueprints", "status": "active", "retry": False, "validation_failures": 0,
+            "phase": "blueprints",
+            "status": "active",
+            "retry": False,
+            "validation_failures": 0,
         }
 
     async def validate_bp_node(state: ResumeGraphState) -> dict:
@@ -917,26 +1876,36 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             output = {"valid": True}
         else:
             messages = [
-                SystemMessage(content=phase_prompt_for_harness("validate_bp") + (
-                    "\n\n탈락이면 valid를 false로 둔다. 결과는 JSON 객체 하나로만 답한다."
-                )),
-                HumanMessage(content=json.dumps({
-                    "phase": "validate_bp",
-                    "approach": current.get("approach"),
-                    "bottleneck_level": current.get("bottleneck_level"),
-                    "prevention_categories": current.get("prevention_categories") or [],
-                    "blueprints": current.get("blueprints") or {},
-                    "analysis": current.get("analysis") or {},
-                }, ensure_ascii=False)),
+                SystemMessage(
+                    content=phase_prompt_for_harness("validate_bp")
+                    + ("\n\n탈락이면 valid를 false로 둔다. 결과는 JSON 객체 하나로만 답한다.")
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "phase": "validate_bp",
+                            "approach": current.get("approach"),
+                            "bottleneck_level": current.get("bottleneck_level"),
+                            "prevention_categories": current.get("prevention_categories") or [],
+                            "blueprints": current.get("blueprints") or {},
+                            "analysis": current.get("analysis") or {},
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
             ]
             output = _parsed(await chat.ainvoke(messages))
         artifacts = dict(state.get("artifacts") or {})
         artifacts["04_validation_report.json"] = await save_named(
-            state, "04_validation_report.json", output)
+            state, "04_validation_report.json", output
+        )
         if _invalid(output):
             return {**_fail_update(state, "blueprints"), "artifacts": artifacts}
         return {
-            "artifacts": artifacts, "phase": "blueprints", "status": "active", "retry": False,
+            "artifacts": artifacts,
+            "phase": "blueprints",
+            "status": "active",
+            "retry": False,
         }
 
     def after_validate(state: ResumeGraphState) -> str:
@@ -965,8 +1934,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         phase = state.get("phase") or "mode_select"
         if state.get("goto") == "p3c_boost":
             return "p3c_boost"
+        if phase == "craft" and _scenario_letter(state) == "E":
+            return "p3c_boost"
+        if phase == "intake" and int(state.get("intake_asks") or 0) > 0:
+            return "g_intake"
         if phase == "review" and _scenario_letter(state) == "C":
             return "p4b_design"
+        if phase == "review" and _quality_pending(state):
+            return "g_quality"
         return {
             "mode_select": "p0_mode",
             "intake": "p0i_intake",
@@ -983,6 +1958,13 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     def route_goto(state: ResumeGraphState) -> str:
         return state.get("goto") or "end"
+
+    def after_classify(state: ResumeGraphState) -> str:
+        analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+        inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+        if posting_unreadable(inputs, analysis):
+            return "g_read_failed"
+        return "g1"
 
     def after_strategy(state: ResumeGraphState) -> str:
         return "end" if state.get("retry") else "g2"
@@ -1010,9 +1992,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p3c_boost", boost)
     graph.add_node("p3c_cycle", boost_gate)
     graph.add_node("p4a_review", work_node("review"))
+    graph.add_node("g_quality", quality_gate)
     graph.add_node("g4a", gate_node("review"))
+    graph.add_node("g_read_failed", read_failed_gate)
     graph.add_node("p5_publish", work_node("publish"))
-    graph.add_node("g5", gate_node("publish"))
     graph.add_node("p6_present", work_node("present"))
     graph.add_node("g6", gate_node("present"))
     graph.add_node("p2x_approach", approach_node)
@@ -1024,43 +2007,88 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_node("p2x_validate_bp", validate_bp_node)
     graph.add_node("g_validate_cap", gate_node("validate_cap"))
     graph.add_node("g2x", gate_node("projects"))
-    graph.add_conditional_edges(START, route_phase, {name: name for name in (
-        "p0_mode", "p0i_intake", "p1_analyze", "p2_strategy", "p2b_feedback", "p3_craft",
-        "p4a_review", "p4b_design", "p5_publish", "p6_present", "p3c_boost",
-        "p2x_approach", "p2x_blueprints",
-    )})
+    graph.add_conditional_edges(
+        START,
+        route_phase,
+        {
+            name: name
+            for name in (
+                "p0_mode",
+                "p0i_intake",
+                "g_intake",
+                "p1_analyze",
+                "p2_strategy",
+                "p2b_feedback",
+                "p3_craft",
+                "p4a_review",
+                "g_quality",
+                "p4b_design",
+                "p5_publish",
+                "p6_present",
+                "p3c_boost",
+                "p2x_approach",
+                "p2x_blueprints",
+            )
+        },
+    )
     graph.add_edge("p0_mode", "g0")
     graph.add_edge("p0i_intake", "g_output_targets")
     graph.add_conditional_edges(
-        "p1_analyze", fan_out, ["parse_resume", "explore_github", "analyze_job"])
+        "p1_analyze", fan_out, ["parse_resume", "explore_github", "analyze_job"]
+    )
     graph.add_edge("parse_resume", "classify_scenario")
     graph.add_edge("explore_github", "classify_scenario")
     graph.add_edge("analyze_job", "classify_scenario")
-    graph.add_edge("classify_scenario", "g1")
+    graph.add_conditional_edges(
+        "classify_scenario", after_classify, {"g1": "g1", "g_read_failed": "g_read_failed"}
+    )
     graph.add_edge("p2b_feedback", "g_feedback")
     graph.add_edge("p4b_design", "g4a")
     graph.add_edge("p2x_approach", "g_approach")
     graph.add_edge("p2x_blueprints", "p2x_validate_bp")
     graph.add_conditional_edges(
-        "p2x_validate", after_validate, {
-            "end": END, "p2x_blueprints": "p2x_blueprints", "g_validate_cap": "g_validate_cap",
-        })
+        "p2x_validate",
+        after_validate,
+        {
+            "end": END,
+            "p2x_blueprints": "p2x_blueprints",
+            "g_validate_cap": "g_validate_cap",
+        },
+    )
     graph.add_conditional_edges(
-        "p2x_validate_bp", after_validate_bp, {
-            "end": END, "g2x": "g2x", "g_validate_cap": "g_validate_cap",
-        })
+        "p2x_validate_bp",
+        after_validate_bp,
+        {
+            "end": END,
+            "g2x": "g2x",
+            "g_validate_cap": "g_validate_cap",
+        },
+    )
     graph.add_conditional_edges("p2_strategy", after_strategy, {"g2": "g2", "end": END})
     graph.add_edge("p3_craft", "g3")
-    graph.add_edge("p4a_review", "g4a")
-    graph.add_edge("p5_publish", "g5")
+    graph.add_edge("p4a_review", "g_quality")
+    graph.add_edge("p5_publish", "p6_present")
     graph.add_edge("p6_present", "g6")
     graph.add_edge("p3c_boost", "p3c_cycle")
-    graph.add_conditional_edges(
-        "p3c_cycle", route_goto, {"end": END, "p3c_boost": "p3c_boost"})
+    graph.add_conditional_edges("p3c_cycle", route_goto, {"end": END, "p3c_boost": "p3c_boost"})
     for name in (
-        "g0", "g_output_targets", "g_tone", "g_intake", "g1", "g_feedback",
-        "g2", "g3", "g4a", "g5", "g6",
-        "g_approach", "g_level", "g_prevention", "g_validate_cap", "g2x",
+        "g0",
+        "g_output_targets",
+        "g_tone",
+        "g_intake",
+        "g1",
+        "g_feedback",
+        "g2",
+        "g3",
+        "g_quality",
+        "g4a",
+        "g6",
+        "g_read_failed",
+        "g_approach",
+        "g_level",
+        "g_prevention",
+        "g_validate_cap",
+        "g2x",
     ):
         graph.add_conditional_edges(name, route_goto, _EXITS)
     return graph.compile(checkpointer=checkpointer)

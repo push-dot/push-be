@@ -26,9 +26,6 @@ from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 EXPORT_PDF = "PDF"
 EXPORT_DOCX = "DOCX"
@@ -42,7 +39,7 @@ def validate_document_input(title: str, kind: str, template: str) -> None:
     if not 1 <= len(title) <= MAX_DOCUMENT_TITLE:
         raise validation_field("title", f"title must be 1-{MAX_DOCUMENT_TITLE} characters")
     if not ent.valid_document_kind(kind):
-        raise validation_field("kind", "must be RESUME, PORTFOLIO, COVER_LETTER or CAREER_STATEMENT")
+        raise validation_field("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE")
     if not ent.valid_document_template(template):
         raise validation_field("template", ent.DOC_TEMPLATE_MESSAGE)
 
@@ -109,7 +106,7 @@ class DocumentService:
                 raise internal()
         validate_document_input(title, kind, template)
         template = ent.stored_document_template(template)
-        now = _now()
+        now = utcnow()
         d = ent.Document(
             id=uuid4(), user_id=user_id, revision=1, application_id=application_id,
             title=title, kind=kind, template=template, language=language,
@@ -134,7 +131,7 @@ class DocumentService:
                 raise revision_conflict(d.revision)
             if d.template != template:
                 d.template = template
-                d.updated_at = _now()
+                d.updated_at = utcnow()
                 try:
                     await self.documents.update(d, expected)
                 except Exception as err:
@@ -200,7 +197,7 @@ class DocumentService:
             new_blocks = copy.deepcopy(blocks)
             await self._verify_blocks(user_id, d.application_id, new_blocks)
             num = await self.documents.next_version_number(doc_id)
-            now = _now()
+            now = utcnow()
             v = ent.DocumentVersion(
                 id=uuid4(), user_id=user_id, document_id=doc_id,
                 application_id=d.application_id, number=num, content=content,
@@ -268,7 +265,7 @@ class DocumentService:
             if language is not None:
                 d.language = language
             num = await self.documents.next_version_number(doc_id)
-            now = _now()
+            now = utcnow()
             content, blocks = dc.build_excerpt_content(entries)
             v = ent.DocumentVersion(
                 id=uuid4(), user_id=user_id, document_id=doc_id,
@@ -325,7 +322,7 @@ class DocumentService:
                 raise validation_field(
                     "selection",
                     "selection text does not match the version content")
-            now = _now()
+            now = utcnow()
             replacement = selection.text
             if action == "SHORTEN" and len(replacement) > 1:
                 replacement = replacement[: len(replacement) // 2]
@@ -376,7 +373,7 @@ class DocumentService:
             await self.approvals.consume(
                 user_id, approval_id, ent.APPROVAL_DOCUMENT_FINALIZE,
                 d.application_id, version_id, self._version_hash(v))
-            now = _now()
+            now = utcnow()
             d.status = ent.DOC_FINALIZED
             d.finalized_version_id = version_id
             d.updated_at = now
@@ -418,7 +415,7 @@ class DocumentService:
             if d.finalized_version_id is None or d.finalized_version_id != v.id:
                 raise document_not_finalized(
                     "only the finalized version can be exported")
-            now = _now()
+            now = utcnow()
             e = ent.DocumentExport(
                 id=uuid4(), user_id=user_id, document_id=doc_id, version_id=v.id,
                 format=format_, template=d.template, language=d.language,

@@ -6,6 +6,7 @@ import {
 } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
+import { stageEnteredAt } from "./applications.ts";
 import {
   JOB_CATEGORIES,
   GUEST_ID,
@@ -25,6 +26,7 @@ import {
   enumList,
   pushArray,
   anyOf,
+  NOT_DELETING,
   postingDto,
   POSTING_COLS,
   openClause,
@@ -32,9 +34,16 @@ import {
   countWhere,
   relevance,
   notify,
+  searchSortMode,
+  assertSearchCursor,
+  stampSearchCursor,
 } from "./recruiting-shared.ts";
 
 const EMPLOYMENT = new Set(["full_time", "contract", "intern", "freelance", "dispatch"]);
+
+const DRAFT_SOURCES = new Set(["AGENT", "MANUAL"]);
+
+const DRAFT_SOURCE_COL = "to_jsonb(p) ->> 'draft_source' AS draft_source";
 
 const CAREER_YEARS = new Set(["0", "1-3", "4-6", "7-9", "10+"]);
 
@@ -65,7 +74,7 @@ function appendPostingFilters(
   params: unknown[],
   url: URL,
   withLocation: boolean,
-  skip: { category?: boolean; career?: boolean; skills?: boolean } = {},
+  skip: { category?: boolean; career?: boolean; skills?: boolean; employment?: boolean } = {},
 ): string {
   const q = url.searchParams.get("q") || "";
   if (q) {
@@ -115,7 +124,7 @@ function appendPostingFilters(
     }
   }
   const employment = enumList(url, "employmentType", EMPLOYMENT, "employmentType");
-  if (employment.length) {
+  if (employment.length && !skip.employment) {
     const i = pushArray(params, employment);
     sql += ` AND p.employment_type = ANY(${anyOf(i)})`;
   }
@@ -134,7 +143,7 @@ const APPLICANT_COUNT_RETURNING =
   "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = job_postings.id) AS applicant_count";
 
 const detailSql = (withStatus: boolean, where: string): string =>
-  `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
+  `SELECT ${POSTING_COLS}${withStatus ? ", p.status" : ""}, p.description, p.requirements, p.work_conditions, ${DRAFT_SOURCE_COL}, ${postingFlags("$2")}, ${applicantCountSql()} FROM job_postings p WHERE ${where}`;
 
 const postingSort = (url: URL): "latest" | "deadline" | "popular" => {
   const sort = url.searchParams.get("sort") || "latest";
@@ -199,11 +208,14 @@ async function listPostings(ctx: Ctx): Promise<Response> {
 }
 
 async function listPostingLocations(ctx: Ctx): Promise<Response> {
+  const level = ctx.url.searchParams.get("level") ?? "district";
+  if (level !== "district" && level !== "city") throw fieldError("level", "must be district or city");
   const rows = await withPublicStatus(async (withStatus) => {
     const params: unknown[] = [ctx.user.id];
-    let sql = `SELECT p.location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
+    const place = level === "city" ? "(regexp_split_to_array(btrim(p.location), '\\s+'))[1]" : "p.location";
+    let sql = `SELECT ${place} AS location, count(*)::int AS count FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
     sql = appendPostingFilters(sql, params, ctx.url, false);
-    sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
+    sql += level === "city" ? " GROUP BY 1 ORDER BY 2 DESC, 1 ASC" : " GROUP BY p.location ORDER BY count DESC, p.location ASC";
     return query(ctx.deps.query, sql, params);
   });
   return data(200, rows.rows.map((row) => ({ location: String(row.location ?? ""), count: Number(row.count ?? 0) })), ctx.rid);
@@ -235,6 +247,18 @@ const categoryFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
   return [...JOB_CATEGORIES].map((id) => ({ id, count: counts.get(id) ?? 0 }));
 };
 
+const employmentFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
+  const rows = await withPublicStatus(async (withStatus) => {
+    const params: unknown[] = [ctx.user.id];
+    let sql = "SELECT p.employment_type AS id, count(*)::int AS count" + facetWhere(withStatus);
+    sql = appendPostingFilters(sql, params, ctx.url, true, { employment: true });
+    sql += " GROUP BY p.employment_type";
+    return query(ctx.deps.query, sql, params);
+  });
+  const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
+  return [...EMPLOYMENT].map((id) => ({ id, count: counts.get(id) ?? 0 }));
+};
+
 const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> => {
   const rows = await withPublicStatus(async (withStatus) => {
     const params: unknown[] = [ctx.user.id];
@@ -261,11 +285,33 @@ export const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: stri
     .map((row) => ({ id: String(row.id ?? ""), count: Number(row.count ?? 0) }));
 };
 
+const SKILL_LIMIT = { fallback: 20, max: 50 };
+
+const skillLimit = (url: URL): number => {
+  const raw = url.searchParams.get("limit");
+  if (raw === null) return SKILL_LIMIT.fallback;
+  const limit = Number(raw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > SKILL_LIMIT.max) throw fieldError("limit", `must be an integer from 1 to ${SKILL_LIMIT.max}`);
+  return limit;
+};
+
+const listSkills = async (ctx: Ctx): Promise<Response> => {
+  const needle = (ctx.url.searchParams.get("q") ?? "").trim();
+  if (codePoints(needle) > 40) throw fieldError("q", "must be at most 40 characters");
+  const limit = skillLimit(ctx.url);
+  const rows = await withPublicStatus((withStatus) => query(ctx.deps.query,
+    `SELECT sk AS name, count(*)::int AS posting_count FROM job_postings p, jsonb_array_elements_text(COALESCE(p.skills, '[]'::jsonb)) sk
+     WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND ($2::text = '' OR strpos(lower(sk), lower($2::text)) > 0)
+     GROUP BY sk ORDER BY (strpos(lower(sk), lower($2::text)) = 1) DESC, posting_count DESC, sk ASC LIMIT $3::int`,
+    [ctx.user.id, needle, limit]));
+  return data(200, rows.rows.map((row) => ({ name: String(row.name ?? ""), postingCount: Number(row.posting_count ?? 0) })), ctx.rid);
+};
+
 const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
-  const [career, category, location, skills] = await Promise.all([
-    careerFacet(ctx), categoryFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
+  const [career, category, employmentType, location, skills] = await Promise.all([
+    careerFacet(ctx), categoryFacet(ctx), employmentFacet(ctx), locationFacet(ctx), skillRows(ctx, true),
   ]);
-  return data(200, { career, category, location, skills }, ctx.rid);
+  return data(200, { career, category, employmentType, location, skills }, ctx.rid);
 };
 
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -342,6 +388,10 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     if (body.status !== "DRAFT" && body.status !== "OPEN") throw fieldError("status", "invalid status");
     postingStatus = body.status;
   }
+  if (body.draftSource != null && !(typeof body.draftSource === "string" && DRAFT_SOURCES.has(body.draftSource))) {
+    throw fieldError("draftSource", "must be AGENT or MANUAL");
+  }
+  const draftSource = body.draftSource == null ? null : String(body.draftSource);
   const account = await verifiedCompany(ctx);
   const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
   if (!company) throw fieldError("company", "company must be 1-200 characters");
@@ -351,17 +401,22 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   const base = [id, account.id, company, title, body.jobCategory, careerMin, careerMax, location, body.employmentType, description,
     JSON.stringify(requirements), JSON.stringify(workConditions), JSON.stringify(skills), JSON.stringify(preferred), imageKey, sourceUrl, deadline,
     fields.text, fields.choseong, fields.jamo, now, postingStatus];
-  try {
-    await query(ctx.deps.query,
-      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22,$23)`,
-      [...base, ctx.user.id]);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
-    await query(ctx.deps.query,
-      `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22)`,
-      base);
+  // Older schemas lack draft_source (0040) and created_by; fall back one column set at a time.
+  const tiers: [string, string, unknown[]][] = [
+    [", created_by, draft_source", ",$23,$24::text", [ctx.user.id, draftSource]],
+    [", created_by", ",$23", [ctx.user.id]],
+    ["", "", []],
+  ];
+  for (const [at, [cols, vals, extra]] of tiers.entries()) {
+    try {
+      await query(ctx.deps.query,
+        `INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, career_max, location, employment_type, description, requirements, work_conditions, skills, preferred, image_key, source_url, deadline, closed_at, revision, search_text, search_choseong, search_jamo, created_at, status${cols})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,NULL,1,$18,$19,$20,$21,$22${vals})`,
+        [...base, ...extra]);
+      break;
+    } catch (err) {
+      if (!isUndefinedColumn(err) || at === tiers.length - 1) throw err;
+    }
   }
   await enqueueIngest(ctx, { postingId: id });
   return data(201, postingDto({
@@ -369,7 +424,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
     career_max: careerMax, location, employment_type: body.employmentType, deadline, source_url: sourceUrl,
     created_at: now, bookmarked: false, applied: false, description, requirements, work_conditions: workConditions,
     preferred, revision: 1, closed_at: null, status: postingStatus, applicant_count: 0,
-    new_applicant_count: 0, created_by_name: ctx.user.displayName,
+    new_applicant_count: 0, created_by_name: ctx.user.displayName, draft_source: draftSource,
   }, true, true), ctx.rid);
 }
 
@@ -413,16 +468,18 @@ function applicationDto(row: Record<string, unknown>): Record<string, unknown> {
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
     fitScore: row.fit_score == null || row.fit_score === "" ? null : Number(row.fit_score),
+    stageEnteredAt: stageEnteredAt(row),
   };
 }
 
 const companyApplicationDto = (row: Record<string, unknown>): Record<string, unknown> => {
   const dto = applicationDto(row);
   delete dto.notes;
+  delete dto.stageEnteredAt;
   return dto;
 };
 
-const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at";
+const APPLICATION_COLS = "a.id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at, to_jsonb(a) -> 'stage_entered_at' AS stage_entered_at";
 
 const existingApplication = (ctx: Ctx, postingId: string) => one(ctx.deps.query,
   `SELECT ${APPLICATION_COLS}
@@ -443,14 +500,23 @@ const idList = (value: unknown, field: string): string[] => {
  * when the caller has no application for the posting yet, which closes most of the double-apply window.
  */
 
-const APPLY_SQL = `WITH job AS (
+const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
     INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
     SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
     WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
     RETURNING id
   ), app AS (
-    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at)
-    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9 FROM job
+    INSERT INTO applications (id, user_id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at${stamp ? ", stage_entered_at" : ""}${snapshot ? ", applicant_snapshot" : ""})
+    SELECT $12, $2, 1, job.id, $4, $5, 'APPLIED', '', $9, NULL, false, $9, $9${stamp ? ", jsonb_build_object('APPLIED', $9::timestamptz)" : ""}${snapshot ? `, (
+      SELECT jsonb_build_object(
+        'headline', p.headline,
+        'jobCategory', p.job_category,
+        'tenureYears', p.tenure_years,
+        'careers', p.careers,
+        'skills', p.skills,
+        'capturedAt', $9::timestamptz
+      ) FROM profiles p WHERE p.user_id = $2
+    )` : ""} FROM job
     RETURNING id
   ), ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
@@ -467,6 +533,15 @@ const APPLY_SQL = `WITH job AS (
   )
   SELECT id FROM app`;
 
+const APPLY_SQL = applySql(true, true);
+const APPLY_SQL_STAMP = applySql(true, false);
+const APPLY_SQL_BARE = applySql(false, false);
+
+const namesUndefinedColumn = (err: unknown, column: string): boolean => {
+  const e = err as { message?: string };
+  return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
+};
+
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const posting = await withPublicStatus((withStatus) => one(ctx.deps.query,
@@ -482,7 +557,7 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     documentIds.length ? query(ctx.deps.query,
       `SELECT DISTINCT ON (d.id) d.id, d.title, v.content FROM documents d
        JOIN document_versions v ON v.document_id = d.id
-       WHERE d.user_id = $1 AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
+       WHERE d.user_id = $1 AND d.status <> 'ARCHIVED' AND d.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
        ORDER BY d.id, v.number DESC, v.created_at DESC, v.id DESC`,
       [ctx.user.id, JSON.stringify(documentIds)]) : null,
     sourceIds.length ? query(ctx.deps.query,
@@ -504,16 +579,33 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     return { document_id: docId, title: String(doc.title ?? ""), content: snapshotText(doc.content) };
   });
   let created: Record<string, unknown> | null;
+  const applyParams = [
+    jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
+    posting.deadline, now, fields.choseong, fields.jamo, applicationId,
+    JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
+  ];
+  const runApply = async (sql: string): Promise<Record<string, unknown> | null> => {
+    try {
+      return await one(ctx.deps.query, sql, applyParams);
+    } catch (err) {
+      // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
+      if (isUnique(err)) return null;
+      throw err;
+    }
+  };
   try {
-    created = await one(ctx.deps.query, APPLY_SQL, [
-      jobId, ctx.user.id, id, posting.company, posting.title, posting.description, JSON.stringify(jsonList(posting.requirements)),
-      posting.deadline, now, fields.choseong, fields.jamo, applicationId,
-      JSON.stringify({ postingId: id, documentIds }), JSON.stringify(snapshots), JSON.stringify(sourceIds),
-    ]);
+    created = await runApply(APPLY_SQL);
   } catch (err) {
-    // A unique index on jobs (user_id, source_posting_id) turns a simultaneous second apply into 23505.
-    if (!isUnique(err)) throw err;
-    created = null;
+    if (!isUndefinedColumn(err)) throw err;
+    // Snapshot is newer than stage_entered_at. A database that lacks only the snapshot
+    // keeps the stamp. One that lacks the stamp (the error names that column) uses the bare insert.
+    const next = namesUndefinedColumn(err, "applicant_snapshot") ? APPLY_SQL_STAMP : APPLY_SQL_BARE;
+    try {
+      created = await runApply(next);
+    } catch (err2) {
+      if (!isUndefinedColumn(err2) || next === APPLY_SQL_BARE) throw err2;
+      created = await runApply(APPLY_SQL_BARE);
+    }
   }
   if (!created) {
     // A concurrent apply for the same posting won; answer with its application.
@@ -525,6 +617,7 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   return data(201, applicationDto({
     id: applicationId, revision: 1, job_id: jobId, company: posting.company, title: posting.title,
     stage: "APPLIED", notes: "", applied_at: now, next_action_at: null, imported: false, created_at: now, updated_at: now,
+    stage_entered_at: { APPLIED: now },
   }), ctx.rid);
 }
 
@@ -539,6 +632,8 @@ const revisionConflict = (currentRevision: number): HttpError =>
   new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision });
 
 const POSTING_RETURNING = `id, company, title, job_category, image_key, skills, career_min, career_max, location, employment_type, deadline, source_url, created_at, revision, preferred, closed_at, description, requirements, work_conditions, status`;
+
+const DRAFT_SOURCE_RETURNING = "to_jsonb(job_postings) ->> 'draft_source' AS draft_source";
 
 const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
@@ -601,7 +696,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const updated = await one(ctx.deps.query,
     `UPDATE job_postings SET company = $3, title = $4, job_category = $5, career_min = $6, career_max = $7, location = $8, employment_type = $9, description = $10, requirements = $11::jsonb, work_conditions = $12::jsonb, skills = $13::jsonb, preferred = $14::jsonb, image_key = $15, source_url = $16, deadline = $17, search_text = $18, search_choseong = $19, search_jamo = $20, status = $22, revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $21
-     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}`,
+     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}, ${DRAFT_SOURCE_RETURNING}`,
     [id, company.id, next.company, next.title, next.job_category, careerMin, careerMax, next.location, next.employment_type, next.description,
       JSON.stringify(jsonList(next.requirements)), JSON.stringify(jsonObject(next.work_conditions)), JSON.stringify(jsonList(next.skills)), JSON.stringify(jsonList(next.preferred)),
       next.image_key ?? null, next.source_url ?? null, next.deadline ?? null, fields.text, fields.choseong, fields.jamo, expected, next.status ?? "OPEN"]);
@@ -628,7 +723,7 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const updated = await one(ctx.deps.query,
     `UPDATE job_postings SET closed_at = $3, status = 'CLOSED', revision = revision + 1
      WHERE id = $1 AND company_id = $2 AND revision = $4 AND closed_at IS NULL
-     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}`,
+     RETURNING ${POSTING_RETURNING}, ${APPLICANT_COUNT_RETURNING}, ${DRAFT_SOURCE_RETURNING}`,
     [id, company.id, ctx.now.toISOString(), expected]);
   if (!updated) {
     const again = await one(ctx.deps.query, "SELECT revision FROM job_postings WHERE id = $1 AND company_id = $2", [id, company.id]);
@@ -658,7 +753,7 @@ const listCompanyPostings = async (ctx: Ctx): Promise<Response> => {
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     const unseen = "(SELECT count(*)::int FROM applications a JOIN jobs j ON j.id = a.job_id WHERE j.source_posting_id = p.id AND (to_jsonb(a) ->> 'company_seen_at') IS NULL) AS new_applicant_count";
     const creator = "(SELECT u.display_name FROM users u WHERE u.id = NULLIF(to_jsonb(p) ->> 'created_by', '')::uuid) AS created_by_name";
-    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${unseen}, ${creator}, ${postingFlags("$1")}` + where;
+    let sql = `SELECT ${cols}, ${applicantCountSql()}, ${unseen}, ${creator}, ${DRAFT_SOURCE_COL}, ${postingFlags("$1")}` + where;
     if (page.cursor) {
       params.push(page.cursor.createdAt, page.cursor.id);
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
@@ -709,6 +804,7 @@ const postingApplicantCounts = async (ctx: Ctx, idRaw: string): Promise<Response
 };
 
 const APPLICANT_SQL = `SELECT a.id, a.user_id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at,
+  (to_jsonb(a) -> 'applicant_snapshot') AS applicant_snapshot,
   (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = a.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score
   FROM applications a JOIN jobs j ON j.id = a.job_id
   WHERE a.id = $1 AND j.source_posting_id = $2`;
@@ -727,17 +823,20 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const params: unknown[] = [postingId];
   const documentsSql = (withFiles: boolean): string => {
     const files = withFiles
-      ? `UNION ALL SELECT f.file_name, f.page_count, f.created_at, f.id FROM application_files f WHERE f.application_id = a.id`
+      ? `UNION ALL SELECT f.file_name, f.page_count, f.created_at, f.id,
+          CASE WHEN lower(f.mime_type) LIKE 'application/pdf%' THEN 'PDF' ELSE 'FILE' END FROM application_files f WHERE f.application_id = a.id`
       : "";
     return `COALESCE((
-      SELECT json_agg(json_build_object('title', d.title, 'pages', d.pages) ORDER BY d.created_at, d.id)
+      SELECT json_agg(json_build_object('title', d.title, 'pages', d.pages, 'kind', d.kind) ORDER BY d.created_at, d.id)
       FROM (
-        SELECT s.title, NULL::int AS pages, s.created_at, s.id FROM application_snapshots s WHERE s.application_id = a.id
+        SELECT s.title, NULL::int AS pages, s.created_at, s.id,
+          CASE WHEN EXISTS (SELECT 1 FROM documents dd WHERE dd.id = s.document_id AND dd.kind = 'HUB_PROFILE') THEN 'PROFILE' END AS kind
+          FROM application_snapshots s WHERE s.application_id = a.id
         ${files}
       ) d
     ), '[]'::json)`;
   };
-  let sql = `SELECT a.id, a.stage, a.applied_at, u.display_name, pr.headline, pr.job_category, pr.tenure_years, pr.avatar_key,
+  let sql = `SELECT a.id, a.stage, a.applied_at, (to_jsonb(a) ->> 'company_seen_at') IS NULL AS is_new, u.display_name, pr.headline, pr.job_category, pr.tenure_years, pr.avatar_key,
     ${documentsSql(true)} AS documents
     FROM applications a
     JOIN jobs j ON j.id = a.job_id
@@ -772,8 +871,10 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
         avatarUrl: imageUrl(row.avatar_key),
       },
       documents: documentPages(row.documents),
+      documentKinds: documentKinds(row.documents),
       stage: String(row.stage ?? ""),
       appliedAt: ts(row.applied_at) ?? "",
+      isNew: asBool(row.is_new),
     },
     createdAt: row.applied_at,
     id: String(row.id),
@@ -782,17 +883,26 @@ const listApplicants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 };
 
-const documentPages = (value: unknown): { title: string; pages: number | null }[] => {
+const documentRows = (value: unknown): Record<string, unknown>[] => {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
   }
   if (!Array.isArray(raw)) return [];
-  return raw.map((item) => {
-    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+  return raw.map((item) => (item && typeof item === "object" ? item as Record<string, unknown> : {}));
+};
+
+const documentPages = (value: unknown): { title: string; pages: number | null }[] =>
+  documentRows(value).map((row) => {
     const pages = row.pages == null || row.pages === "" ? null : Number(row.pages);
     return { title: String(row.title ?? ""), pages: pages != null && Number.isFinite(pages) ? pages : null };
   });
+
+const DOCUMENT_KINDS = ["PROFILE", "PDF", "FILE"];
+
+const documentKinds = (value: unknown): string[] => {
+  const present = new Set(documentRows(value).map((row) => String(row.kind ?? "")));
+  return DOCUMENT_KINDS.filter((kind) => present.has(kind));
 };
 
 const fileBytes = (value: unknown): Uint8Array<ArrayBuffer> | null => {
@@ -817,6 +927,41 @@ const snapshotDocuments = async (ctx: Ctx, applicationId: string): Promise<{ id:
   }));
 };
 
+const applicationFiles = async (ctx: Ctx, applicationId: string): Promise<{ id: string; fileName: string; mimeType: string; size: number; pageCount: number | null }[]> => {
+  try {
+    const rows = await query(ctx.deps.query,
+      "SELECT id, file_name, mime_type, size, page_count FROM application_files WHERE application_id = $1 ORDER BY created_at, id",
+      [applicationId]);
+    return rows.rows.map((row) => ({
+      id: String(row.id),
+      fileName: String(row.file_name ?? ""),
+      mimeType: String(row.mime_type ?? ""),
+      size: Number(row.size ?? 0),
+      pageCount: row.page_count == null ? null : Number(row.page_count),
+    }));
+  } catch (err) {
+    if (isMissingRelation(err) || isUndefinedColumn(err)) return [];
+    throw err;
+  }
+};
+
+const objectOf = (value: unknown): Record<string, unknown> | null => {
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return null; }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
+};
+
+const textOrNull = (value: unknown): string | null => value == null ? null : String(value);
+
+const tenureOf = (value: unknown): number | null => {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
 const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
   const postingId = requireUuid(postingRaw, "id");
   const applicationId = requireUuid(applicationRaw, "applicationId");
@@ -831,23 +976,33 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err;
     }
   };
-  const [, documents, person] = await Promise.all([
+  const [, documents, files, person] = await Promise.all([
     markSeen(),
     snapshotDocuments(ctx, applicationId),
+    applicationFiles(ctx, applicationId),
     one(ctx.deps.query,
-      `SELECT u.display_name, u.email, p.headline, p.careers, p.skills
-       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1`,
+      `SELECT u.display_name, u.email, p.headline, p.job_category, p.tenure_years, p.careers, p.skills,
+         (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN user_settings s ON s.user_id = u.id WHERE u.id = $1`,
       [String(application.user_id)]),
   ]);
+  const snap = objectOf(application.applicant_snapshot);
+  const submitted = snap != null;
   return data(200, {
     application: companyApplicationDto(application),
     documents,
+    files,
     applicant: {
       displayName: String(person?.display_name ?? ""),
       email: person?.email == null ? "" : String(person.email),
-      headline: person?.headline == null ? "" : String(person.headline),
-      careers: jsonList(person?.careers),
-      skills: jsonList(person?.skills).map(String),
+      headline: submitted ? (snap.headline == null ? "" : String(snap.headline)) : (person?.headline == null ? "" : String(person.headline)),
+      jobCategory: submitted ? textOrNull(snap.jobCategory) : textOrNull(person?.job_category),
+      tenureYears: submitted ? tenureOf(snap.tenureYears) : tenureOf(person?.tenure_years),
+      careers: jsonList(submitted ? snap.careers : person?.careers),
+      skills: jsonList(submitted ? snap.skills : person?.skills).map(String),
+      hubProfileId: asBool(person?.hub_public) ? String(application.user_id) : null,
+      profileSource: submitted ? "SUBMITTED" : "CURRENT",
+      capturedAt: submitted ? ts(snap.capturedAt) : null,
     },
   }, ctx.rid);
 };
@@ -900,19 +1055,33 @@ const patchApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: stri
     throw new HttpError(409, "INVALID_TRANSITION", "terminal stage");
   }
   const now = ctx.now.toISOString();
-  const updated = await one(ctx.deps.query,
-    `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
-     WHERE id = $1 AND user_id = $2
-     RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
-    [applicationId, String(current.user_id), body.stage, now]);
+  const applicantParams = [applicationId, String(current.user_id), body.stage, now];
+  let updated: Record<string, unknown> | null;
+  try {
+    updated = await one(ctx.deps.query,
+      `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4,
+       stage_entered_at = COALESCE(stage_entered_at, '{}'::jsonb) || CASE WHEN COALESCE(stage_entered_at, '{}'::jsonb) ? $3 THEN '{}'::jsonb ELSE jsonb_build_object($3, $4::timestamptz) END
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
+      applicantParams);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    updated = await one(ctx.deps.query,
+      `UPDATE applications SET stage = $3, revision = revision + 1, updated_at = $4
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, revision, job_id, company, title, stage, notes, applied_at, next_action_at, imported, created_at, updated_at`,
+      applicantParams);
+  }
   if (!updated) throw notFound();
   await notify(ctx, String(current.user_id), "APPLICATION_STAGE", "지원 상태가 바뀌었어요", "", { kind: "activity", id: applicationId });
   return data(200, companyApplicationDto(updated), ctx.rid);
 };
 
 export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
+  const sort = searchSortMode(ctx.url);
   const loaded = await withPublicStatus(async (withStatus) => {
     const page = pageOf(ctx.url);
+    assertSearchCursor(ctx.url, sort);
     const forms = queryForms(q);
     const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
@@ -928,13 +1097,16 @@ export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
       sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
     }
     params.push(page.limit + 1);
-    sql += ` ORDER BY ${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+    const order = sort === "latest"
+      ? "p.created_at DESC, p.id DESC"
+      : `${relevance("p.title", "p.company")}, p.created_at DESC, p.id DESC`;
+    sql += ` ORDER BY ${order} LIMIT $${params.length}`;
     const rows = await query(ctx.deps.query, sql, params);
     return { rows, page, total };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, loaded.total);
+  return pageBody(paged.items.map((row) => row.item), stampSearchCursor(paged.nextCursor, sort), paged.hasMore, ctx.rid, loaded.total);
 }
 
 export const dispatchPostings = async (ctx: Ctx, path: string): Promise<Response | null> => {
@@ -942,6 +1114,7 @@ export const dispatchPostings = async (ctx: Ctx, path: string): Promise<Response
   if (method === "GET" && path === "/api/v1/postings") return listPostings(ctx);
   if (method === "POST" && path === "/api/v1/postings") return createPosting(ctx);
   if (method === "GET" && path === "/api/v1/postings/facets") return listPostingFacets(ctx);
+  if (method === "GET" && path === "/api/v1/skills") return listSkills(ctx);
   if (method === "GET" && path === "/api/v1/postings/locations") return listPostingLocations(ctx);
   const bookmark = path.match(/^\/api\/v1\/postings\/([^/]+)\/bookmark$/);
   if (bookmark && method === "POST") return bookmarkPosting(ctx, bookmark[1]);

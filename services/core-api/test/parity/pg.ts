@@ -4,14 +4,19 @@ import type { AddressInfo } from "node:net";
 import { Pool, neonConfig, types } from "@neondatabase/serverless";
 import { WebSocket, WebSocketServer } from "ws";
 
-import type { Query } from "../../src/db.ts";
+import { inTransaction, type Query, type Transaction } from "../../src/db.ts";
 
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
-export type LivePg = { query: Query; close: () => Promise<void> };
+export type LivePg = { query: Query; transaction?: Transaction; close: () => Promise<void> };
 
-export const livePg = async (url: string): Promise<LivePg> => {
+const rowsOf = (raw: unknown) => {
+  const result = (Array.isArray(raw) ? raw[raw.length - 1] : raw) as { rows: Record<string, unknown>[]; rowCount: number | null };
+  return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+};
+
+export const livePg = async (url: string, max = 10): Promise<LivePg> => {
   const target = new URL(url);
   const server = new WebSocketServer({ port: 0 });
   server.on("connection", (socket) => {
@@ -29,12 +34,16 @@ export const livePg = async (url: string): Promise<LivePg> => {
   neonConfig.useSecureWebSocket = false;
   neonConfig.pipelineTLS = false;
   neonConfig.pipelineConnect = false;
-  const pool = new Pool({ connectionString: url, ssl: false });
+  const pool = new Pool({ connectionString: url, ssl: false, max });
   return {
-    query: async (text, params = []) => {
-      const raw = await pool.query(text, params as unknown[]);
-      const result = Array.isArray(raw) ? raw[raw.length - 1] : raw;
-      return { rows: result.rows as Record<string, unknown>[], rowCount: result.rowCount ?? result.rows.length };
+    query: async (text, params = []) => rowsOf(await pool.query(text, params as unknown[])),
+    transaction: async (work) => {
+      const client = await pool.connect();
+      try {
+        return await inTransaction(client, work);
+      } finally {
+        client.release();
+      }
     },
     close: async () => {
       await pool.end();

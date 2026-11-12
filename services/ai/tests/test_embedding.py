@@ -96,17 +96,21 @@ async def test_factory_switches_to_api_provider(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_embedder_asks_for_1024_dimensions():
     seen = []
+    pinned = []
 
     def handler(request):
         body = json.loads(request.content)
         seen.append((str(request.url), request.headers["authorization"], body["dimensions"]))
+        pinned.append(body["provider"])
         data = [{"index": i, "embedding": [float(i)]} for i in reversed(range(len(body["input"])))]
         return httpx.Response(200, json={"data": data})
 
     async with client_for(handler) as client:
-        out = await ApiEmbedder("https://api.example/v1", "k", "m", client).embed(["a", "b"])
+        out = await ApiEmbedder(
+            "https://api.example/v1", "k", "openai/text-embedding-3-small", client).embed(["a", "b"])
     assert out == [[0.0], [1.0]]
     assert seen == [("https://api.example/v1/embeddings", "Bearer k", 1024)]
+    assert pinned == [{"only": ["openai"], "allow_fallbacks": False, "data_collection": "deny"}]
 
 
 @pytest.mark.asyncio

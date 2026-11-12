@@ -1,10 +1,12 @@
 from __future__ import annotations
 from app.clock import utcnow
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4, uuid5
 
+from app.claimctx import LostClaim
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
 from app.domain.errors import (
@@ -22,7 +24,6 @@ from app.infrastructure.store_operations import OperationStore
 
 
 _SEARCH_MODEL = "deepseek/deepseek-v4.1-flash"
-_GO_PREFIX = "opencode-go/"
 _USAGE_NS = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 
 
@@ -33,8 +34,13 @@ def usage_row_id(job_id, purpose: str) -> UUID:
     return uuid5(_USAGE_NS, f"push:ai-usage:{job_id}:{purpose}")
 
 
-def _now() -> datetime:
-    return utcnow()
+@dataclass(frozen=True)
+class UsageHold:
+    """The usage row this attempt reserved, and the generation it must release."""
+
+    id: UUID
+    generation: int
+
 
 
 def managed_allowance(plan: str | None) -> int:
@@ -49,15 +55,12 @@ def validate_ai_options(ai: Optional[ent.AiOptions]) -> None:
 
 
 class AIGate:
-    def __init__(self, db: DB, managed_key: str, chat,
-                 go_chat=None, go_key: str = "", config=None):
+    def __init__(self, db: DB, managed_key: str, chat, config=None):
         self.db = db
         self.users = UserStore(db)
         self.usage = AiUsageStore(db)
         self.managed_key = managed_key
         self.chat = chat
-        self.go_chat = go_chat
-        self.go_key = go_key
         self.config = config
 
     def _levers_config(self):
@@ -71,15 +74,19 @@ class AIGate:
                      job_id=None) -> None:
         if user_id is None:
             return
-        from app.claimctx import LostClaim
+        row = ent.AiUsage(
+            id=usage_row_id(job_id, "meter:" + model), user_id=user_id,
+            provider="OPENAI", model=model, managed=True,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cost_micro_credits=ent.ai_cost_micro_credits(
+                "OPENAI", model, input_tokens, output_tokens),
+            status=ent.USAGE_SETTLED, created_at=utcnow())
         try:
-            await self.usage.create(ent.AiUsage(
-                id=usage_row_id(job_id, "meter:" + model), user_id=user_id,
-                provider="OPENAI", model=model, managed=True,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                cost_micro_credits=ent.ai_cost_micro_credits(
-                    "OPENAI", model, input_tokens, output_tokens),
-                status=ent.USAGE_SETTLED, created_at=_now()))
+            # A queue job's meter rows join the job, so its settle counts them against the reservation.
+            if job_id and queue_backend() == "redis":
+                await self.usage.create_for_job(row, job_id)
+            else:
+                await self.usage.create(row)
         except LostClaim:
             raise
         except Exception:
@@ -146,26 +153,23 @@ class AIGate:
         ai.effort = levers.effort
         if ai.ultra_resume and u.plan != ent.PLAN_ULTRA:
             raise feature_disabled("ultraResume requires the ULTRA plan")
-        now = _now()
+        now = utcnow()
         month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                   microsecond=0)
         spent = await self.usage.sum_cost_since(user_id, month_start)
         if spent >= managed_allowance(u.plan):
             raise feature_disabled(
                 "monthly managed AI usage limit reached for plan " + (u.plan or ent.PLAN_FREE))
-        if ai.model.startswith(_GO_PREFIX):
-            if not self.go_key or self.go_chat is None:
-                raise not_configured("OpenCode Go is not configured")
-        elif not self.managed_key:
+        if not self.managed_key:
             raise not_configured("managed AI is not configured")
 
     async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str, job_id=None,
-                       purpose: str = "chat") -> UUID | None:
+                       purpose: str = "chat") -> UsageHold | None:
         if queue_backend() == "redis":
             if not job_id:
                 return None
-            now = _now()
+            now = utcnow()
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(
                 id=usage_row_id(job_id, purpose), user_id=user_id,
@@ -174,16 +178,16 @@ class AIGate:
                 cost_micro_credits=ent.ai_cost_micro_credits(
                     "OPENAI", ai.model, est_in, 2048),
                 status=ent.USAGE_RESERVED, created_at=now)
-            await self.usage.create_for_job(row, job_id)
-            return row.id
-        out = None
+            gen = await self.usage.create_for_job(row, job_id)
+            return UsageHold(row.id, gen if isinstance(gen, int) else 1)
+        out: UsageHold | None = None
 
         async def work():
             nonlocal out
             await self.usage.lock_user(user_id)
             await self.usage.expire_stale()
             u = await self.users.get(user_id)
-            now = _now()
+            now = utcnow()
             month_start = now.replace(day=1, hour=0, minute=0, second=0,
                                       microsecond=0)
             spent = await self.usage.sum_cost_since(user_id, month_start)
@@ -198,30 +202,35 @@ class AIGate:
                 cost_micro_credits=ent.ai_cost_micro_credits(
                     "OPENAI", ai.model, est_in, 2048),
                 status=ent.USAGE_RESERVED, created_at=now)
-            await self.usage.create(row)
-            out = row.id
+            gen = await self.usage.create(row)
+            out = UsageHold(row.id, gen if isinstance(gen, int) else 1)
 
         await self.db.run(work)
         return out
 
     async def _settle(self, usage_id: Optional[UUID], model: str,
-                      input_tokens: int, output_tokens: int) -> None:
+                      input_tokens: int, output_tokens: int,
+                      generation: int | None = None) -> None:
         if usage_id is None:
             return
         try:
             await self.usage.settle(
                 usage_id, input_tokens, output_tokens,
                 ent.ai_cost_micro_credits("OPENAI", model,
-                                          input_tokens, output_tokens))
+                                          input_tokens, output_tokens),
+                generation)
+        except LostClaim:
+            await self._release(usage_id, generation)
+            raise
         except Exception:
             logging.getLogger(__name__).exception(
                 "usage settle failed id=%s", usage_id)
 
-    async def _release(self, usage_id: Optional[UUID]) -> None:
+    async def _release(self, usage_id: Optional[UUID], generation: int | None = None) -> None:
         if usage_id is None:
             return
         try:
-            await self.usage.release(usage_id)
+            await self.usage.release(usage_id, generation)
         except Exception:
             logging.getLogger(__name__).exception(
                 "usage release failed id=%s", usage_id)
@@ -250,9 +259,6 @@ class AIGate:
 
     async def _route(self, user_id: UUID, ai: ent.AiOptions):
         model = ai.model
-        if model.startswith(_GO_PREFIX):
-            return (self.go_chat, self.go_key, model[len(_GO_PREFIX):],
-                    {"x-opencode-session": str(user_id)})
         if ai.web_search:
             model += ":online"
         return self.chat, self.managed_key, model, None
@@ -263,23 +269,21 @@ class AIGate:
         updates = {}
         if not getattr(config, "managed_ai_key", "") and self.managed_key:
             updates["managed_ai_key"] = self.managed_key
-        if not getattr(config, "opencode_go_key", "") and self.go_key:
-            updates["opencode_go_key"] = self.go_key
         if self.config is None:
             base = getattr(chat, "base_url", "") or getattr(config, "ai_base_url", "")
             if base:
                 updates["ai_base_url"] = base
         return replace(config, **updates) if updates else config
 
-    def _factory_call(self, ai: ent.AiOptions, user_id, job_id, usage_id, chat):
+    def _factory_call(self, ai: ent.AiOptions, user_id, job_id, usage_id, chat,
+                      generation: int | None = None):
         from app.framework.llm import AiUsageCallback
-        web = bool(ai.web_search) and not ai.model.startswith(_GO_PREFIX)
+        web = bool(ai.web_search)
         return {
             "levers": PlanLevers(ai.model, ai.effort, "", "", "", 0),
             "web_search": web,
-            "session_id": str(user_id),
             "app_config": self._factory_config(chat),
-            "callback": AiUsageCallback(self.usage, user_id, job_id, usage_id),
+            "callback": AiUsageCallback(self.usage, user_id, job_id, usage_id, generation),
         }
 
     async def _langchain_text(self, model_name: str, system: str, user: str, *,
@@ -293,7 +297,7 @@ class AIGate:
             return await complete_langchain(
                 self.chat, self.managed_key, model_name, system, user, "low", None,
                 levers=PlanLevers(model_name, "LOW", "", "", "", 0),
-                web_search=web_search, session_id=str(user_id or ""),
+                web_search=web_search,
                 app_config=self._factory_config(self.chat),
                 callback=AiUsageCallback(self.usage, user_id, job_id, None))
         except ImportError:
@@ -310,22 +314,24 @@ class AIGate:
             user_id, ai, search_query or user, job_id)
         chat, key, model, headers = await self._route(user_id, ai)
         reasoning = ai.effort.lower()
-        usage_id = await self._reserve(user_id, ai, system, user, job_id)
+        hold = await self._reserve(user_id, ai, system, user, job_id)
+        usage_id = None if hold is None else hold.id
+        generation = None if hold is None else hold.generation
         try:
             from app.framework.models import complete_or_none
             c = await complete_or_none(
                 chat, key, model, system, user, reasoning, headers,
-                **self._factory_call(ai, user_id, job_id, usage_id, chat))
+                **self._factory_call(ai, user_id, job_id, usage_id, chat, generation))
             if c is None:
                 c = await chat.chat(key, model, system, user, reasoning, headers)
         except Exception:
-            await self._release(usage_id)
+            await self._release(usage_id, generation)
             raise provider_error("AI provider request failed")
         except BaseException:
             # Cancellation must not leave the reservation counting against the allowance.
-            await self._release(usage_id)
+            await self._release(usage_id, generation)
             raise
-        await self._settle(usage_id, model, c.input_tokens, c.output_tokens)
+        await self._settle(usage_id, model, c.input_tokens, c.output_tokens, generation)
         return c.model_copy(update={"usage_id": usage_id})
 
     async def stream(self, user_id: UUID, ai: ent.AiOptions,
@@ -339,7 +345,9 @@ class AIGate:
             user_id, ai, search_query or user, job_id)
         chat, key, model, headers = await self._route(user_id, ai)
         reasoning = ai.effort.lower()
-        usage_id = await self._reserve(user_id, ai, system, user, job_id)
+        hold = await self._reserve(user_id, ai, system, user, job_id)
+        usage_id = None if hold is None else hold.id
+        generation = None if hold is None else hold.generation
         if usage_id is not None:
             usage.setdefault("usage_ids", []).append(usage_id)
         settled = False
@@ -348,7 +356,7 @@ class AIGate:
             lc = stream_or_none(
                 chat, key, model, system, user, usage, reasoning, headers,
                 assistant_prefix,
-                **self._factory_call(ai, user_id, job_id, usage_id, chat))
+                **self._factory_call(ai, user_id, job_id, usage_id, chat, generation))
             ran_legacy = True
             if lc is not None:
                 produced = False
@@ -376,15 +384,15 @@ class AIGate:
                         yield tok
             await self._settle(usage_id, model,
                                usage.get("input_tokens", 0),
-                               usage.get("output_tokens", 0))
+                               usage.get("output_tokens", 0), generation)
             settled = True
-        except DomainError:
+        except (DomainError, LostClaim):
             raise
         except Exception:
             raise provider_error("AI provider request failed")
         finally:
             if not settled:
-                await self._release(usage_id)
+                await self._release(usage_id, generation)
 
 
 async def record_usage(usage: AiUsageStore, user_id: UUID, op_id: UUID,
@@ -418,7 +426,7 @@ class AIService:
 
         async def work():
             nonlocal op
-            now = _now()
+            now = utcnow()
             op_id = uuid4()
             op = ent.Operation(
                 id=op_id, user_id=user_id, type=ent.OP_AI_GENERATE,

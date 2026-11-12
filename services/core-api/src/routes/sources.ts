@@ -1,10 +1,11 @@
-import { one, query } from "../db.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { pageOf, ts } from "../page.ts";
 import { encodeCursor, parseUtc } from "../time.ts";
 import type { Ctx } from "../types.ts";
 import { declaredTooLarge } from "./images.ts";
+import { readObject, textOf } from "./recruiting-shared.ts";
 
 const MAX_SOURCE_BYTES = 20 << 20;
 
@@ -40,9 +41,18 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
   if (!ALLOWED_SOURCE_MIME.has(mime)) throw fieldError("file", "unsupported file type " + mime);
   const sha = hex(await crypto.subtle.digest("SHA-256", bytes));
   const id = crypto.randomUUID();
-  await query(ctx.deps.query,
-    "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'))",
-    [id, ctx.user.id, file.name, mime, bytes.length, sha, `db://sources/${id}`, "STORED", ctx.now.toISOString(), base64(bytes)]);
+  const docKind = kind.trim().slice(0, 40) || null;
+  const stored = [id, ctx.user.id, file.name, mime, bytes.length, sha, `db://sources/${id}`, "STORED", ctx.now.toISOString(), base64(bytes)];
+  try {
+    await query(ctx.deps.query,
+      "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content, doc_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'),$11)",
+      [...stored, docKind]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    await query(ctx.deps.query,
+      "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'))",
+      stored);
+  }
   const { jobId } = await enqueueJob(ctx.deps.query, {
     type: "ingest",
     userId: ctx.user.id,
@@ -57,17 +67,35 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string };
+type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string; kind: string | null; company: string | null; postingTitle: string | null };
+
+const kindOf = (value: unknown): string | null => value == null || value === "" ? null : String(value);
+
+export const sourceItem = (row: Record<string, unknown>): LibraryItem => ({
+  id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
+  pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
+  origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind), company: null, postingTitle: null,
+});
+
+export const documentLibraryItem = (row: Record<string, unknown>): LibraryItem => ({
+  id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
+  createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
+  company: row.company == null ? null : String(row.company), postingTitle: row.posting_title == null ? null : String(row.posting_title),
+});
+
+export type DocumentsLibraryRow = LibraryItem;
+
+export const libraryItemsNewerFirst = (a: LibraryItem, b: LibraryItem): number => {
+  const byTime = rank(b.createdAt).localeCompare(rank(a.createdAt));
+  return byTime || b.id.localeCompare(a.id);
+};
 
 const rank = (createdAt: unknown): string => {
   const p = parseUtc(createdAt);
   return `${p.y}-${p.mo}-${p.d}T${p.h}:${p.mi}:${p.s}.${String(p.micros).padStart(6, "0")}`;
 };
 
-const newerFirst = (a: LibraryItem, b: LibraryItem): number => {
-  const byTime = rank(b.createdAt).localeCompare(rank(a.createdAt));
-  return byTime || b.id.localeCompare(a.id);
-};
+const newerFirst = libraryItemsNewerFirst;
 
 export const listSources = async (ctx: Ctx): Promise<Response> => {
   const kind = ctx.url.searchParams.get("kind") || null;
@@ -75,28 +103,23 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   // Each side needs at most limit + 1 rows past the cursor; the merged page is cut from their union.
   const params: unknown[] = [ctx.user.id];
-  let after = "";
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    after = " AND (created_at, id) < ($2, $3)";
-  }
+  if (page.cursor) params.push(page.cursor.createdAt, page.cursor.id);
   params.push(page.limit + 1);
-  const tail = `${after} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`;
+  const tail = (a: string): string => `${page.cursor ? ` AND (${a}created_at, ${a}id) < ($2, $3)` : ""} ORDER BY ${a}created_at DESC, ${a}id DESC LIMIT $${params.length}`;
   const [uploads, documents] = await Promise.all([
     kind === "AI" ? null : query(ctx.deps.query,
-      "SELECT id, file_name, mime_type, size, page_count, origin, created_at FROM sources WHERE user_id = $1" + tail, params),
-    kind === "UPLOAD" ? null : query(ctx.deps.query, "SELECT id, title, created_at FROM documents WHERE user_id = $1" + tail, params),
+      "SELECT id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind FROM sources WHERE user_id = $1" + tail(""), params),
+    kind === "UPLOAD" ? null : query(ctx.deps.query,
+      "SELECT d.id, d.title, d.created_at, to_jsonb(d)->>'kind' AS kind, a.company, a.title AS posting_title FROM documents d LEFT JOIN applications a ON a.id = d.application_id WHERE d.user_id = $1 AND d.status <> 'ARCHIVED'" + tail("d."), params),
   ]);
+  const sourceRows = (uploads?.rows ?? []).filter((row) => {
+    const name = String(row.file_name ?? "");
+    const mime = String(row.mime_type ?? "");
+    return !name.toLowerCase().endsWith(".md") && mime.toLowerCase() !== "text/markdown";
+  });
   const items: LibraryItem[] = [
-    ...(uploads?.rows ?? []).map((row) => ({
-      id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
-      pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
-      origin: row.origin ? String(row.origin) : "UPLOAD",
-    })),
-    ...(documents?.rows ?? []).map((row) => ({
-      id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
-      createdAt: ts(row.created_at), origin: "AI",
-    })),
+    ...sourceRows.map(sourceItem),
+    ...(documents?.rows ?? []).map(documentLibraryItem),
   ].sort(newerFirst);
   const hasMore = items.length > page.limit;
   const slice = items.slice(0, page.limit);
@@ -117,6 +140,17 @@ export const getSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
     sha256: String(row.sha256), status: String(row.status), createdAt: ts(row.created_at),
   }, ctx.rid);
+};
+
+export const renameSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
+  const id = requireUuid(idRaw, "id");
+  const body = await readObject(ctx.request);
+  const fileName = textOf(typeof body.fileName === "string" ? body.fileName.trim() : body.fileName, "fileName", 1, 200);
+  const row = await one(ctx.deps.query,
+    "UPDATE sources SET file_name = $3 WHERE id = $1::uuid AND user_id = $2 RETURNING id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind",
+    [id, ctx.user.id, fileName]);
+  if (!row) throw notFound();
+  return data(200, sourceItem(row), ctx.rid);
 };
 
 const fromBase64 = (text: string): Uint8Array => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
@@ -150,7 +184,12 @@ export const deleteSource = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, DELETE_SOURCE, [id, ctx.user.id]);
   if (!Number(row?.found)) throw notFound();
-  if (Number(row?.used) > 0) throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence");
+  if (Number(row?.used) > 0) {
+    throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
+      reason: "REFERENCED_BY_EVIDENCE",
+      evidenceCount: Number(row?.used),
+    });
+  }
   if (!Number(row?.deleted)) throw notFound();
   return noContent(ctx.rid);
 };
@@ -166,6 +205,7 @@ export const dispatchSources = async (ctx: Ctx, path: string): Promise<Response 
   if (!m) return null;
   if (m[2] && method === "GET") return getSourceContent(ctx, m[1]);
   if (!m[2] && method === "GET") return getSource(ctx, m[1]);
+  if (!m[2] && method === "PATCH") return renameSource(ctx, m[1]);
   if (!m[2] && method === "DELETE") return deleteSource(ctx, m[1]);
   return null;
 };

@@ -1,15 +1,27 @@
-import { one, query } from "../db.ts";
-import { HttpError, data, fieldError, pageBody, requireUuid } from "../http.ts";
+import { isUndefinedColumn, one, query } from "../db.ts";
+import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
-import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_SQL, notify } from "./recruiting-shared.ts";
+import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_COLS, OFFER_FROM, notify } from "./recruiting-shared.ts";
+
+// Mirrors the block check of POST /me/offers/{id}/messages: the other party blocked the caller.
+const offerSelect = (user: string): string => "SELECT oa.archived_at, " + OFFER_COLS
+  + `, EXISTS (SELECT 1 FROM user_blocks bm WHERE bm.blocked_id = ${user} AND bm.blocker_id = CASE WHEN o.sender_id = ${user} THEN o.profile_user_id ELSE o.sender_id END) AS blocked_me`
+  + OFFER_FROM;
+
+const withArchive = (user: string): string => " LEFT JOIN offer_archives oa ON oa.offer_id = o.id AND oa.user_id = " + user;
 
 async function listOffers(ctx: Ctx): Promise<Response> {
   const box = ctx.url.searchParams.get("box");
   if (box !== "received" && box !== "sent") throw fieldError("box", "must be received or sent");
+  const archived = ctx.url.searchParams.get("archived");
+  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
   const page = pageOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT " + OFFER_SQL + (box === "received" ? " WHERE o.profile_user_id = $1" : " WHERE o.sender_id = $1");
+  const mine = box === "received" ? "o.profile_user_id" : "o.sender_id";
+  const other = box === "received" ? "o.sender_id" : "o.profile_user_id";
+  let sql = offerSelect("$1") + withArchive("$1") + ` WHERE ${mine} = $1 AND oa.offer_id IS ${archived === "1" ? "NOT NULL" : "NULL"}`
+    + ` AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE b.blocker_id = $1 AND b.blocked_id = ${other})`;
   const total = await countWhere(ctx, sql, " FROM offers o", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
@@ -25,7 +37,7 @@ async function listOffers(ctx: Ctx): Promise<Response> {
 
 async function offerFor(ctx: Ctx, idRaw: string): Promise<Record<string, unknown>> {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "SELECT " + OFFER_SQL + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, offerSelect("$2") + withArchive("$2") + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
   if (!row) throw notFound();
   return row;
 }
@@ -53,8 +65,14 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
   let reply = "";
   if (status === "ACCEPTED" && body.reply != null) reply = textOf(body.reply, "reply", 1, 2000);
   const now = ctx.now.toISOString();
-  const decided = await one(ctx.deps.query,
-    "UPDATE offers SET status = $2 WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id", [row.id, status]);
+  const guard = " WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id";
+  let decided: Record<string, unknown> | null;
+  try {
+    decided = await one(ctx.deps.query, "UPDATE offers SET status = $2, responded_at = $3" + guard, [row.id, status, now]);
+  } catch (err) {
+    if (!isUndefinedColumn(err)) throw err;
+    decided = await one(ctx.deps.query, "UPDATE offers SET status = $2" + guard, [row.id, status]);
+  }
   if (!decided) throw new HttpError(409, "CONFLICT", "offer is already closed");
   if (reply) {
     await query(ctx.deps.query,
@@ -62,10 +80,37 @@ async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLIN
       [crypto.randomUUID(), row.id, ctx.user.id, reply, now]);
   }
   row.status = status;
+  row.responded_at = now;
   if (status === "ACCEPTED") {
     await notify(ctx, String(row.sender_id), "OFFER", "제안을 수락했어요", "", { kind: "offer", id: String(row.id) });
   }
   return data(200, offerDto(row), ctx.rid);
+}
+
+async function archiveOffer(ctx: Ctx, idRaw: string, archive: boolean): Promise<Response> {
+  const offer = await offerFor(ctx, idRaw);
+  if (archive) {
+    await query(ctx.deps.query,
+      "INSERT INTO offer_archives (user_id, offer_id, archived_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, offer_id) DO NOTHING",
+      [ctx.user.id, offer.id, ctx.now.toISOString()]);
+  } else {
+    await query(ctx.deps.query, "DELETE FROM offer_archives WHERE user_id = $1 AND offer_id = $2", [ctx.user.id, offer.id]);
+  }
+  return data(200, offerDto(await offerFor(ctx, idRaw)), ctx.rid);
+}
+
+async function reportOffer(ctx: Ctx, idRaw: string): Promise<Response> {
+  const offer = await offerFor(ctx, idRaw);
+  const body: Record<string, unknown> = await readObject(ctx.request).catch((err: unknown) => {
+    if (err instanceof HttpError && err.message === "request body required") return {};
+    throw err;
+  });
+  const reason = body.reason == null ? null : textOf(body.reason, "reason", 1, 500);
+  const reported = String(offer.sender_id) === ctx.user.id ? offer.profile_user_id : offer.sender_id;
+  await query(ctx.deps.query,
+    "INSERT INTO offer_reports (id, reporter_id, reported_user_id, offer_id, reason, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+    [crypto.randomUUID(), ctx.user.id, reported, offer.id, reason, ctx.now.toISOString()]);
+  return noContent(ctx.rid);
 }
 
 async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -99,6 +144,9 @@ async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
 async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
   if (String(offer.status) !== "ACCEPTED") throw new HttpError(409, "CONFLICT", "offer is not accepted");
+  const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
+  const blocked = await one(ctx.deps.query, "SELECT 1 AS blocked FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [other, ctx.user.id]);
+  if (blocked) throw new HttpError(403, "BLOCKED", "this user is not accepting messages from you");
   const body = await readObject(ctx.request);
   const text = textOf(body.body, "body", 1, 2000);
   const id = crypto.randomUUID();
@@ -106,7 +154,6 @@ async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   await query(ctx.deps.query,
     "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
     [id, offer.id, ctx.user.id, text, now]);
-  const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
   await notify(ctx, other, "OFFER", "새 메시지", text, { kind: "offer", id: String(offer.id) });
   return data(201, {
     id, offerId: String(offer.id), sender: { id: ctx.user.id, displayName: ctx.user.displayName }, body: text, createdAt: ts(now),
@@ -123,6 +170,10 @@ export const dispatchOffers = async (ctx: Ctx, path: string): Promise<Response |
   if (accept && method === "POST") return decideOffer(ctx, accept[1], "ACCEPTED");
   const decline = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/decline$/);
   if (decline && method === "POST") return decideOffer(ctx, decline[1], "DECLINED");
+  const archive = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/(archive|unarchive)$/);
+  if (archive && method === "POST") return archiveOffer(ctx, archive[1], archive[2] === "archive");
+  const report = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/report$/);
+  if (report && method === "POST") return reportOffer(ctx, report[1]);
   const offerId = path.match(/^\/api\/v1\/me\/offers\/([^/]+)$/);
   if (offerId && method === "GET") return getOffer(ctx, offerId[1]);
   return null;

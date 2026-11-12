@@ -478,3 +478,14 @@ def test_export_route_docx_and_guards():
     res = c.get(f"/api/v1/documents/{d.id}/versions/{draft.id}/export")
     assert res.status_code == 422
     assert res.json()["error"]["code"] == "DOCUMENT_NOT_FINALIZED"
+    hub = f.document(A, title="Push 프로필")
+    hub.kind = "HUB_PROFILE"
+    s.documents.put(hub)
+    latest = f.version(A, hub, blocks_text=("허브 본문",))
+    s.documents.versions[latest.id] = latest
+    hub.latest_version_id = latest.id
+    hub.finalized_version_id = None
+    s.documents.put(hub)
+    exported = c.get(f"/api/v1/documents/{hub.id}/versions/{latest.id}/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.content.startswith(b"%PDF")

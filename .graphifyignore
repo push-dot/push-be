@@ -1,0 +1,58 @@
+# Documentation
+docs/
+**/*.md
+**/*.mdx
+**/*.pdf
+**/*.txt
+**/*.rst
+
+# Images and video
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.webp
+**/*.svg
+**/*.ico
+**/*.mp4
+**/*.webm
+**/*.mov
+**/*.avi
+
+# Virtual environments
+.venv/
+venv/
+**/node_modules/
+
+# Caches
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+**/.pytest_cache/
+**/.mypy_cache/
+
+# Build outputs
+dist/
+build/
+**/dist/
+**/build/
+**/.next/
+**/coverage/
+
+# Lockfiles
+package-lock.json
+**/package-lock.json
+pnpm-lock.yaml
+**/pnpm-lock.yaml
+yarn.lock
+**/yarn.lock
+Cargo.lock
+**/Cargo.lock
+poetry.lock
+**/poetry.lock
+uv.lock
+**/uv.lock
+
+# Graphify output (avoid re-indexing)
+graphify-out/

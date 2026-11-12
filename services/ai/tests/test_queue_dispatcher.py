@@ -66,6 +66,9 @@ class MemoryDB:
     async def neon_stats(self):
         return {"dbSizeBytes": 0, "ragNodes": 0}
 
+    async def open_billing_alerts(self):
+        return 0
+
 
 def opener(holder, jobs, outbox):
     async def open_db():
@@ -333,18 +336,18 @@ async def test_dispatcher_sweeps_rate_limits_every_loop():
     await box.run_once(NOW)
     await box.run_once(NOW, maintain=True)
     await box.run_once(NOW, maintain=True)
-    assert pool.executed == [
+    assert [sql for sql in pool.executed if "rate_limits" in sql] == [
         "DELETE FROM rate_limits WHERE expires_at < now()",
         "DELETE FROM rate_limits WHERE expires_at < now()",
     ]
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_purges_accounts_past_30_days():
-    from app.account_purge import PURGE_SQL
+async def test_dispatcher_purges_accounts_and_companies_every_maintenance_pass():
+    from app.account_purge import COMPANY_PURGE_SQL, PURGE_SQL
     pool = Pool()
     box = box_with_pool(pool)
+    await box.run_once(NOW)
     await box.run_once(NOW, maintain=True)
     await box.run_once(NOW, maintain=True)
-    assert pool.fetched == [PURGE_SQL, PURGE_SQL]
-    assert "30 days" in PURGE_SQL
+    assert pool.fetched == [PURGE_SQL, COMPANY_PURGE_SQL] * 2

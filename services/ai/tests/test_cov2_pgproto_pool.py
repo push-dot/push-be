@@ -209,7 +209,8 @@ async def test_acquire_releases_lock_when_connect_fails(monkeypatch):
     with pytest.raises(OSError):
         async with pool.acquire():
             pass
-    assert not pool._local.lock.locked()
+    assert pool._local_pool is not None
+    assert pool._local_pool._size == 0
 
 
 async def test_acquire_keeps_connection_on_pg_error_and_drops_on_other(monkeypatch):
@@ -223,7 +224,8 @@ async def test_acquire_keeps_connection_on_pg_error_and_drops_on_other(monkeypat
         async with pool.acquire():
             raise RuntimeError("boom")
     assert opened[0].closed
-    assert not pool._local.lock.locked()
+    assert pool._local_pool is not None
+    assert pool._local_pool._size == 0
 
 
 async def test_end_request_scope_ignores_foreign_objects():
@@ -260,7 +262,8 @@ async def test_pool_close_drops_local_and_request_connections(monkeypatch):
         assert len(opened) == 2
         await pool.close()
         assert all(c.closed for c in opened)
-        assert scope.conn is None and pool._local.conn is None
+        assert scope.conn is None
+        assert pool._local_pool is not None and pool._local_pool._size == 0
     finally:
         await pool.end_request_scope(scope)
     assert _request_state.get() is None

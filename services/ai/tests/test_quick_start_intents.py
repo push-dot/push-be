@@ -109,26 +109,32 @@ async def test_fit_without_inputs_enters_intake():
     _assert_kept(saved, source)
 
 
-async def test_fit_with_inputs_enters_analyze():
+async def test_fit_with_inputs_enters_analyze(monkeypatch):
+    _flat_fit(monkeypatch)
     source = _bag()
     _runtime, rows, items = await _open("fit", source)
     saved = _saved(rows)
-    assert _choice(items)["gate"] == "analyze"
-    assert saved["phase"] == "analyze"
+    assert _choice(items)["gate"] == "boost"
+    assert saved["phase"] == "craft"
     assert saved["scenario"] == "E"
     assert saved["work_mode"] == "resume_based"
     _assert_kept(saved, source)
 
 
-async def test_fit_with_inputs_accepts_analyze_into_present():
-    runtime, rows, items = await _open("fit", _bag())
-    choice = _choice(items)
-    assert choice["gate"] == "analyze"
-    items = await _accept(runtime, "fit", choice, "continue")
+async def test_fit_quick_start_skips_the_analyze_card(monkeypatch):
+    _flat_fit(monkeypatch)
+    _runtime, rows, items = await _open("fit", _bag())
+    gates = [
+        chunk.get("gate")
+        for mode, chunk in items
+        if mode == "custom" and isinstance(chunk, dict) and chunk.get("type") == "choice"
+    ]
+    assert "analyze" not in gates
+    assert gates[0] == "boost"
     saved = _saved(rows)
-    assert _choice(items)["gate"] == "present"
-    assert saved["phase"] == "present"
     assert saved["scenario"] == "E"
+    assert saved["phase"] == "craft"
+    assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
 
 
 async def test_gaps_without_analysis_enters_intake():
@@ -268,6 +274,36 @@ def test_worker_accepts_personal_quick_start_intents():
         assert known_intent(intent) == intent
     with pytest.raises(DomainError):
         known_intent("nope")
+
+
+async def test_find_postings_returns_the_ranked_list(monkeypatch):
+    async def fake(_db, _user_id, _inputs, job_id=None):
+        return {
+            "items": [{
+                "postingId": "p1",
+                "company": "모아페이",
+                "title": "백엔드 엔지니어",
+                "location": "서울",
+                "fitScore": 8.2,
+                "similarity": 0.91,
+            }],
+            "text": "조건에 맞는 공고예요.\n1. 모아페이 · 백엔드 엔지니어 · 서울 · 적합도 8.2점",
+            "scored": 1,
+        }
+
+    monkeypatch.setattr("app.domain.services.posting_match.run_quick_match", fake)
+    _runtime, rows, items = await _open(
+        "find_postings",
+    )
+    assert rows.conversation.get("resume_state") in (None, "null")
+    tokens = [
+        chunk.get("token") for mode, chunk in items
+        if mode == "custom" and isinstance(chunk, dict) and chunk.get("token")
+    ]
+    assert any("모아페이" in token for token in tokens)
+    assert not any(
+        mode == "custom" and isinstance(chunk, dict) and chunk.get("type") == "choice"
+        for mode, chunk in items)
 
 
 async def test_employer_conversation_does_not_enter_the_resume_flow():

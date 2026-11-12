@@ -11,6 +11,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.domain import entities as ent
+from app.domain.quick_starts import quick_start_seed
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
@@ -22,7 +23,7 @@ from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.router import select_harness
-from app.infrastructure.store_chat_jobs import user_message_id
+from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
 from app.ingest.web_page import fetch_page_text, find_urls
 from app.jsonutil import to_jsonable
 
@@ -36,7 +37,7 @@ def _stable_ids(job_id) -> tuple:
         jid = job_id if isinstance(job_id, UUID) else UUID(str(job_id))
         base = "push:chat:" + str(jid)
         return (user_message_id(jid),
-                uuid5(NAMESPACE_URL, base + ":assistant"),
+                assistant_message_id(jid),
                 uuid5(NAMESPACE_URL, base + ":op"))
     return uuid4(), uuid4(), uuid4()
 
@@ -88,6 +89,11 @@ def _resume_state(payload: dict, conversation: dict) -> dict:
         "conversation_id": str(payload.get("conversation_id") or ""),
         "user_id": str(payload.get("user_id") or ""),
         "job_id": str(payload.get("job_id") or ""),
+        "profile_document_id": saved.get("profile_document_id") or "",
+        "intake_asks": int(saved.get("intake_asks") or 0),
+        "gate_epoch": int(saved.get("gate_epoch") or 0),
+        "fit_from": saved.get("fit_from"),
+        "fit_to": saved.get("fit_to"),
     }
 
 
@@ -121,6 +127,7 @@ _RESUME_KEYS = (
     "status", "phase", "work_mode", "scenario", "inputs", "analysis", "strategy",
     "drafts", "review", "template", "artifacts", "output_targets", "tone", "warnings",
     "approach", "bottleneck_level", "prevention_categories", "blueprints",
+    "profile_document_id", "intake_asks", "gate_epoch", "fit_from", "fit_to",
 )
 
 
@@ -142,7 +149,11 @@ async def _turn_inputs(payload: dict) -> dict:
         elif body:
             pages[url] = body
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    return {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
+    incoming = {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
+    document_id = context.get("documentId")
+    if document_id:
+        incoming["documentId"] = str(document_id)
+    return incoming
 
 
 def _pending(snapshot) -> dict | None:
@@ -329,14 +340,24 @@ class HarnessRuntime:
                     state["start_flow"] = start
             if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
                 saved = _saved_resume(conversation.get("resume_state"))
+                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+                state["context"] = context
+                state["quick_start"] = None
+                state["quick_start_done"] = False
                 if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
                     seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
                     state["resume"] = seeded
                 elif quick_start_resume(payload.get("intent"), saved) is not None:
                     state["intent"] = payload.get("intent")
-                    if saved:
-                        state["resume"] = saved
+                    incoming = await _turn_inputs(payload)
+                    base = dict(saved) if saved else {}
+                    if any(incoming.get(key) for key in ("pages", "attachments", "documentId")):
+                        base["inputs"] = merge_inputs(base.get("inputs") or {}, incoming)
+                    if base:
+                        state["resume"] = base
+                elif quick_start_seed(payload.get("intent"), text, context) is not None:
+                    state["intent"] = payload.get("intent")
         config = {**(config or {}), "recursion_limit": RECURSION_LIMIT}
         interrupted = False
         done = None

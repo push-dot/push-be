@@ -60,10 +60,12 @@ async def main() -> None:
     pool = app.state.db.pool
 
     async def settle(_db, job_id):
-        await settle_job(pool, job_id, utcnow())
+        async with pool.acquire() as conn:
+            await settle_job(conn, job_id, utcnow())
 
     async def release(_db, job_id):
-        await release_job(pool, job_id, utcnow())
+        async with pool.acquire() as conn:
+            await release_job(conn, job_id, utcnow())
 
     worker = Worker(
         StreamQueue(redis),

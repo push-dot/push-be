@@ -12,6 +12,14 @@ const IMAGE_KEY: Schema = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]
 const text = (minLength: number, maxLength: number): Schema => ({ type: "string", minLength, maxLength });
 const csv = (description: string): Schema => ({ type: "string", description });
 const person = obj({ id: str, displayName: str });
+const offerParty = obj({
+  id: str,
+  displayName: str,
+  kind: enumOf("PERSON", "COMPANY"),
+  companyName: nullable(str),
+  headline: str,
+  avatarUrl: nullable(str),
+});
 
 const profileProps: Record<string, Schema> = {
   userId: uuid,
@@ -40,14 +48,14 @@ export const routes: Route[] = [
   get("core", "/api/v1/profiles", {
     tag,
     summary: "List public profiles",
-    description: "Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings.",
+    description: "Excludes the caller and private profiles. careerStatus is null when hidden by visibility settings. 빠른 시작 커피챗 허브 추천 is explore=recommended and is empty when the caller has no job_category. 팔로잉 is GET /api/v1/me/follows. The sheet reads userId, displayName, headline, and avatarUrl. Counts are client-side.",
     params: [
       ...pageParams,
       query("q", { type: "string", maxLength: 200 }),
       query("category", csv("Comma-separated: dev, data, design, plan, marketing, sales, hr, ops")),
-      query("tenure", csv("Comma-separated: 0-2, 3-5, 6-9, 10+")),
+      query("tenure", csv("Comma-separated: 0, 1-2, 3-5, 6-9, 10+. Legacy 0-2 is still accepted.")),
       query("status", csv("Comma-separated: satisfied, seeking, feedback")),
-      query("explore", enumOf("recommended", "offers"), "recommended: same jobCategory as the caller; offers: profiles the caller sent offers to"),
+      query("explore", enumOf("recommended", "offers", "received"), "recommended: same jobCategory as the caller; offers: profiles the caller sent offers to; received: profiles that sent the caller an offer"),
     ],
     responses: { 200: okPage(ref("Profile")) },
   }),
@@ -60,7 +68,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/profiles/{id}/offer", {
     tag,
     summary: "Send an offer to a profile",
-    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must be an open posting of the sender's company.",
+    description: "403 when the profile is not open to offers, 409 when an offer was already sent. postingId must belong to the sender's company and have closed_at null. A DRAFT with no closed_at is accepted. A private profile is 404. 403 BLOCKED when the profile owner blocked the sender.",
     params: [id],
     body: body(obj({ message: text(1, 500), postingId: nullable(uuid) }, ["message"])),
     responses: { 201: ok(ref("Offer"), "Created") },
@@ -96,8 +104,8 @@ export const routes: Route[] = [
       intro: nullable(text(0, 2000)),
       careers: { type: "array", maxItems: 30, items: ref("SocialProfileCareerInput") },
       skills: nullable({ type: "array", maxItems: 50, items: text(1, 40) }),
-      avatarKey: nullable(IMAGE_KEY),
-      resumeSourceId: nullable(str),
+      avatarKey: { ...nullable(IMAGE_KEY), description: "Null or an empty string clears it. A key must not contain .." },
+      resumeSourceId: { ...nullable(str), description: "UUID of a source the caller owns. Null or empty clears it. A missing source is 404." },
       contact: nullable(text(0, 200)),
     }, [])),
     responses: { 200: ok(ref("ProfileDetail")) },
@@ -105,7 +113,12 @@ export const routes: Route[] = [
   get("core", "/api/v1/me/offers", {
     tag,
     summary: "List my offers",
-    params: [{ name: "box", in: "query", required: true, schema: enumOf("received", "sent") }, ...pageParams],
+    description: "Archived offers and offers whose other party the caller blocked are left out, and total counts the same filters.",
+    params: [
+      { name: "box", in: "query", required: true, schema: enumOf("received", "sent") },
+      query("archived", enumOf("0", "1"), "1 lists only the offers the caller archived. 0 or absent lists the rest. Any other value is 400."),
+      ...pageParams,
+    ],
     responses: { 200: okPage(ref("Offer")) },
   }),
   get("core", "/api/v1/me/offers/{id}", {
@@ -118,7 +131,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/accept", {
     tag,
     summary: "Accept an offer",
-    description: "Recipient only. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
+    description: "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ. A non-empty reply is stored as the first offer message.",
     params: [id],
     body: body(obj({ reply: nullable(text(1, 2000)) }, []), false),
     responses: { 200: ok(ref("Offer")) },
@@ -126,9 +139,52 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/decline", {
     tag,
     summary: "Decline an offer",
-    description: "Recipient only. 409 when the offer is not SENT or READ.",
+    description: "Recipient only. Anyone else is 403 FORBIDDEN. 409 when the offer is not SENT or READ.",
     params: [id],
     responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/archive", {
+    tag,
+    summary: "Archive an offer",
+    description: "Either party. Archiving is per user and idempotent: archiving again keeps the first archivedAt. Anyone else is 404.",
+    params: [id],
+    responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/unarchive", {
+    tag,
+    summary: "Unarchive an offer",
+    description: "Either party. Idempotent. archivedAt is null in the response. Anyone else is 404.",
+    params: [id],
+    responses: { 200: ok(ref("Offer")) },
+  }),
+  post("core", "/api/v1/me/offers/{id}/report", {
+    tag,
+    summary: "Report an offer",
+    description: "Either party reports the other. Stored for review, no automatic action. Reporting again adds another report. Anyone else is 404.",
+    params: [id],
+    body: body(obj({ reason: nullable(text(1, 500)) }, []), false),
+    responses: { 204: noContent },
+  }),
+  get("core", "/api/v1/me/blocks", {
+    tag,
+    summary: "List users I blocked",
+    description: "Newest first.",
+    params: [...pageParams],
+    responses: { 200: okPage(ref("BlockedUser")) },
+  }),
+  post("core", "/api/v1/me/blocks", {
+    tag,
+    summary: "Block a user",
+    description: "400 when userId is the caller, 404 when the user does not exist. Idempotent. A blocked user cannot send the caller offers (403 BLOCKED), and offers between the two leave the caller's offer lists.",
+    body: body(obj({ userId: uuid })),
+    responses: { 204: noContent },
+  }),
+  del("core", "/api/v1/me/blocks/{userId}", {
+    tag,
+    summary: "Unblock a user",
+    description: "Idempotent.",
+    params: [pathParam("userId")],
+    responses: { 204: noContent },
   }),
   get("core", "/api/v1/me/offers/{id}/messages", {
     tag,
@@ -140,7 +196,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/offers/{id}/messages", {
     tag,
     summary: "Send an offer message",
-    description: "409 unless the offer is ACCEPTED.",
+    description: "409 unless the offer is ACCEPTED. 403 BLOCKED when the other party blocked the caller; existing messages stay visible.",
     params: [id],
     body: body(obj({ body: text(1, 2000) })),
     responses: { 201: ok(ref("OfferMessage"), "Created") },
@@ -154,9 +210,9 @@ export const routes: Route[] = [
   post("core", "/api/v1/me/links", {
     tag,
     summary: "Add a link",
-    description: "kind is inferred from the URL host when omitted.",
+    description: "kind is inferred from the URL host when omitted. url must be http or https with no username or password.",
     body: body(obj({
-      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri" },
+      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri", description: "http or https URL with no username or password" },
       kind: LINK_KIND,
       title: nullable(text(0, 300)),
       aiRead: nullable(bool),
@@ -166,9 +222,10 @@ export const routes: Route[] = [
   patch("core", "/api/v1/me/links/{id}", {
     tag,
     summary: "Update a link",
+    description: "url, when sent, must be http or https with no username or password.",
     params: [id],
     body: body(obj({
-      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri" },
+      url: { type: "string", minLength: 1, maxLength: 2000, format: "uri", description: "http or https URL with no username or password" },
       kind: LINK_KIND,
       title: nullable(text(0, 300)),
       aiRead: bool,
@@ -178,8 +235,16 @@ export const routes: Route[] = [
   del("core", "/api/v1/me/links/{id}", {
     tag,
     summary: "Delete a link",
+    description: "Soft delete: the link leaves the list, PATCH and the AI readers, and POST .../restore brings it back. 404 when it is already deleted. Adding the same URL again creates a new link.",
     params: [id],
     responses: { 204: noContent },
+  }),
+  post("core", "/api/v1/me/links/{id}/restore", {
+    tag,
+    summary: "Restore a deleted link",
+    description: "Undo for DELETE. Idempotent: a link that is not deleted is returned as is. 404 for another user's link.",
+    params: [id],
+    responses: { 200: ok(ref("ProfileLink")) },
   }),
   post("core", "/api/v1/me/devices", {
     tag,
@@ -242,6 +307,66 @@ export const routes: Route[] = [
     summary: "List bookmarked open postings",
     params: [...pageParams],
     responses: { 200: okPage(ref("Posting")) },
+  }),
+  get("core", "/api/v1/me/posting-views", {
+    tag,
+    summary: "List recently viewed open postings",
+    description: "One card per posting, newest viewed day first. Does not increment view counts. A missing posting_views table is an empty page.",
+    params: [...pageParams],
+    responses: { 200: okPage(ref("Posting")) },
+  }),
+  get("core", "/api/v1/me/posting-document-status", {
+    tag,
+    summary: "Document status for postings",
+    description: "postingIds is one comma-separated list of at most 50 uuids. Every requested id is returned. NONE 서류 없음, DRAFT 초안 있음, READY 서류 준비됨.",
+    params: [query("postingIds", { type: "string" }, "Comma-separated posting uuids")],
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          postingId: uuid,
+          status: enumOf("NONE", "DRAFT", "READY"),
+          label: str,
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/suggested-experiences", {
+    tag,
+    summary: "Suggested experiences from gap analyses",
+    description: "Up to 5 strings from the caller's gap analyses, preferred_missing then missing, newest analysis first. No model call.",
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          id: str,
+          title: str,
+          sub: str,
+          meta: str,
+          postingId: nullable(uuid),
+          applicationId: uuid,
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/career-topics", {
+    tag,
+    summary: "Topic chips for a career post",
+    description: "At most three items, in order career, application, gap. Empty slots are omitted. No model call.",
+    responses: {
+      200: ok(obj({
+        items: arr(obj({
+          id: enumOf("career", "application", "gap"),
+          title: str,
+          sub: str,
+          source: enumOf("career", "application", "gap"),
+        })),
+      })),
+    },
+  }),
+  get("core", "/api/v1/me/match-chips", {
+    tag,
+    summary: "Chips for matching postings",
+    description: "Up to 8 strings: category and role, tenure, then skills. No location chip.",
+    responses: { 200: ok(obj({ chips: arr(str) })) },
   }),
   get("core", "/api/v1/me/follows", {
     tag,
@@ -330,17 +455,34 @@ export const schemas: Record<string, Schema> = {
     description: text(0, 500),
   }, ["company", "role"]),
   Profile: obj(profileProps),
-  ProfileDetail: obj({ ...profileProps, following: bool, offered: bool }),
+  ProfileDetail: obj({
+    ...profileProps,
+    following: bool,
+    offered: bool,
+  }),
   Offer: obj({
     id: uuid,
-    sender: obj({ id: str, displayName: str, companyName: nullable(str), headline: str, avatarUrl: nullable(str) }),
-    recipient: person,
+    sender: offerParty,
+    recipient: offerParty,
     message: str,
-    posting: nullable(obj({ id: uuid, title: str, company: str, imageUrl: nullable(str) })),
+    posting: nullable(obj({
+      id: uuid,
+      title: str,
+      company: str,
+      imageUrl: nullable(str),
+      location: str,
+      careerMin: int,
+      careerMax: nullable(int),
+      deadline: nullable(date),
+    })),
     status: enumOf("SENT", "READ", "ACCEPTED", "DECLINED"),
     readAt: nullable(dateTime),
+    respondedAt: { ...nullable(dateTime), description: "When the recipient accepted or declined. Null while open, and for offers answered before this was recorded." },
+    canSend: { ...bool, description: "Whether POST /me/offers/{id}/messages would succeed for the caller: status ACCEPTED and the other party has not blocked the caller." },
     createdAt: dateTime,
-  }),
+    archivedAt: { ...nullable(dateTime), description: "When the caller archived this offer. Null when not archived. Per caller." },
+  }, ["id", "sender", "recipient", "message", "posting", "status", "readAt", "respondedAt", "canSend", "createdAt"]),
+  BlockedUser: obj({ user: person, createdAt: dateTime }),
   OfferMessage: obj({ id: uuid, offerId: uuid, sender: person, body: str, createdAt: dateTime }),
   ProfileLink: obj({
     id: uuid,

@@ -4,8 +4,8 @@ import { clearLease, isolate } from "../middleware/ratelimit.ts";
 
 // Largest body a worker accepts (core sources, python evidence uploads).
 const MAX_BODY_BYTES = 20 << 20;
-// Headers the AI worker sends to core with the internal secret.
-const ACT_AS = new Set(["x-push-internal-secret", "x-push-act-as", "x-push-company"]);
+// Headers the AI worker sends to core with the internal secret. x-push-approval names the card core checks.
+const ACT_AS = new Set(["x-push-internal-secret", "x-push-act-as", "x-push-company", "x-push-approval"]);
 
 /** True when the request carries the AI worker's act-as secret. Only core routes may keep the act-as headers. */
 export async function isInternalCall(request: Request, env: FrontEnv): Promise<boolean> {

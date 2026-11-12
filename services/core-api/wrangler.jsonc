@@ -13,13 +13,19 @@
   "placement": { "mode": "targeted", "region": "aws:ap-southeast-1" },
   "vars": {
     "APP_ENV": "production",
+    // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
+    "PAYMENTS_ENABLED": "0",
     "MANAGED_AI": "1",
-    "MANAGED_GO": "0",
-    "STRIPE_SUCCESS_URL": "push://billing/success",
-    "STRIPE_CANCEL_URL": "push://billing/cancel",
+    // Web origins Stripe Checkout may return employers to (comma list, first is the default).
+    "STRIPE_RETURN_ORIGINS": "https://push.devcyjoon.tech",
     "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
     "QUEUE_BACKEND": "redis",
-    "DISPATCH_ORIGIN": "https://dispatch.187-127-112-169.sslip.io"
+    "DISPATCH_ORIGIN": "https://dispatch.187-127-112-169.sslip.io",
+    "IAP_PRODUCT_PRO": "push.pro.monthly",
+    "IAP_PRODUCT_ULTRA": "push.ultra.monthly",
+    "IAP_PRODUCT_TOPUP": "push.credits.topup",
+    "APPLE_BUNDLE_ID": "app.push.mobile",
+    "GOOGLE_PLAY_PACKAGE": "app.push.mobile"
   },
   // Test server: push-be-core-staging behind push-be-staging (see the gateway).
   // APP_ENV=development turns on DEV_AUTH_TOKEN; PHONE_SMS_MODE=log writes phone
@@ -30,16 +36,20 @@
       "triggers": { "crons": ["15 * * * *"] },
       "vars": {
         "APP_ENV": "development",
+        "PAYMENTS_ENABLED": "1",
         // The AI service seeds this user at startup when DEV_AUTH_TOKEN is set.
         "DEV_USER_ID": "00000000-0000-4000-8000-000000000001",
         "PHONE_SMS_MODE": "log",
         "MANAGED_AI": "1",
-        "MANAGED_GO": "0",
-        "STRIPE_SUCCESS_URL": "push://billing/success",
-        "STRIPE_CANCEL_URL": "push://billing/cancel",
+        "STRIPE_RETURN_ORIGINS": "http://localhost:5174,http://localhost:5175",
         "STRIPE_PORTAL_RETURN_URL": "push://billing/portal",
         "QUEUE_BACKEND": "redis",
-        "DISPATCH_ORIGIN": "https://dispatch-staging.187-127-112-169.sslip.io"
+        "DISPATCH_ORIGIN": "https://dispatch-staging.187-127-112-169.sslip.io",
+        "IAP_PRODUCT_PRO": "push.pro.monthly",
+        "IAP_PRODUCT_ULTRA": "push.ultra.monthly",
+        "IAP_PRODUCT_TOPUP": "push.credits.topup",
+        "APPLE_BUNDLE_ID": "app.push.mobile",
+        "GOOGLE_PLAY_PACKAGE": "app.push.mobile"
       }
     }
   }

@@ -11,7 +11,7 @@ const NOW = new Date("2026-10-21T00:00:00Z");
 test("github callback sends a User-Agent when fetching the user", async () => {
   resetLimits();
   const env = {
-    APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0",
+    APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
   const query: Deps["query"] = async (sql) => {
@@ -57,7 +57,7 @@ function deletionDeps(stripeOk: boolean) {
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     stripeCalls.push(`${init?.method} ${String(input).replace("https://api.stripe.com", "")}`);
     if (!stripeOk) return Response.json({ error: {} }, { status: 500 });
-    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1" }, { id: "sub_2" }] });
+    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });
     return Response.json({ id: "sub", status: "canceled" });
   };
   const env = { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: "u1", STRIPE_SECRET_KEY: "sk" } as CoreEnv;
@@ -106,7 +106,7 @@ test("DELETE /me still deletes when the companies table is missing", async () =>
   };
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     stripeCalls.push(`${init?.method} ${String(input).replace("https://api.stripe.com", "")}`);
-    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1" }, { id: "sub_2" }] });
+    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });
     return Response.json({ id: "sub", status: "canceled" });
   };
   const env = { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: "u1", STRIPE_SECRET_KEY: "sk" } as CoreEnv;
@@ -136,7 +136,7 @@ test("clearDeletion ignores a missing companies table", async () => {
 test("login still works before migration 0018 is applied", async () => {
   resetLimits();
   const env = {
-    APP_ENV: "production", MANAGED_AI: "1", MANAGED_GO: "0",
+    APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
   const query: Deps["query"] = async (sql) => {
@@ -161,4 +161,28 @@ test("login still works before migration 0018 is applied", async () => {
     { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
   );
   assert.equal(res.status, 302);
+});
+
+test("logout deletes the caller's push token, or all of the user's when none is sent", async () => {
+  const seen: { sql: string; params: unknown[] }[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    seen.push({ sql, params });
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+  const logout = (body: Record<string, unknown>) => handle(
+    new Request("https://core.example/api/v1/auth/logout", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }),
+    { APP_ENV: "production" } as CoreEnv,
+    { query, now: () => NOW },
+  );
+  resetLimits();
+  assert.equal((await logout({ refreshToken: "r1", pushToken: "ExponentPushToken[a]" })).status, 204);
+  assert.equal((await logout({ refreshToken: "r1" })).status, 204);
+  const calls = seen.filter((c) => c.sql.includes("DELETE FROM user_devices"));
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /user_id IN \(SELECT user_id FROM target\) AND \(\$3::text IS NULL OR token = \$3::text\)/);
+  assert.equal(calls[0].params[2], "ExponentPushToken[a]");
+  assert.equal(calls[1].params[2], null);
 });

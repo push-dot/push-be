@@ -47,7 +47,12 @@ async def export_version(id: str, versionId: str, request: Request):
     v = await d.documents.get_version(current_user(request).id,
                                       param_id(id, "id"),
                                       param_id(versionId, "versionId"))
-    if doc.finalized_version_id is None or doc.finalized_version_id != v.id:
+    hub_latest = (
+        doc.kind == "HUB_PROFILE"
+        and doc.latest_version_id is not None
+        and doc.latest_version_id == v.id
+    )
+    if not hub_latest and (doc.finalized_version_id is None or doc.finalized_version_id != v.id):
         raise document_not_finalized(
             "only the finalized version can be exported")
     lines = tiptap_to_lines(v.content or {})

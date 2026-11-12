@@ -272,7 +272,7 @@ class StubAiUsageStore:
     async def lock_user(self, user_id: UUID):
         pass
 
-    async def settle(self, id_, input_tokens, output_tokens, cost):
+    async def settle(self, id_, input_tokens, output_tokens, cost, generation=None):
         for u in self.items:
             if u.id == id_ and u.status == ent.USAGE_RESERVED:
                 u.input_tokens = input_tokens
@@ -280,9 +280,10 @@ class StubAiUsageStore:
                 u.cost_micro_credits = cost
                 u.status = ent.USAGE_SETTLED
 
-    async def release(self, id_):
+    async def release(self, id_, generation=None):
         for u in self.items:
-            if u.id == id_ and u.status == ent.USAGE_RESERVED:
+            if u.id == id_ and u.status == ent.USAGE_RESERVED and (
+                    generation is None or getattr(u, "reservation_gen", generation) == generation):
                 u.cost_micro_credits = 0
                 u.status = ent.USAGE_RELEASED
 

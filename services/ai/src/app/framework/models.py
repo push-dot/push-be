@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Final
 
 from app.domain import entities as ent
-from app.domain.plan_levers import provider_for
+from app.domain.plan_levers import openrouter_route
 from app.framework.flag import use_langchain
 from app.framework.prompts import render_messages
 
@@ -18,16 +18,13 @@ _TIMEOUT_SECONDS: Final = 60
 _MAX_RETRIES: Final = 1
 
 
-def provider_of(chat, model: str) -> dict | None:
-    """OpenRouter provider routing, the same rule OpenAIClient applies to its own requests."""
-    config = getattr(chat, "config", None)
-    return None if config is None else provider_for(model, config)
-
-
 def chat_model(*, api_key: str, model: str, base_url: str,
                reasoning: str = "", headers: dict | None = None,
-               provider: dict | None = None, cls=None, streaming: bool = True):
+               cls=None, streaming: bool = True):
     """OpenAI-compatible chat model. Tools are not bound to this call."""
+    if cls is None and not (api_key or "").strip():
+        from app.domain.errors import not_configured
+        raise not_configured("managed AI is not configured")
     if cls is None:
         from langchain_openai import ChatOpenAI
         cls = ChatOpenAI
@@ -41,13 +38,11 @@ def chat_model(*, api_key: str, model: str, base_url: str,
         "timeout": _TIMEOUT_SECONDS,
         "max_retries": _MAX_RETRIES,
     }
-    extra_body: dict = {}
+    # The same provider pins and web engine as OpenAIClient's raw requests.
+    extra_body: dict = openrouter_route(model)
     if reasoning:
         extra_body["reasoning"] = {"effort": reasoning}
-    if provider:
-        extra_body["provider"] = provider
-    if extra_body:
-        kwargs["extra_body"] = extra_body
+    kwargs["extra_body"] = extra_body
     if headers:
         kwargs["default_headers"] = headers
     return cls(**kwargs)
@@ -92,27 +87,26 @@ def _attach(model, callback):
 
 def _built_model(chat, key: str, model: str, reasoning: str,
                  headers: dict | None, *, levers=None, web_search: bool = False,
-                 session_id: str = "", app_config=None, callback=None):
+                 app_config=None, callback=None):
     if levers is None:
         lc = chat_model(
             api_key=key, model=model, base_url=getattr(chat, "base_url", ""),
-            reasoning=reasoning, headers=headers, provider=provider_of(chat, model))
+            reasoning=reasoning, headers=headers)
     else:
         from app.framework.llm import chat_model_for
         lc = chat_model_for(
-            levers, web_search=web_search, streaming=True, config=app_config,
-            session_id=session_id)
+            levers, web_search=web_search, streaming=True, config=app_config)
     return _attach(lc, callback)
 
 
 async def complete_langchain(chat, key: str, model: str, system: str,
                              user: str, reasoning: str = "",
                              headers: dict | None = None, *, levers=None,
-                             web_search: bool = False, session_id: str = "",
+                             web_search: bool = False,
                              app_config=None, callback=None) -> ent.AICompletion:
     lc = _built_model(
         chat, key, model, reasoning, headers, levers=levers, web_search=web_search,
-        session_id=session_id, app_config=app_config, callback=callback)
+        app_config=app_config, callback=callback)
     messages = render_messages(system, user)
     result = await lc.ainvoke(messages)
     usage: dict = {}
@@ -127,11 +121,11 @@ async def stream_langchain(chat, key: str, model: str, system: str, user: str,
                            usage: dict, reasoning: str = "",
                            headers: dict | None = None,
                            assistant_prefix: str = "", *, levers=None,
-                           web_search: bool = False, session_id: str = "",
+                           web_search: bool = False,
                            app_config=None, callback=None):
     lc = _built_model(
         chat, key, model, reasoning, headers, levers=levers, web_search=web_search,
-        session_id=session_id, app_config=app_config, callback=callback)
+        app_config=app_config, callback=callback)
     messages = render_messages(system, user, assistant_prefix)
     async for chunk in lc.astream(messages):
         _apply_usage(chunk, usage)

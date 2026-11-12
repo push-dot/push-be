@@ -42,7 +42,7 @@ async def test_turn_uses_gate_model_and_persists_reply():
     operation = items[-1][1]["operation"]
     assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
     assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
-    assert svc.ai.settled == [("gate-model", 10, 5)]
+    assert svc.ai.settled == [("anthropic/claude-sonnet-5-5", 10, 5)]
     tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
     assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
 
@@ -105,6 +105,33 @@ async def test_bypass_intake_with_a_page_does_not_stop():
     from app.harness.personal.resume.graph import _must_stop
     assert not _must_stop({"access_mode": "BYPASS", "inputs": {"pages": {"u": "t"}}}, "intake")
     assert _must_stop({"access_mode": "BYPASS", "inputs": {}}, "intake")
+
+
+async def test_intake_text_followup_sends_the_choice_with_done():
+    from tests.harness_fakes import Rows
+
+    rows = Rows({"company_id": None, "resume_state": None})
+    runtime = HarnessRuntime(service(rows))
+    first = await run(runtime, _payload(
+        "내 프로필로 점수 올려 줘", ai=None, intent="boost", access_mode="BYPASS"))
+    assert any(
+        mode == "custom" and chunk.get("type") == "choice" and chunk.get("gate") == "intake"
+        for mode, chunk in first)
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in first)
+    second = await run(runtime, _payload(
+        "이력서 만들기만 할게요. 자료는 지금 없어요.",
+        ai=None,
+        access_mode="BYPASS",
+        job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ))
+    assert any(
+        mode == "custom" and chunk.get("type") == "choice" and chunk.get("gate") == "intake"
+        for mode, chunk in second)
+    assert any(
+        mode == "custom" and chunk.get("type") == "done" and chunk.get("awaiting") == "choice"
+        for mode, chunk in second)
 
 
 async def test_resume_turn_saves_the_assistant_message():
@@ -368,7 +395,9 @@ async def test_gate_model_sends_openrouter_provider_routing_for_the_free_model()
             return chat, "key", ai.model, None
 
     await _gate_model(FreeGate(), Recording).ainvoke([HumanMessage("hi")])
-    assert built[0]["extra_body"]["provider"]["ignore"] == ["DeepSeek"]
+    assert built[0]["extra_body"]["provider"] == {
+        "only": ["together", "fireworks", "novita"], "allow_fallbacks": False,
+        "data_collection": "deny"}
 
 
 class _JobCtx:
@@ -421,3 +450,25 @@ async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(mo
     assert len(checks) == 2
     assert [kind for kind, _ in ctx.events].count("token") == 50
     assert ctx.events[0] == ("token", {"text": "0"}) and ctx.events[-1][0] == "done"
+
+
+async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
+    card = {
+        "type": "result",
+        "source": "external",
+        "taskLine": "이력서 수정",
+        "documentId": "doc-1",
+        "fileName": "이력서.pdf",
+    }
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", card
+            yield "values", {}
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [("result", {key: value for key, value in card.items() if key != "type"})]

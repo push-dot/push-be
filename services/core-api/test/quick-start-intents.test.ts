@@ -9,7 +9,11 @@ const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const NOW = new Date("2026-10-18T00:00:00Z");
 
-const INTENTS = ["match_posting", "fit", "gaps", "experience", "boost"] as const;
+const INTENTS = [
+  "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
+] as const;
 
 const env = (): CoreEnv => ({
   APP_ENV: "production",
@@ -49,7 +53,7 @@ test("personal conversations accept quick-start intents", async () => {
       text: "시작해 주세요",
       accessMode: "AUTO",
       intent,
-    }), `bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee1${index}`), env(), deps(async (sql, next) => {
+    }), `bbbbbbbb-bbbb-4ccc-8ddd-${index.toString(16).padStart(12, "0")}`), env(), deps(async (sql, next) => {
       if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
       if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
       if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
