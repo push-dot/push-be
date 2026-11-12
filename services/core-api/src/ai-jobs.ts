@@ -26,13 +26,14 @@ const LEGACY_INSERT = `WITH job AS (
 
 /**
  * The payload of the one status row a queued chat job `j` starts with: the first phase of its run.
- * `since` is the job's creation, so a timer counts the whole run. `ahead` is the caller's own jobs
- * of that type that were queued or running before it.
+ * `since` is the job's creation, so a timer counts the whole run. `ahead` is the job's queue position
+ * as the bot state defines it (bot_state_v.job_ahead, 0054), so the stream and the bot list say the
+ * same number. Outside a bot thread, and once the job runs, it is 0.
  */
 export const QUEUED_STATUS = `jsonb_build_object('text', '대기 중', 'phase', 'queued',
     'since', to_char(j.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-    'ahead', (SELECT count(*)::int FROM ai_jobs o WHERE o.user_id = j.user_id AND o.type = j.type
-      AND o.status IN ('QUEUED', 'RETRY', 'RUNNING') AND o.created_at < j.created_at))`;
+    'ahead', COALESCE((SELECT v.job_ahead FROM bot_state_v v
+      WHERE v.user_id = j.user_id AND v.thread_id = j.conversation_id AND v.job_id = j.id), 0))`;
 
 const STATUS = `INSERT INTO chat_events (job_id, type, payload) SELECT j.id, 'status', ${QUEUED_STATUS} FROM ai_jobs j WHERE j.id = $1`;
 

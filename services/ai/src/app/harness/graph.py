@@ -17,6 +17,7 @@ from app.domain.access_mode import AccessMode
 from app.framework.models import _content
 from app.harness.approval import create_tool_approval
 from app.harness.policy import Tier, decide
+from app.harness.status import thinking, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -42,6 +43,7 @@ class HarnessState(TypedDict, total=False):
     job_id: str
     access_mode: str
     tool_calls_used: int
+    bot: dict | None
 
 
 class PersonalState(HarnessState, total=False):
@@ -320,9 +322,27 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
+def bot_line(bot: dict | None) -> str:
+    """Who the model is in a bot thread. Only the app shows one: a 봇, never an 에이전트."""
+    if not bot:
+        return ""
+    own = bot.get("name") or bot.get("company")
+    name = "Push Bot" if bot.get("kind") == "push" else f"{own} 봇"
+    line = f"이 대화에서 당신은 '{name}'이에요."
+    if bot.get("kind") != "push":
+        line += f" {bot.get('company')} 회사에 지원하는 사용자를 도와요."
+    if bot.get("postingId"):
+        title = bot.get("postingTitle") or "제목 없음"
+        line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
+    return line + f" 자신을 말할 때는 '{name}'이나 '봇'이라고 하고 '에이전트'라고 하지 마세요."
+
+
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
+    progress: dict[str, str] = {}
+    if spec.id == "personal":
+        from app.harness.personal.tools import PROGRESS as progress
 
     async def agent(state: HarnessState) -> dict:
         messages = list(state.get("messages") or [])
@@ -336,6 +356,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 lines = []
             if lines:
                 content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
+            if who := bot_line(state.get("bot")):
+                content = content.rstrip() + "\n\n" + who
             quick = state.get("quick_start")
             if isinstance(quick, dict) and quick.get("instruction"):
                 sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
@@ -345,6 +367,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))
+        thinking()
         reply = await _complete(target, messages, text_only=over)
         return {"messages": [reply]} if reply is not None else {}
 
@@ -395,6 +418,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             )
             if created:
                 emit(_tool_event(tool.name, "wait", summary, tier))
+                waiting(event["id"], "confirm", summary)
                 emit(event)
             answer = interrupt({
                 "approval_id": event["id"],
@@ -420,6 +444,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
         )
+        if tool.name in progress:
+            working(progress[tool.name])
         emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):

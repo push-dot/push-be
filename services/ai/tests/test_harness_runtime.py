@@ -309,6 +309,13 @@ async def test_a_flow_reply_made_in_a_job_that_resumed_from_a_card_is_stored():
     done = next(chunk for mode, chunk in resumed if mode == "custom" and chunk.get("type") == "done")
     assert done["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
 
+    targets = next(c for mode, c in resumed if mode == "custom" and c.get("type") == "choice")
+    quiet = await run(runtime, _payload("", job_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                                        resume={"approvalId": targets["id"], "optionId": "submit",
+                                                "optionIds": ["submit", "resume"]}))
+    assert not [chunk for mode, chunk in quiet if mode == "custom" and "token" in chunk]
+    assert len(svc.messages) == before + 1, "a job going from card to card stores no old reply"
+
 
 def _fit_call(call_id: str) -> dict:
     return {"name": "get_fit_score", "args": {}, "id": call_id, "type": "tool_call"}
@@ -437,9 +444,11 @@ async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
     async def cancelled(job_id):
         return True
 
+    ctx = _JobCtx()
     with pytest.raises(JobCancelled):
-        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), _JobCtx(), cancelled)
+        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
     assert closed == [True]
+    assert ctx.events == [], "the cancel's own status change writes the one cancelled event (0055)"
 
 
 async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(monkeypatch):
@@ -484,3 +493,25 @@ async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
     ctx = _JobCtx()
     await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
     assert ctx.events == [("result", {key: value for key, value in card.items() if key != "type"})]
+
+
+async def test_queue_turn_stores_status_and_notice_frames_whole():
+    since = "2026-11-13T00:00:00.000000Z"
+    status = {"type": "status", "text": "공고 요건을 읽는 중", "phase": "working", "since": since}
+    notice = {"type": "notice", "text": "“자격 요건”을 읽지 못했어요 · 로그인이 필요한 영역이에요"}
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", status
+            yield "custom", notice
+            yield "values", {}
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [
+        ("status", {key: value for key, value in status.items() if key != "type"}),
+        ("notice", {"text": notice["text"]}),
+    ]

@@ -20,6 +20,7 @@ from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
 from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
+from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
 from app.jsonutil import to_jsonable
@@ -278,6 +279,7 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
                 ctx.db, ctx.user_id, ctx.conversation_id, event, str(args.document_id))
             await ctx.db.q().execute(
                 "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
+            waiting(event["id"], "confirm", "서류 수정")
             emit(event)
         answer = interrupt({
             "approval_id": event["id"],
@@ -352,6 +354,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
             UUID(choice["id"]),
             json.dumps({"gate": choice["gate"]}, ensure_ascii=False),
         )
+        waiting(choice["id"], "answer")
         emit(choice)
         return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}
@@ -432,6 +435,42 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
 def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
     return ToolSpec(name, tier, model, run, lambda _args: summary, approval_kind)
 
+
+# The status line while a tool runs (event `status`, phase working). Each line ends in "는 중".
+PROGRESS = {
+    "search_postings": "공고를 찾는 중",
+    "find_matching_postings": "맞는 공고를 찾는 중",
+    "get_posting": "공고 요건을 읽는 중",
+    "list_bookmarks": "저장한 공고를 보는 중",
+    "list_applications": "지원 현황을 보는 중",
+    "list_documents": "서류 목록을 보는 중",
+    "get_document": "서류를 읽는 중",
+    "list_offers": "받은 제안을 보는 중",
+    "get_offer": "제안 내용을 읽는 중",
+    "list_calendar_events": "일정을 보는 중",
+    "get_my_profile": "프로필을 보는 중",
+    "search_profiles": "허브 프로필을 찾는 중",
+    "list_posts": "글을 보는 중",
+    "get_fit_score": "적합도를 계산하는 중",
+    "search_career_context": "경력 자료를 찾는 중",
+    "bookmark_posting": "공고를 저장하는 중",
+    "unbookmark_posting": "저장한 공고에서 빼는 중",
+    "create_calendar_event": "일정을 추가하는 중",
+    "update_calendar_event": "일정을 고치는 중",
+    "edit_document": "서류를 고치는 중",
+    "start_document": "서류 작성을 준비하는 중",
+    "prepare_interview": "면접 준비를 시작하는 중",
+    "apply_to_posting": "공고에 지원하는 중",
+    "accept_offer": "제안을 수락하는 중",
+    "decline_offer": "제안을 거절하는 중",
+    "send_offer_message": "제안에 답장을 보내는 중",
+    "send_offer": "커피챗 제안을 보내는 중",
+    "create_post": "글을 올리는 중",
+    "create_comment": "댓글을 남기는 중",
+    "follow_user": "팔로우하는 중",
+    "update_my_profile": "프로필을 고치는 중",
+    "delete_calendar_event": "일정을 지우는 중",
+}
 
 PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",

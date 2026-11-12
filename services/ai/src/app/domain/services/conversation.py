@@ -38,6 +38,8 @@ _LIVE_EVENT_TYPES = frozenset(
         "think",
         "plan",
         "paper",
+        "status",
+        "notice",
     }
 )
 
