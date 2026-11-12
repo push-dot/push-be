@@ -470,18 +470,35 @@ export const archiveDocument = async (ctx: Ctx, idRaw: string): Promise<Response
   const doc = await loadDocument(ctx, id);
   if (Number(doc.revision) !== expected) throw conflict(doc.revision);
   if (doc.status === "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
-  const now = ts(ctx.now);
-  const updated = await one(ctx.deps.query,
-    "UPDATE documents SET revision = revision + 1, status = 'ARCHIVED', updated_at = $3 WHERE id = $1 AND user_id = $2 AND revision = $4 RETURNING id",
-    [id, ctx.user.id, now, expected]);
-  if (!updated) await failedUpdate(ctx, "documents", id);
-  return data(200, documentDto({ ...doc, revision: expected + 1, status: "ARCHIVED", updated_at: now }), ctx.rid);
+  if (!(await archiveDoc(ctx, id, expected))) await failedUpdate(ctx, "documents", id);
+  return data(200, documentDto({ ...doc, revision: expected + 1, status: "ARCHIVED", updated_at: ts(ctx.now) }), ctx.rid);
 };
 
-const RESTORE_SQL = `UPDATE documents SET revision = revision + 1,
-    status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, updated_at = $3
-  WHERE id = $1 AND user_id = $2 AND revision = $4 AND status = 'ARCHIVED'
-  RETURNING status`;
+/**
+ * Archives the caller's live document. With `revision` null there is no revision check, as for the materials
+ * delete. False when nothing moved: no such live document, or another revision.
+ */
+export const archiveDoc = async (ctx: Ctx, id: string, revision: number | null): Promise<boolean> =>
+  (await one(ctx.deps.query,
+    `UPDATE documents SET revision = revision + 1, status = 'ARCHIVED', updated_at = $3
+     WHERE id = $1 AND user_id = $2 AND status <> 'ARCHIVED' AND ($4::bigint IS NULL OR revision = $4) RETURNING id`,
+    [id, ctx.user.id, ts(ctx.now), revision])) != null;
+
+/**
+ * Brings back the caller's archived document: finalized when it has a finalized version, else a draft. Archiving
+ * dropped its search nodes, so it is read again. Its new status, or null when nothing moved, as for `archiveDoc`.
+ */
+export const unarchiveDoc = async (ctx: Ctx, id: string, revision: number | null): Promise<string | null> => {
+  const row = await one(ctx.deps.query,
+    `UPDATE documents SET revision = revision + 1,
+       status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, updated_at = $3
+     WHERE id = $1 AND user_id = $2 AND status = 'ARCHIVED' AND ($4::bigint IS NULL OR revision = $4)
+     RETURNING status`,
+    [id, ctx.user.id, ts(ctx.now), revision]);
+  if (!row) return null;
+  await enqueueIngest(ctx, { documentId: id });
+  return String(row.status);
+};
 
 export const restoreDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
@@ -490,11 +507,8 @@ export const restoreDocument = async (ctx: Ctx, idRaw: string): Promise<Response
   const doc = await loadDocument(ctx, id);
   if (Number(doc.revision) !== expected) throw conflict(doc.revision);
   if (doc.status !== "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
-  const now = ts(ctx.now);
-  const updated = await one(ctx.deps.query, RESTORE_SQL, [id, ctx.user.id, now, expected]);
-  if (!updated) await failedUpdate(ctx, "documents", id);
-  await enqueueIngest(ctx, { documentId: id });
-  return data(200, documentDto({ ...doc, revision: expected + 1, status: String(updated!.status), updated_at: now }), ctx.rid);
+  const status = (await unarchiveDoc(ctx, id, expected)) ?? await failedUpdate(ctx, "documents", id);
+  return data(200, documentDto({ ...doc, revision: expected + 1, status, updated_at: ts(ctx.now) }), ctx.rid);
 };
 
 export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> => {

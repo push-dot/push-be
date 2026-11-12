@@ -79,7 +79,7 @@ export const routes: Route[] = [
   del("core", "/api/v1/materials/{kind}/{id}", {
     tag: "materials",
     summary: "Delete a material",
-    description: `${keptForThirtyDays} Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. 404 when there is no such live material.`,
+    description: `${keptForThirtyDays} Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. A material that is deleted already, by an earlier or a concurrent request, answers 204 again and is not changed. 404 when the caller has no such material, live or kept.`,
     params: [kind, id],
     responses: { 204: noContent },
   }),

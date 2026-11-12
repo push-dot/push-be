@@ -2429,7 +2429,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a material
-         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. 404 when there is no such live material.
+         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. A material that is deleted already, by an earlier or a concurrent request, answers 204 again and is not changed. 404 when the caller has no such material, live or kept.
          */
         delete: operations["deleteMaterialsByKindById"];
         options?: never;
