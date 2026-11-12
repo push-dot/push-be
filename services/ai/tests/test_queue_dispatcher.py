@@ -60,6 +60,12 @@ class MemoryDB:
     async def purge_finished(self, now):
         return 0
 
+    async def compact_finished(self, now):
+        return 0
+
+    async def sweep_orphan_checkpoints(self):
+        return 0
+
     async def expire_approvals(self, now):
         return None
 

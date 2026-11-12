@@ -1956,6 +1956,1900 @@
         ],
         "type": "object"
       },
+      "BotTurn": {
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "properties": {
+                  "approvalId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "optionId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "optionIds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "approvalId",
+                  "optionId"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assistant": {
+            "anyOf": [
+              {
+                "properties": {
+                  "messageId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "properties": {
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "file",
+                            "document",
+                            "posting",
+                            "link"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "messageId",
+                  "text",
+                  "sources"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bot's reply. null while it runs and for a turn that ended on a card or failed before replying."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "The frames the bot stream sent, in seq order, without done. Tokens with nothing but status between them are one event, stored at its last row's seq and at. A tool, think, card, or any other frame between two tokens keeps two events. Only the first terminal event (error or cancelled) is kept. A PENDING or RUNNING turn keeps every status; a finished turn keeps only waiting ones.",
+            "items": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "token"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "phase": {
+                      "description": "Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it.",
+                      "type": "string"
+                    },
+                    "seconds": {
+                      "description": "How long the model step took. Nearest second, then at least 1. No text and no chain-of-thought.",
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "think"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "seconds",
+                    "phase",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "heading": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "description": "draft-{target}-v{version}, e.g. draft-resume-v1. A new version is a new card. The same id replaces the card.",
+                      "type": "string"
+                    },
+                    "label": {
+                      "description": "이력서 초안 v1, 포트폴리오 초안 v1, or 자기소개서 초안 v1",
+                      "type": "string"
+                    },
+                    "lines": {
+                      "description": "Up to 6 preview lines, markdown stripped, each at most 120 characters",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "paper"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "label",
+                    "heading",
+                    "lines",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "documentId": {
+                      "type": "string"
+                    },
+                    "hunks": {
+                      "items": {
+                        "properties": {
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sign": {
+                            "enum": [
+                              "+",
+                              "-",
+                              ""
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "line",
+                          "sign",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "revisionId": {
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "diff"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "documentId",
+                    "revisionId",
+                    "hunks",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "band": {
+                      "description": "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)",
+                      "type": "string"
+                    },
+                    "delta": {
+                      "description": "Boost card: signed change from from, e.g. +1.4",
+                      "type": "string"
+                    },
+                    "from": {
+                      "description": "Boost card: the score before the first boost cycle",
+                      "type": "number"
+                    },
+                    "keywords": {
+                      "description": "Up to 5 posting terms; ok when the resume text contains the term",
+                      "items": {
+                        "properties": {
+                          "label": {
+                            "type": "string"
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "ok"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "note": {
+                      "description": "Boost card: 적합도 6.9 → 8.3 (+1.4)",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "description": "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
+                      "properties": {
+                        "careerLevel": {
+                          "type": "number"
+                        },
+                        "domain": {
+                          "type": "number"
+                        },
+                        "experienceLink": {
+                          "type": "number"
+                        },
+                        "keyword": {
+                          "type": "number"
+                        },
+                        "techStack": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "plan": {
+                      "enum": [
+                        "FREE",
+                        "PRO",
+                        "ULTRA"
+                      ],
+                      "type": "string"
+                    },
+                    "projected": {
+                      "description": "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+                      "properties": {
+                        "bullets": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "score": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "label",
+                        "bullets"
+                      ],
+                      "type": "object"
+                    },
+                    "score": {
+                      "type": "number"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "description": "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
+                      "type": "string"
+                    },
+                    "topGap": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "fit"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "score",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "documentId": {
+                      "description": "Empty string when the document was not synced",
+                      "type": "string"
+                    },
+                    "downloadUrl": {
+                      "description": "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}",
+                      "type": "string"
+                    },
+                    "fileId": {
+                      "type": "string"
+                    },
+                    "mime": {
+                      "description": "Never text/markdown.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event.",
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "file"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "mime",
+                    "fileId",
+                    "documentId",
+                    "downloadUrl",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "properties": {
+                              "id": {
+                                "enum": [
+                                  "apply",
+                                  "convert",
+                                  "view"
+                                ],
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "method": {
+                                "type": "string"
+                              },
+                              "path": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "at": {
+                          "description": "When the event was stored. A joined token has the time of its last row.",
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "bullets": {
+                          "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cardMeta": {
+                          "type": "string"
+                        },
+                        "checklist": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "company": {
+                          "type": "string"
+                        },
+                        "documentId": {
+                          "type": "string"
+                        },
+                        "fileName": {
+                          "description": "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
+                          "type": "string"
+                        },
+                        "fitFrom": {
+                          "description": "Fit before any edit; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "fitTo": {
+                          "description": "Fit after the last boost cycle; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "pageLine": {
+                          "type": "string"
+                        },
+                        "savedLine": {
+                          "type": "string"
+                        },
+                        "seq": {
+                          "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                          "type": "integer"
+                        },
+                        "source": {
+                          "enum": [
+                            "external"
+                          ],
+                          "type": "string"
+                        },
+                        "summary": {
+                          "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
+                          "type": "string"
+                        },
+                        "taskLine": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "result"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "source",
+                        "taskLine",
+                        "checklist",
+                        "documentId",
+                        "fileName",
+                        "pageLine",
+                        "cardMeta",
+                        "actions",
+                        "seq",
+                        "at"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "properties": {
+                              "id": {
+                                "enum": [
+                                  "apply",
+                                  "convert",
+                                  "view"
+                                ],
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "method": {
+                                "type": "string"
+                              },
+                              "path": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "at": {
+                          "description": "When the event was stored. A joined token has the time of its last row.",
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "bullets": {
+                          "description": "Up to 3 changes: the draft's changes, else the analysis improvements",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "checklist": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "company": {
+                          "type": "string"
+                        },
+                        "documentId": {
+                          "type": "string"
+                        },
+                        "fitFrom": {
+                          "description": "Fit before any edit; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "fitTo": {
+                          "description": "Fit after the last boost cycle; present only when the fit rose",
+                          "type": "number"
+                        },
+                        "headline": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "seq": {
+                          "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                          "type": "integer"
+                        },
+                        "source": {
+                          "enum": [
+                            "profile"
+                          ],
+                          "type": "string"
+                        },
+                        "subtitle": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "description": "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)",
+                          "type": "string"
+                        },
+                        "taskLine": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "result"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "source",
+                        "taskLine",
+                        "checklist",
+                        "documentId",
+                        "name",
+                        "headline",
+                        "title",
+                        "subtitle",
+                        "actions",
+                        "seq",
+                        "at"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "description": "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq). JOB_FAILED: the job ended without writing its own terminal event, for example its worker died; the database wrote this one.",
+                          "enum": [
+                            "NOT_CONFIGURED",
+                            "PROVIDER_ERROR",
+                            "INTERNAL",
+                            "JOB_FAILED"
+                          ],
+                          "type": "string"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "error"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "error",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "id": {
+                      "enum": [
+                        "strategy",
+                        "feedback"
+                      ],
+                      "type": "string"
+                    },
+                    "keywords": {
+                      "description": "Strategy card only. Up to 6, without a leading +",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "description": "섹션 4개 or 3개",
+                      "type": "string"
+                    },
+                    "rows": {
+                      "items": {
+                        "properties": {
+                          "label": {
+                            "type": "string"
+                          },
+                          "note": {
+                            "type": "string"
+                          },
+                          "tag": {
+                            "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tag",
+                          "label",
+                          "note"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "plan"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "title",
+                    "meta",
+                    "rows",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "extra": {
+                      "description": "Detail lines the client folds as +N줄",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "result": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "resultLine": {
+                      "description": "One-line outcome shown under the tool line",
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "state": {
+                      "description": "run is sent just before the tool executes, then ok or err. wait is the approval pause.",
+                      "enum": [
+                        "run",
+                        "ok",
+                        "err",
+                        "wait"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "What the tool worked on, e.g. a file name or 회사 · 직무",
+                      "type": "string"
+                    },
+                    "tier": {
+                      "enum": [
+                        "READ",
+                        "SAFE_WRITE",
+                        "RISKY_WRITE"
+                      ],
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "tool"
+                      ],
+                      "type": "string"
+                    },
+                    "warning": {
+                      "description": "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "state",
+                    "summary",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "id": {
+                      "description": "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze.",
+                      "type": "string"
+                    },
+                    "items": {
+                      "items": {
+                        "properties": {
+                          "added": {
+                            "description": "True for a step added after the list was first shown",
+                            "type": "boolean"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "enum": [
+                              "todo",
+                              "now",
+                              "done"
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "text",
+                          "state"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "todo"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "items",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "ahead": {
+                      "description": "The caller's runs queued or running before this one",
+                      "type": "integer"
+                    },
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "phase": {
+                      "enum": [
+                        "queued"
+                      ],
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "since": {
+                      "description": "When the run was queued. For waiting: when the card asked.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "status"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                    "phase",
+                    "since",
+                    "ahead",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "phase": {
+                      "enum": [
+                        "thinking",
+                        "working"
+                      ],
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "since": {
+                      "description": "When the run was queued. For waiting: when the card asked.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "status"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                    "phase",
+                    "since",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "cardId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "for": {
+                      "enum": [
+                        "answer",
+                        "confirm"
+                      ],
+                      "type": "string"
+                    },
+                    "phase": {
+                      "enum": [
+                        "waiting"
+                      ],
+                      "type": "string"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "since": {
+                      "description": "When the run was queued. For waiting: when the card asked.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "status"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                    "phase",
+                    "since",
+                    "for",
+                    "cardId",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "resumable": {
+                      "description": "True when a document flow is active and the next message continues it. Absent on a stored event from before this field.",
+                      "type": "boolean"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "type": {
+                      "enum": [
+                        "cancelled"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "resumable",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "args": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "documentId": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "anyOf": [
+                        {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "null when the card waits until it is answered"
+                    },
+                    "foot": {
+                      "description": "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting",
+                      "type": "string"
+                    },
+                    "hunks": {
+                      "description": "DOCUMENT_EDIT: the proposed change, sent before it is applied",
+                      "items": {
+                        "properties": {
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sign": {
+                            "enum": [
+                              "+",
+                              "-",
+                              ""
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "line",
+                          "sign",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "DOCUMENT_EDIT",
+                        "TOOL_ACTION"
+                      ],
+                      "type": "string"
+                    },
+                    "openedAt": {
+                      "description": "When the card asked. A card asked again has the new time.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "options": {
+                      "items": {
+                        "properties": {
+                          "action": {
+                            "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                            "enum": [
+                              "change"
+                            ],
+                            "type": "string"
+                          },
+                          "badge": {
+                            "description": "Short tag such as 추천, or the company initial on a material row",
+                            "type": "string"
+                          },
+                          "desc": {
+                            "description": "Second line under the label",
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "sub": {
+                            "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "resolution": {
+                      "description": "How the card was answered. A card with no stored row, a gate the server answered itself (auto), is APPROVED with optionId null.",
+                      "properties": {
+                        "optionId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "optionIds": {
+                          "description": "Present when more than one option was picked",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "PENDING",
+                            "APPROVED",
+                            "REJECTED",
+                            "EXPIRED"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "optionId"
+                      ],
+                      "type": "object"
+                    },
+                    "retryable": {
+                      "description": "True for a tool card with a lifetime while no newer chat job of the thread exists",
+                      "type": "boolean"
+                    },
+                    "rows": {
+                      "description": "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+                      "items": {
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          },
+                          "initial": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "toolName": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "approval"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "kind",
+                    "title",
+                    "options",
+                    "resolution",
+                    "openedAt",
+                    "expiresAt",
+                    "retryable",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "at": {
+                      "description": "When the event was stored. A joined token has the time of its last row.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "auto": {
+                      "description": "Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections.",
+                      "type": "boolean"
+                    },
+                    "detail": {
+                      "description": "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress",
+                      "type": "string"
+                    },
+                    "documentId": {
+                      "description": "Present gate: the saved profile document, when there is one",
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "anyOf": [
+                        {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "null when the card waits until it is answered"
+                    },
+                    "gate": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "RESUME_GATE",
+                        "EMPLOYER_GATE"
+                      ],
+                      "type": "string"
+                    },
+                    "multiple": {
+                      "description": "Present and true when more than one option may be selected",
+                      "type": "boolean"
+                    },
+                    "note": {
+                      "description": "Profile present gate: where the PDF can be exported",
+                      "type": "string"
+                    },
+                    "openedAt": {
+                      "description": "When the card asked. A card asked again has the new time.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "options": {
+                      "description": "Old-client fallback. A client that does not read sections answers from this list.",
+                      "items": {
+                        "properties": {
+                          "action": {
+                            "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                            "enum": [
+                              "change"
+                            ],
+                            "type": "string"
+                          },
+                          "badge": {
+                            "description": "Short tag such as 추천, or the company initial on a material row",
+                            "type": "string"
+                          },
+                          "desc": {
+                            "description": "Second line under the label",
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "sub": {
+                            "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "recommended": {
+                      "type": "string"
+                    },
+                    "resolution": {
+                      "description": "How the card was answered. A card with no stored row, a gate the server answered itself (auto), is APPROVED with optionId null.",
+                      "properties": {
+                        "optionId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "optionIds": {
+                          "description": "Present when more than one option was picked",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "PENDING",
+                            "APPROVED",
+                            "REJECTED",
+                            "EXPIRED"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "optionId"
+                      ],
+                      "type": "object"
+                    },
+                    "retryable": {
+                      "description": "True for a tool card with a lifetime while no newer chat job of the thread exists",
+                      "type": "boolean"
+                    },
+                    "sections": {
+                      "description": "Present → render these instead of options. Row sections are display only.",
+                      "items": {
+                        "description": "A new client renders sections instead of options. options stays as the fallback for an older client.",
+                        "oneOf": [
+                          {
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "chips"
+                                ],
+                                "type": "string"
+                              },
+                              "multiple": {
+                                "description": "Present and true when every chip in the section may be selected",
+                                "type": "boolean"
+                              },
+                              "options": {
+                                "items": {
+                                  "properties": {
+                                    "action": {
+                                      "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                                      "enum": [
+                                        "change"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "badge": {
+                                      "description": "Short tag such as 추천, or the company initial on a material row",
+                                      "type": "string"
+                                    },
+                                    "desc": {
+                                      "description": "Second line under the label",
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "sub": {
+                                      "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "selected": {
+                                "description": "Default ids. Applied only when the answer contains submit and the section has no pick.",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "options",
+                              "selected"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "rows"
+                                ],
+                                "type": "string"
+                              },
+                              "options": {
+                                "items": {
+                                  "properties": {
+                                    "action": {
+                                      "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                                      "enum": [
+                                        "change"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "badge": {
+                                      "description": "Short tag such as 추천, or the company initial on a material row",
+                                      "type": "string"
+                                    },
+                                    "desc": {
+                                      "description": "Second line under the label",
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "sub": {
+                                      "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "options"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "toggle"
+                                ],
+                                "type": "string"
+                              },
+                              "options": {
+                                "items": {
+                                  "properties": {
+                                    "action": {
+                                      "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                                      "enum": [
+                                        "change"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "badge": {
+                                      "description": "Short tag such as 추천, or the company initial on a material row",
+                                      "type": "string"
+                                    },
+                                    "desc": {
+                                      "description": "Second line under the label",
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "sub": {
+                                      "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "selected": {
+                                "description": "Default on. With submit, an id is on only when it is in optionIds. Without submit, a toggle section that was not touched keeps selected.",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "options",
+                              "selected"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "thumbnails"
+                                ],
+                                "type": "string"
+                              },
+                              "options": {
+                                "items": {
+                                  "properties": {
+                                    "action": {
+                                      "description": "Material rows only. Opens the material picker. This id is not an answer.",
+                                      "enum": [
+                                        "change"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "badge": {
+                                      "description": "Short tag such as 추천, or the company initial on a material row",
+                                      "type": "string"
+                                    },
+                                    "desc": {
+                                      "description": "Second line under the label",
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "sub": {
+                                      "description": "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "selected": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "options",
+                              "selected"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "type": "array"
+                    },
+                    "seq": {
+                      "description": "chat_events id; send back as ?after= or Last-Event-ID to resume",
+                      "type": "integer"
+                    },
+                    "submit": {
+                      "description": "Present → the answer is the button, not a tapped option. Send optionId submit and optionIds [submit, …picked ids].",
+                      "properties": {
+                        "label": {
+                          "description": "Confirm button. {n} is the number of selected ids in toggle sections.",
+                          "type": "string"
+                        },
+                        "optionLabels": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Thumbnails: button label for the selected option id. CLASSIC → 클래식으로 만들기.",
+                          "type": "object"
+                        },
+                        "zeroLabel": {
+                          "description": "Button label when {n} would be 0",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "choice"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "options",
+                    "resolution",
+                    "openedAt",
+                    "expiresAt",
+                    "retryable",
+                    "seq",
+                    "at"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Opaque. Equals turn on the frames of this run's stream.",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RUNNING",
+              "DONE",
+              "FAILED",
+              "CANCELLED"
+            ],
+            "type": "string"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "properties": {
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "file",
+                            "document",
+                            "posting",
+                            "link"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "messageId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "messageId",
+                  "text",
+                  "attachments"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The message that started the turn, with the attachments stored at send. null for a card answer."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "createdAt",
+          "user",
+          "answer",
+          "events",
+          "assistant"
+        ],
+        "type": "object"
+      },
       "CalendarEvent": {
         "properties": {
           "applicationId": {
@@ -10774,6 +12668,67 @@
           }
         ]
       },
+      "Transcript": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/BotTurn"
+            },
+            "type": "array"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "properties": {
+                  "lastSeq": {
+                    "type": "integer"
+                  },
+                  "turnId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "turnId",
+                  "lastSeq"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First page only, while the newest turn is PENDING or RUNNING. Follow GET /bots/{id}/stream?after=lastSeq."
+          },
+          "page": {
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "nextCursor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "nextCursor",
+              "hasMore"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data",
+          "page",
+          "live"
+        ],
+        "type": "object"
+      },
       "TranscriptMatch": {
         "properties": {
           "at": {
@@ -18210,6 +20165,62 @@
           "bots"
         ],
         "x-owner": "core"
+      },
+      "get": {
+        "description": "One item per chat job of the bot's thread, with its messages and its stored frames, so a reopened chat draws what the stream showed. A bot with no thread, and push before the Push Bot exists, has no turns. No body holds the id of the conversation that stores the thread. Turns stay until the bot is deleted or its chat is cleared. 404 for an unknown bot.",
+        "operationId": "getBotsByIdTranscript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcript"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read a bot's chat, newest turn first",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "ai"
       }
     },
     "/api/v1/bots/{id}/transcript/matches": {

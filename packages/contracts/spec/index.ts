@@ -7,9 +7,10 @@ import { sharedSchemas, type Route, type Schema } from "./shared.ts";
 import * as social from "./social.ts";
 import * as bots from "./bots.ts";
 import * as botChat from "./bot-chat.ts";
+import * as botTranscript from "./bot-transcript.ts";
 import * as materials from "./materials.ts";
 
-const areas = [account, bots, botChat, career, conversations, documents, materials, postings, social];
+const areas = [account, bots, botChat, botTranscript, career, conversations, documents, materials, postings, social];
 
 export const routes: Route[] = areas.flatMap((area) => area.routes);
 
