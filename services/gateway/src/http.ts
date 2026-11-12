@@ -10,6 +10,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const ALLOWED_ORIGINS = new Set([
   "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost",
+  "https://push-fo-web.youngjoon568.workers.dev",
+  "https://push.devcyjoon.tech",
 ]);
 const ALLOWED_HEADERS = new Set([
   "origin", "content-type", "accept", "authorization",
