@@ -457,9 +457,10 @@ class HarnessRuntime:
         assistant_msg = ent.Message(
             id=assistant_msg_id, user_id=user_id, conversation_id=conversation.id,
             role="ASSISTANT", text=reply, attachments=[], operation_id=op_id, created_at=now)
-        value = {"assistantMessage": to_jsonable(assistant_msg), "approvalIds": []}
+        # Ids only: the turn's text lives in messages alone, so an erase of the thread leaves no copy.
+        value = {"assistantMessageId": str(assistant_msg_id), "approvalIds": []}
         if text:
-            value["userMessage"] = to_jsonable(user_msg)
+            value["userMessageId"] = str(user_msg_id)
         op = ent.Operation(
             id=op_id, user_id=user_id, type=ent.OP_CHAT_MESSAGE,
             application_id=conversation.application_id, status=ent.OP_SUCCEEDED,

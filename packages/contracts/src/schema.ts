@@ -767,27 +767,10 @@ export interface paths {
         get: operations["getBots"];
         put?: never;
         /**
-         * Create a company bot
-         * @description 403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.
+         * Open the company bot of a posting, creating it when the caller has none for that company
+         * @description One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist or is a draft.
          */
         post: operations["postBots"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/bots/companies/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Search companies by name with open posting counts */
-        get: operations["getBotsCompaniesSearch"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -823,49 +806,17 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Delete a company bot
-         * @description 403 DEFAULT_BOT_PROTECTED for the Push bot.
+         * Delete a company bot and erase its chat
+         * @description Deletes the bot with its thread, messages, jobs, events, cards, workspace files, work-done notifications and read marker. Usage rows stay. 403 DEFAULT_BOT_PROTECTED for the Push bot.
          */
         delete: operations["deleteBotsById"];
         options?: never;
         head?: never;
-        /** Update a bot */
+        /**
+         * Update a bot
+         * @description The Push bot accepts notificationsMuted only. Any other body key is 400.
+         */
         patch: operations["patchBotsById"];
-        trace?: never;
-    };
-    "/api/v1/bots/{id}/conversations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List conversations under a bot */
-        get: operations["getBotsByIdConversations"];
-        put?: never;
-        /** Start a conversation under a bot */
-        post: operations["postBotsByIdConversations"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/bots/{id}/library": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List bot library conversations, files, and links */
-        get: operations["getBotsByIdLibrary"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
         trace?: never;
     };
     "/api/v1/bots/{id}/read": {
@@ -880,6 +831,26 @@ export interface paths {
         /** Mark a bot read */
         post: operations["postBotsByIdRead"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Erase a bot's chat and keep the bot
+         * @description Deletes the thread with its messages, jobs, events, cards, workspace files and work-done notifications. The bot, its settings and its read marker stay. 204 when the bot has no thread.
+         */
+        delete: operations["deleteBotsByIdTranscript"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4065,6 +4036,8 @@ export interface components {
         };
         Bot: {
             avatarKey: string | null;
+            /** @description null exactly when kind is push. */
+            color: ("teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray") | null;
             companyId: string | null;
             companyName: string;
             /** Format: date-time */
@@ -4083,42 +4056,6 @@ export interface components {
             /** @enum {string} */
             status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
             unread: boolean;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        BotCompanyHit: {
-            name: string;
-            openPostingCount: number;
-        };
-        BotLibrary: {
-            conversations: {
-                hasMore: boolean;
-                items: components["schemas"]["BotLibraryConversation"][];
-                nextCursor: string | null;
-            };
-            files: {
-                hasMore: boolean;
-                items: components["schemas"]["DocumentsLibraryItem"][];
-                nextCursor: string | null;
-            };
-            links: {
-                hasMore: boolean;
-                items: components["schemas"]["ProfileLink"][];
-                nextCursor: string | null;
-            };
-        };
-        BotLibraryConversation: {
-            applicationId: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: uuid */
-            id: string;
-            lastMessagePreview: string;
-            pinned: boolean;
-            revision: number;
-            /** @enum {string} */
-            status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
-            title: string;
             /** Format: date-time */
             updatedAt: string;
         };
@@ -5044,6 +4981,13 @@ export interface components {
             payload: unknown;
             sequence: number;
         };
+        CreateBotBody: {
+            /** @enum {string} */
+            color?: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+            displayName?: string;
+            /** Format: uuid */
+            postingId: string;
+        };
         Device: {
             /** @enum {string} */
             platform: "ios" | "android";
@@ -5711,6 +5655,13 @@ export interface components {
             sha256: string;
             size: number;
             status: string;
+        };
+        UpdateBotBody: {
+            /** @enum {string} */
+            color?: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+            displayName?: string;
+            expectedRevision: number;
+            notificationsMuted?: boolean;
         };
         UploadedImage: {
             key: string;
@@ -7164,18 +7115,12 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    companyId: string | null;
-                    companyName: string;
-                    displayName: string;
-                    postingId: string | null;
-                    postingUrl: string | null;
-                };
+                "application/json": components["schemas"]["CreateBotBody"];
             };
         };
         responses: {
-            /** @description Created */
-            201: {
+            /** @description The caller already has a bot for that company */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7185,34 +7130,14 @@ export interface operations {
                     };
                 };
             };
-            default: components["responses"]["Error"];
-        };
-    };
-    getBotsCompaniesSearch: {
-        parameters: {
-            query?: {
-                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
-                limit?: number;
-                /** @description Opaque cursor from page.nextCursor */
-                cursor?: string;
-                /** @description Required company name substring */
-                q?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["BotCompanyHit"][];
-                        page: components["schemas"]["Page"];
+                        data: components["schemas"]["Bot"];
                     };
                 };
             };
@@ -7308,13 +7233,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    avatarKey?: string | null;
-                    displayName?: string;
-                    expectedRevision: number;
-                    mascotKey?: string | null;
-                    notificationsMuted?: boolean;
-                };
+                "application/json": components["schemas"]["UpdateBotBody"];
             };
         };
         responses: {
@@ -7326,108 +7245,6 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["Bot"];
-                    };
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getBotsByIdConversations: {
-        parameters: {
-            query?: {
-                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
-                limit?: number;
-                /** @description Opaque cursor from page.nextCursor */
-                cursor?: string;
-            };
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        data: components["schemas"]["Conversation"][];
-                        page: components["schemas"]["Page"];
-                    };
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    postBotsByIdConversations: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    applicationId?: string | null;
-                    title: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        data: components["schemas"]["Conversation"];
-                    };
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getBotsByIdLibrary: {
-        parameters: {
-            query?: {
-                /** @description Page size (default 50, max 100) */
-                limit?: number;
-                /** @description When set, only that section is populated */
-                section?: "conversations" | "files" | "links";
-                /** @description Cursor for the conversations section */
-                conversationCursor?: string;
-                /** @description Cursor for the files section */
-                fileCursor?: string;
-                /** @description Cursor for the links section */
-                linkCursor?: string;
-            };
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        data: components["schemas"]["BotLibrary"];
                     };
                 };
             };
@@ -7461,6 +7278,27 @@ export interface operations {
                         };
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsByIdTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
