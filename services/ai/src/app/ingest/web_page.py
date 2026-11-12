@@ -6,6 +6,7 @@ import os
 import re
 import socket
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 
@@ -51,6 +52,22 @@ _RENDER_SLOTS = asyncio.Semaphore(2)
 
 type IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 type HopCheck = Callable[[str], Awaitable[None]]
+# Whether a redirect or a navigation may go to this URL. None follows any public URL.
+type AllowHop = Callable[[str], bool] | None
+
+
+@dataclass(frozen=True)
+class Page:
+    url: str  # where the text came from, after redirects
+    text: str
+
+
+class LeftSite(Exception):
+    """A redirect led to a URL the caller's permission does not cover. Nothing of it was read."""
+
+    def __init__(self, to: str):
+        super().__init__(to)
+        self.to = to
 
 
 def _is_public(ip: IPAddress) -> bool:
@@ -273,11 +290,14 @@ def _html_to_text(html: str, chunk: int = 65536) -> str:
 _MIN_TEXT = 1500
 
 
-async def _render_text(url: str) -> str:
+async def _render_text(url: str, allow_hop: AllowHop = None) -> str:
     async def guard(route):
         req_url = route.request.url
         if not req_url.startswith(("http://", "https://")):
             await route.continue_()
+            return
+        if allow_hop is not None and route.request.is_navigation_request() and not allow_hop(req_url):
+            await route.abort()
             return
         try:
             await asyncio.to_thread(_assert_public_sync, req_url)
@@ -321,13 +341,15 @@ async def _render_with_browser(url: str, guard) -> str:
 
 
 async def _read_page(client: httpx.AsyncClient, url: str,
-                     check_hop: HopCheck) -> tuple[str, str, bool]:
+                     check_hop: HopCheck, allow_hop: AllowHop = None) -> tuple[str, str, bool]:
     """Follow redirects, checking every hop. Returns (final url, text, is_html)."""
     for _ in range(_MAX_HOPS):
         await check_hop(url)
         async with client.stream("GET", url) as r:
             if r.is_redirect and "location" in r.headers:
                 url = urljoin(url, r.headers["location"])
+                if allow_hop is not None and not allow_hop(url):
+                    raise LeftSite(url)
                 continue
             if r.status_code != 200:
                 raise ValueError("http status " + str(r.status_code))
@@ -365,7 +387,7 @@ async def _with_render_fallback(url: str, text: str, is_html: bool,
     return rendered if len(rendered) > len(text) else text
 
 
-async def fetch_page_text(url: str) -> str:
+async def fetch_page(url: str, *, allow_hop: AllowHop = None) -> Page:
     transport = _PinnedTransport()
 
     async def pin_hop(hop: str) -> None:
@@ -376,8 +398,13 @@ async def fetch_page_text(url: str) -> str:
     async with httpx.AsyncClient(transport=transport, headers=_HEADERS,
                                  timeout=_HTTP_TIMEOUT) as client:
         async with asyncio.timeout(_FETCH_DEADLINE):
-            url, text, is_html = await _read_page(client, url, pin_hop)
-    return await _with_render_fallback(url, text, is_html, _render_text)
+            url, text, is_html = await _read_page(client, url, pin_hop, allow_hop)
+    render = _render_text if allow_hop is None else (lambda page: _render_text(page, allow_hop))
+    return Page(url, await _with_render_fallback(url, text, is_html, render))
+
+
+async def fetch_page_text(url: str) -> str:
+    return (await fetch_page(url)).text
 
 
 _GH_USER_RE = re.compile(

@@ -17,14 +17,13 @@ _EVENTS = (
     "SELECT id, job_id, type, payload, created_at FROM chat_events WHERE job_id = ANY($1::uuid[]) ORDER BY id"
 )
 
-# retryable: a tool card with a lifetime that no newer chat job of the thread has passed by.
+# retryable: a tool card with a lifetime that no newer chat job of the thread has passed by (0058).
 _CARDS = (
     "SELECT a.id, a.option_id, a.created_at AS opened_at, a.expires_at, "
     "CASE WHEN a.status = 'PENDING' AND a.expires_at <= now() THEN 'EXPIRED' "
     "ELSE a.status END AS status, "
-    "(a.kind = 'TOOL_ACTION' AND a.expires_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ai_jobs n "
-    "WHERE n.conversation_id = a.conversation_id AND n.type = 'chat' AND n.created_at > a.created_at)) "
-    "AS retryable, "
+    "(a.kind = 'TOOL_ACTION' AND a.expires_at IS NOT NULL "
+    "AND NOT approval_superseded(a.conversation_id, a.created_at)) AS retryable, "
     "(SELECT j.payload->'resume'->'optionIds' FROM chat_jobs j "
     "WHERE j.conversation_id = $1 AND j.payload->'resume'->>'approvalId' = a.id::text "
     "ORDER BY j.created_at DESC LIMIT 1) AS option_ids "

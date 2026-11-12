@@ -34,6 +34,7 @@ _TIERS = {
     "list_posts": Tier.READ,
     "get_fit_score": Tier.READ,
     "search_career_context": Tier.READ,
+    "read_page": Tier.EXTERNAL_READ,
     "bookmark_posting": Tier.SAFE_WRITE,
     "unbookmark_posting": Tier.SAFE_WRITE,
     "create_calendar_event": Tier.SAFE_WRITE,
@@ -54,6 +55,7 @@ _TIERS = {
 }
 
 _PYTHON = {
+    "read_page",
     "list_documents",
     "get_document",
     "edit_document",
