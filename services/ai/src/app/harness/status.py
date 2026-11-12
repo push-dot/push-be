@@ -157,12 +157,13 @@ def working(text: str) -> None:
     _send("working", text)
 
 
-def waiting(card_id: object, card_for: CardFor, summary: str | None = None) -> None:
-    """Sent once per card, just before its `approval` or `choice`. `since` is its asking time."""
+def waiting(card_id: object, card_for: CardFor, label: str | None = None) -> None:
+    """Sent once per card, just before its `approval` or `choice`. `since` is its asking time.
+    A write's card says what it waits on by its label (personal/tools.py CARD_LABEL)."""
     run = current_run.get()
     if run is None:
         return
-    text = f"{summary} · 확인을 기다리는 중" if summary else WAITING[card_for]
+    text = f"{label} · 확인을 기다리는 중" if label else WAITING[card_for]
     run.last = ("waiting", text)
     emit(
         {

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import pytest
 
 from app.harness import runtime as runtime_module
-from app.harness.personal.resume.subject import saved_for_turn, subject_of, turn_subject
+from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
 from app.harness.runtime import HarnessRuntime
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
 
 A_URL = "https://jobs.a-corp.example/backend"
 B_URL = "https://jobs.b-corp.example/frontend"
+PORTFOLIO = "https://seojun.notion.site/portfolio"
+GITHUB = "https://github.com/seojun"
 BOT_POSTING = "11111111-1111-4111-8111-111111111111"
 ATTACHED_POSTING = "22222222-2222-4222-8222-222222222222"
 FINISHED_ABOUT_A = {
@@ -27,10 +30,17 @@ FINISHED_ABOUT_A = {
     },
     "drafts": {"markdown": "A사 백엔드 지원용 이력서 초안"},
 }
+WITH_PORTFOLIO = {
+    **FINISHED_ABOUT_A,
+    "inputs": {
+        "pages": {PORTFOLIO: "서준의 포트폴리오", A_URL: "A사 백엔드 공고: Python, Kafka 필수"},
+        "attachments": [],
+    },
+}
 
 
 class SeeingLC(ScriptedLC):
-    seen: list = []
+    seen: ClassVar[list] = []
 
     async def ainvoke(self, messages, **kwargs):
         SeeingLC.seen.append(list(messages))
@@ -51,7 +61,7 @@ def _first_flow_context() -> dict:
 
 
 async def _quick_start(
-    monkeypatch, conversation: dict, intent: str, text: str
+    monkeypatch, conversation: dict, intent: str, text: str, context: dict | None = None
 ) -> tuple[dict, dict]:
     """The first flow context the model got, and the flow state saved after the turn."""
 
@@ -77,7 +87,7 @@ async def _quick_start(
             "conversation_id": CONV,
             "access_mode": "AUTO",
             "ai": managed_ai(),
-            "context": {},
+            "context": context or {},
             "intent": intent,
             "job_id": "99999999-9999-4999-8999-999999999999",
         },
@@ -86,8 +96,8 @@ async def _quick_start(
     return _first_flow_context(), json.loads(saved) if isinstance(saved, str) else saved
 
 
-def _after_a(**bot) -> dict:
-    return {"company_id": None, "resume_state": dict(FINISHED_ABOUT_A), **bot}
+def _after_a(**columns) -> dict:
+    return {"company_id": None, "resume_state": dict(FINISHED_ABOUT_A), **columns}
 
 
 async def test_gaps_for_posting_b_after_a_flow_about_a_is_planned_from_b(monkeypatch):
@@ -117,13 +127,10 @@ async def test_boost_with_nothing_attached_goes_on_with_the_draft_of_a(monkeypat
     assert list(sent["inputs"]["pages"]) == [A_URL]
 
 
-async def test_a_company_bot_quick_start_with_nothing_attached_works_on_the_bots_posting(
-    monkeypatch,
-):
-    about_c = {**FINISHED_ABOUT_A, "inputs": {"postingId": ATTACHED_POSTING, "attachments": []}}
-    bot = {
+def _company_bot(saved: dict) -> dict:
+    return {
         "company_id": None,
-        "resume_state": about_c,
+        "resume_state": saved,
         "bot_kind": "company",
         "bot_name": "모아페이",
         "bot_company": "모아페이",
@@ -131,52 +138,108 @@ async def test_a_company_bot_quick_start_with_nothing_attached_works_on_the_bots
         "bot_posting_title": "Backend",
     }
 
+
+async def test_a_company_bot_quick_start_with_nothing_attached_works_on_the_bots_posting(
+    monkeypatch,
+):
+    about_c = {**FINISHED_ABOUT_A, "inputs": {"postingId": ATTACHED_POSTING, "attachments": []}}
+
     sent, _saved = await _quick_start(
-        monkeypatch, bot, "gaps", "이 회사 공고에서 부족한 점을 찾아 줘"
+        monkeypatch, _company_bot(about_c), "gaps", "이 회사 공고에서 부족한 점을 찾아 줘"
     )
 
     assert sent["inputs"]["postingId"] == BOT_POSTING
     assert (sent["analysis"], sent["drafts"]) == ({}, {})
 
 
+async def test_a_company_bot_quick_start_with_a_portfolio_link_works_on_the_bots_posting(
+    monkeypatch,
+):
+    sent, saved = await _quick_start(
+        monkeypatch, _company_bot(None), "gaps", f"내 포트폴리오로 부족한 점 찾아 줘 {PORTFOLIO}"
+    )
+
+    assert sent["inputs"]["postingId"] == BOT_POSTING
+    assert list(sent["inputs"]["pages"]) == [PORTFOLIO]
+    assert saved["inputs"]["postingId"] == BOT_POSTING
+
+
+async def test_a_company_bots_flow_goes_on_when_a_portfolio_link_is_added(monkeypatch):
+    about_bot = {**FINISHED_ABOUT_A, "inputs": {"postingId": BOT_POSTING, "attachments": []}}
+
+    sent, _saved = await _quick_start(
+        monkeypatch, _company_bot(about_bot), "gaps", f"이것도 보고 부족한 점 찾아 줘 {PORTFOLIO}"
+    )
+
+    assert sent["analysis"]["fit"] == 71
+    assert list(sent["inputs"]["pages"]) == [PORTFOLIO]
+
+
+async def test_a_portfolio_link_does_not_carry_a_flow_about_a_into_posting_b(monkeypatch):
+    sent, saved = await _quick_start(
+        monkeypatch,
+        _after_a(resume_state=dict(WITH_PORTFOLIO)),
+        "gaps",
+        f"부족한 점 찾아 줘 {B_URL}",
+        {"urls": [PORTFOLIO]},
+    )
+
+    assert (sent["analysis"], sent["drafts"]) == ({}, {})
+    assert list(sent["inputs"]["pages"]) == [PORTFOLIO, B_URL]
+    assert "A사" not in json.dumps(saved, ensure_ascii=False)
+
+
+async def test_a_link_the_flow_already_read_goes_on_with_the_flow(monkeypatch):
+    sent, _saved = await _quick_start(
+        monkeypatch,
+        _after_a(resume_state=dict(WITH_PORTFOLIO)),
+        "boost",
+        "점수 올려 줘",
+        {"urls": [PORTFOLIO]},
+    )
+
+    assert sent["drafts"]["markdown"] == "A사 백엔드 지원용 이력서 초안"
+
+
+def test_a_turn_hands_the_flow_its_attached_links_first_and_at_most_two():
+    payload = {"context": {"urls": [PORTFOLIO]}, "text": f"{A_URL} {PORTFOLIO} {B_URL}"}
+
+    assert turn_links(payload) == [PORTFOLIO, A_URL]
+
+
 @pytest.mark.parametrize(
-    ("payload", "bot", "subject"),
+    ("payload", "bot", "posting"),
     [
         (
-            {"context": {"postingId": ATTACHED_POSTING, "urls": [B_URL]}, "text": A_URL},
+            {"context": {"postingId": ATTACHED_POSTING}},
             {"postingId": BOT_POSTING},
-            {"postingId": ATTACHED_POSTING},
+            ATTACHED_POSTING,
         ),
-        (
-            {"context": {"urls": ["https://github.com/seojun", B_URL]}, "text": A_URL},
-            None,
-            {"url": B_URL},
-        ),
-        (
-            {"context": {}, "text": f"{A_URL}/ 이 공고로"},
-            {"postingId": BOT_POSTING},
-            {"url": A_URL},
-        ),
-        ({"context": {}, "text": "https://github.com/seojun 로 점수 올려 줘"}, None, None),
-        (
-            {"context": {}, "text": "점수 올려 줘"},
-            {"postingId": BOT_POSTING},
-            {"postingId": BOT_POSTING},
-        ),
-        ({"context": {}, "text": "점수 올려 줘"}, {"postingId": None}, None),
+        ({"context": {"urls": [B_URL]}}, {"postingId": BOT_POSTING}, BOT_POSTING),
+        ({"context": {"urls": [B_URL]}}, None, None),
+        ({"text": "점수 올려 줘"}, {"postingId": None}, None),
     ],
 )
-def test_what_a_turn_names(payload, bot, subject):
-    assert turn_subject(payload, bot) == subject
+def test_the_posting_a_turn_works_on(payload, bot, posting):
+    assert turn_posting(payload, bot) == posting
 
 
-def test_a_state_that_names_no_posting_continues_only_with_a_turn_that_names_none():
-    unnamed = {"inputs": {"attachments": ["doc-1"]}, "drafts": {"markdown": "초안"}}
+ABOUT_ATTACHED = {"tone": "담백하게", "inputs": {"postingId": ATTACHED_POSTING}, "fit": 71}
 
-    assert subject_of(unnamed) is None
-    assert saved_for_turn(unnamed, None) == unnamed
-    assert saved_for_turn(unnamed, {"url": B_URL}) == {}
-    assert (
-        saved_for_turn(FINISHED_ABOUT_A, turn_subject({"text": A_URL + "/#apply"}, None))
-        == FINISHED_ABOUT_A
-    )
+
+@pytest.mark.parametrize(
+    ("saved", "posting", "links", "kept"),
+    [
+        (FINISHED_ABOUT_A, None, [], FINISHED_ABOUT_A),
+        (FINISHED_ABOUT_A, None, [A_URL + "/#apply"], FINISHED_ABOUT_A),
+        (FINISHED_ABOUT_A, None, [GITHUB], FINISHED_ABOUT_A),
+        (FINISHED_ABOUT_A, None, [B_URL], {"tone": "담백하게"}),
+        (FINISHED_ABOUT_A, ATTACHED_POSTING, [], {"tone": "담백하게"}),
+        (WITH_PORTFOLIO, None, [PORTFOLIO], WITH_PORTFOLIO),
+        (WITH_PORTFOLIO, None, [PORTFOLIO, B_URL], {"tone": "담백하게"}),
+        (ABOUT_ATTACHED, ATTACHED_POSTING, [PORTFOLIO], ABOUT_ATTACHED),
+        ({"inputs": {"attachments": ["doc-1"]}}, None, [B_URL], {}),
+    ],
+)
+def test_what_a_quick_start_keeps_of_the_saved_flow(saved, posting, links, kept):
+    assert saved_for_turn(saved, posting, links) == kept

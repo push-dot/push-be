@@ -2,22 +2,36 @@
 
 A bot has one thread for ever, and the flow keeps its state per thread. A new quick start carries
 the saved inputs, analysis, and drafts forward, which is right only while it works on the same
-posting. So a saved flow is about one subject, and a quick start that names another starts clean.
-One that names the same subject, or none, continues. The subject is read from the flow's own
-inputs, so a state saved before this rule has one too.
+posting. So a quick start that names another posting starts clean, and one that names none goes on.
+
+A link alone cannot tell a posting from a portfolio: core passes attached links without their kind,
+and a pasted link has none. So a link counts as new only when the saved flow has not read it, and a
+new link starts clean. Asking for the posting again costs one answer; carrying A's analysis into B's
+flow writes a wrong document.
 """
 
 from __future__ import annotations
 
-from typing import TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
 from app.ingest.web_page import find_urls
 
+_LINKS_PER_TURN = 2
 
-class Subject(TypedDict, total=False):
-    postingId: str
-    url: str
+
+def turn_links(payload: dict) -> list[str]:
+    """The links a turn hands the flow, attached ones first. The flow reads at most two."""
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    attached = [url for url in context.get("urls") or [] if isinstance(url, str)]
+    found = find_urls(payload.get("text") or "")
+    return list(dict.fromkeys([*attached, *found]))[:_LINKS_PER_TURN]
+
+
+def turn_posting(payload: dict, bot: dict | None) -> str | None:
+    """The Push posting a turn works on: an attached one, else a company bot's own."""
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    posting = context.get("postingId") or (bot or {}).get("postingId")
+    return str(posting) if posting else None
 
 
 def _url_key(url: str) -> str:
@@ -27,43 +41,22 @@ def _url_key(url: str) -> str:
     )
 
 
-def _posting_url(url: object) -> bool:
-    # A GitHub link is the user's own material, never the posting a flow works on.
-    return (
-        isinstance(url, str)
-        and url.startswith(("http://", "https://"))
-        and "github.com" not in url.lower()
-    )
+def _own_material(url: str) -> bool:
+    # A GitHub link is the user's own work, never the posting a flow is about.
+    return "github.com" in url.lower()
 
 
-def turn_subject(payload: dict, bot: dict | None) -> Subject | None:
-    """What this turn names: an attached posting, then the first posting link it carries or its
-    text holds, then a company bot's own posting. None means "go on with what we were doing"."""
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    if context.get("postingId"):
-        return {"postingId": str(context["postingId"])}
-    urls = [*(context.get("urls") or []), *find_urls(payload.get("text") or "")]
-    for url in urls:
-        if _posting_url(url):
-            return {"url": _url_key(url)}
-    if bot and bot.get("postingId"):
-        return {"postingId": str(bot["postingId"])}
-    return None
-
-
-def subject_of(saved: dict) -> Subject | None:
+def saved_for_turn(saved: dict, posting: str | None, links: list[str]) -> dict:
+    """The saved flow state a new quick start may build on: all of it while the turn stays on the
+    flow's posting, else only the tone, which is the user's preference and not a fact about a
+    posting. A turn that names a Push posting stays when the flow is about that posting. One that
+    names none stays unless it brings a link the flow has not read."""
     inputs = saved.get("inputs") if isinstance(saved.get("inputs"), dict) else {}
-    if inputs.get("postingId"):
-        return {"postingId": str(inputs["postingId"])}
-    for url in inputs.get("pages") or {}:
-        if _posting_url(url):
-            return {"url": _url_key(url)}
-    return None
-
-
-def saved_for_turn(saved: dict, subject: Subject | None) -> dict:
-    """The saved flow state a new quick start may build on: all of it for the same subject, else
-    only the tone, which is the user's preference and not a fact about a posting."""
-    if subject is None or subject_of(saved) == subject:
+    if posting is not None:
+        same = str(inputs.get("postingId") or "") == posting
+    else:
+        read = {_url_key(url) for url in inputs.get("pages") or {}}
+        same = all(_url_key(url) in read for url in links if not _own_material(url))
+    if same:
         return saved
     return {"tone": saved["tone"]} if saved.get("tone") else {}

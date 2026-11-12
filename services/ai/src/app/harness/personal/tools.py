@@ -279,7 +279,7 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
                 ctx.db, ctx.user_id, ctx.conversation_id, event, str(args.document_id))
             await ctx.db.q().execute(
                 "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
-            waiting(event["id"], "confirm", "서류 수정")
+            waiting(event["id"], "confirm", CARD_LABEL["edit_document"])
             emit(event)
         answer = interrupt({
             "approval_id": event["id"],
@@ -470,6 +470,28 @@ PROGRESS = {
     "follow_user": "팔로우하는 중",
     "update_my_profile": "프로필을 고치는 중",
     "delete_calendar_event": "일정을 지우는 중",
+}
+
+# What a write's card is called on the status line while it waits, "{label} · 확인을 기다리는 중".
+# 지원하기 and 이력서 수정 are drawn on boards ChatPh6Apply and ChatApprove.
+CARD_LABEL = {
+    "bookmark_posting": "공고 저장",
+    "unbookmark_posting": "공고 저장 취소",
+    "create_calendar_event": "일정 추가",
+    "update_calendar_event": "일정 수정",
+    "edit_document": "이력서 수정",
+    "start_document": "서류 작성",
+    "prepare_interview": "면접 준비",
+    "apply_to_posting": "지원하기",
+    "accept_offer": "제안 수락",
+    "decline_offer": "제안 거절",
+    "send_offer_message": "제안 답장",
+    "send_offer": "커피챗 제안",
+    "create_post": "글 올리기",
+    "create_comment": "댓글 남기기",
+    "follow_user": "팔로우하기",
+    "update_my_profile": "프로필 수정",
+    "delete_calendar_event": "일정 삭제",
 }
 
 PERSONAL_TOOLS = [

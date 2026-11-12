@@ -22,11 +22,11 @@ from app.harness.graph import (
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
-from app.harness.personal.resume.subject import saved_for_turn, turn_subject
+from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
 from app.harness.router import select_harness
 from app.harness.status import THINKING, Run, current_run, wire_time
 from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
-from app.ingest.web_page import fetch_page_text, find_urls
+from app.ingest.web_page import fetch_page_text
 from app.jsonutil import to_jsonable
 
 
@@ -184,8 +184,7 @@ def _gate_answer(resume: dict) -> dict:
 
 async def _turn_inputs(payload: dict) -> dict:
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    linked = [url for url in context.get("urls") or [] if isinstance(url, str)]
-    urls = list(dict.fromkeys([*linked, *find_urls(payload.get("text") or "")]))[:2]
+    urls = turn_links(payload)
     bodies = await asyncio.gather(*(fetch_page_text(url) for url in urls), return_exceptions=True)
     pages = {}
     for url, body in zip(urls, bodies):
@@ -442,9 +441,9 @@ class HarnessRuntime:
                     state["resume"] = seeded
                 elif quick_start_resume(payload.get("intent"), saved) is not None:
                     state["intent"] = payload.get("intent")
-                    subject = turn_subject(payload, conversation.get("bot"))
-                    incoming = await self._inputs(payload, (subject or {}).get("postingId"))
-                    base = dict(saved_for_turn(saved, subject))
+                    posting = turn_posting(payload, conversation.get("bot"))
+                    incoming = await self._inputs(payload, posting)
+                    base = dict(saved_for_turn(saved, posting, turn_links(payload)))
                     if any(incoming.get(key) for key in _INPUT_KEYS):
                         base["inputs"] = merge_inputs(base.get("inputs") or {}, incoming)
                     if base:

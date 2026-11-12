@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+from functools import partial
 from typing import Annotated, Any, Final
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -322,26 +323,33 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
-def bot_line(bot: dict | None) -> str:
-    """Who the model is in a bot thread. Only the app shows one: a 봇, never an 에이전트."""
+def bot_prompt(prompt: str, bot: dict | None) -> str:
+    """The system prompt of a thread. A bot thread exists only in the app, where the model is a
+    봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line."""
     if not bot:
-        return ""
-    own = bot.get("name") or bot.get("company")
-    name = "Push Bot" if bot.get("kind") == "push" else f"{own} 봇"
-    line = f"이 대화에서 당신은 '{name}'이에요."
-    if bot.get("kind") != "push":
-        line += f" {bot.get('company')} 회사에 지원하는 사용자를 도와요."
+        return prompt
+    # Names and titles are written by users and employers. Quoted, they stay data.
+    quote = partial(json.dumps, ensure_ascii=False)
+    if bot.get("kind") == "push":
+        name, helps = "Push Bot", "구직자의 커리어를"
+    else:
+        name = f"{bot.get('name') or bot.get('company')} 봇"
+        helps = f"{quote(bot.get('company') or '')} 회사에 지원하는 구직자를"
+    line = f"당신은 Push에서 {helps} 돕는 {quote(name)}이에요."
     if bot.get("postingId"):
-        title = bot.get("postingTitle") or "제목 없음"
+        title = quote(bot.get("postingTitle") or "제목 없음")
         line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
-    return line + f" 자신을 말할 때는 '{name}'이나 '봇'이라고 하고 '에이전트'라고 하지 마세요."
+    line += f" 자신을 말할 때는 {quote(name)}이나 봇이라고 하고, 에이전트라고 하지 않아요."
+    return line + "\n" + prompt.partition("\n")[2]
 
 
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
     progress: dict[str, str] = {}
+    labels: dict[str, str] = {}
     if spec.id == "personal":
+        from app.harness.personal.tools import CARD_LABEL as labels
         from app.harness.personal.tools import PROGRESS as progress
 
     async def agent(state: HarnessState) -> dict:
@@ -349,15 +357,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         content = spec.prompt
         if spec.id == "personal":
             from app.harness.personal.reference import reference_lines
+            content = bot_prompt(content, state.get("bot"))
             try:
                 lines = await reference_lines(
                     db, state.get("user_id"), state.get("conversation_id"))
             except Exception:
                 lines = []
             if lines:
-                content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
-            if who := bot_line(state.get("bot")):
-                content = content.rstrip() + "\n\n" + who
+                content = content.rstrip() + "\n\n" + "\n".join(lines)
             quick = state.get("quick_start")
             if isinstance(quick, dict) and quick.get("instruction"):
                 sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
@@ -418,7 +425,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             )
             if created:
                 emit(_tool_event(tool.name, "wait", summary, tier))
-                waiting(event["id"], "confirm", summary)
+                waiting(event["id"], "confirm", labels.get(tool.name))
                 emit(event)
             answer = interrupt({
                 "approval_id": event["id"],
