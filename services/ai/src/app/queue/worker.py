@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -19,6 +20,40 @@ from app.queue.streams import Message, StreamQueue
 logger = logging.getLogger(__name__)
 
 LOG_FIELDS = ("docIds", "promptHash", "tokensIn", "tokensOut")
+_TURN = frozenset({"chat", "employer_ai"})
+
+
+def core_from_env():
+    origin = os.environ.get("CORE_ORIGIN", "").strip()
+    token = os.environ.get("INTERNAL_JOB_TOKEN", "").strip()
+    if not origin or not token:
+        return None
+    from app.harness.core_client import CoreClient
+
+    return CoreClient(origin, os.environ.get("INTERNAL_API_SECRET", "").strip(), job_token=token)
+
+
+async def notify_turn_done(core, job, result) -> None:
+    if core is None or job.get("type") not in _TURN:
+        return
+    if not isinstance(result, dict) or "operationId" not in result:
+        return
+    conversation_id = job.get("conversation_id")
+    if not conversation_id:
+        return
+    try:
+        await core.call(
+            "POST",
+            "/api/v1/internal/notifications/ai-done",
+            user_id=str(job["user_id"]),
+            json={
+                "userId": str(job["user_id"]),
+                "conversationId": str(conversation_id),
+                "jobId": str(job["id"]),
+            },
+        )
+    except Exception:
+        logger.exception("ai-done notify failed")
 
 type Renew = Callable[[], Awaitable[object]]
 
@@ -62,6 +97,7 @@ class Worker:
         min_idle_ms: int = 120_000,
         settle=None,
         release=None,
+        core=None,
     ):
         self.queue = queue
         self.db = db
@@ -80,6 +116,7 @@ class Worker:
         self.min_idle_ms = min_idle_ms
         self.settle = settle or _noop
         self.release = release or _noop
+        self.core = core
         self._stop = asyncio.Event()
 
     async def run_forever(self) -> None:
@@ -96,6 +133,11 @@ class Worker:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _core(self):
+        if self.core is not None:
+            return self.core
+        return core_from_env()
 
     async def _loop(self) -> None:
         while not self._stop.is_set():
@@ -191,6 +233,7 @@ class Worker:
                 beat.cancel()
             await self.db.finish(job["id"], result, self.now())
             await self.settle(self.db, job["id"])
+            await notify_turn_done(self._core(), job, result)
             await self.queue.ack(msg.queue, self.group, msg.id)
             return "done"
         except asyncio.CancelledError:

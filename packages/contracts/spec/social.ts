@@ -504,7 +504,7 @@ export const schemas: Record<string, Schema> = {
       type: "object",
       description: "Navigation target. Empty object when missing.",
       properties: {
-        kind: { type: "string", enum: ["offer", "post", "posting", "calendar", "activity", "conversation"], description: "activity: id is an application id" },
+        kind: { type: "string", enum: ["offer", "post", "posting", "calendar", "activity", "conversation", "bot"], description: "activity: id is an application id. bot: id is a bot id" },
         id: str,
       },
       additionalProperties: true,

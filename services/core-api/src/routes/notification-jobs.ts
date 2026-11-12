@@ -22,10 +22,25 @@ const requireJob = async (ctx: Ctx): Promise<void> => {
   if (!(await sameSecret(token, expected))) throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
 };
 
-const allowed = async (ctx: Ctx, userId: string, column: string): Promise<boolean> => {
-  const pref = await one(ctx.deps.query, `SELECT ${column} AS enabled FROM user_settings WHERE user_id = $1`, [userId]);
-  return !pref || asBool(pref.enabled);
+const THREAD = `SELECT c.bot_id, b.notifications_muted, COALESCE(b.display_name, s.display_name) AS display_name,
+    s.last_message_preview, s.unread, COALESCE(us.notify_ai_done, true) AS allowed
+  FROM conversations c
+  LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL
+  LEFT JOIN bot_state_v s ON s.bot_id = b.id
+  LEFT JOIN user_settings us ON us.user_id = c.user_id
+  WHERE c.id = $1 AND c.user_id = $2`;
+
+const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz)
+  ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key`;
+
+const pushSentence = (name: unknown): string => {
+  const text = String(name ?? "").trim();
+  if (!text) return "봇이 작업을 마쳤어요";
+  if (text.endsWith("봇") || text.endsWith("Bot")) return `${text}이 작업을 마쳤어요`;
+  return `${text} 봇이 작업을 마쳤어요`;
 };
+
+const alreadyRead = (value: unknown): boolean => value === false || value === "f" || value === "false";
 
 // One statement per kind: pick due rows, skip opted-out users, and claim the dedupe key so a rerun sends nothing twice.
 const claimed = (due: string): string => `WITH due AS (${due}), claimed AS (
@@ -50,11 +65,24 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const userId = requireUuid(String(body.userId ?? ""), "userId");
   const conversationId = requireUuid(String(body.conversationId ?? ""), "conversationId");
-  const title = body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title);
+  const jobId = requireUuid(String(body.jobId ?? ""), "jobId");
+  const row = await one(ctx.deps.query, THREAD, [conversationId, userId]);
+  if (!row || !asBool(row.allowed) || asBool(row.notifications_muted) || alreadyRead(row.unread)) {
+    return data(201, { id: null }, ctx.rid);
+  }
+  const claim = await one(ctx.deps.query, CLAIM, [`ai-done:${jobId}`, ctx.now.toISOString()]);
+  if (!claim) return data(201, { id: null }, ctx.rid);
+  const botId = row.bot_id == null || row.bot_id === "" ? "" : String(row.bot_id);
+  const title = botId ? "봇 작업 완료" : (body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
   if (title.length > 200) throw fieldError("title", "must be at most 200 characters");
-  if (!(await allowed(ctx, userId, "notify_ai_done"))) return data(201, { id: null }, ctx.rid);
   const id = await sendNotification(ctx, {
-    userId, type: "AI_DONE", title, body: "", target: { kind: "conversation", id: conversationId },
+    userId,
+    type: "AI_DONE",
+    title,
+    body: botId ? String(row.last_message_preview ?? "") : "",
+    target: botId ? { kind: "bot", id: botId } : { kind: "conversation", id: conversationId },
+    conversationId,
+    ...(botId ? { pushBody: pushSentence(row.display_name) } : {}),
   });
   return data(201, { id }, ctx.rid);
 };

@@ -64,6 +64,7 @@ x-ai-env: &ai-env
   RERANK_PROVIDER: similarity
   CORE_ORIGIN: ${CORE_ORIGIN:-}
   INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+  INTERNAL_JOB_TOKEN: ${INTERNAL_JOB_TOKEN:-}
 
 services:
   staging-dispatcher:

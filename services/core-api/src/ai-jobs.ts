@@ -15,7 +15,7 @@ export type ResumeJob = {
 const CARRIED = ["ai", "access_mode", "accessMode", "intent"] as const;
 
 const CONVERSATION = `SELECT c.company_id, co.plan AS company_plan, u.plan AS user_plan,
-    (SELECT payload FROM ai_jobs WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last
+    (SELECT payload FROM ai_jobs WHERE conversation_id = c.id AND type IN ('chat', 'employer_ai') ORDER BY created_at DESC LIMIT 1) AS last
   FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2
   WHERE c.id = $1 AND (c.user_id = $2 OR (c.company_id IS NOT NULL
     AND c.company_id = (SELECT company_id FROM company_members WHERE user_id = $2)))`;
