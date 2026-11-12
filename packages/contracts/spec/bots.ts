@@ -1,10 +1,13 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, del, ref, obj, closed, arr, str, bool, uuid, dateTime, nullable, int,
-  body, ok, okPage, noContent, pathParam, query, pageParams,
+  get, post, patch, del, ref, obj, closed, arr, str, bool, uuid, dateTime, nullable, int, enumOf,
+  body, ok, noContent, pathParam,
 } from "./shared.ts";
 
-const id = pathParam("id");
+const id = pathParam("id", { type: "string", description: "A bot id, or the literal push for the caller's Push Bot." });
+
+const botColor = enumOf("teal", "sky", "blue", "violet", "pink", "red", "coral", "amber", "green", "brown", "gray");
+const displayName = { type: "string", minLength: 1, maxLength: 120 };
 
 const botStatus = { type: "string", enum: ["DONE", "RUNNING", "NEEDS_APPROVAL"] };
 
@@ -14,6 +17,7 @@ const bot = obj({
   displayName: str,
   companyId: nullable(uuid),
   companyName: str,
+  color: { ...nullable(botColor), description: "null exactly when kind is push." },
   postingId: nullable(uuid),
   postingUrl: nullable(str),
   avatarKey: nullable(str),
@@ -34,38 +38,20 @@ const linkPreview = {
   ],
 };
 
-const companyHit = closed({ name: str, openPostingCount: int }, ["name", "openPostingCount"]);
+const createBotBody = closed({ postingId: uuid, displayName, color: botColor }, ["postingId"]);
 
-const botLibraryConversation = obj({
-  id: uuid,
-  revision: int,
-  applicationId: nullable(uuid),
-  title: str,
-  pinned: bool,
-  createdAt: dateTime,
-  updatedAt: dateTime,
-  status: botStatus,
-  lastMessagePreview: str,
-});
-
-const botLibrarySection = (item: ReturnType<typeof ref>) => closed({
-  items: arr(item),
-  nextCursor: nullable(str),
-  hasMore: bool,
-}, ["items", "nextCursor", "hasMore"]);
-
-const botLibrary = closed({
-  conversations: botLibrarySection(ref("BotLibraryConversation")),
-  files: botLibrarySection(ref("DocumentsLibraryItem")),
-  links: botLibrarySection(ref("ProfileLink")),
-}, ["conversations", "files", "links"]);
+const updateBotBody = closed({
+  expectedRevision: int,
+  displayName,
+  notificationsMuted: bool,
+  color: botColor,
+}, ["expectedRevision"]);
 
 export const schemas: Record<string, Schema> = {
   Bot: bot,
-  BotCompanyHit: companyHit,
+  CreateBotBody: createBotBody,
+  UpdateBotBody: updateBotBody,
   BotLinkPreview: linkPreview,
-  BotLibraryConversation: botLibraryConversation,
-  BotLibrary: botLibrary,
 };
 
 export const routes: Route[] = [
@@ -77,28 +63,16 @@ export const routes: Route[] = [
   }),
   post("core", "/api/v1/bots", {
     tag: "bots",
-    summary: "Create a company bot",
-    description: "403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.",
-    body: body(closed({
-      companyId: nullable(uuid),
-      companyName: str,
-      postingId: nullable(uuid),
-      postingUrl: nullable(str),
-      displayName: str,
-    })),
-    responses: { 201: ok(ref("Bot"), "Created") },
+    summary: "Open the company bot of a posting, creating it when the caller has none for that company",
+    description: "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist or is a draft.",
+    body: body(ref("CreateBotBody")),
+    responses: { 200: ok(ref("Bot"), "The caller already has a bot for that company"), 201: ok(ref("Bot"), "Created") },
   }),
   post("core", "/api/v1/bots/link-preview", {
     tag: "bots",
     summary: "Resolve a job posting URL before creating a bot",
     body: body(closed({ url: str }, ["url"])),
     responses: { 200: ok(ref("BotLinkPreview")) },
-  }),
-  get("core", "/api/v1/bots/companies/search", {
-    tag: "bots",
-    summary: "Search companies by name with open posting counts",
-    params: [...pageParams, query("q", str, "Required company name substring")],
-    responses: { 200: okPage(ref("BotCompanyHit")) },
   }),
   get("core", "/api/v1/bots/{id}", {
     tag: "bots",
@@ -109,53 +83,29 @@ export const routes: Route[] = [
   patch("core", "/api/v1/bots/{id}", {
     tag: "bots",
     summary: "Update a bot",
+    description: "The Push bot accepts notificationsMuted only. Any other body key is 400.",
     params: [id],
-    body: body(closed({
-      expectedRevision: int,
-      displayName: str,
-      notificationsMuted: bool,
-      avatarKey: nullable(str),
-      mascotKey: nullable(str),
-    }, ["expectedRevision"])),
+    body: body(ref("UpdateBotBody")),
     responses: { 200: ok(ref("Bot")) },
   }),
   del("core", "/api/v1/bots/{id}", {
     tag: "bots",
-    summary: "Delete a company bot",
-    description: "403 DEFAULT_BOT_PROTECTED for the Push bot.",
+    summary: "Delete a company bot and erase its chat",
+    description: "Deletes the bot with its thread, messages, jobs, events, cards, workspace files, work-done notifications and read marker. Usage rows stay. 403 DEFAULT_BOT_PROTECTED for the Push bot.",
     params: [id],
     responses: { 204: noContent },
   }),
-  get("core", "/api/v1/bots/{id}/conversations", {
+  del("core", "/api/v1/bots/{id}/transcript", {
     tag: "bots",
-    summary: "List conversations under a bot",
-    params: [id, ...pageParams],
-    responses: { 200: okPage(ref("Conversation")) },
-  }),
-  post("core", "/api/v1/bots/{id}/conversations", {
-    tag: "bots",
-    summary: "Start a conversation under a bot",
+    summary: "Erase a bot's chat and keep the bot",
+    description: "Deletes the thread with its messages, jobs, events, cards, workspace files and work-done notifications. The bot, its settings and its read marker stay. 204 when the bot has no thread.",
     params: [id],
-    body: body(closed({ title: str, applicationId: nullable(uuid) }, ["title"])),
-    responses: { 201: ok(ref("Conversation"), "Created") },
+    responses: { 204: noContent },
   }),
   post("core", "/api/v1/bots/{id}/read", {
     tag: "bots",
     summary: "Mark a bot read",
     params: [id],
     responses: { 200: ok(closed({ readAt: dateTime }, ["readAt"])) },
-  }),
-  get("core", "/api/v1/bots/{id}/library", {
-    tag: "bots",
-    summary: "List bot library conversations, files, and links",
-    params: [
-      id,
-      query("limit", int, "Page size (default 50, max 100)"),
-      query("section", { type: "string", enum: ["conversations", "files", "links"] }, "When set, only that section is populated"),
-      query("conversationCursor", str, "Cursor for the conversations section"),
-      query("fileCursor", str, "Cursor for the files section"),
-      query("linkCursor", str, "Cursor for the links section"),
-    ],
-    responses: { 200: ok(ref("BotLibrary")) },
   }),
 ];

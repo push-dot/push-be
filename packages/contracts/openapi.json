@@ -1012,6 +1012,30 @@
               }
             ]
           },
+          "color": {
+            "anyOf": [
+              {
+                "enum": [
+                  "teal",
+                  "sky",
+                  "blue",
+                  "violet",
+                  "pink",
+                  "red",
+                  "coral",
+                  "amber",
+                  "green",
+                  "brown",
+                  "gray"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null exactly when kind is push."
+          },
           "companyId": {
             "anyOf": [
               {
@@ -1106,6 +1130,7 @@
           "displayName",
           "companyId",
           "companyName",
+          "color",
           "postingId",
           "postingUrl",
           "avatarKey",
@@ -1117,182 +1142,6 @@
           "lastMessagePreview",
           "unread",
           "status"
-        ],
-        "type": "object"
-      },
-      "BotCompanyHit": {
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "openPostingCount": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "openPostingCount"
-        ],
-        "type": "object"
-      },
-      "BotLibrary": {
-        "additionalProperties": false,
-        "properties": {
-          "conversations": {
-            "additionalProperties": false,
-            "properties": {
-              "hasMore": {
-                "type": "boolean"
-              },
-              "items": {
-                "items": {
-                  "$ref": "#/components/schemas/BotLibraryConversation"
-                },
-                "type": "array"
-              },
-              "nextCursor": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "items",
-              "nextCursor",
-              "hasMore"
-            ],
-            "type": "object"
-          },
-          "files": {
-            "additionalProperties": false,
-            "properties": {
-              "hasMore": {
-                "type": "boolean"
-              },
-              "items": {
-                "items": {
-                  "$ref": "#/components/schemas/DocumentsLibraryItem"
-                },
-                "type": "array"
-              },
-              "nextCursor": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "items",
-              "nextCursor",
-              "hasMore"
-            ],
-            "type": "object"
-          },
-          "links": {
-            "additionalProperties": false,
-            "properties": {
-              "hasMore": {
-                "type": "boolean"
-              },
-              "items": {
-                "items": {
-                  "$ref": "#/components/schemas/ProfileLink"
-                },
-                "type": "array"
-              },
-              "nextCursor": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "items",
-              "nextCursor",
-              "hasMore"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "conversations",
-          "files",
-          "links"
-        ],
-        "type": "object"
-      },
-      "BotLibraryConversation": {
-        "properties": {
-          "applicationId": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "lastMessagePreview": {
-            "type": "string"
-          },
-          "pinned": {
-            "type": "boolean"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "status": {
-            "enum": [
-              "DONE",
-              "RUNNING",
-              "NEEDS_APPROVAL"
-            ],
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "revision",
-          "applicationId",
-          "title",
-          "pinned",
-          "createdAt",
-          "updatedAt",
-          "status",
-          "lastMessagePreview"
         ],
         "type": "object"
       },
@@ -4886,6 +4735,40 @@
         ],
         "type": "object"
       },
+      "CreateBotBody": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "enum": [
+              "teal",
+              "sky",
+              "blue",
+              "violet",
+              "pink",
+              "red",
+              "coral",
+              "amber",
+              "green",
+              "brown",
+              "gray"
+            ],
+            "type": "string"
+          },
+          "displayName": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          },
+          "postingId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "postingId"
+        ],
+        "type": "object"
+      },
       "Device": {
         "properties": {
           "platform": {
@@ -7963,6 +7846,42 @@
           "sha256",
           "status",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "UpdateBotBody": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "enum": [
+              "teal",
+              "sky",
+              "blue",
+              "violet",
+              "pink",
+              "red",
+              "coral",
+              "amber",
+              "green",
+              "brown",
+              "gray"
+            ],
+            "type": "string"
+          },
+          "displayName": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer"
+          },
+          "notificationsMuted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expectedRevision"
         ],
         "type": "object"
       },
@@ -11107,7 +11026,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.",
+        "description": "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist or is a draft.",
         "operationId": "postBots",
         "parameters": [
           {
@@ -11118,61 +11037,31 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "companyId": {
-                    "anyOf": [
-                      {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "companyName": {
-                    "type": "string"
-                  },
-                  "displayName": {
-                    "type": "string"
-                  },
-                  "postingId": {
-                    "anyOf": [
-                      {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "postingUrl": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "companyId",
-                  "companyName",
-                  "postingId",
-                  "postingUrl",
-                  "displayName"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/CreateBotBody"
               }
             }
           },
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Bot"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The caller already has a bot for that company"
+          },
           "201": {
             "content": {
               "application/json": {
@@ -11195,79 +11084,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Create a company bot",
-        "tags": [
-          "bots"
-        ],
-        "x-owner": "core"
-      }
-    },
-    "/api/v1/bots/companies/search": {
-      "get": {
-        "operationId": "getBotsCompaniesSearch",
-        "parameters": [
-          {
-            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "maximum": 100,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Opaque cursor from page.nextCursor",
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Required company name substring",
-            "in": "query",
-            "name": "q",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/BotCompanyHit"
-                      },
-                      "type": "array"
-                    },
-                    "page": {
-                      "$ref": "#/components/schemas/Page"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "page"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "summary": "Search companies by name with open posting counts",
+        "summary": "Open the company bot of a posting, creating it when the caller has none for that company",
         "tags": [
           "bots"
         ],
@@ -11333,7 +11150,7 @@
     },
     "/api/v1/bots/{id}": {
       "delete": {
-        "description": "403 DEFAULT_BOT_PROTECTED for the Push bot.",
+        "description": "Deletes the bot with its thread, messages, jobs, events, cards, workspace files, work-done notifications and read marker. Usage rows stay. 403 DEFAULT_BOT_PROTECTED for the Push bot.",
         "operationId": "deleteBotsById",
         "parameters": [
           {
@@ -11341,7 +11158,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "format": "uuid",
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
               "type": "string"
             }
           }
@@ -11354,7 +11171,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Delete a company bot",
+        "summary": "Delete a company bot and erase its chat",
         "tags": [
           "bots"
         ],
@@ -11368,7 +11185,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "format": "uuid",
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
               "type": "string"
             }
           }
@@ -11403,6 +11220,7 @@
         "x-owner": "core"
       },
       "patch": {
+        "description": "The Push bot accepts notificationsMuted only. Any other body key is 400.",
         "operationId": "patchBotsById",
         "parameters": [
           {
@@ -11410,7 +11228,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "format": "uuid",
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
               "type": "string"
             }
           }
@@ -11419,42 +11237,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "avatarKey": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "displayName": {
-                    "type": "string"
-                  },
-                  "expectedRevision": {
-                    "type": "integer"
-                  },
-                  "mascotKey": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "notificationsMuted": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "expectedRevision"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/UpdateBotBody"
               }
             }
           },
@@ -11490,247 +11273,6 @@
         "x-owner": "core"
       }
     },
-    "/api/v1/bots/{id}/conversations": {
-      "get": {
-        "operationId": "getBotsByIdConversations",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          {
-            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "maximum": 100,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Opaque cursor from page.nextCursor",
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/Conversation"
-                      },
-                      "type": "array"
-                    },
-                    "page": {
-                      "$ref": "#/components/schemas/Page"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "page"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "summary": "List conversations under a bot",
-        "tags": [
-          "bots"
-        ],
-        "x-owner": "core"
-      },
-      "post": {
-        "operationId": "postBotsByIdConversations",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "applicationId": {
-                    "anyOf": [
-                      {
-                        "format": "uuid",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "title": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "title"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Conversation"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "summary": "Start a conversation under a bot",
-        "tags": [
-          "bots"
-        ],
-        "x-owner": "core"
-      }
-    },
-    "/api/v1/bots/{id}/library": {
-      "get": {
-        "operationId": "getBotsByIdLibrary",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Page size (default 50, max 100)",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "description": "When set, only that section is populated",
-            "in": "query",
-            "name": "section",
-            "required": false,
-            "schema": {
-              "enum": [
-                "conversations",
-                "files",
-                "links"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "description": "Cursor for the conversations section",
-            "in": "query",
-            "name": "conversationCursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Cursor for the files section",
-            "in": "query",
-            "name": "fileCursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Cursor for the links section",
-            "in": "query",
-            "name": "linkCursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/BotLibrary"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "summary": "List bot library conversations, files, and links",
-        "tags": [
-          "bots"
-        ],
-        "x-owner": "core"
-      }
-    },
     "/api/v1/bots/{id}/read": {
       "post": {
         "operationId": "postBotsByIdRead",
@@ -11740,7 +11282,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "format": "uuid",
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
               "type": "string"
             }
           },
@@ -11782,6 +11324,36 @@
           }
         },
         "summary": "Mark a bot read",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/transcript": {
+      "delete": {
+        "description": "Deletes the thread with its messages, jobs, events, cards, workspace files and work-done notifications. The bot, its settings and its read marker stay. 204 when the bot has no thread.",
+        "operationId": "deleteBotsByIdTranscript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Erase a bot's chat and keep the bot",
         "tags": [
           "bots"
         ],

@@ -40,8 +40,10 @@ async def test_turn_uses_gate_model_and_persists_reply():
     items = await run(HarnessRuntime(svc, model_cls=ScriptedLC), _payload())
     assert ("custom", {"token": "안녕하세요"}) in items
     operation = items[-1][1]["operation"]
-    assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
-    assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
+    user, assistant = svc.messages
+    assert (user.role, assistant.role, assistant.text) == ("USER", "ASSISTANT", "안녕하세요")
+    assert operation.result.value == {
+        "assistantMessageId": str(assistant.id), "userMessageId": str(user.id), "approvalIds": []}
     assert svc.ai.settled == [("anthropic/claude-sonnet-5-5", 10, 5)]
     tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
     assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
@@ -145,7 +147,7 @@ async def test_resume_turn_saves_the_assistant_message():
     done = [chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "done"]
     assert len(done) == 1
     assert done[0]["awaiting"] == "choice"
-    assert done[0]["operation"]["result"]["value"]["assistantMessage"]["text"] == "어떤 방식으로 쓸지 골라 주세요"
+    assert done[0]["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
     assert ("custom", {"token": "어떤 방식으로 쓸지 골라 주세요"}) in items
 
 
