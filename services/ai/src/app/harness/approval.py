@@ -16,7 +16,8 @@ approval_conversation_id: contextvars.ContextVar[str | None] = contextvars.Conte
     "approval_conversation_id", default=None)
 
 APPROVE_ALWAYS = "approve_always"
-# Core stores every answer but reject as APPROVED (conversations.ts resolveApproval), so both run the tool.
+# Core stores every answer but reject as APPROVED (conversations.ts resolveApproval), so both
+# run the tool.
 APPROVING = frozenset({"approve", APPROVE_ALWAYS})
 
 _PAGE_TTL = timedelta(minutes=10)
@@ -30,7 +31,10 @@ class CardSpec:
     offered only in a bot thread, because a conversation without a bot has no bot to remember for.
     """
 
-    options: tuple[dict, ...] = ({"id": "approve", "label": "실행"}, {"id": "reject", "label": "취소"})
+    options: tuple[dict, ...] = (
+        {"id": "approve", "label": "실행"},
+        {"id": "reject", "label": "취소"},
+    )
     ttl: timedelta = timedelta(hours=24)
     foot: str | None = None
     site: bool = False
@@ -38,13 +42,18 @@ class CardSpec:
 
 DEFAULT_CARD = CardSpec()
 
-# The only list of card variants. Core never names a lifetime: a retry reuses the span stored on the row.
+# The only list of card variants. Core never names a lifetime: a retry reuses the span stored on
+# the row.
 CARDS: dict[str, CardSpec] = {
     "apply_to_posting": CardSpec(foot="지원하면 취소할 수 없어요"),
     "read_page": CardSpec(
         options=(
             {"id": "approve", "label": "한 번 허용"},
-            {"id": APPROVE_ALWAYS, "label": "항상 허용", "desc": "이 봇이 이 사이트를 읽을 때 다시 묻지 않아요"},
+            {
+                "id": APPROVE_ALWAYS,
+                "label": "항상 허용",
+                "desc": "이 봇이 이 사이트를 읽을 때 다시 묻지 않아요",
+            },
             {"id": "reject", "label": "거절"},
         ),
         ttl=_PAGE_TTL,
@@ -64,8 +73,8 @@ def site_host(url: str) -> str:
 
 
 def normalize_url(url: str) -> str | None:
-    """The form two URLs are compared in, None when it does not parse. Query strings are kept: one page
-    of a site is not the site."""
+    """The form two URLs are compared in, None when it does not parse. Query strings are kept:
+    one page of a site is not the site."""
     try:
         parts = urlsplit(url.strip())
         port = parts.port
@@ -89,12 +98,14 @@ _SUPPLIED = (
 async def user_supplied(db, conversation_id, user_id, url: str) -> bool:
     """True when the user gave this URL in this thread, in a message or as an attached link.
 
-    Then the user already chose the page and nothing asks. The whole URL must match, never only the host.
+    Then the user already chose the page and nothing asks. The whole URL must match, never only
+    the host.
     """
     wanted = normalize_url(url)
     if wanted is None:
         return False
-    rows = await db.q().fetch(_SUPPLIED, UUID(str(conversation_id)), UUID(str(user_id)), site_host(url))
+    rows = await db.q().fetch(
+        _SUPPLIED, UUID(str(conversation_id)), UUID(str(user_id)), site_host(url))
     return any(
         normalize_url(given) == wanted
         for row in rows
@@ -105,13 +116,14 @@ async def user_supplied(db, conversation_id, user_id, url: str) -> bool:
 async def site_granted(db, conversation_id, url: str) -> bool:
     """False in a conversation without a bot: there every page the user did not give asks."""
     return bool(await db.q().fetchval(
-        "SELECT EXISTS (SELECT 1 FROM bot_site_grants g JOIN conversations c ON c.bot_id = g.bot_id "
-        "WHERE c.id = $1 AND g.host = $2)",
+        "SELECT EXISTS (SELECT 1 FROM bot_site_grants g "
+        "JOIN conversations c ON c.bot_id = g.bot_id WHERE c.id = $1 AND g.host = $2)",
         UUID(str(conversation_id)), site_host(url)))
 
 
 async def remember_site(db, conversation_id, url: str) -> None:
-    """Written for an answered 항상 허용 just before the tool runs. A job that dies first remembers nothing."""
+    """Written for an answered 항상 허용 just before the tool runs. A job that dies first
+    remembers nothing."""
     await db.q().execute(
         "INSERT INTO bot_site_grants (bot_id, host) SELECT c.bot_id, $2 FROM conversations c "
         "WHERE c.id = $1 AND c.bot_id IS NOT NULL ON CONFLICT DO NOTHING",
@@ -121,7 +133,8 @@ async def remember_site(db, conversation_id, url: str) -> None:
 async def _thread_company(db, conversation_id) -> tuple[bool, str]:
     """Whether the conversation is a bot thread, and the bot's company ('' for the Push Bot)."""
     row = await db.q().fetchrow(
-        "SELECT b.kind, b.company_name FROM bots b JOIN conversations c ON c.bot_id = b.id WHERE c.id = $1",
+        "SELECT b.kind, b.company_name FROM bots b "
+        "JOIN conversations c ON c.bot_id = b.id WHERE c.id = $1",
         UUID(str(conversation_id)))
     if row is None:
         return False, ""
@@ -130,7 +143,9 @@ async def _thread_company(db, conversation_id) -> tuple[bool, str]:
 
 def tool_action_event(
     approval_id: str, summary: str, tool_name: str, args: dict, display=None, *,
-    title: str | None = None, options: tuple[dict, ...] | None = None, expires_at: datetime | None = None,
+    title: str | None = None,
+    options: tuple[dict, ...] | None = None,
+    expires_at: datetime | None = None,
 ) -> dict:
     card = CARDS.get(tool_name, DEFAULT_CARD)
     event = {
@@ -189,7 +204,8 @@ async def create_tool_approval(
     stored = json.dumps(event["options"], ensure_ascii=False)
     await db.q().execute(
         "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, "
-        "conversation_id, title, options, tool_name, tool_args, tool_call_id, job_id, expires_at, created_at) "
+        "conversation_id, title, options, tool_name, tool_args, tool_call_id, job_id, "
+        "expires_at, created_at) "
         "VALUES ($1,$2,'TOOL_ACTION',$3,$4,'PENDING',$5,$6,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13) "
         "ON CONFLICT (id) DO NOTHING",
         UUID(approval_id),

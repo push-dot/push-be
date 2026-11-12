@@ -7,7 +7,8 @@ from app.domain.access_mode import AccessMode
 
 class Tier(StrEnum):
     READ = "READ"
-    # Opens a page outside Push. It asks unless the user gave the URL or the bot holds a grant for its host.
+    # Opens a page outside Push. It asks unless the user gave the URL or the bot holds a grant
+    # for its host.
     EXTERNAL_READ = "EXTERNAL_READ"
     SAFE_WRITE = "SAFE_WRITE"
     RISKY_WRITE = "RISKY_WRITE"
@@ -46,7 +47,8 @@ def decide(
     mode: AccessMode, tier: Tier, tool: str | None = None, *,
     quick_start: bool = False, supplied: bool = False, granted: bool = False,
 ) -> Decision:
-    """supplied: the user gave this URL in the thread. granted: the bot holds a grant for its host."""
+    """supplied: the user gave this URL in the thread. granted: the bot holds a grant for its
+    host."""
     if tool in ALWAYS_ASK_TOOLS:
         return Decision.ASK
     if not isinstance(tier, Tier):

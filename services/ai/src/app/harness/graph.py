@@ -378,8 +378,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
         meta = bound.metadata
         summary = meta["summary"](args)
-        # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three values
-        # and may not change shape before push-fe F3. Send EXTERNAL_READ once the api-client knows it.
+        # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three
+        # values and may not change shape before push-fe F3. Send EXTERNAL_READ once it knows it.
         tier = (Tier.READ if meta["tier"] is Tier.EXTERNAL_READ else meta["tier"]).value
         page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:

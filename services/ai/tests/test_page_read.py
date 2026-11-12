@@ -17,10 +17,12 @@ from tests.test_cov_ingest_web_page import _dns, _pinned
 
 
 def fake_web(monkeypatch, pages: dict) -> list[str]:
-    """Every host of `pages` resolves to a public address. A value is the body, or ("redirect", location).
+    """Every host of `pages` resolves to a public address. A value is the body, or
+    ("redirect", location).
     Returns the URLs fetched, in order."""
     hosts = {httpx.URL(url).host for url in pages} | {
-        httpx.URL(value[1]).host for value in pages.values() if isinstance(value, tuple)}
+        httpx.URL(value[1]).host for value in pages.values() if isinstance(value, tuple)
+    }
     _dns(monkeypatch, {host: ["93.184.216.34"] for host in hosts})
     fetched: list[str] = []
 
@@ -41,13 +43,20 @@ def fake_web(monkeypatch, pages: dict) -> list[str]:
 def test_a_page_the_user_gave_or_a_granted_host_is_read_in_every_mode(mode):
     for facts in ({"supplied": True}, {"granted": True}):
         assert decide(mode, Tier.EXTERNAL_READ, "read_page", **facts) is Decision.EXECUTE
-        assert decide(mode, Tier.EXTERNAL_READ, "read_page", quick_start=True, **facts) is Decision.EXECUTE
+        assert (
+            decide(mode, Tier.EXTERNAL_READ, "read_page", quick_start=True, **facts)
+            is Decision.EXECUTE
+        )
 
 
 def test_a_page_the_bot_chose_asks_unless_the_mode_is_run_at_once():
-    asked = {mode for mode in AccessMode if decide(mode, Tier.EXTERNAL_READ, "read_page") is Decision.ASK}
+    asked = {
+        mode for mode in AccessMode if decide(mode, Tier.EXTERNAL_READ, "read_page") is Decision.ASK
+    }
     assert asked == {AccessMode.ALWAYS_ASK, AccessMode.AUTO}
-    assert not write_needs_approval(AccessMode.BYPASS, Tier.EXTERNAL_READ, {"intent": "applications"}, "read_page")
+    assert not write_needs_approval(
+        AccessMode.BYPASS, Tier.EXTERNAL_READ, {"intent": "applications"}, "read_page"
+    )
 
 
 @pytest.mark.parametrize("mode", list(AccessMode))
@@ -80,36 +89,56 @@ def test_other_tool_cards_keep_two_answers_and_a_day():
 def test_a_grant_is_one_host_and_a_supplied_url_is_one_page():
     assert site_host("https://WWW.Moapay.co.kr./jobs/1") == "moapay.co.kr"
     assert site_host("https://careers.moapay.co.kr/jobs") == "careers.moapay.co.kr"
-    same = ("HTTPS://Careers.Moapay.co.kr:443/jobs/1/?a=1#top", "https://careers.moapay.co.kr/jobs/1?a=1")
+    same = (
+        "HTTPS://Careers.Moapay.co.kr:443/jobs/1/?a=1#top",
+        "https://careers.moapay.co.kr/jobs/1?a=1",
+    )
     assert normalize_url(same[0]) == normalize_url(same[1])
-    assert normalize_url("https://a.example/jobs/1?a=1") != normalize_url("https://a.example/jobs/1?a=2")
+    assert normalize_url("https://a.example/jobs/1?a=1") != normalize_url(
+        "https://a.example/jobs/1?a=2"
+    )
     assert normalize_url("https://a.example/jobs/1") != normalize_url("https://a.example/jobs/2")
-    assert normalize_url("https://[::1/x") is None and normalize_url("https://a.example:99999/") is None
+    assert (
+        normalize_url("https://[::1/x") is None
+        and normalize_url("https://a.example:99999/") is None
+    )
 
 
 async def test_a_redirect_to_a_host_the_permission_does_not_cover_reads_nothing_of_it(monkeypatch):
-    fetched = fake_web(monkeypatch, {
-        "https://moapay.example/jobs": ("redirect", "https://other-site.example/jobs"),
-        "https://other-site.example/jobs": "다른 사이트",
-    })
+    fetched = fake_web(
+        monkeypatch,
+        {
+            "https://moapay.example/jobs": ("redirect", "https://other-site.example/jobs"),
+            "https://other-site.example/jobs": "다른 사이트",
+        },
+    )
     with pytest.raises(web_page.LeftSite) as left:
-        await web_page.fetch_page("https://moapay.example/jobs", allow_hop=lambda u: site_host(u) == "moapay.example")
+        await web_page.fetch_page(
+            "https://moapay.example/jobs", allow_hop=lambda u: site_host(u) == "moapay.example"
+        )
     assert left.value.to == "https://other-site.example/jobs"
     assert fetched == ["https://moapay.example/jobs"]
 
 
-async def test_without_a_hop_limit_a_redirect_is_followed_and_the_page_names_where_it_ended(monkeypatch):
-    fetched = fake_web(monkeypatch, {
-        "https://short.example/x": ("redirect", "https://careers.moapay.example/jobs/1"),
-        "https://careers.moapay.example/jobs/1": "백엔드 엔지니어",
-    })
+async def test_without_a_hop_limit_a_redirect_is_followed_and_the_page_names_where_it_ended(
+    monkeypatch,
+):
+    fetched = fake_web(
+        monkeypatch,
+        {
+            "https://short.example/x": ("redirect", "https://careers.moapay.example/jobs/1"),
+            "https://careers.moapay.example/jobs/1": "백엔드 엔지니어",
+        },
+    )
     page = await web_page.fetch_page("https://short.example/x")
     assert page == web_page.Page("https://careers.moapay.example/jobs/1", "백엔드 엔지니어")
     assert fetched == ["https://short.example/x", "https://careers.moapay.example/jobs/1"]
     assert await web_page.fetch_page_text("https://short.example/x") == "백엔드 엔지니어"
 
 
-async def test_the_browser_render_does_not_navigate_to_a_host_the_permission_does_not_cover(monkeypatch):
+async def test_the_browser_render_does_not_navigate_to_a_host_the_permission_does_not_cover(
+    monkeypatch,
+):
     seen = {}
 
     async def browser(url, guard):
@@ -118,7 +147,9 @@ async def test_the_browser_render_does_not_navigate_to_a_host_the_permission_doe
 
     monkeypatch.setattr(web_page, "_render_with_browser", browser)
     monkeypatch.setattr(web_page, "_assert_public_sync", lambda url: ["93.184.216.34"])
-    await web_page._render_text("https://moapay.example/", lambda u: site_host(u) == "moapay.example")
+    await web_page._render_text(
+        "https://moapay.example/", lambda u: site_host(u) == "moapay.example"
+    )
 
     class Route:
         def __init__(self, url, navigation):

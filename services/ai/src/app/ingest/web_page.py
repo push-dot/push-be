@@ -296,7 +296,8 @@ async def _render_text(url: str, allow_hop: AllowHop = None) -> str:
         if not req_url.startswith(("http://", "https://")):
             await route.continue_()
             return
-        if allow_hop is not None and route.request.is_navigation_request() and not allow_hop(req_url):
+        navigation = route.request.is_navigation_request()
+        if allow_hop is not None and navigation and not allow_hop(req_url):
             await route.abort()
             return
         try:

@@ -13,8 +13,8 @@ from pydantic.alias_generators import to_camel
 from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
-from app.framework.fit_judge import judge_fit
 from app.domain.validators import validate_https_url
+from app.framework.fit_judge import judge_fit
 from app.harness.approval import approval_id_for, site_host, user_supplied
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
@@ -442,12 +442,14 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
 
 
 async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
-    """A URL the user gave is followed wherever it leads, a short link included. A page read on an
-    approval or a site grant stays on that host: a redirect elsewhere is a new decision for the model."""
+    """A URL the user gave is followed wherever it leads, a short link included. A page read on
+    an approval or a site grant stays on that host: a redirect elsewhere is a new decision for the
+    model."""
     host = site_host(args.url)
     supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
+    same_site = None if supplied else lambda hop: site_host(hop) == host
     try:
-        page = await fetch_page(args.url, allow_hop=None if supplied else lambda hop: site_host(hop) == host)
+        page = await fetch_page(args.url, allow_hop=same_site)
     except LeftSite as left:
         return {"error": "REDIRECTED", "to": left.to}
     except Exception:
