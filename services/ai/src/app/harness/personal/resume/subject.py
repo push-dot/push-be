@@ -12,23 +12,27 @@ flow writes a wrong document.
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.ingest.web_page import find_urls
 
 
-def turn_links(payload: dict) -> list[str]:
+def _dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def turn_links(payload: dict[str, Any]) -> list[str]:
     """Every link a turn brings, attached ones first."""
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context = _dict(payload.get("context"))
     attached = [url for url in context.get("urls") or [] if isinstance(url, str)]
     found = find_urls(payload.get("text") or "")
     return list(dict.fromkeys([*attached, *found]))
 
 
-def turn_posting(payload: dict, bot: dict | None) -> str | None:
+def turn_posting(payload: dict[str, Any], bot: dict[str, Any] | None) -> str | None:
     """The Push posting a turn works on: an attached one, else a company bot's own."""
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    posting = context.get("postingId") or (bot or {}).get("postingId")
+    posting = _dict(payload.get("context")).get("postingId") or (bot or {}).get("postingId")
     return str(posting) if posting else None
 
 
@@ -44,12 +48,12 @@ def _own_material(url: str) -> bool:
     return "github.com" in url.lower()
 
 
-def saved_for_turn(saved: dict, posting: str | None, links: list[str]) -> dict:
+def saved_for_turn(saved: dict[str, Any], posting: str | None, links: list[str]) -> dict[str, Any]:
     """The saved flow state a new quick start may build on: all of it while the turn stays on the
     flow's posting, else only the tone, which is the user's preference and not a fact about a
     posting. A turn that names a Push posting stays when the flow is about that posting. One that
     names none stays unless it brings a link the flow has not read."""
-    inputs = saved.get("inputs") if isinstance(saved.get("inputs"), dict) else {}
+    inputs = _dict(saved.get("inputs"))
     if posting is not None:
         same = str(inputs.get("postingId") or "") == posting
     else:

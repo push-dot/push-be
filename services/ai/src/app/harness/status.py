@@ -8,10 +8,10 @@ the AI service's.
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from app.harness.tools import emit
 
@@ -57,7 +57,7 @@ STEPS = (
 ) = STEPS
 
 
-def _writing(state: dict) -> str:
+def _writing(state: dict[str, Any]) -> str:
     return (
         WRITE_COVER_LETTER
         if set(state.get("output_targets") or ()) == {"cover_letter"}
@@ -69,7 +69,7 @@ def _writing(state: dict) -> str:
 # or a router: it asks with its own `waiting` status. Two lines start inside a node, where its slow
 # part begins: SCORE_FIT before the fit judge of classify_scenario, SAVE_DOCUMENT before p6_present
 # saves.
-NODE_STATUS: dict[str, str | Callable[[dict], str] | None] = {
+NODE_STATUS: dict[str, str | Callable[[dict[str, Any]], str] | None] = {
     "p0_mode": READ_DOCUMENT,
     "p0i_intake": READ_DOCUMENT,
     "p1_analyze": READ_POSTING,
@@ -123,7 +123,7 @@ class Run:
     since: str
     last: tuple[str, str] | None = None
 
-    def status(self, phase: str, text: str) -> dict | None:
+    def status(self, phase: str, text: str) -> dict[str, str] | None:
         """The phase's event, or None when it repeats the last one: a tool loop thinks once."""
         if (phase, text) == self.last:
             return None
@@ -182,13 +182,13 @@ def notice(text: str) -> None:
     emit({"type": "notice", "text": text})
 
 
-def with_status(name: str, node):
+def with_status(name: str, node: Callable[[Any], Awaitable[Any]]) -> Any:
     """The node, sending its NODE_STATUS line when it starts. A node without a key fails here."""
     line = NODE_STATUS[name]
     if line is None:
         return node
 
-    async def started(state):
+    async def started(state: Any) -> Any:
         working(line(state) if callable(line) else line)
         return await node(state)
 
