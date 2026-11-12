@@ -7,6 +7,8 @@ import {
 const id = pathParam("id");
 
 const seq = { type: "integer", description: "chat_events id; send back as ?after= or Last-Event-ID to resume" };
+const at = { ...dateTime, description: "When the event was stored" };
+const turn = { type: "string", description: "Opaque. Every frame of one run has the same value." };
 
 const option = obj({
   id: str,
@@ -76,8 +78,8 @@ const resolutionField = {
 
 const sseError = obj({
   code: {
-    ...enumOf("NOT_CONFIGURED", "PROVIDER_ERROR", "INTERNAL"),
-    description: "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).",
+    ...enumOf("NOT_CONFIGURED", "PROVIDER_ERROR", "INTERNAL", "JOB_FAILED"),
+    description: "NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is \"managed AI is not configured\"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq). JOB_FAILED: the job ended without writing its own terminal event, for example its worker died; the database wrote this one.",
   },
   message: str,
   details: nullable({ type: "object", additionalProperties: true }),
@@ -90,8 +92,18 @@ const resultAction = obj({
   path: str,
 }, ["id", "label"]);
 
-const chatEvents: Record<string, Schema> = {
-  status: obj({ type: enumOf("status"), text: str, seq }),
+const statusOf = (fields: Record<string, Schema>): Schema => obj({ type: enumOf("status"), text: str, ...fields, seq });
+const since = { ...dateTime, description: "When the run was queued. For waiting: when the card asked." };
+
+/** What a run is doing. The newest status with a phase is the current one. */
+export const statusPhases: Schema[] = [
+  statusOf({ phase: enumOf("queued"), since, ahead: { ...int, description: "The caller's runs queued or running before this one" } }),
+  statusOf({ phase: enumOf("thinking", "working"), since }),
+  statusOf({ phase: enumOf("waiting"), since, for: enumOf("answer", "confirm"), cardId: uuid }),
+];
+
+export const chatEvents: Record<string, Schema> = {
+  status: { anyOf: [statusOf({}), ...statusPhases] },
   token: obj({ type: enumOf("token"), text: str, seq }),
   think: obj({
     type: enumOf("think"),
@@ -323,14 +335,35 @@ const chatEvents: Record<string, Schema> = {
     seq,
   }, ["type", "operation", "seq"]),
   error: obj({ type: enumOf("error"), error: sseError, seq }, ["type", "error"]),
-  cancelled: obj({ type: enumOf("cancelled"), seq }),
+  cancelled: obj({
+    type: enumOf("cancelled"),
+    resumable: { type: "boolean", description: "True when a document flow is active and the next message continues it. Absent on a stored event from before this field." },
+    seq,
+  }, ["type", "seq"]),
 };
+
+const variants = (event: Schema): Schema[] | undefined => (event.oneOf ?? event.anyOf) as Schema[] | undefined;
+
+/** A stored frame as a stream sends it. A frame without a required seq is the gateway's own error and has no stamp. */
+export const stamped = (event: Schema): Schema => {
+  if (variants(event)) return { ...event, [event.oneOf ? "oneOf" : "anyOf"]: variants(event)!.map(stamped) };
+  const required = event.required as string[];
+  return {
+    ...event,
+    properties: { ...(event.properties as Record<string, Schema>), at, turn },
+    required: required.includes("seq") ? [...required, "at", "turn"] : required,
+  };
+};
+
+const streamEvents = Object.fromEntries(Object.entries(chatEvents).map(([name, event]) => [name, stamped(event)]));
 
 const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. "
   + "The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. "
-  + "The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
-  + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. "
-  + "The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
+  + "The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. "
+  + "Every stored frame carries at and turn. cancelled carries resumable. "
+  + "After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
+  + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. "
+  + "The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. A status the AI service writes has text only until it writes phases, and so has a row stored before phases. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
   + "The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). "
   + "During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. "
   + "Every field added after the first release is optional; a client that ignores it keeps working. "
@@ -339,8 +372,28 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
   + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.";
 
+export const messageText = { type: "string", minLength: 1, maxLength: 20000 };
+
+export const PERSONAL_INTENTS = [
+  "match_posting", "fit", "gaps", "experience", "boost",
+  "find_postings", "deadline_postings", "applications", "calendar",
+  "hub_profile", "offer_reply", "coffee_chat", "career_post",
+];
+
+export const aiOptions = nullable(closed({
+  provider: {
+    ...enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
+    description: "Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.",
+  },
+  model: { type: "string", minLength: 1 },
+  effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX." },
+  ultraResume: { type: "boolean", description: "Requires the ULTRA plan" },
+  webSearch: bool,
+  models: { type: "object", additionalProperties: true },
+}, ["provider", "model"]));
+
 const postMessageBody = body(closed({
-  text: { type: "string", minLength: 1, maxLength: 20000 },
+  text: messageText,
   context: closed({
     documentId: nullable(uuid),
     versionId: nullable(uuid),
@@ -349,24 +402,9 @@ const postMessageBody = body(closed({
       description: "Ids of the caller's uploaded sources. A PDF, DOCX, or DOC attached with a fix, tailor, or improve request (고쳐, 고치, 맞춰, 맞추, 개선, tailor, improve) and no intent runs the resume flow on that file. The result event then has source external.",
     },
   }, []),
-  ai: nullable(closed({
-    provider: {
-      ...enumOf("OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"),
-      description: "Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.",
-    },
-    model: { type: "string", minLength: 1 },
-    effort: { ...enumOf("LOW", "MEDIUM", "HIGH", "MAX"), description: "Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX." },
-    ultraResume: { type: "boolean", description: "Requires the ULTRA plan" },
-    webSearch: bool,
-    models: { type: "object", additionalProperties: true },
-  }, ["provider", "model"])),
+  ai: aiOptions,
   accessMode: { ...enumOf("ALWAYS_ASK", "AUTO", "BYPASS", "SUGGEST", "CONFIRM_ACTIONS"), description: "SUGGEST maps to AUTO, CONFIRM_ACTIONS to ALWAYS_ASK; defaults to the saved user setting" },
-  intent: enumOf(
-    "posting", "review", "interview", "general",
-    "match_posting", "fit", "gaps", "experience", "boost",
-    "find_postings", "deadline_postings", "applications", "calendar",
-    "hub_profile", "offer_reply", "coffee_chat", "career_post",
-  ),
+  intent: enumOf("posting", "review", "interview", "general", ...PERSONAL_INTENTS),
   applicationId: nullable(uuid),
 }, ["text"]));
 
@@ -484,7 +522,7 @@ export const routes: Route[] = [
     description: "Same body and checks as POST .../messages; a non-202 result from core is returned as is. " + chatStreamDescription,
     params: [id],
     body: postMessageBody,
-    responses: { 200: sse(chatEvents, "Chat reply stream") },
+    responses: { 200: sse(streamEvents, "Chat reply stream") },
   }),
   get("gateway", "/api/v1/conversations/{id}/messages/stream/active", {
     tag: "conversations",
@@ -495,12 +533,12 @@ export const routes: Route[] = [
       query("after", { type: "integer", minimum: 0 }, "Resume after this seq; the Last-Event-ID header is used when absent"),
       { name: "Last-Event-ID", in: "header", required: false, schema: str },
     ],
-    responses: { 200: sse(chatEvents, "Chat reply stream"), 204: { description: "No active chat job" } },
+    responses: { 200: sse(streamEvents, "Chat reply stream"), 204: { description: "No active chat job" } },
   }),
   post("gateway", "/api/v1/conversations/{id}/stream/cancel", {
     tag: "conversations",
     summary: "Cancel the active chat job",
-    description: "409 CONFLICT when no job is running. The open stream receives a cancelled event.",
+    description: "409 CONFLICT when no job is running. The open stream receives a cancelled event, written with the cancel itself.",
     params: [id],
     responses: { 200: ok(obj({ jobId: uuid, status: enumOf("CANCELLED") })) },
   }),
