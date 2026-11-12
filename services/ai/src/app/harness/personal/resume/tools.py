@@ -9,6 +9,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import BaseModel
 
 from app.framework.fit_judge import judge_fit
+from app.harness.material_access import announce, current_access, refusal
 from app.harness.policy import Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
 from app.infrastructure.posting_fit_cache import read_plan
@@ -52,6 +53,12 @@ class ArtifactArgs(BaseModel):
 
 
 async def _parse_attachment(ctx: ToolContext, args: AttachmentArgs) -> dict:
+    access = current_access.get()
+    evidence_ok = access is None or access.allows("evidence", str(args.attachment_id))
+    file_ok = access is None or access.allows("file", str(args.attachment_id))
+    if not evidence_ok and not file_ok:
+        announce()
+        return refusal()
     evidence = await ctx.db.q().fetchrow(
         "SELECT title, source_text FROM career_evidence WHERE id = $1 AND user_id = $2",
         args.attachment_id, UUID(ctx.user_id))
@@ -77,6 +84,10 @@ async def _fetch_url(ctx: ToolContext, args: UrlArgs) -> dict:
 
 
 async def _explore_github(ctx: ToolContext, args: GithubArgs) -> dict:
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        announce()
+        return refusal()
     rows = await ctx.db.q().fetch(
         "SELECT url FROM user_links WHERE user_id = $1 AND kind = 'github' AND ai_read "
         "AND deleted_at IS NULL",
@@ -139,6 +150,9 @@ async def _put_pdf(ctx: ToolContext, name: str, content: bytes) -> None:
 
 
 async def _document_id(ctx: ToolContext, name: str, template: str | None = None) -> str:
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        return ""
     from app.harness.personal.tools import bound_services
     from app.infrastructure.resume_workspace import _sync_documents_db
 

@@ -75,6 +75,11 @@ def _uuid(value):
 async def _link_id(db, user_id, url: str):
     if db is None or not url:
         return None
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        return None
     uid = _uuid(user_id)
     if uid is None:
         return None

@@ -41,6 +41,11 @@ async def require_live_document(query, user_id, document_id) -> None:
 async def latest_document_id(query, user_id):
     if query is None or user_id is None:
         return None
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        return None
     row = await query.fetchrow(_LATEST_DOCUMENT, user_id)
     if row is None:
         return None
@@ -49,6 +54,15 @@ async def latest_document_id(query, user_id):
 
 async def load_corpus(query, user_id, document_id):
     if query is None or user_id is None:
+        return [], []
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
+    if (
+        access is not None
+        and not access.may_search()
+        and (document_id is None or not access.allows("document", str(document_id)))
+    ):
         return [], []
     rows = await query.fetch(
         POSTING_MATCH_SQL, user_id, _USER_KINDS, document_id, CANDIDATE_CAP)

@@ -422,8 +422,16 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:
             thread = state.get("conversation_id")
+            from app.harness.material_access import current_access, supplied_closed
+
+            access = current_access.get()
+            closed = access is not None and not access.may_search()
             page = {
-                "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
+                "supplied": await (
+                    supplied_closed(db, thread, state.get("user_id"), args.url)
+                    if closed
+                    else user_supplied(db, thread, state.get("user_id"), args.url)
+                ),
                 "granted": await site_granted(db, thread, args.url),
             }
         if (
@@ -536,12 +544,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 return finish({})
             if started["intent"] == "find_postings":
                 from app.domain.services import posting_match as matching
+                from app.harness.material_access import current_access
 
                 result = await matching.run_quick_match(
                     db,
                     state.get("user_id"),
                     started["inputs"],
                     job_id=state.get("job_id"),
+                    access=current_access.get(),
                 ) or {}
                 text_out = result.get("text") or "조건에 맞는 공고가 없어요."
                 payload = {"items": result.get("items") or [], "text": text_out}
