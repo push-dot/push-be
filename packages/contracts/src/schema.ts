@@ -7476,6 +7476,14 @@ export interface components {
             operation: components["schemas"]["Operation"] | null;
             /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
             seq: number;
+            /** @description Materials this turn read or saved, first use, at most 5. Omitted when empty. A link title is the page read after redirects. */
+            sources?: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "file" | "document" | "posting" | "link";
+                title: string;
+            }[];
             /** @description Opaque. Every frame of one run has the same value. */
             turn: string;
             /** @enum {string} */

@@ -25,6 +25,7 @@ from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
 from app.harness.router import select_harness
+from app.harness.sources import TurnSources, current_sources, listed
 from app.harness.status import THINKING, Run, current_run, wire_time
 from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
 from app.ingest.web_page import fetch_page_text
@@ -379,6 +380,7 @@ class HarnessRuntime:
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
             (bound_core, bound_core.set(self._core)),
             (current_run, current_run.set(run)),
+            (current_sources, current_sources.set(TurnSources())),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         ok = False
@@ -480,11 +482,17 @@ class HarnessRuntime:
                 operation = await self._persist(payload, reply, ai, turn)
         else:
             operation = await self._persist(payload, _final_text(after.values), ai, turn)
+        found = listed()
         if done is not None:
             extra = {"operation": to_jsonable(operation)} if operation is not None else {}
+            if found:
+                extra["sources"] = found
             yield "custom", {**done, **extra}
         elif operation is not None:
-            yield "values", {"operation": operation}
+            chunk = {"operation": operation}
+            if found:
+                chunk["sources"] = found
+            yield "values", chunk
 
     async def _stored_gate(self, approval_id) -> str:
         if not approval_id:
@@ -569,10 +577,18 @@ class HarnessRuntime:
             text=reply, input_tokens=turn.get("input_tokens", 0),
             output_tokens=turn.get("output_tokens", 0))
 
+        found = listed()
+
         async def work():
             if text:
                 await svc.conversations.upsert_user_message(user_msg)
             await svc.conversations.create_message(assistant_msg)
+            if found:
+                await svc.db.q().execute(
+                    "UPDATE messages SET attachments = $2::jsonb WHERE id = $1",
+                    assistant_msg_id,
+                    json.dumps(found, ensure_ascii=False),
+                )
             await svc.ops.create(op)
             if ai is not None and turn.get("checked"):
                 usage_ids = [turn["usage_id"]] if turn.get("usage_id") else []

@@ -6,13 +6,15 @@ import logging
 from uuid import UUID, uuid4
 
 from app.harness.personal.resume.drafts import draft_text
+from app.harness.sources import note, stamp_created_by
 from app.infrastructure.doc_render import tiptap_to_lines
 
 _TITLE = "Push 프로필"
 _SOURCE_SQL = (
     "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, "
-    "created_at, content, page_count, origin) "
-    "VALUES ($1,$2,$3,$4,$5,$6,$7,'STORED',now(),$8,$9,'AI')"
+    "created_at, content, page_count, origin, created_by_bot_id) "
+    "VALUES ($1,$2,$3,$4,$5,$6,$7,'STORED',now(),$8,$9,'AI',"
+    "(SELECT bot_id FROM conversations WHERE id = $10))"
 )
 
 
@@ -202,10 +204,12 @@ async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int
             f"db://sources/{source_id}",
             pdf,
             pages,
+            _uuid(state.get("conversation_id")),
         )
     except Exception:
         logging.getLogger(__name__).warning("source insert failed", exc_info=True)
         return False
+    note("file", str(source_id), file_name)
     return True
 
 
@@ -251,6 +255,7 @@ async def save_profile_document(state: dict, title: str | None = None) -> str:
             user_id, None, label, "HUB_PROFILE", template, "ko")
         await document_svc.create_version(
             user_id, doc.id, doc.revision, content, blocks, "resume flow")
+        await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
     except Exception:
         return ""
     return str(doc.id)
