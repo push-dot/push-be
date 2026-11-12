@@ -43,6 +43,7 @@ function isPython(method: string, path: string): boolean {
   if (method === "GET" && /^\/api\/v1\/conversations\/shared\/[^/]+$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/artifacts$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/turns$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/bots\/[^/]+\/transcript$/.test(path)) return true;
   return false;
 }
 
