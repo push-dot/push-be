@@ -174,7 +174,6 @@ export const getSourceContent = async (ctx: Ctx, idRaw: string): Promise<Respons
  */
 export const CITING_EVIDENCE = "used AS (SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $1 AND provenance->>'sourceId' = $2::uuid::text)";
 
-/** 409 when `CITING_EVIDENCE` counted any evidence. */
 export const refuseCited = (used: unknown): void => {
   if (Number(used) > 0) {
     throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
