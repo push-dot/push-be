@@ -33,6 +33,7 @@ from app.jsonutil import to_jsonable
 _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 _TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
 _POSTING_TEXT_CAP = 6000
+_PAGES_PER_TURN = 2
 _INPUT_KEYS = ("pages", "attachments", "documentId", "postingId")
 
 
@@ -184,7 +185,7 @@ def _gate_answer(resume: dict) -> dict:
 
 async def _turn_inputs(payload: dict) -> dict:
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    urls = turn_links(payload)
+    urls = turn_links(payload)[:_PAGES_PER_TURN]
     bodies = await asyncio.gather(*(fetch_page_text(url) for url in urls), return_exceptions=True)
     pages = {}
     for url, body in zip(urls, bodies):
@@ -273,6 +274,7 @@ class HarnessRuntime:
                 _job_uuid(payload.get("job_id")),
             )
         except Exception:
+            logging.getLogger(__name__).warning("conversation read failed", exc_info=True)
             row = None
         if not row:
             return found

@@ -325,7 +325,8 @@ async def _complete(chat, messages, *, text_only: bool = False):
 
 def bot_prompt(prompt: str, bot: dict | None) -> str:
     """The system prompt of a thread. A bot thread exists only in the app, where the model is a
-    봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line."""
+    봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
+    also says 플랜 where the web says 요금제."""
     if not bot:
         return prompt
     # Names and titles are written by users and employers. Quoted, they stay data.
@@ -340,7 +341,7 @@ def bot_prompt(prompt: str, bot: dict | None) -> str:
         title = quote(bot.get("postingTitle") or "제목 없음")
         line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
     line += f" 자신을 말할 때는 {quote(name)}이나 봇이라고 하고, 에이전트라고 하지 않아요."
-    return line + "\n" + prompt.partition("\n")[2]
+    return line + "\n" + prompt.partition("\n")[2].replace("요금제", "플랜")
 
 
 def build_harness_graph(spec, checkpointer, *, model, db, core):

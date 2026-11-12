@@ -16,15 +16,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.ingest.web_page import find_urls
 
-_LINKS_PER_TURN = 2
-
 
 def turn_links(payload: dict) -> list[str]:
-    """The links a turn hands the flow, attached ones first. The flow reads at most two."""
+    """Every link a turn brings, attached ones first."""
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     attached = [url for url in context.get("urls") or [] if isinstance(url, str)]
     found = find_urls(payload.get("text") or "")
-    return list(dict.fromkeys([*attached, *found]))[:_LINKS_PER_TURN]
+    return list(dict.fromkeys([*attached, *found]))
 
 
 def turn_posting(payload: dict, bot: dict | None) -> str | None:

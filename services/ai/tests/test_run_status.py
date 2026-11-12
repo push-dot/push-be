@@ -297,7 +297,8 @@ async def test_a_company_bot_knows_its_name_and_its_posting():
     )
     assert f'기준 공고: "백엔드 엔지니어" (posting_id {POSTING})' in who
     assert "에이전트" not in rest, "the web's first line is not there to contradict the bot's"
-    assert rest == REGISTRY["personal"].prompt.split("\n", 1)[1]
+    assert "요금제" not in rest, "the app says 플랜"
+    assert "플랜에 따라 참고하는 연차 범위와 점수대가 달라요." in rest
 
 
 async def test_the_push_bot_calls_itself_a_bot_and_a_web_conversation_keeps_its_prompt():

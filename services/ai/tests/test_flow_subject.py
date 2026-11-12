@@ -189,6 +189,24 @@ async def test_a_portfolio_link_does_not_carry_a_flow_about_a_into_posting_b(mon
     assert "A사" not in json.dumps(saved, ensure_ascii=False)
 
 
+async def test_posting_b_after_two_read_links_does_not_carry_the_flow_about_a(monkeypatch):
+    read_all = {
+        **FINISHED_ABOUT_A,
+        "inputs": {"pages": {**WITH_PORTFOLIO["inputs"]["pages"], GITHUB: "서준의 GitHub"}},
+    }
+
+    sent, saved = await _quick_start(
+        monkeypatch,
+        _after_a(resume_state=read_all),
+        "gaps",
+        f"부족한 점 찾아 줘 {B_URL}",
+        {"urls": [PORTFOLIO, GITHUB]},
+    )
+
+    assert (sent["analysis"], sent["drafts"]) == ({}, {})
+    assert "A사" not in json.dumps(saved, ensure_ascii=False)
+
+
 async def test_a_link_the_flow_already_read_goes_on_with_the_flow(monkeypatch):
     sent, _saved = await _quick_start(
         monkeypatch,
@@ -201,10 +219,22 @@ async def test_a_link_the_flow_already_read_goes_on_with_the_flow(monkeypatch):
     assert sent["drafts"]["markdown"] == "A사 백엔드 지원용 이력서 초안"
 
 
-def test_a_turn_hands_the_flow_its_attached_links_first_and_at_most_two():
+def test_a_turn_brings_every_link_once_attached_ones_first():
     payload = {"context": {"urls": [PORTFOLIO]}, "text": f"{A_URL} {PORTFOLIO} {B_URL}"}
 
-    assert turn_links(payload) == [PORTFOLIO, A_URL]
+    assert turn_links(payload) == [PORTFOLIO, A_URL, B_URL]
+
+
+async def test_a_turn_reads_at_most_two_pages_attached_ones_first(monkeypatch):
+    sent, _saved = await _quick_start(
+        monkeypatch,
+        _after_a(),
+        "gaps",
+        f"부족한 점 찾아 줘 {A_URL} {B_URL}",
+        {"urls": [PORTFOLIO]},
+    )
+
+    assert list(sent["inputs"]["pages"]) == [PORTFOLIO, A_URL]
 
 
 @pytest.mark.parametrize(

@@ -300,13 +300,14 @@ async def test_a_flow_reply_made_in_a_job_that_resumed_from_a_card_is_stored():
     gate_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "choice")
     before = len(svc.messages)
 
-    resumed = await run(runtime, _payload("", job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-                                          resume={"approvalId": gate_id, "optionId": "resume_based"}))
+    resumed = await run(runtime, _payload(
+        "", job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        resume={"approvalId": gate_id, "optionId": "resume_based"}))
 
     streamed = [chunk["token"] for mode, chunk in resumed if mode == "custom" and "token" in chunk]
     assert streamed == ["자료를 받았어요. 이력서 1개와 공고 1개예요."]
     assert [(m.role, m.text) for m in svc.messages[before:]] == [("ASSISTANT", streamed[0])]
-    done = next(chunk for mode, chunk in resumed if mode == "custom" and chunk.get("type") == "done")
+    done = next(c for mode, c in resumed if mode == "custom" and c.get("type") == "done")
     assert done["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
 
     targets = next(c for mode, c in resumed if mode == "custom" and c.get("type") == "choice")

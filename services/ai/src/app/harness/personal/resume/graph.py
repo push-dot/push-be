@@ -1842,13 +1842,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         return {"status": "active", "phase": "analyze", "goto": "g1"}
 
     async def design_node(state: ResumeGraphState) -> dict:
-        current = current_of(state)
         reply = "디자인을 골라 주세요."
         emit({"token": reply})
         return {"reply": reply, "reply_job": running_job(), "phase": "review"}
 
     async def approach_node(state: ResumeGraphState) -> dict:
-        current = current_of(state)
         reply = "접근 방식을 골라 주세요."
         emit({"token": reply})
         return {
