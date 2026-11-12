@@ -38,6 +38,8 @@ _LIVE_EVENT_TYPES = frozenset(
         "think",
         "plan",
         "paper",
+        "status",
+        "notice",
     }
 )
 
@@ -45,6 +47,10 @@ _LIVE_EVENT_TYPES = frozenset(
 def _live_event(chunk: dict):
     kind = chunk.get("type")
     if kind not in _LIVE_EVENT_TYPES:
+        return None
+    # The employer flows' status lines have no phase and never reached a client. A status a client
+    # reads always has one (harness/status.py).
+    if kind == "status" and "phase" not in chunk:
         return None
     return kind, {key: value for key, value in chunk.items() if key != "type"}
 
@@ -252,8 +258,6 @@ class ConversationService:
                         break
                     if "token" in chunk:
                         await self.jobs.emit(job_id, "token", {"text": chunk["token"]})
-                    elif "status" in chunk:
-                        await self.jobs.emit(job_id, "status", {"text": chunk["status"]})
                     else:
                         live = _live_event(chunk)
                         if live is not None:

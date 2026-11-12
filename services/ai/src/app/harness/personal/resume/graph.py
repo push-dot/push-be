@@ -54,6 +54,15 @@ from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
 from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
 from app.harness.policy import Tier
+from app.harness.status import (
+    SAVE_DOCUMENT,
+    SCORE_FIT,
+    notice,
+    running_job,
+    waiting,
+    with_status,
+    working,
+)
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -388,6 +397,13 @@ def _fail_update(state: dict, phase: str) -> dict:
         "status": "active",
         "retry": failed < _VALIDATE_CAP,
     }
+
+
+def _failed_check(state: dict, phase: str, said: str) -> dict:
+    update = _fail_update(state, phase)
+    if not update["retry"]:
+        notice(said)
+    return update
 
 
 def _capped(state: dict, phase: str) -> bool:
@@ -815,6 +831,12 @@ def _choice(
     return event
 
 
+async def _ask(db, state: dict, event: dict) -> None:
+    if await _save_choice(db, state, event):
+        waiting(event["id"], "answer")
+        emit(event)
+
+
 async def _save_choice(db, state: dict, event: dict) -> bool:
     if db is None:
         return True
@@ -1018,9 +1040,11 @@ def merge_inputs(inputs: dict, extra: dict) -> dict:
         if item not in attachments:
             attachments.append(item)
     merged["attachments"] = attachments
-    document_id = extra.get("documentId")
-    if document_id:
-        merged["documentId"] = str(document_id)
+    for key in ("documentId", "postingId"):
+        if extra.get(key):
+            merged[key] = str(extra[key])
+    if isinstance(extra.get("posting"), dict):
+        merged["posting"] = extra["posting"]
     return merged
 
 
@@ -1318,6 +1342,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 await _emit_papers(db, current, stored)
             if phase == "present":
                 view = {**current, **stored}
+                working(SAVE_DOCUMENT)
                 if resume_source(view) == "external":
                     display_name, _headline = await profile_card_names(db, view)
                     saved = await save_edited_file(db, view, edited_pdf_name(view, display_name))
@@ -1337,7 +1362,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
             emit({"token": reply})
-            stored = {**stored, "reply": reply, "reply_job": current["job_id"], "retry": False}
+            stored = {**stored, "reply": reply, "reply_job": running_job(), "retry": False}
             if stamped.get("inputs"):
                 stored["inputs"] = stamped["inputs"]
             retries = int((current.get("strategy") or {}).get("retries") or 0)
@@ -1421,8 +1446,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 auto=False,
                 cycle=asks if gate_id == "intake" and asks else None,
             )
-            if await _save_choice(db, current, event):
-                emit(event)
+            await _ask(db, current, event)
             answer = (
                 interrupt(
                     {
@@ -1500,12 +1524,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
         if current_ai_gate() is None:
             return None
+        working(SCORE_FIT)
         text = await resume_text(state)
         try:
             view = await score_text(state, text)
         except Exception:
             logging.getLogger(__name__).warning("analyze fit failed", exc_info=True)
             emit(fit_failed_line())
+            notice("적합도를 계산하지 못했어요")
             return None
         score = float(view["fitScore"])
         analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
@@ -1529,7 +1555,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 if not failed:
                     fit_from = await analyze_fit(state)
             elif key == "posting" and failed:
-                emit(posting_line(analysis, failed=True))
+                line = posting_line(analysis, failed=True)
+                emit(line)
+                notice(line["resultLine"])
             else:
                 emit(lines[key]())
             emit(todo_event("analyze", steps, index + 1, added))
@@ -1617,8 +1645,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             answer: dict = {"option_id": "continue"}
         else:
             event = _choice(state, "boost", auto=False, cycle=pending["cycle"], detail=detail)
-            if await _save_choice(db, state, event):
-                emit(event)
+            await _ask(db, state, event)
             answer = (
                 interrupt(
                     {
@@ -1693,7 +1720,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         else:
             reply = _feedback_text(current)
         emit({"token": reply})
-        return {"reply": reply, "reply_job": current["job_id"], "phase": "feedback"}
+        return {"reply": reply, "reply_job": running_job(), "phase": "feedback"}
 
     async def quality_gate(state: ResumeGraphState) -> dict:
         current = current_of(state)
@@ -1718,8 +1745,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             emit(event)
             answer = {"option_id": "submit", "option_ids": ["submit", *selected]}
         else:
-            if await _save_choice(db, current, event):
-                emit(event)
+            await _ask(db, current, event)
             answer = (
                 interrupt(
                     {
@@ -1764,8 +1790,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         if intent not in {"paste", "pick"}:
             emit({"token": _READ_FAILED_WARN})
         event = _read_failed_event(current)
-        if await _save_choice(db, current, event):
-            emit(event)
+        await _ask(db, current, event)
         answer = (
             interrupt(
                 {
@@ -1817,18 +1842,16 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         return {"status": "active", "phase": "analyze", "goto": "g1"}
 
     async def design_node(state: ResumeGraphState) -> dict:
-        current = current_of(state)
         reply = "디자인을 골라 주세요."
         emit({"token": reply})
-        return {"reply": reply, "reply_job": current["job_id"], "phase": "review"}
+        return {"reply": reply, "reply_job": running_job(), "phase": "review"}
 
     async def approach_node(state: ResumeGraphState) -> dict:
-        current = current_of(state)
         reply = "접근 방식을 골라 주세요."
         emit({"token": reply})
         return {
             "reply": reply,
-            "reply_job": current["job_id"],
+            "reply_job": running_job(),
             "phase": "approach",
             "retry": False,
         }
@@ -1861,7 +1884,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             ]
             output = _parsed(await chat.ainvoke(messages))
         if _invalid(output):
-            return _fail_update(state, "approach")
+            return _failed_check(state, "approach", "방향 검증에서 문제가 생겼어요")
         return {
             "phase": "blueprints",
             "status": "active",
@@ -1900,7 +1923,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             state, "04_validation_report.json", output
         )
         if _invalid(output):
-            return {**_fail_update(state, "blueprints"), "artifacts": artifacts}
+            failed = _failed_check(state, "blueprints", "설계안 검증에서 문제가 생겼어요")
+            return {**failed, "artifacts": artifacts}
         return {
             "artifacts": artifacts,
             "phase": "blueprints",
@@ -1970,43 +1994,47 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         return "end" if state.get("retry") else "g2"
 
     graph = StateGraph(ResumeGraphState)
-    graph.add_node("p0_mode", work_node("mode_select"))
-    graph.add_node("g0", gate_node("mode_select"))
-    graph.add_node("p0i_intake", work_node("intake"))
-    graph.add_node("g_output_targets", gate_node("output_targets"))
-    graph.add_node("g_tone", gate_node("tone"))
-    graph.add_node("g_intake", gate_node("intake"))
-    graph.add_node("p1_analyze", work_node("analyze"))
-    graph.add_node("parse_resume", parse_resume)
-    graph.add_node("explore_github", explore_github)
-    graph.add_node("analyze_job", analyze_job)
-    graph.add_node("classify_scenario", classify_scenario)
-    graph.add_node("g1", gate_node("analyze"))
-    graph.add_node("p2b_feedback", feedback_node)
-    graph.add_node("g_feedback", gate_node("feedback"))
-    graph.add_node("p4b_design", design_node)
-    graph.add_node("p2_strategy", work_node("strategy"))
-    graph.add_node("g2", gate_node("strategy"))
-    graph.add_node("p3_craft", work_node("craft"))
-    graph.add_node("g3", gate_node("craft"))
-    graph.add_node("p3c_boost", boost)
-    graph.add_node("p3c_cycle", boost_gate)
-    graph.add_node("p4a_review", work_node("review"))
-    graph.add_node("g_quality", quality_gate)
-    graph.add_node("g4a", gate_node("review"))
-    graph.add_node("g_read_failed", read_failed_gate)
-    graph.add_node("p5_publish", work_node("publish"))
-    graph.add_node("p6_present", work_node("present"))
-    graph.add_node("g6", gate_node("present"))
-    graph.add_node("p2x_approach", approach_node)
-    graph.add_node("g_approach", gate_node("approach"))
-    graph.add_node("g_level", gate_node("level"))
-    graph.add_node("g_prevention", gate_node("prevention"))
-    graph.add_node("p2x_validate", validate_node)
-    graph.add_node("p2x_blueprints", work_node("blueprints"))
-    graph.add_node("p2x_validate_bp", validate_bp_node)
-    graph.add_node("g_validate_cap", gate_node("validate_cap"))
-    graph.add_node("g2x", gate_node("projects"))
+
+    def add(name: str, node) -> None:
+        graph.add_node(name, with_status(name, node))
+
+    add("p0_mode", work_node("mode_select"))
+    add("g0", gate_node("mode_select"))
+    add("p0i_intake", work_node("intake"))
+    add("g_output_targets", gate_node("output_targets"))
+    add("g_tone", gate_node("tone"))
+    add("g_intake", gate_node("intake"))
+    add("p1_analyze", work_node("analyze"))
+    add("parse_resume", parse_resume)
+    add("explore_github", explore_github)
+    add("analyze_job", analyze_job)
+    add("classify_scenario", classify_scenario)
+    add("g1", gate_node("analyze"))
+    add("p2b_feedback", feedback_node)
+    add("g_feedback", gate_node("feedback"))
+    add("p4b_design", design_node)
+    add("p2_strategy", work_node("strategy"))
+    add("g2", gate_node("strategy"))
+    add("p3_craft", work_node("craft"))
+    add("g3", gate_node("craft"))
+    add("p3c_boost", boost)
+    add("p3c_cycle", boost_gate)
+    add("p4a_review", work_node("review"))
+    add("g_quality", quality_gate)
+    add("g4a", gate_node("review"))
+    add("g_read_failed", read_failed_gate)
+    add("p5_publish", work_node("publish"))
+    add("p6_present", work_node("present"))
+    add("g6", gate_node("present"))
+    add("p2x_approach", approach_node)
+    add("g_approach", gate_node("approach"))
+    add("g_level", gate_node("level"))
+    add("g_prevention", gate_node("prevention"))
+    add("p2x_validate", validate_node)
+    add("p2x_blueprints", work_node("blueprints"))
+    add("p2x_validate_bp", validate_bp_node)
+    add("g_validate_cap", gate_node("validate_cap"))
+    add("g2x", gate_node("projects"))
     graph.add_conditional_edges(
         START,
         route_phase,
