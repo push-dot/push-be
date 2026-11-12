@@ -63,6 +63,7 @@ const botDetail = {
     obj({
       posting: { ...nullable(obj({ id: uuid, title: str, deadline: nullable(date), closed: bool })), description: "null for the Push Bot and when the posting is gone." },
       fit: { ...nullable(obj({ score: num })), description: "The newest fit score computed for this posting, 0 to 10. null until one exists." },
+      materialCount: { ...int, description: "The bot's materials: made by it or attached in its chat. GET /materials?bot= lists them." },
     }),
   ],
 };
