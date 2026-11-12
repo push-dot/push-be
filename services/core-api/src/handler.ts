@@ -31,6 +31,7 @@ import { dispatchPostings } from "./routes/postings.ts";
 import { dispatchPosts } from "./routes/posts.ts";
 import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
+import { dispatchBotChat } from "./routes/bot-chat.ts";
 import { dispatchBots } from "./routes/bots.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
@@ -224,6 +225,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (postings) return postings;
   const search = await dispatchSearch(ctx, path);
   if (search) return search;
+  const botChat = await dispatchBotChat(ctx, path);
+  if (botChat) return botChat;
   const bots = await dispatchBots(ctx, path);
   if (bots) return bots;
   const profiles = await dispatchProfiles(ctx, path);

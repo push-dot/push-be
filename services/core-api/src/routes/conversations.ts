@@ -1,5 +1,5 @@
 import { base64ToBytes } from "../crypto.ts";
-import { enqueueResumeJob } from "../ai-jobs.ts";
+import { QUEUED_STATUS, enqueueResumeJob } from "../ai-jobs.ts";
 import { scheduleChatJob } from "../conversations/schedule-chat-job.ts";
 import { one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
@@ -21,7 +21,7 @@ const PLAN_EFFORT: Record<string, string> = {
   "EMPLOYER:ULTRA": "MAX",
 };
 
-const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => {
+export const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => {
   const tier = plan == null ? "" : String(plan).trim().toUpperCase();
   if (audience === "EMPLOYER") return PLAN_EFFORT[`EMPLOYER:${tier}`] ?? "MEDIUM";
   return PLAN_EFFORT[`PERSONAL:${tier || "FREE"}`] ?? "LOW";
@@ -33,12 +33,12 @@ const INTENTS = new Set([
   "find_postings", "deadline_postings", "applications", "calendar",
   "hub_profile", "offer_reply", "coffee_chat", "career_post",
 ]);
-const PERSONAL_INTENTS = new Set([
+export const PERSONAL_INTENTS = new Set([
   "match_posting", "fit", "gaps", "experience", "boost",
   "find_postings", "deadline_postings", "applications", "calendar",
   "hub_profile", "offer_reply", "coffee_chat", "career_post",
 ]);
-const CANONICAL_ACCESS: Record<string, string> = {
+export const CANONICAL_ACCESS: Record<string, string> = {
   ALWAYS_ASK: "ALWAYS_ASK",
   AUTO: "AUTO",
   BYPASS: "BYPASS",
@@ -51,6 +51,7 @@ const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', u
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE", "EMPLOYER_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
 const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
+export const SAVED_ACCESS_MODE = "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1";
 const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
   + " WHERE e.user_id = $1 AND e.archived = false"
   + ` AND e.id IN (${EVIDENCE_REFS} AND m.conversation_id = $2)`
@@ -79,7 +80,7 @@ async function readObject(request: Request): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
-function forbidExtra(body: Record<string, unknown>, allowed: string[]): void {
+export function forbidExtra(body: Record<string, unknown>, allowed: string[]): void {
   for (const key of Object.keys(body)) {
     if (!allowed.includes(key)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
@@ -265,7 +266,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string, archived = tr
   return data(200, convDto(updated), ctx.rid);
 }
 
-function aiDto(raw: unknown): Record<string, unknown> | null {
+export function aiDto(raw: unknown): Record<string, unknown> | null {
   if (raw == null) return null;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -290,7 +291,7 @@ function aiDto(raw: unknown): Record<string, unknown> | null {
   };
 }
 
-async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
+export async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
   if (!ai) return;
   const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
   const [user, spent] = await Promise.all([
@@ -315,11 +316,13 @@ async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<
 
 export { scheduleChatJob };
 
-const enqueueChatMessage = async (
+/** `attachments` is what the USER row stores. Core owns that column: the AI service fills in the rest of the row and leaves it. */
+export const enqueueChatMessage = async (
   ctx: Ctx,
   conversationId: string,
   payload: Record<string, unknown>,
   text: string,
+  attachments: Record<string, unknown>[] = [],
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
@@ -347,9 +350,9 @@ const enqueueChatMessage = async (
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
     "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
-    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
-    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT $3, 'status', $6::jsonb FROM msg RETURNING job_id) SELECT conv.id FROM conv",
-    [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify({ text: "대기 중" })]);
+    + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, $6::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
+    + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT j.id, 'status', " + QUEUED_STATUS + " FROM ai_jobs j WHERE j.id = $3 AND EXISTS (SELECT 1 FROM msg) RETURNING job_id) SELECT conv.id FROM conv",
+    [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify(attachments)]);
   if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const kick = withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
   if (ctx.deps.waitUntil) ctx.deps.waitUntil(kick);
@@ -409,9 +412,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
   const contextDocumentId = context.documentId == null ? null : String(context.documentId);
   const [saved, owned, contextDocument] = await Promise.all([
-    access ? null : one(ctx.deps.query,
-      "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1",
-      [ctx.user.id]),
+    access ? null : one(ctx.deps.query, SAVED_ACCESS_MODE, [ctx.user.id]),
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
@@ -563,7 +564,7 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   }
 };
 
-const APPROVAL_PATH = /^\/api\/v1\/conversations\/[^/]+\/approvals\/([^/]+)$/;
+const APPROVAL_PATH = /^\/api\/v1\/(?:conversations|bots)\/[^/]+\/approvals\/([^/]+)$/;
 
 export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
   const approval = path.match(APPROVAL_PATH);
