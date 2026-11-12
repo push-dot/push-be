@@ -761,14 +761,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List bots for the signed-in user
-         * @description Ensures the default Push bot exists. Push bot is listed first. Includes last message preview, unread flag, and aggregate status when cheap.
+         * List the caller's bots, or find the bot of a posting's company
+         * @description Without postingId: every bot, the Push Bot first and then by lastActivityAt, newest first. Not paged. limit says how many company bots the plan allows and how many exist. Makes the Push Bot when it is missing. With postingId: zero or one bot, the caller's company bot for that posting's company, compared as POST /bots compares it, and no limit. An unknown or draft posting gives an empty list.
          */
         get: operations["getBots"];
         put?: never;
         /**
          * Open the company bot of a posting, creating it when the caller has none for that company
-         * @description One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist or is a draft.
+         * @description One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.
          */
         post: operations["postBots"];
         delete?: never;
@@ -786,8 +786,31 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve a job posting URL before creating a bot */
+        /**
+         * Resolve a job posting URL before creating a bot
+         * @description Resolves only a posting Push already has, by the id in the url or by the posting's source url. No page is fetched. A draft posting and a posting with a blank company are not_a_posting, as POST /bots answers 404 for them.
+         */
         post: operations["postBotsLinkPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search the caller's bots and the messages of their chats
+         * @description bots holds every bot whose display name, company name or posting title contains q, in list order. messages holds the messages of the caller's bot chats whose text contains q, newest first, and page pages them. Matching ignores letter case. % and _ in q are plain characters. 400 when q is missing, blank, or longer than 200 characters.
+         */
+        get: operations["getBotsSearch"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4040,9 +4063,47 @@ export interface components {
             };
         };
         Bot: {
+            /** @description null when nothing runs and no card is open. */
+            activity: ({
+                /** @description The caller's own chat runs that started before this one and are not finished. */
+                ahead: number;
+                /** @constant */
+                phase: "queued";
+                /** Format: date-time */
+                since: string;
+            } | {
+                /** @description The newest working sentence of this run. */
+                label: string | null;
+                /** @constant */
+                phase: "thinking";
+                /** Format: date-time */
+                since: string;
+            } | {
+                label: string;
+                /** @constant */
+                phase: "working";
+                /** Format: date-time */
+                since: string;
+            } | {
+                /** Format: uuid */
+                cardId: string;
+                cardTitle: string;
+                expiresAt: string | null;
+                /** @enum {string} */
+                for: "answer" | "confirm";
+                /** @constant */
+                phase: "waiting";
+                /** Format: date-time */
+                since: string;
+            }) | null;
+            /** @deprecated */
             avatarKey: string | null;
             /** @description null exactly when kind is push. */
-            color: ("teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray") | null;
+            color: components["schemas"]["BotColor"] | null;
+            /**
+             * @deprecated
+             * @description Always null.
+             */
             companyId: string | null;
             companyName: string;
             /** Format: date-time */
@@ -4052,20 +4113,114 @@ export interface components {
             id: string;
             /** @enum {string} */
             kind: "push" | "company";
+            /**
+             * Format: date-time
+             * @description The newest of: the bot was made, its newest message, its open card. The list is ordered by it.
+             */
+            lastActivityAt: string;
+            lastMessage: {
+                /** Format: date-time */
+                at: string;
+                fromBot: boolean;
+                preview: string;
+            } | null;
+            /**
+             * @deprecated
+             * @description lastMessage.preview, or an empty string.
+             */
             lastMessagePreview: string;
+            /** @deprecated */
             mascotKey: string | null;
             notificationsMuted: boolean;
             postingId: string | null;
+            /** @deprecated */
             postingUrl: string | null;
             revision: number;
-            /** @enum {string} */
+            /**
+             * @deprecated
+             * @description NEEDS_APPROVAL for a waiting activity, RUNNING for any other activity, else DONE.
+             * @enum {string}
+             */
             status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
+            /** @description The bot wrote a message or asked a card after the caller last read it. */
             unread: boolean;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @deprecated
+             */
             updatedAt: string;
         };
+        /** @description What the bot's thread is doing. since is the run's start for queued, thinking and working, and the card's asking time for waiting. */
+        BotActivity: {
+            /** @description The caller's own chat runs that started before this one and are not finished. */
+            ahead: number;
+            /** @constant */
+            phase: "queued";
+            /** Format: date-time */
+            since: string;
+        } | {
+            /** @description The newest working sentence of this run. */
+            label: string | null;
+            /** @constant */
+            phase: "thinking";
+            /** Format: date-time */
+            since: string;
+        } | {
+            label: string;
+            /** @constant */
+            phase: "working";
+            /** Format: date-time */
+            since: string;
+        } | {
+            /** Format: uuid */
+            cardId: string;
+            cardTitle: string;
+            expiresAt: string | null;
+            /** @enum {string} */
+            for: "answer" | "confirm";
+            /** @constant */
+            phase: "waiting";
+            /** Format: date-time */
+            since: string;
+        };
+        /** @enum {string} */
+        BotColor: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+        BotDetail: components["schemas"]["Bot"] & {
+            /** @description The newest fit score computed for this posting, 0 to 10. null until one exists. */
+            fit: {
+                score: number;
+            } | null;
+            /** @description null for the Push Bot and when the posting is gone. */
+            posting: {
+                closed: boolean;
+                deadline: string | null;
+                /** Format: uuid */
+                id: string;
+                title: string;
+            } | null;
+        };
+        BotLimit: {
+            /** @description null is unlimited. */
+            max: number | null;
+            /** @enum {string} */
+            plan: "FREE" | "PRO" | "ULTRA";
+            table: {
+                FREE: number;
+                PRO: number;
+                /** @description null is unlimited. */
+                ULTRA: number | null;
+            };
+            /** @description The caller's company bots. The Push Bot is not counted. */
+            used: number;
+        };
         BotLinkPreview: {
+            careerMax: number | null;
+            careerMin: number;
             company: string;
+            deadline: string | null;
+            /** @description The host of the url that was sent. */
+            host: string;
+            location: string | null;
             /** Format: uuid */
             postingId: string;
             /** @constant */
@@ -4074,6 +4229,37 @@ export interface components {
         } | {
             /** @constant */
             status: "not_a_posting";
+        };
+        BotList: {
+            data: components["schemas"]["Bot"][];
+            limit?: components["schemas"]["BotLimit"];
+        };
+        BotRef: {
+            color: components["schemas"]["BotColor"] | null;
+            displayName: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "push" | "company";
+        };
+        BotSearch: {
+            botTotal: number;
+            bots: (components["schemas"]["Bot"] & {
+                /** @description Company and posting title joined by a middle dot, or the display name when the bot has no posting. */
+                line: string;
+            })[];
+            messageTotal: number;
+            messages: {
+                /** Format: date-time */
+                at: string;
+                bot: components["schemas"]["BotRef"];
+                /** Format: uuid */
+                messageId: string;
+                /** @enum {string} */
+                role: "USER" | "ASSISTANT";
+                /** @description Up to 30 characters before the first match and 60 after it. Starts with an ellipsis when the text before it was cut. */
+                snippet: string;
+            }[];
         };
         CalendarEvent: {
             applicationId: string | null;
@@ -4987,8 +5173,8 @@ export interface components {
             sequence: number;
         };
         CreateBotBody: {
-            /** @enum {string} */
-            color?: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+            color?: components["schemas"]["BotColor"];
+            /** @description Outer spaces are dropped. A name of spaces only is 400. */
             displayName?: string;
             /** Format: uuid */
             postingId: string;
@@ -5662,8 +5848,8 @@ export interface components {
             status: string;
         };
         UpdateBotBody: {
-            /** @enum {string} */
-            color?: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+            color?: components["schemas"]["BotColor"];
+            /** @description Outer spaces are dropped. A name of spaces only is 400. */
             displayName?: string;
             expectedRevision: number;
             notificationsMuted?: boolean;
@@ -7087,7 +7273,10 @@ export interface operations {
     };
     getBots: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A posting id. Narrows the list to the caller's bot for that posting's company. */
+                postingId?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7100,9 +7289,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        data: components["schemas"]["Bot"][];
-                    };
+                    "application/json": components["schemas"]["BotList"];
                 };
             };
             default: components["responses"]["Error"];
@@ -7181,6 +7368,36 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getBotsSearch: {
+        parameters: {
+            query: {
+                q: string;
+                /** @description Message hits per page. A larger integer is clamped to 50. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSearch"];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getBotsById: {
         parameters: {
             query?: never;
@@ -7199,7 +7416,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["Bot"];
+                        data: components["schemas"]["BotDetail"];
                     };
                 };
             };

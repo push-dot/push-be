@@ -1,7 +1,7 @@
 import { boundTransaction, lockOwner } from "../billing/credits.ts";
 import { isLockTimeout, one, query, type Query, type Transaction } from "../db.ts";
-import { HttpError, asBool, data, fieldError, noContent, requireUuid, uuid5Url } from "../http.ts";
-import { revisionUpdate, ts } from "../page.ts";
+import { HttpError, asBool, data, fieldError, jsonResponse, noContent, requireUuid, uuid5Url } from "../http.ts";
+import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { readObject, rejectFields, textOf, httpsUrl } from "./recruiting-shared.ts";
 import { requireAgentConsent } from "./conversations.ts";
@@ -10,23 +10,24 @@ import { requireAgentConsent } from "./conversations.ts";
 export const BOT_COLORS = ["teal", "sky", "blue", "violet", "pink", "red", "coral", "amber", "green", "brown", "gray"] as const;
 type BotColor = (typeof BOT_COLORS)[number];
 
-const COMPANY_LIMIT: Record<string, number | null> = { FREE: 3, PRO: 20, ULTRA: null };
+/** Company bots a personal plan allows. null is unlimited. The Push Bot is not counted. */
+const COMPANY_LIMIT = { FREE: 3, PRO: 20, ULTRA: null } as const;
+type Plan = keyof typeof COMPANY_LIMIT;
+
 const PUSH_LABEL = "Push Bot";
 const PUSH_ADDRESS = "push";
 const DISPLAY_NAME_MAX = 120;
+const SEARCH_Q_MAX = 200;
+const SEARCH_LIMIT = { default: 20, max: 50 };
+const SNIPPET = { before: 30, after: 60 };
 const UUID_IN_PATH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 const pushBotId = (userId: string): Promise<string> => uuid5Url(`push:bot:${userId}`);
 
-const planTier = (plan: unknown): string => {
-  const tier = plan == null ? "" : String(plan).trim().toUpperCase();
-  return tier || "FREE";
-};
-
-const companyBotLimit = (plan: unknown): number | null => {
-  const tier = planTier(plan);
-  const limit = COMPANY_LIMIT[tier];
-  return limit === undefined ? COMPANY_LIMIT.FREE : limit;
+/** A plan the table does not name gets the FREE limit, and is reported as FREE. */
+const planOf = (plan: unknown): Plan => {
+  const tier = String(plan ?? "").trim().toUpperCase();
+  return tier in COMPANY_LIMIT ? tier as Plan : "FREE";
 };
 
 const canonUrl = (value: string): string => {
@@ -64,26 +65,90 @@ const colorOf = (value: unknown): BotColor => {
   return color;
 };
 
+const nameOf = (value: unknown): string => {
+  const name = textOf(value, "displayName", 1, DISPLAY_NAME_MAX).trim();
+  if (!name) throw fieldError("displayName", "must not be blank");
+  return name;
+};
+
+const likePattern = (q: string): string => `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+
+// ILIKE folds case through the database's locale, which is most of a search's time. Under the C
+// collation it folds A to Z only, and that is all a q needs unless it holds a cased letter outside ASCII.
+const foldOf = (q: string): string =>
+  ([...q].some((ch) => ch > "\x7f" && ch.toLowerCase() !== ch.toUpperCase()) ? "" : ' COLLATE "C"');
+
+export const snippetOf = (text: string, q: string): string => {
+  const found = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu").exec(text);
+  const chars = [...text];
+  const at = found ? [...text.slice(0, found.index)].length : 0;
+  const start = Math.max(0, at - SNIPPET.before);
+  const end = at + (found ? [...found[0]].length : 0) + SNIPPET.after;
+  return (start > 0 ? "…" : "") + chars.slice(start, end).join("");
+};
+
 type BotRow = Record<string, unknown>;
 
-const botDto = (row: BotRow): Record<string, unknown> => ({
-  id: String(row.id),
+const textOrNull = (value: unknown): string | null => (value == null ? null : String(value));
+
+/** Columns bot_id, kind, display_name and color of any row to the BotRef of the contract. */
+const botRef = (row: BotRow): Record<string, unknown> => ({
+  id: String(row.bot_id),
   kind: String(row.kind),
   displayName: String(row.display_name ?? ""),
-  companyId: row.company_id == null ? null : String(row.company_id),
-  companyName: String(row.company_name ?? ""),
   color: String(row.kind) === "push" ? null : String(row.color),
-  postingId: row.posting_id == null ? null : String(row.posting_id),
-  postingUrl: row.posting_url == null ? null : String(row.posting_url),
-  avatarKey: row.avatar_key == null ? null : String(row.avatar_key),
-  mascotKey: row.mascot_key == null ? null : String(row.mascot_key),
-  notificationsMuted: asBool(row.notifications_muted),
-  revision: Number(row.revision ?? 1),
-  createdAt: ts(row.created_at),
-  updatedAt: ts(row.updated_at),
-  lastMessagePreview: row.last_message_preview == null ? "" : String(row.last_message_preview),
-  unread: row.unread === true || row.unread === "t",
-  status: row.status == null ? "DONE" : String(row.status),
+});
+
+// An open card comes before a run: the run that asked it has ended, and the next one starts with the answer.
+const activityOf = (row: BotRow): Record<string, unknown> | null => {
+  if (row.card_id != null) {
+    return {
+      phase: "waiting", since: ts(row.card_at), for: String(row.card_for), cardId: String(row.card_id),
+      cardTitle: String(row.card_title ?? ""), expiresAt: ts(row.card_expires_at),
+    };
+  }
+  const since = ts(row.job_at);
+  switch (row.job_phase) {
+    case "queued": return { phase: "queued", since, ahead: Number(row.job_ahead ?? 0) };
+    case "working": return { phase: "working", since, label: String(row.job_text ?? "") };
+    case "thinking": return { phase: "thinking", since, label: textOrNull(row.job_recent_text) };
+    default: return null;
+  }
+};
+
+const botDto = (row: BotRow): Record<string, unknown> => {
+  const activity = activityOf(row);
+  const lastMessage = row.last_message_at == null ? null : {
+    preview: String(row.last_message_preview ?? ""), at: ts(row.last_message_at), fromBot: asBool(row.last_message_from_bot),
+  };
+  return {
+    ...botRef(row),
+    companyName: String(row.company_name ?? ""),
+    postingId: textOrNull(row.posting_id),
+    notificationsMuted: asBool(row.notifications_muted),
+    revision: Number(row.revision ?? 1),
+    createdAt: ts(row.created_at),
+    lastActivityAt: ts(row.last_activity_at),
+    lastMessage,
+    unread: asBool(row.unread),
+    activity,
+    // The app build from before the bot contract reads the fields below. They go with migration 0058.
+    companyId: null,
+    postingUrl: textOrNull(row.posting_url),
+    avatarKey: textOrNull(row.avatar_key),
+    mascotKey: textOrNull(row.mascot_key),
+    updatedAt: ts(row.updated_at),
+    lastMessagePreview: lastMessage?.preview ?? "",
+    status: activity == null ? "DONE" : activity.phase === "waiting" ? "NEEDS_APPROVAL" : "RUNNING",
+  };
+};
+
+const botDetailDto = (row: BotRow): Record<string, unknown> => ({
+  ...botDto(row),
+  posting: row.posting_title == null ? null : {
+    id: String(row.posting_id), title: String(row.posting_title), deadline: textOrNull(row.posting_deadline), closed: asBool(row.posting_closed),
+  },
+  fit: row.fit_score == null ? null : { score: Number(row.fit_score) },
 });
 
 const BOT_COLS = "b.id, b.kind, b.company_id, b.company_name, b.color, b.posting_id, b.posting_url, b.display_name, b.avatar_key, b.mascot_key, b.notifications_muted, b.revision, b.created_at, b.updated_at";
@@ -115,66 +180,29 @@ export const resolveBot = async (ctx: Ctx, raw: string): Promise<BotRow> => {
   return row;
 };
 
-const enrichBotsSql = (): string => {
-  return `WITH last_msg AS (
-       SELECT DISTINCT ON (c.bot_id) c.bot_id, left(m.text, 140) AS preview
-       FROM conversations c
-       JOIN messages m ON m.conversation_id = c.id
-       WHERE c.user_id = $1 AND c.bot_id IS NOT NULL AND NOT c.archived
-       ORDER BY c.bot_id, m.created_at DESC, m.id DESC
-     ),
-     bot_activity AS (
-       SELECT c.bot_id,
-         max(c.updated_at) AS latest_at,
-         bool_or(EXISTS (
-           SELECT 1 FROM approvals a
-           WHERE a.conversation_id = c.id AND a.status = 'PENDING'
-             AND (a.expires_at IS NULL OR a.expires_at > now())
-         )) AS needs_approval,
-         bool_or(EXISTS (
-           SELECT 1 FROM chat_jobs j
-           WHERE j.conversation_id = c.id AND j.status IN ('PENDING', 'RUNNING')
-         )) AS running
-       FROM conversations c
-       WHERE c.user_id = $1 AND c.bot_id IS NOT NULL AND NOT c.archived
-       GROUP BY c.bot_id
-     )
-     SELECT ${BOT_COLS},
-       COALESCE(lm.preview, '') AS last_message_preview,
-       CASE
-         WHEN ba.needs_approval THEN 'NEEDS_APPROVAL'
-         WHEN ba.running THEN 'RUNNING'
-         ELSE 'DONE'
-       END AS status,
-       (
-         ba.latest_at IS NOT NULL AND (
-           br.read_at IS NULL OR ba.latest_at > br.read_at
-         )
-       ) AS unread
-     FROM bots b
-     LEFT JOIN last_msg lm ON lm.bot_id = b.id
-     LEFT JOIN bot_activity ba ON ba.bot_id = b.id
-     LEFT JOIN bot_read_markers br ON br.user_id = b.user_id AND br.bot_id = b.id
-     WHERE b.user_id = $1 AND b.deleted_at IS NULL`;
-};
+// Every bot read is bot_state_v filtered on its own user_id. The filter then reaches the scan of bots
+// inside the view, and only the caller's bots are evaluated.
+const BOT_SELECT = "SELECT s.* FROM bot_state_v s WHERE s.user_id = $1";
+const BOT_POSTING_SELECT = `SELECT s.*, p.title AS posting_title, p.deadline::text AS posting_deadline, (p.closed_at IS NOT NULL) AS posting_closed,
+    (SELECT f.fit_score FROM posting_fit_cache f WHERE f.user_id = s.user_id AND f.posting_id = s.posting_id
+     ORDER BY f.created_at DESC LIMIT 1) AS fit_score
+  FROM bot_state_v s LEFT JOIN job_postings p ON p.id = s.posting_id WHERE s.user_id = $1`;
+const BOT_ORDER = " ORDER BY (s.kind = 'push') DESC, s.last_activity_at DESC, s.bot_id DESC";
 
 const readBot = async (ctx: Ctx, id: string): Promise<Record<string, unknown>> => {
-  const row = await one(ctx.deps.query, enrichBotsSql() + " AND b.id = $2", [ctx.user.id, id]);
+  const row = await one(ctx.deps.query, BOT_SELECT + " AND s.bot_id = $2", [ctx.user.id, id]);
   if (!row) throw notFound();
   return botDto(row);
 };
 
-const listBots = async (ctx: Ctx): Promise<Response> => {
-  await ensurePushBot(ctx);
-  const rows = await query(ctx.deps.query,
-    enrichBotsSql() + " ORDER BY CASE WHEN b.kind = 'push' THEN 0 ELSE 1 END, b.updated_at DESC, b.id DESC",
-    [ctx.user.id]);
-  const items = rows.rows.map(botDto);
-  return data(200, items, ctx.rid);
-};
+const POSTING_SELECT = "SELECT p.id, p.company, p.title, p.deadline::text AS deadline, p.career_min, p.career_max, p.location FROM job_postings p WHERE p.status <> 'DRAFT'";
 
-const inTransactionOf = (ctx: Ctx): Transaction =>
-  ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
+/** A posting a company bot can be made from: not a draft, and its company is not blank. `company` comes back trimmed. */
+const botPosting = async (q: Query, where: string, params: unknown[]): Promise<BotRow | null> => {
+  const row = await one(q, `${POSTING_SELECT} AND ${where}`, params);
+  const company = String(row?.company ?? "").trim();
+  return row && company ? { ...row, company } : null;
+};
 
 const companyBotId = async (q: Query, userId: string, company: string): Promise<string | null> => {
   const row = await one(q,
@@ -183,17 +211,37 @@ const companyBotId = async (q: Query, userId: string, company: string): Promise<
   return row ? String(row.id) : null;
 };
 
+const listBots = async (ctx: Ctx): Promise<Response> => {
+  const q = ctx.deps.query;
+  const postingId = ctx.url.searchParams.get("postingId");
+  if (postingId != null) {
+    const posting = await botPosting(q, "p.id = $1", [requireUuid(postingId, "postingId")]);
+    const id = posting && await companyBotId(q, ctx.user.id, String(posting.company));
+    const found = id ? (await query(q, BOT_SELECT + " AND s.bot_id = $2", [ctx.user.id, id])).rows : [];
+    return jsonResponse(200, { data: found.map(botDto) }, ctx.rid);
+  }
+  await ensurePushBot(ctx);
+  const rows = (await query(q, BOT_SELECT + BOT_ORDER, [ctx.user.id])).rows;
+  const plan = planOf(ctx.user.plan);
+  const limit = { plan, max: COMPANY_LIMIT[plan], used: rows.filter((row) => row.kind === "company").length, table: COMPANY_LIMIT };
+  return jsonResponse(200, { data: rows.map(botDto), limit }, ctx.rid);
+};
+
+const inTransactionOf = (ctx: Ctx): Transaction =>
+  ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
+
 const createBot = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   closedBody(body, ["postingId", "displayName", "color"]);
   const postingId = requireUuid(String(body.postingId ?? ""), "postingId");
-  const displayName = body.displayName == null ? null : textOf(body.displayName, "displayName", 1, DISPLAY_NAME_MAX);
+  const displayName = body.displayName == null ? null : nameOf(body.displayName);
   const color = body.color == null ? "teal" : colorOf(body.color);
   await requireAgentConsent(ctx);
-  const limit = companyBotLimit(ctx.user.plan);
+  const plan = planOf(ctx.user.plan);
+  const limit = COMPANY_LIMIT[plan];
   try {
     const made = await inTransactionOf(ctx)(async (q) => {
-      const posting = await one(q, "SELECT company FROM job_postings WHERE id = $1 AND status <> 'DRAFT'", [postingId]);
+      const posting = await botPosting(q, "p.id = $1", [postingId]);
       if (!posting) throw notFound();
       const company = String(posting.company);
       if (limit != null) {
@@ -205,7 +253,7 @@ const createBot = async (ctx: Ctx): Promise<Response> => {
       if (limit != null) {
         const row = await one(q, "SELECT count(*)::int AS n FROM bots WHERE user_id = $1 AND kind = 'company' AND deleted_at IS NULL", [ctx.user.id]);
         if (Number(row?.n ?? 0) >= limit) {
-          throw new HttpError(403, "BOT_LIMIT", "company bot limit reached for your plan", { limit, plan: planTier(ctx.user.plan) });
+          throw new HttpError(403, "BOT_LIMIT", "company bot limit reached for your plan", { limit, plan });
         }
       }
       const inserted = await one(q,
@@ -231,7 +279,53 @@ const createBot = async (ctx: Ctx): Promise<Response> => {
 
 const getBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
-  return data(200, await readBot(ctx, String(bot.id)), ctx.rid);
+  const row = await one(ctx.deps.query, BOT_POSTING_SELECT + " AND s.bot_id = $2", [ctx.user.id, String(bot.id)]);
+  if (!row) throw notFound();
+  return data(200, botDetailDto(row), ctx.rid);
+};
+
+// shortcut: a scan of every message of the caller's bot chats, add a pg_trgm index on messages.text when one user holds about 50,000 messages.
+const messageSearch = (fold: string): string => `WITH hits AS MATERIALIZED (
+    SELECT m.id, m.created_at, b.id AS bot_id
+    FROM bots b
+    JOIN conversations c ON c.bot_id = b.id
+    JOIN messages m ON m.conversation_id = c.id
+    WHERE b.user_id = $1 AND b.deleted_at IS NULL AND m.text${fold} ILIKE $2 ESCAPE '\\'
+  ), page AS (
+    SELECT h.id, h.bot_id FROM hits h
+    WHERE $3::timestamptz IS NULL OR (h.created_at, h.id) < ($3::timestamptz, $4::uuid)
+    ORDER BY h.created_at DESC, h.id DESC LIMIT $5
+  )
+  SELECT t.total, m.id, m.created_at, m.role, m.text, b.id AS bot_id, b.kind, b.display_name, b.color
+  FROM (SELECT count(*)::int AS total FROM hits) t
+  LEFT JOIN (page JOIN messages m ON m.id = page.id JOIN bots b ON b.id = page.bot_id) ON true
+  ORDER BY m.created_at DESC, m.id DESC`;
+
+const searchBots = async (ctx: Ctx): Promise<Response> => {
+  const q = (ctx.url.searchParams.get("q") ?? "").trim();
+  if (!q || [...q].length > SEARCH_Q_MAX) throw fieldError("q", `q must be 1-${SEARCH_Q_MAX} characters`);
+  const page = pageOf(ctx.url);
+  const limit = ctx.url.searchParams.has("limit") ? Math.min(page.limit, SEARCH_LIMIT.max) : SEARCH_LIMIT.default;
+  const pattern = likePattern(q);
+  const fold = foldOf(q);
+  const [named, said] = await Promise.all([
+    query(ctx.deps.query,
+      `${BOT_POSTING_SELECT} AND (s.display_name${fold} ILIKE $2 ESCAPE '\\' OR s.company_name${fold} ILIKE $2 ESCAPE '\\' OR p.title${fold} ILIKE $2 ESCAPE '\\')${BOT_ORDER}`,
+      [ctx.user.id, pattern]),
+    query(ctx.deps.query, messageSearch(fold), [ctx.user.id, pattern, page.cursor?.createdAt ?? null, page.cursor?.id ?? null, limit + 1]),
+  ]);
+  const bots = named.rows.map((row) => ({
+    ...botDto(row),
+    line: row.posting_title == null ? String(row.display_name ?? "") : `${row.company_name} · ${row.posting_title}`,
+  }));
+  const hits = pageResult(said.rows.filter((row) => row.id != null), limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
+  const messages = hits.items.map((row) => ({
+    bot: botRef(row), messageId: String(row.id), at: ts(row.created_at), role: String(row.role), snippet: snippetOf(String(row.text ?? ""), q),
+  }));
+  return jsonResponse(200, {
+    data: { bots, botTotal: bots.length, messages, messageTotal: Number(said.rows[0]?.total ?? 0) },
+    page: { nextCursor: hits.nextCursor, hasMore: hits.hasMore },
+  }, ctx.rid);
 };
 
 const PUSH_BOT_FIXED = ["displayName", "color"];
@@ -251,7 +345,7 @@ const patchBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   if (Number(current.revision) !== body.expectedRevision) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
-  const displayName = body.displayName == null ? String(current.display_name ?? "") : textOf(body.displayName, "displayName", 1, DISPLAY_NAME_MAX);
+  const displayName = body.displayName == null ? String(current.display_name ?? "") : nameOf(body.displayName);
   let notificationsMuted = asBool(current.notifications_muted);
   if (body.notificationsMuted != null) {
     if (typeof body.notificationsMuted !== "boolean") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
@@ -293,34 +387,23 @@ const linkPreview = async (ctx: Ctx): Promise<Response> => {
   const url = textOf(body.url, "url", 1, 2000);
   if (!httpsUrl(url)) throw fieldError("url", "must be an http(s) URL without credentials");
   const byId = postingIdFromUrl(url);
-  if (byId) {
-    const posting = await one(ctx.deps.query, "SELECT id, company, title FROM job_postings WHERE id = $1", [byId]);
-    if (posting) {
-      return data(200, {
-        status: "found",
-        company: String(posting.company ?? ""),
-        title: String(posting.title ?? ""),
-        postingId: String(posting.id),
-      }, ctx.rid);
-    }
-  }
-  const canon = canonUrl(url);
-  const row = await one(ctx.deps.query,
-    `SELECT id, company, title FROM job_postings
-     WHERE source_url IS NOT NULL AND (
-       source_url = $1 OR source_url = $2 OR rtrim(source_url, '/') = rtrim($1, '/')
-     )
-     ORDER BY created_at DESC LIMIT 1`,
-    [url, canon]);
-  if (row) {
-    return data(200, {
-      status: "found",
-      company: String(row.company ?? ""),
-      title: String(row.title ?? ""),
-      postingId: String(row.id),
-    }, ctx.rid);
-  }
-  return data(200, { status: "not_a_posting" }, ctx.rid);
+  const posting = (byId && await botPosting(ctx.deps.query, "p.id = $1", [byId]))
+    ?? await botPosting(ctx.deps.query,
+      `p.source_url IS NOT NULL AND (p.source_url = $1 OR p.source_url = $2 OR rtrim(p.source_url, '/') = rtrim($1, '/'))
+       ORDER BY p.created_at DESC LIMIT 1`,
+      [url, canonUrl(url)]);
+  if (!posting) return data(200, { status: "not_a_posting" }, ctx.rid);
+  return data(200, {
+    status: "found",
+    postingId: String(posting.id),
+    company: String(posting.company),
+    title: String(posting.title ?? ""),
+    deadline: textOrNull(posting.deadline),
+    careerMin: Number(posting.career_min ?? 0),
+    careerMax: posting.career_max == null ? null : Number(posting.career_max),
+    location: String(posting.location ?? "").trim() || null,
+    host: new URL(url).hostname,
+  }, ctx.rid);
 };
 
 const markBotRead = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -338,6 +421,7 @@ export const dispatchBots = async (ctx: Ctx, path: string): Promise<Response | n
   if (method === "GET" && path === "/api/v1/bots") return listBots(ctx);
   if (method === "POST" && path === "/api/v1/bots") return createBot(ctx);
   if (method === "POST" && path === "/api/v1/bots/link-preview") return linkPreview(ctx);
+  if (method === "GET" && path === "/api/v1/bots/search") return searchBots(ctx);
   const oneBot = path.match(/^\/api\/v1\/bots\/([^/]+)$/);
   if (method === "GET" && oneBot) return getBot(ctx, oneBot[1]);
   if (method === "PATCH" && oneBot) return patchBot(ctx, oneBot[1]);
