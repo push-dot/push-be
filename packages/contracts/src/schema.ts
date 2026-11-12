@@ -6544,10 +6544,10 @@ export interface components {
             target: {
                 id?: string;
                 /**
-                 * @description activity: id is an application id
+                 * @description activity: id is an application id. bot: id is a bot id
                  * @enum {string}
                  */
-                kind?: "offer" | "post" | "posting" | "calendar" | "activity" | "conversation";
+                kind?: "offer" | "post" | "posting" | "calendar" | "activity" | "conversation" | "bot";
             } & {
                 [key: string]: unknown;
             };

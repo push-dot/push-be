@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from app.domain.chat_settings import (
     apply_chat_settings,
-    insert_ai_done,
     load_chat_settings,
     resolve_chat_settings,
 )
@@ -104,28 +103,13 @@ async def test_load_returns_defaults_when_query_fails_or_row_is_missing():
     }
 
 
-async def test_insert_ai_done_records_sql_title_and_target():
-    query = _Query()
-    user_id = uuid4()
-    conversation_id = uuid4()
-    await insert_ai_done(query, user_id, conversation_id)
-    sql, args = query.calls[0]
-    assert "INSERT INTO notifications" in sql
-    assert "AI_DONE" in sql
-    assert "AI 작업이 끝났어요" in args
-    assert "" in args
-    blob = next(arg for arg in args if isinstance(arg, str) and "conversation" in arg)
-    assert blob == (
-        '{"kind":"conversation","id":"' + str(conversation_id) + '"}'
-    )
-    assert user_id in args
+class _Core:
+    def __init__(self):
+        self.calls = []
 
-
-async def test_insert_ai_done_swallows_execute_error(caplog):
-    query = _Query(error=RuntimeError("notifications missing"))
-    with caplog.at_level("ERROR"):
-        await insert_ai_done(query, uuid4(), uuid4())
-    assert any(record.exc_info for record in caplog.records)
+    async def call(self, method, path, *, user_id, json=None, **kwargs):
+        self.calls.append((method, path, user_id, json))
+        return {"id": None}
 
 
 class _Jobs:
@@ -154,50 +138,64 @@ class _DB:
 
 
 class _Graph:
-    def __init__(self, error=None):
+    def __init__(self, error=None, chunks=None):
         self.error = error
+        self.chunks = chunks
 
     async def astream(self, state, config=None, stream_mode=None):
         if self.error is not None:
             raise self.error
-        yield ("values", {"operation": {"status": "SUCCEEDED"}})
+        chunks = self.chunks
+        if chunks is None:
+            chunks = [("values", {"operation": {"status": "SUCCEEDED"}})]
+        for chunk in chunks:
+            yield chunk
 
 
-def _job_svc(error=None):
+def _job_svc(error=None, chunks=None):
     from app.domain.services.conversation import ConversationService
 
     svc = ConversationService.__new__(ConversationService)
     svc.db = _DB()
     svc.jobs = _Jobs()
-    svc._harness_runtime = _Graph(error)
+    svc._harness_runtime = _Graph(error, chunks)
     svc._sem = asyncio.Semaphore(1)
+    svc.core = _Core()
     return svc
 
 
-async def test_run_job_inserts_ai_done_only_after_done():
+def _chat_job(user_id, conversation_id):
+    return {
+        "id": uuid4(),
+        "type": "chat",
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "attempt": 1,
+        "payload": {"text": "hi"},
+    }
+
+
+async def test_run_job_notifies_only_after_an_operation():
     user_id = uuid4()
     conversation_id = uuid4()
+    job = _chat_job(user_id, conversation_id)
     svc = _job_svc()
-    await svc._run_job({
-        "id": uuid4(),
-        "user_id": user_id,
-        "conversation_id": conversation_id,
-        "attempt": 1,
-        "payload": {"text": "hi"},
-    })
+    await svc._run_job(job)
     assert svc.jobs.finished == ["DONE"]
-    sql, args = svc.db.query.calls[0]
-    assert "AI_DONE" in sql
-    assert "AI 작업이 끝났어요" in args
-    assert '{"kind":"conversation","id":"' + str(conversation_id) + '"}' in args
+    assert svc.core.calls == [(
+        "POST",
+        "/api/v1/internal/notifications/ai-done",
+        str(user_id),
+        {"userId": str(user_id), "conversationId": str(conversation_id), "jobId": str(job["id"])},
+    )]
+    assert svc.db.query.calls == []
+
+    card = _job_svc(chunks=[("values", {})])
+    await card._run_job(_chat_job(user_id, conversation_id))
+    assert card.jobs.finished == ["DONE"]
+    assert card.core.calls == []
 
     failed = _job_svc(RuntimeError("model down"))
-    await failed._run_job({
-        "id": uuid4(),
-        "user_id": user_id,
-        "conversation_id": conversation_id,
-        "attempt": 1,
-        "payload": {"text": "hi"},
-    })
+    await failed._run_job(_chat_job(user_id, conversation_id))
     assert failed.jobs.finished == ["REQUEUE"]
-    assert failed.db.query.calls == []
+    assert failed.core.calls == []

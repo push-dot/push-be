@@ -38,7 +38,8 @@ class _DB:
 
 
 def _ai_done(svc):
-    return [a for s, a in svc.db.conn.sql if "AI_DONE" in s]
+    core = getattr(svc, "core", None)
+    return [] if core is None else core.calls
 
 
 class _Convs(StubConversationStore):
@@ -62,13 +63,22 @@ def _svc(jobs) -> ConversationService:
 # ---- small helpers --------------------------------------------------------
 
 async def test_notify_failure_never_fails_the_job():
-    class DB:
-        def q(self):
-            raise RuntimeError("pool closed")
+    class Boom:
+        def __init__(self):
+            self.called = False
+
+        async def call(self, method, path, *, user_id, json=None, **kwargs):
+            self.called = True
+            raise RuntimeError("core down")
 
     svc = _svc(None)
-    svc.db = DB()
-    await svc._notify_ai_done(uuid4(), uuid4())
+    boom = Boom()
+    svc.core = boom
+    await svc._notify_ai_done(
+        {"id": uuid4(), "type": "chat", "user_id": uuid4(), "conversation_id": uuid4()},
+        {"operationId": "op"},
+    )
+    assert boom.called
 
 
 async def test_wait_times_out_without_a_wake():
@@ -223,9 +233,19 @@ def _job(jobs, attempt=1, **payload):
             "payload": {"text": "hi", **payload}}
 
 
+class _RecordingCore:
+    def __init__(self):
+        self.calls = []
+
+    async def call(self, method, path, *, user_id, json=None, **kwargs):
+        self.calls.append(json)
+        return {}
+
+
 def _run_svc(jobs, graph):
     svc = _svc(jobs)
     svc._harness_runtime = graph
+    svc.core = _RecordingCore()
     return svc
 
 

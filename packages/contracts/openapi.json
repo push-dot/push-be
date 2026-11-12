@@ -9203,14 +9203,15 @@
                 "type": "string"
               },
               "kind": {
-                "description": "activity: id is an application id",
+                "description": "activity: id is an application id. bot: id is a bot id",
                 "enum": [
                   "offer",
                   "post",
                   "posting",
                   "calendar",
                   "activity",
-                  "conversation"
+                  "conversation",
+                  "bot"
                 ],
                 "type": "string"
               }
