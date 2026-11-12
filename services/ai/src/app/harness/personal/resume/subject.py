@@ -38,7 +38,10 @@ def turn_posting(payload: dict[str, Any], bot: dict[str, Any] | None) -> str | N
 
 
 def _url_key(url: str) -> str:
-    parts = urlsplit(url.strip())
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url.strip()
     return urlunsplit(
         (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, "")
     )
@@ -46,7 +49,11 @@ def _url_key(url: str) -> str:
 
 def _own_material(url: str) -> bool:
     # A GitHub link is the user's own work, never the posting a flow is about.
-    return "github.com" in url.lower()
+    try:
+        host = (urlsplit(url.strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "github.com" or host.endswith(".github.com")
 
 
 def saved_for_turn(saved: dict[str, Any], posting: str | None, links: list[str]) -> dict[str, Any]:

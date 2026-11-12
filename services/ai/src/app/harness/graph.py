@@ -44,7 +44,7 @@ class HarnessState(TypedDict, total=False):
     job_id: str
     access_mode: str
     tool_calls_used: int
-    bot: dict | None
+    bot: dict[str, Any] | None
 
 
 class PersonalState(HarnessState, total=False):
@@ -323,7 +323,7 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
-def bot_prompt(prompt: str, bot: dict | None) -> str:
+def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
     """The system prompt of a thread. A bot thread exists only in the app, where the model is a
     봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
     also says 플랜 where the web says 요금제."""
