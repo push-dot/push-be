@@ -324,9 +324,9 @@ test("a document is archived and restored alike by the documents routes and the 
   if (!db) return t.skip(SKIP);
   const user = await db.person("PRO");
   const routes = {
-    documents: { archive: (id: string) => db!.call(user, "POST", `/documents/${id}/archive`, { expectedRevision: 1 }),
+    documents: { archived: 200, archive: (id: string) => db!.call(user, "POST", `/documents/${id}/archive`, { expectedRevision: 1 }),
       restore: (id: string) => db!.call(user, "POST", `/documents/${id}/restore`, { expectedRevision: 1 }) },
-    materials: { archive: (id: string) => db!.call(user, "DELETE", `/materials/document/${id}`),
+    materials: { archived: 204, archive: (id: string) => db!.call(user, "DELETE", `/materials/document/${id}`),
       restore: (id: string) => db!.call(user, "POST", `/materials/document/${id}/restore`) },
   };
   const stateOf = async (id: string) => {
@@ -336,7 +336,7 @@ test("a document is archived and restored alike by the documents routes and the 
 
   for (const [name, route] of Object.entries(routes)) {
     const live = await doc(user, "보관할 이력서", 1);
-    assert.ok([200, 204].includes((await route.archive(live)).status), name);
+    assert.equal((await route.archive(live)).status, route.archived, name);
     assert.deepEqual(await stateOf(live), ["ARCHIVED", 2], `${name} archives once`);
 
     const finalized = await archivedDoc(user, true);
