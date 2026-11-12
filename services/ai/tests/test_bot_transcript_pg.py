@@ -3,7 +3,6 @@
 CI test-db sets BILLING_PG_URL; elsewhere these tests skip.
 """
 
-import json
 import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -75,13 +74,12 @@ async def bot_with_thread(db, user: UUID, kind: str = "company") -> tuple[UUID, 
     return bot, thread
 
 
-async def turn(db, user, thread, status, at, rows, text=None, attachments=(), resume=None) -> UUID:
+async def turn(db, user, thread, status, at, rows, text=None, attachments=()) -> UUID:
     job = uuid4()
-    payload = {"text": text or "", **({"resume": resume} if resume else {})}
     await db.q().execute(
         "INSERT INTO ai_jobs (id, type, queue, user_id, status, max_attempts, payload, conversation_id, "
         "created_at, updated_at) VALUES ($1, 'chat', 'q:chat', $2, $3, 3, $4::jsonb, $5, $6, $6)",
-        job, user, status, payload, thread, at)
+        job, user, status, {"text": text or ""}, thread, at)
     for kind, body in rows:
         await db.q().execute(
             "INSERT INTO chat_events (job_id, type, payload, created_at) VALUES ($1, $2, $3::jsonb, $4)",
