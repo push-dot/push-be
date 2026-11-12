@@ -306,6 +306,21 @@ test("a file that career evidence cites is not deleted", async (t) => {
   assert.equal((await db.call(user, "GET", `/materials/file/${cited}`)).status, 200);
 });
 
+test("a posting bookmarked again after a delete can be deleted and restored again", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  const posting = await bookmark(user, "누리클라우드", 1);
+  assert.equal((await db.call(user, "DELETE", `/materials/posting/${posting}`)).status, 204);
+  assert.equal((await db.call(user, "POST", `/postings/${posting}/bookmark`)).status, 204);
+  const again = await db.call(user, "GET", `/materials/posting/${posting}`);
+
+  assert.equal((await db.call(user, "DELETE", `/materials/posting/${posting}`)).status, 204);
+  const back = await db.call(user, "POST", `/materials/posting/${posting}/restore`);
+
+  assert.equal(back.status, 200);
+  assert.equal(back.data.bookmarkedAt, again.data.bookmarkedAt, "the newer bookmark comes back");
+});
+
 test("a bookmark restored after its posting is gone answers 404", async (t) => {
   if (!db) return t.skip(SKIP);
   const user = await db.person("PRO");

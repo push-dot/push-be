@@ -58,6 +58,7 @@ const hostOf = (url: string): string => {
 const changed = async (ctx: Ctx, sql: string, params: unknown[]): Promise<boolean> =>
   (await query(ctx.deps.query, sql, params)).rows.length > 0;
 
+// Markdown files are the resume flow's working notes, kept off every list the user sees.
 const FILE_LIVE = "x.user_id = $1 AND lower(x.file_name) NOT LIKE '%.md' AND lower(x.mime_type) <> 'text/markdown'";
 
 // Evidence that cites the file keeps it, as DELETE /sources does. The profile's pin goes with the
@@ -69,7 +70,6 @@ const BIN_FILE = `WITH src AS (SELECT x.* FROM sources x WHERE ${FILE_LIVE} AND 
     SELECT src.user_id, 'file', src.id, $3::timestamptz, to_jsonb(src) || jsonb_build_object('resume_pinned',
       EXISTS (SELECT 1 FROM profiles p WHERE p.user_id = src.user_id AND p.resume_source_id = src.id))
     FROM src, used WHERE used.n = 0
-    ON CONFLICT (user_id, kind, id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at, snapshot = EXCLUDED.snapshot
     RETURNING id),
   gone AS (DELETE FROM sources s USING binned WHERE s.id = binned.id RETURNING s.id)
   SELECT (SELECT count(*) FROM src)::int AS found, (SELECT n FROM used) AS used, (SELECT count(*) FROM gone)::int AS deleted`;
@@ -85,6 +85,7 @@ const UNBIN_FILE = `WITH back AS (DELETE FROM material_bin WHERE user_id = $1 AN
 
 const POSTING_LIVE = "k.user_id = $1 AND x.status <> 'DRAFT'";
 
+// A posting bookmarked again after a delete and deleted once more replaces its earlier snapshot.
 const BIN_BOOKMARK = `WITH gone AS (
     DELETE FROM bookmarks k USING job_postings x WHERE x.id = k.posting_id AND ${POSTING_LIVE} AND k.posting_id = $2 RETURNING k.*)
   INSERT INTO material_bin (user_id, kind, id, deleted_at, snapshot)
@@ -101,7 +102,6 @@ const KINDS: Record<Kind, KindRule> = {
   file: {
     section: "doc",
     from: "sources x",
-    // Markdown files are the resume flow's working notes, kept off every list the user sees.
     live: FILE_LIVE,
     at: "x.created_at",
     search: ["x.file_name"],
