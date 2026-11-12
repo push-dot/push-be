@@ -195,24 +195,29 @@ const KINDS: Record<Kind, KindRule> = {
 
 const kindsOf = (section: Section): Kind[] => KIND_NAMES.filter((kind) => KINDS[kind].section === section);
 
-// usedBy asks the same containment, so the one GIN index on messages.attachments serves both.
-const attachedTo = (kind: Kind): string => `EXISTS (SELECT 1 FROM conversations c JOIN messages m ON m.conversation_id = c.id
-    WHERE c.bot_id = $3 AND m.attachments @> jsonb_build_array(jsonb_build_object('kind', '${kind}', 'id', x.id::text)))`;
+// What bot $3's chat attached, read once per statement. A probe per material walked the whole thread
+// for each one: 0.4 s for 300 materials and a 2,000-message thread.
+const ATTACHED = `WITH attached AS MATERIALIZED (
+    SELECT a->>'kind' AS kind, a->>'id' AS id
+    FROM conversations c JOIN messages m ON m.conversation_id = c.id
+    CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(m.attachments) = 'array' THEN m.attachments END) a
+    WHERE c.bot_id = $3 AND m.attachments <> '[]'::jsonb)`;
 
 /** The caller's live materials of a kind that match the search and belong to the bot: made by it or attached in its chat. */
 const matching = (kind: Kind): string => {
   const rule = KINDS[kind];
   const found = rule.search.map((col) => `strpos(lower(${col}), lower($2)) > 0`).join(" OR ");
-  const ofBot = rule.maker ? `${rule.maker} = $3 OR ${attachedTo(kind)}` : attachedTo(kind);
+  const attached = `x.id::text IN (SELECT id FROM attached WHERE kind = '${kind}')`;
+  const ofBot = rule.maker ? `${rule.maker} = $3 OR ${attached}` : attached;
   return `${rule.live} AND ($2::text IS NULL OR ${found}) AND ($3::uuid IS NULL OR ${ofBot})`;
 };
 
-const COUNTS = `SELECT ${SECTION_NAMES.map((section) =>
+const COUNTS = `${ATTACHED} SELECT ${SECTION_NAMES.map((section) =>
   `(${kindsOf(section).map((kind) => `(SELECT count(*) FROM ${KINDS[kind].from} WHERE ${matching(kind)})`).join(" + ")})::int AS ${section}`).join(", ")}`;
 
 // $4 and $5 are the cursor, $6 the row count.
 const PAGE: Record<Section, string> = Object.fromEntries(SECTION_NAMES.map((section) => [section,
-  `SELECT kind, id, at FROM (${kindsOf(section).map((kind) =>
+  `${ATTACHED} SELECT kind, id, at FROM (${kindsOf(section).map((kind) =>
     `SELECT '${kind}' AS kind, x.id, ${KINDS[kind].at} AS at FROM ${KINDS[kind].from} WHERE ${matching(kind)}`).join(" UNION ALL ")}) m
    WHERE $4::timestamptz IS NULL OR (m.at, m.id) < ($4::timestamptz, $5::uuid)
    ORDER BY m.at DESC, m.id DESC LIMIT $6`])) as Record<Section, string>;
@@ -223,12 +228,16 @@ const ROWS: Record<Kind, string> = Object.fromEntries(KIND_NAMES.map((kind) => {
   return [kind, `SELECT x.id, ${at} AS at, ${cols}${madeBy} WHERE ${live} AND x.id = ANY($2::uuid[])`];
 })) as Record<Kind, string>;
 
-const USED_BY = `SELECT b.id AS bot_id, b.kind, b.display_name, b.color
-  FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN bots b ON b.id = c.bot_id
-  WHERE m.user_id = $1 AND m.attachments @> jsonb_build_array(jsonb_build_object('kind', $2::text, 'id', $3::text))
-    AND b.user_id = $1 AND b.deleted_at IS NULL
+// The containment goes first, through the GIN index. Left to the planner, it walked every thread of the
+// caller instead: 19 ms against 0.4 ms for 31 bots of 2,000 messages.
+const USED_BY = `WITH hits AS MATERIALIZED (
+    SELECT m.conversation_id, m.created_at FROM messages m
+    WHERE m.attachments @> jsonb_build_array(jsonb_build_object('kind', $2::text, 'id', $3::text)) AND m.user_id = $1)
+  SELECT b.id AS bot_id, b.kind, b.display_name, b.color
+  FROM hits h JOIN conversations c ON c.id = h.conversation_id JOIN bots b ON b.id = c.bot_id
+  WHERE b.user_id = $1 AND b.deleted_at IS NULL
   GROUP BY b.id, b.kind, b.display_name, b.color
-  ORDER BY max(m.created_at) DESC, b.id`;
+  ORDER BY max(h.created_at) DESC, b.id`;
 
 /** The caller's live materials of one kind, as DTOs in the order of `ids`. One that is gone is left out. */
 const materialsOf = async (ctx: Ctx, kind: Kind, ids: string[]): Promise<Row[]> => {

@@ -5,9 +5,9 @@
 -- was false for them. A deleted one now waits in material_bin as its own row, and the retention
 -- purge erases it after the period of an archived document (services/ai account_purge.py).
 -- Additive. Apply off-peak: run_migrations wraps each file in one transaction (no CONCURRENTLY),
--- so the GIN build blocks writes to messages while it runs.
+-- so the two index builds on messages block writes to it while they run.
 -- Revert: DROP TABLE material_bin;
---         DROP INDEX messages_attachments_gin, user_links_deleted_idx;
+--         DROP INDEX messages_attachments_gin, messages_attached_idx, user_links_deleted_idx;
 --         ALTER TABLE user_links DROP COLUMN last_checked_at, DROP COLUMN last_check_ok;
 --         ALTER TABLE documents DROP COLUMN created_by_bot_id;
 --         ALTER TABLE sources DROP COLUMN created_by_bot_id;
@@ -24,6 +24,9 @@ ALTER TABLE user_links ADD COLUMN last_checked_at timestamptz, ADD COLUMN last_c
 -- Which bots used a material: messages whose attachments contain {kind, id}. The fact is the
 -- message, so there is no usage table to keep in step.
 CREATE INDEX messages_attachments_gin ON messages USING gin (attachments jsonb_path_ops);
+-- What a bot's chat attached: the thread's messages that have attachments, without its other
+-- messages. A thread is endless, and most of its messages attach nothing.
+CREATE INDEX messages_attached_idx ON messages (conversation_id) WHERE attachments <> '[]'::jsonb;
 
 -- For the purge of deleted links.
 CREATE INDEX user_links_deleted_idx ON user_links (deleted_at) WHERE deleted_at IS NOT NULL;

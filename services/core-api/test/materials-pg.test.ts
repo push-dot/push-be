@@ -176,7 +176,7 @@ test("a section tab pages files and documents together, newest first, with no sh
   const pages: string[][] = [];
   let cursor: string | null = "";
   while (cursor != null) {
-    const page = await db.call(user, "GET", `/materials?tab=doc&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
+    const page: { status: number; data: Record<string, unknown> } = await db.call(user, "GET", `/materials?tab=doc&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
     assert.equal(page.status, 200);
     const [section] = sectionsOf(page.data);
     pages.push(section.items.map((item) => item.id));
