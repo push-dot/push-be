@@ -535,11 +535,21 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const picked = selectedOptions(body, cardOptionIds(row.options));
   const optionId = picked.optionId;
-  if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
-  if (row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime()) {
+  const expired = row.status === "EXPIRED"
+    || (row.status === "PENDING" && row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime());
+  // 닫기 on an expired card answers reject. It closes the card and resumes nothing.
+  if (expired && optionId === "reject") {
+    const closed = await one(ctx.deps.query,
+      "UPDATE approvals SET status = 'REJECTED', option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $1 AND status IN ('PENDING', 'EXPIRED') RETURNING id",
+      [approvalId, optionId]);
+    if (!closed) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+    return data(200, { id: approvalId, status: "REJECTED", optionId }, ctx.rid);
+  }
+  if (expired) {
     await query(ctx.deps.query, "UPDATE approvals SET status = 'EXPIRED', updated_at = now() WHERE id = $1 AND status = 'PENDING'", [approvalId]);
     throw new HttpError(410, "APPROVAL_EXPIRED", "approval expired");
   }
+  if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
   const kind = String(row.kind ?? "");
   const status = kind === "TOOL_ACTION" && optionId === "reject" ? "REJECTED" : "APPROVED";
   const updated = await one(ctx.deps.query,

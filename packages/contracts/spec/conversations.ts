@@ -184,6 +184,7 @@ export const chatEvents: Record<string, Schema> = {
       description: "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
     },
     options: arr(option),
+    expiresAt: { ...dateTime, description: "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none." },
     resolution: resolutionField,
     seq,
   }, ["type", "id", "kind", "title", "options", "seq"]),
@@ -560,7 +561,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/conversations/{id}/approvals/{approvalId}", {
     tag: "conversations",
     summary: "Answer a chat approval or choice card",
-    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
+    description: "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED past the card's expiresAt. Past expiresAt, reject still closes the card: 200 {status REJECTED} and nothing resumes. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
     params: [id, pathParam("approvalId")],
     body: body(closed({
       optionId: { type: "string", minLength: 1 },

@@ -31,6 +31,7 @@ import { dispatchPostings } from "./routes/postings.ts";
 import { dispatchPosts } from "./routes/posts.ts";
 import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
+import { dispatchBotApprovals } from "./routes/bot-approvals.ts";
 import { dispatchBotChat } from "./routes/bot-chat.ts";
 import { dispatchBots } from "./routes/bots.ts";
 import { dispatchMaterials } from "./routes/materials.ts";
@@ -226,6 +227,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (postings) return postings;
   const search = await dispatchSearch(ctx, path);
   if (search) return search;
+  const botApprovals = await dispatchBotApprovals(ctx, path);
+  if (botApprovals) return botApprovals;
   const botChat = await dispatchBotChat(ctx, path);
   if (botChat) return botChat;
   const bots = await dispatchBots(ctx, path);
