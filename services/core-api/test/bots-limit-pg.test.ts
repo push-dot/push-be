@@ -1,6 +1,7 @@
 // One bot per company and the plan limit, on a migrated Postgres (BILLING_PG_URL): both are decided by
 // a row lock and a unique index, which the in-memory fakes of bots.test.ts cannot show.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 import { BOT_COLORS } from "../src/routes/bots.ts";
@@ -142,9 +143,13 @@ test("PATCH stores colour and mute, and keeps the Push Bot's name and colour fix
   assert.equal((await db.call(user, "GET", "/bots/push")).data.color, null);
 });
 
-test("the colours the route accepts are the colours the database accepts", async (t) => {
+test("the colours the route accepts are the colours of the database and of the contract", async (t) => {
   if (!db) return t.skip(SKIP);
   const check = await db.pg.query("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'bots_color_chk'");
   const names = [...String(check.rows[0].def).matchAll(/'([a-z]+)'/g)].map((match) => match[1]);
   assert.deepEqual(names, [...BOT_COLORS]);
+  const contract = JSON.parse(readFileSync(new URL("../../../packages/contracts/openapi.json", import.meta.url), "utf8")) as {
+    components: { schemas: { BotColor: { enum: string[] } } };
+  };
+  assert.deepEqual(contract.components.schemas.BotColor.enum, [...BOT_COLORS]);
 });

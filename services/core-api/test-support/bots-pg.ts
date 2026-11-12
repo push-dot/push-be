@@ -11,6 +11,8 @@ type Answer = {
   status: number;
   data: Record<string, unknown>;
   error: { code: string; details: Record<string, unknown> } | undefined;
+  /** The whole body, for the keys beside data: limit, page. */
+  body: Record<string, unknown>;
 };
 
 /** The bot routes on a migrated Postgres: sign-in, rate limit and idempotency are faked, every other statement is real. */
@@ -70,7 +72,7 @@ export const botsPg = async (url: string) => {
       body: body === undefined ? undefined : JSON.stringify(body),
     }), env, { query: queryAs(user), transaction: pg.transaction, now: () => new Date() });
     const json = res.status === 204 ? {} : await res.json() as { data?: Record<string, unknown>; error?: Answer["error"] };
-    return { status: res.status, data: json.data ?? {}, error: json.error };
+    return { status: res.status, data: json.data ?? {}, error: json.error, body: json };
   };
 
   const close = async (): Promise<void> => {
