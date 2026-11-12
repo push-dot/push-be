@@ -569,7 +569,7 @@ def _interrupt_gate(snap) -> str:
     return ""
 
 
-async def _blueprint(graph, config, payload, stop, answers=None):
+async def _blueprint(graph, config, payload, stop, answers=None, notices=None):
     answers = answers or {}
     gates = []
     titles = {}
@@ -580,6 +580,8 @@ async def _blueprint(graph, config, payload, stop, answers=None):
             payload, config, stream_mode=["custom", "values"]):
             if mode == "custom" and isinstance(chunk, dict):
                 events.append(chunk)
+                if notices is not None and chunk.get("type") == "notice":
+                    notices.append(chunk["text"])
         snap = await graph.aget_state(config)
         if snap.values.get("status") == "done":
             return gates, titles, choices, snap
@@ -658,11 +660,14 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
     model = _PhaseModel({"validate": {"valid": False}})
     graph = _graph(_Approvals(), model=model)
     config = _config()
+    notices: list = []
     gates, titles, choices, snap = await _blueprint(
         graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
         _on_cap,
         {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
+        notices,
     )
+    assert notices == ["방향 검증에서 문제가 생겼어요"], "only the failure that stops the flow"
     assert "validate_cap" in gates
     assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
     assert [item["label"] for item in choices["validate_cap"]["options"]] == [
@@ -688,10 +693,13 @@ async def test_failed_blueprint_validation_returns_to_blueprints_until_the_cap()
     })
     graph = _graph(_Approvals(), model=model)
     config = _config()
+    notices: list = []
     gates, titles, _choices, snap = await _blueprint(
         graph, config, _base(phase="analyze", work_mode="experience_blueprint"),
         _on_cap,
+        notices=notices,
     )
+    assert notices == ["설계안 검증에서 문제가 생겼어요"]
     assert "validate_cap" in gates
     assert "projects" not in gates
     assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"

@@ -272,6 +272,7 @@ async def test_a_failed_fit_marks_the_line_and_still_finishes_the_list(monkeypat
         bound_services.reset(token)
     failed = next(event for event in events if event.get("name") == "fit_score")
     assert failed["state"] == "err"
+    assert {"type": "notice", "text": "적합도를 계산하지 못했어요"} in events
     assert "resultLine" not in failed
     assert _kinds(events)[-2:] == ["todo:done,done,done,done", "choice"]
     assert snap.values.get("fit_from") is None

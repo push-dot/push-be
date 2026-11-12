@@ -232,7 +232,8 @@ def _run_svc(jobs, graph):
 async def test_run_job_success_streams_events_and_notifies():
     jobs = _RunJobs()
     graph = _Graph([
-        ("custom", {"status": "thinking"}),
+        ("custom", {"type": "status", "text": "생각 중", "phase": "thinking", "since": "t0"}),
+        ("custom", {"type": "status", "text": "회사 정보를 찾는 중"}),
         ("custom", {"token": "Hi"}),
         ("custom", {"type": "tool", "name": "read"}),
         ("custom", {"type": "unknown"}),
@@ -244,6 +245,7 @@ async def test_run_job_success_streams_events_and_notifies():
     await svc._run_job(j)
     assert [e["type"] for e in jobs.events] == ["status", "token", "tool",
                                                 "done"]
+    assert jobs.events[0]["payload"]["phase"] == "thinking", "a status without a phase stays out"
     assert jobs.events[-1]["payload"] == {"operation": {"status": "SUCCEEDED"}}
     assert jobs.finished == [("DONE", None)]
     assert _ai_done(svc)

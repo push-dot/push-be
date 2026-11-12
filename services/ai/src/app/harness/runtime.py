@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -22,14 +22,57 @@ from app.harness.graph import (
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
+from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
 from app.harness.router import select_harness
+from app.harness.status import THINKING, Run, current_run, wire_time
 from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
-from app.ingest.web_page import fetch_page_text, find_urls
+from app.ingest.web_page import fetch_page_text
 from app.jsonutil import to_jsonable
 
 
 _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 _TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
+_POSTING_TEXT_CAP = 6000
+_PAGES_PER_TURN = 2
+_INPUT_KEYS = ("pages", "attachments", "documentId", "postingId")
+
+
+def _column(row, key: str):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _job_uuid(job_id) -> UUID | None:
+    try:
+        return UUID(str(job_id)) if job_id else None
+    except ValueError:
+        return None
+
+
+def _json_list(raw) -> list:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+def bot_context(row) -> dict | None:
+    """The bot a thread belongs to, as the model and the flow see it. Never read from a request."""
+    kind = _column(row, "bot_kind")
+    if kind is None:
+        return None
+    posting_id = _column(row, "bot_posting_id")
+    return {
+        "kind": str(kind),
+        "name": str(_column(row, "bot_name") or ""),
+        "company": str(_column(row, "bot_company") or ""),
+        "postingId": str(posting_id) if posting_id else None,
+        "postingTitle": _column(row, "bot_posting_title"),
+    }
 
 
 def _stable_ids(job_id) -> tuple:
@@ -120,6 +163,7 @@ def _state(payload: dict, conversation: dict) -> dict:
         "job_id": str(payload.get("job_id") or ""),
         "access_mode": mode.value,
         "tool_calls_used": 0,
+        "bot": conversation.get("bot"),
     }
 
 
@@ -140,7 +184,8 @@ def _gate_answer(resume: dict) -> dict:
 
 
 async def _turn_inputs(payload: dict) -> dict:
-    urls = find_urls(payload.get("text") or "")[:2]
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    urls = turn_links(payload)[:_PAGES_PER_TURN]
     bodies = await asyncio.gather(*(fetch_page_text(url) for url in urls), return_exceptions=True)
     pages = {}
     for url, body in zip(urls, bodies):
@@ -148,7 +193,6 @@ async def _turn_inputs(payload: dict) -> dict:
             logging.getLogger(__name__).warning("page prefetch failed", exc_info=body)
         elif body:
             pages[url] = body
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     incoming = {"pages": pages, "attachments": [str(item) for item in context.get("evidenceIds") or []]}
     document_id = context.get("documentId")
     if document_id:
@@ -218,11 +262,19 @@ class HarnessRuntime:
         }
         try:
             row = await self.svc.db.q().fetchrow(
-                "SELECT company_id, resume_state, posting_id, application_id "
-                "FROM conversations WHERE id = $1",
+                "SELECT c.company_id, c.resume_state, c.posting_id, c.application_id, "
+                "b.kind AS bot_kind, b.display_name AS bot_name, b.company_name AS bot_company, "
+                "b.posting_id AS bot_posting_id, p.title AS bot_posting_title, "
+                "(SELECT j.created_at FROM ai_jobs j WHERE j.id = $2) AS job_created_at "
+                "FROM conversations c "
+                "LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL "
+                "LEFT JOIN job_postings p ON p.id = b.posting_id "
+                "WHERE c.id = $1",
                 payload.get("conversation_id"),
+                _job_uuid(payload.get("job_id")),
             )
         except Exception:
+            logging.getLogger(__name__).warning("conversation read failed", exc_info=True)
             row = None
         if not row:
             return found
@@ -236,7 +288,43 @@ class HarnessRuntime:
                     found[key] = str(row[key])
             except (KeyError, IndexError):
                 continue
+        found["bot"] = bot_context(row)
+        if _column(row, "job_created_at") is not None:
+            found["job_created_at"] = row["job_created_at"]
         return found
+
+    async def _posting_input(self, posting_id) -> dict:
+        """The posting a turn works on, read by id: the flow has its text before any tool call."""
+        try:
+            row = await self.svc.db.q().fetchrow(
+                "SELECT id, company, title, description, requirements, preferred, source_url "
+                "FROM job_postings WHERE id = $1",
+                UUID(str(posting_id)),
+            )
+        except Exception:
+            logging.getLogger(__name__).warning("posting read failed", exc_info=True)
+            row = None
+        if not row:
+            return {"postingId": str(posting_id)}
+        posting = {
+            "id": str(row["id"]),
+            "company": row["company"],
+            "title": row["title"],
+            "description": (row["description"] or "")[:_POSTING_TEXT_CAP],
+            "requirements": _json_list(row["requirements"]),
+            "preferred": _json_list(row["preferred"]),
+        }
+        if row["source_url"]:
+            posting["url"] = row["source_url"]
+        return {"postingId": posting["id"], "posting": posting}
+
+    async def _inputs(self, payload: dict, posting_id=None) -> dict:
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        incoming = await _turn_inputs(payload)
+        posting_id = posting_id or context.get("postingId")
+        if posting_id:
+            incoming.update(await self._posting_input(posting_id))
+        return incoming
 
     async def _open(self, payload):
         conversation = await self._conversation(payload)
@@ -281,14 +369,18 @@ class HarnessRuntime:
         from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
         ai = self._ai(payload, spec, plan)
         turn: dict = {}
+        started = conversation.get("job_created_at") or datetime.now(UTC)
+        run = Run(str(payload.get("job_id") or ""), wire_time(started))
         tokens = [
             (bound_services, bound_services.set(self.svc)),
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
             (bound_core, bound_core.set(self._core)),
+            (current_run, current_run.set(run)),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         ok = False
         try:
+            yield "custom", run.status("thinking", THINKING)
             async for item in self._chat_turn(
                     graph, payload, conversation, config, stream_mode, ai, turn, spec):
                 yield item
@@ -324,7 +416,7 @@ class HarnessRuntime:
             state = Command(resume=_gate_answer(resume))
         elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
-            state = Command(resume={"text": text, **await _turn_inputs(payload)})
+            state = Command(resume={"text": text, **await self._inputs(payload)})
         elif waiting is not None and waiting.get("kind") in _TEXT_GATES:
             return
         else:
@@ -346,13 +438,15 @@ class HarnessRuntime:
                 state["quick_start_done"] = False
                 if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
-                    seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, await _turn_inputs(payload))
+                    incoming = await self._inputs(payload)
+                    seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, incoming)
                     state["resume"] = seeded
                 elif quick_start_resume(payload.get("intent"), saved) is not None:
                     state["intent"] = payload.get("intent")
-                    incoming = await _turn_inputs(payload)
-                    base = dict(saved) if saved else {}
-                    if any(incoming.get(key) for key in ("pages", "attachments", "documentId")):
+                    posting = turn_posting(payload, conversation.get("bot"))
+                    incoming = await self._inputs(payload, posting)
+                    base = dict(saved_for_turn(saved, posting, turn_links(payload)))
+                    if any(incoming.get(key) for key in _INPUT_KEYS):
                         base["inputs"] = merge_inputs(base.get("inputs") or {}, incoming)
                     if base:
                         state["resume"] = base

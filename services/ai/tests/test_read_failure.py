@@ -78,6 +78,7 @@ async def test_missing_requirements_routes_to_read_failed_gate_and_skips_fit():
     assert tool[1] == "err"
     assert "로그인이 필요한 영역이에요" in tool[2]
     assert choice[1] == "read_failed"
+    assert [event["text"] for event in events if event.get("type") == "notice"] == [tool[2]]
 
 
 async def test_proceed_continues_to_analyze_gate():

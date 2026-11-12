@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+from functools import partial
 from typing import Annotated, Any, Final
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -24,6 +25,7 @@ from app.harness.approval import (
     user_supplied,
 )
 from app.harness.policy import Decision, Tier, decide
+from app.harness.status import thinking, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -49,6 +51,7 @@ class HarnessState(TypedDict, total=False):
     job_id: str
     access_mode: str
     tool_calls_used: int
+    bot: dict | None
 
 
 class PersonalState(HarnessState, total=False):
@@ -319,22 +322,49 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
+def bot_prompt(prompt: str, bot: dict | None) -> str:
+    """The system prompt of a thread. A bot thread exists only in the app, where the model is a
+    봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
+    also says 플랜 where the web says 요금제."""
+    if not bot:
+        return prompt
+    # Names and titles are written by users and employers. Quoted, they stay data.
+    quote = partial(json.dumps, ensure_ascii=False)
+    if bot.get("kind") == "push":
+        name, helps = "Push Bot", "구직자의 커리어를"
+    else:
+        name = f"{bot.get('name') or bot.get('company')} 봇"
+        helps = f"{quote(bot.get('company') or '')} 회사에 지원하는 구직자를"
+    line = f"당신은 Push에서 {helps} 돕는 {quote(name)}이에요."
+    if bot.get("postingId"):
+        title = quote(bot.get("postingTitle") or "제목 없음")
+        line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
+    line += f" 자신을 말할 때는 {quote(name)}이나 봇이라고 하고, 에이전트라고 하지 않아요."
+    return line + "\n" + prompt.partition("\n")[2].replace("요금제", "플랜")
+
+
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
+    progress: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    if spec.id == "personal":
+        from app.harness.personal.tools import CARD_LABEL as labels
+        from app.harness.personal.tools import PROGRESS as progress
 
     async def agent(state: HarnessState) -> dict:
         messages = list(state.get("messages") or [])
         content = spec.prompt
         if spec.id == "personal":
             from app.harness.personal.reference import reference_lines
+            content = bot_prompt(content, state.get("bot"))
             try:
                 lines = await reference_lines(
                     db, state.get("user_id"), state.get("conversation_id"))
             except Exception:
                 lines = []
             if lines:
-                content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
+                content = content.rstrip() + "\n\n" + "\n".join(lines)
             quick = state.get("quick_start")
             if isinstance(quick, dict) and quick.get("instruction"):
                 sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
@@ -344,6 +374,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))
+        thinking()
         reply = await _complete(target, messages, text_only=over)
         return {"messages": [reply]} if reply is not None else {}
 
@@ -403,6 +434,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             )
             if created:
                 emit(_tool_event(tool.name, "wait", summary, tier))
+                waiting(event["id"], "confirm", labels.get(tool.name))
                 emit(event)
             answer = interrupt({
                 "approval_id": event["id"],
@@ -430,6 +462,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
         )
+        if tool.name in progress:
+            working(progress[tool.name])
         emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):

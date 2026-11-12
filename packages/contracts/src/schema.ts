@@ -1576,7 +1576,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message and stream the reply
-         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. A status the AI service writes has text only until it writes phases, and so has a row stored before phases. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
+         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. The AI service writes thinking (생각 중) when the run starts and before each model call, and waiting with for and cardId just before the card it waits on. In a job seeker's chat it also writes working with a sentence before each tool and each step of the document flow, and a write's card names itself in the waiting text, as in 지원하기 · 확인을 기다리는 중. An employer chat writes no working, and its tool cards wait with 확인을 기다리고 있어요. The employer flows (posting, review, interview) write no status a client receives. A status row stored before phases has text only. notice names a step that failed while the run went on; it is stored and replayed. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
          */
         post: operations["postConversationsByIdMessagesStream"];
         delete?: never;
@@ -1594,7 +1594,7 @@ export interface paths {
         };
         /**
          * Replay the active chat stream
-         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. A status the AI service writes has text only until it writes phases, and so has a row stored before phases. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
+         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. The AI service writes thinking (생각 중) when the run starts and before each model call, and waiting with for and cardId just before the card it waits on. In a job seeker's chat it also writes working with a sentence before each tool and each step of the document flow, and a write's card names itself in the waiting text, as in 지원하기 · 확인을 기다리는 중. An employer chat writes no working, and its tool cards wait with 확인을 기다리고 있어요. The employer flows (posting, review, interview) write no status a client receives. A status row stored before phases has text only. notice names a step that failed while the run went on; it is stored and replayed. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
          */
         get: operations["getConversationsByIdMessagesStreamActive"];
         put?: never;
@@ -4787,6 +4787,18 @@ export interface components {
                  * @description When the event was stored. A joined token has the time of its last row.
                  */
                 at: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+                text: string;
+                /** @enum {string} */
+                type: "notice";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
                 /** @enum {string} */
                 id: "strategy" | "feedback";
                 /** @description Strategy card only. Up to 6, without a leading + */
@@ -4855,7 +4867,7 @@ export interface components {
                 /** @enum {string} */
                 type: "todo";
             } | {
-                /** @description The caller's runs queued or running before this one */
+                /** @description In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere */
                 ahead: number;
                 /**
                  * Format: date-time
@@ -4920,7 +4932,7 @@ export interface components {
                  * @description When the event was stored. A joined token has the time of its last row.
                  */
                 at: string;
-                /** @description True when a document flow is active and the next message continues it. Absent on a stored event from before this field. */
+                /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
                 resumable: boolean;
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
                 seq: number;
@@ -5986,7 +5998,14 @@ export interface components {
                 /** @enum {string} */
                 type: "error";
             } | {
-                /** @description True when a document flow is active and the next message continues it. Absent on a stored event from before this field. */
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+                text: string;
+                /** @enum {string} */
+                type: "notice";
+            } | {
+                /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
                 resumable?: boolean;
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
                 seq: number;
@@ -6872,7 +6891,7 @@ export interface components {
         };
         /** @description A frame of a bot stream */
         StreamEvent: ({
-            /** @description The caller's runs queued or running before this one */
+            /** @description In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere */
             ahead: number;
             /**
              * Format: date-time
@@ -7485,7 +7504,21 @@ export interface components {
              * @description When the event was stored
              */
             at: string;
-            /** @description True when a document flow is active and the next message continues it. Absent on a stored event from before this field. */
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "notice";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
             resumable: boolean;
             /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
             seq: number;
@@ -9231,7 +9264,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, cancelled. */
+            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9337,7 +9370,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, cancelled. */
+            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10678,7 +10711,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10706,7 +10739,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
