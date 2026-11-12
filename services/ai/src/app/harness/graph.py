@@ -24,7 +24,9 @@ from app.harness.approval import (
     site_granted,
     user_supplied,
 )
+from app.harness.memory import memory_update, merge_memory
 from app.harness.policy import Decision, Tier, decide
+from app.harness.state import ThreadMemory
 from app.harness.status import thinking, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
@@ -54,7 +56,7 @@ class HarnessState(TypedDict, total=False):
     bot: dict[str, Any] | None
 
 
-class PersonalState(HarnessState, total=False):
+class PersonalState(HarnessState, ThreadMemory, total=False):
     resume: dict | None
     intent: str | None
     context: dict | None
@@ -352,7 +354,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         from app.harness.personal.tools import CARD_LABEL as labels
         from app.harness.personal.tools import PROGRESS as progress
 
-    async def agent(state: HarnessState) -> dict:
+    async def agent(state: dict) -> dict:
         messages = list(state.get("messages") or [])
         content = spec.prompt
         if spec.id == "personal":
@@ -371,6 +373,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 content = content.rstrip() + "\n\n" + quick["instruction"] + "\n시트 입력: " + sheet
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=content), *messages]
+        if spec.id == "personal":
+            remembered = (state.get("summary") or "").strip()
+            if remembered:
+                messages = [messages[0], SystemMessage(content=remembered), *messages[1:]]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))
@@ -499,22 +505,31 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         subgraph = build_resume_graph(None, model=None, db=db)
 
         async def route(state: PersonalState) -> dict | Command:
+            memory = await memory_update(
+                list(state.get("messages") or []),
+                state.get("summary") or "",
+                turn_model.get() or model,
+            )
+
+            def finish(result):
+                return merge_memory(memory, result)
+
             if _resume_dict(state).get("status") == "active":
-                return {}
+                return finish({})
             if state.get("quick_start_done"):
-                return {}
+                return finish({})
             seed = quick_start_resume(state.get("intent"), _resume_dict(state))
             if seed is not None:
-                return enter_flow("resume_flow", resume=seed)
+                return finish(enter_flow("resume_flow", resume=seed))
             attached = await _resume_from_attachment(db, state)
             if attached is not None:
-                return enter_flow("resume_flow", resume=attached)
+                return finish(enter_flow("resume_flow", resume=attached))
             from app.domain.quick_starts import quick_start_seed
 
             started = quick_start_seed(
                 state.get("intent"), _human_text(state), state.get("context") or {})
             if started is None:
-                return {}
+                return finish({})
             if started["intent"] == "find_postings":
                 from app.domain.services import posting_match as matching
 
@@ -529,14 +544,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 emit(_tool_event(
                     "find_matching_postings", "ok", "공고를 찾아요", Tier.READ.value, payload))
                 emit({"token": text_out})
-                return Command(
+                return finish(Command(
                     update={
                         "messages": [AIMessage(content=text_out)],
                         "quick_start_done": True,
                     },
                     goto=END,
-                )
-            return {"quick_start": started}
+                ))
+            return finish({"quick_start": started})
 
         async def resume_flow(state: PersonalState, config) -> dict | Command:
             parent_config = get_config()
