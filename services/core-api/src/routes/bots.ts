@@ -5,6 +5,7 @@ import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { readObject, rejectFields, textOf, httpsUrl } from "./recruiting-shared.ts";
 import { requireAgentConsent } from "./conversations.ts";
+import { materialCountOf } from "./materials.ts";
 
 /** Mirrors bots_color_chk (migration 0053). */
 export const BOT_COLORS = ["teal", "sky", "blue", "violet", "pink", "red", "coral", "amber", "green", "brown", "gray"] as const;
@@ -92,7 +93,7 @@ type BotRow = Record<string, unknown>;
 const textOrNull = (value: unknown): string | null => (value == null ? null : String(value));
 
 /** Columns bot_id, kind, display_name and color of any row to the BotRef of the contract. */
-const botRef = (row: BotRow): Record<string, unknown> => ({
+export const botRef = (row: BotRow): Record<string, unknown> => ({
   id: String(row.bot_id),
   kind: String(row.kind),
   displayName: String(row.display_name ?? ""),
@@ -281,7 +282,7 @@ const getBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
   const row = await one(ctx.deps.query, BOT_POSTING_SELECT + " AND s.bot_id = $2", [ctx.user.id, String(bot.id)]);
   if (!row) throw notFound();
-  return data(200, botDetailDto(row), ctx.rid);
+  return data(200, { ...botDetailDto(row), materialCount: await materialCountOf(ctx, String(bot.id)) }, ctx.rid);
 };
 
 // shortcut: a scan of every message of the caller's bot chats, add a pg_trgm index on messages.text when one user holds about 50,000 messages.

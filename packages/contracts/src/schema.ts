@@ -2393,6 +2393,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's materials
+         * @description Files and Push documents (doc), bookmarked postings (bookmark), and saved links (link), each newest first. A file is sorted by when it was saved, a document by its last edit. tab=all gives the first 4 docs, 3 bookmarks and 3 links with no cursor. Another tab gives that section, paged. q keeps materials whose name contains it, without letter case: a file's name, a document's title or its application's company, a posting's company or title, a link's title or url. bot keeps the materials that bot made or that were attached in its chat. 404 when bot is not the caller's.
+         */
+        get: operations["getMaterials"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/materials/{kind}/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one material with the bots that used it
+         * @description 404 for a deleted material.
+         */
+        get: operations["getMaterialsByKindById"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a material
+         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. 404 when there is no such live material.
+         */
+        delete: operations["deleteMaterialsByKindById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/materials/{kind}/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo the delete of a material
+         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Answers the material as it is listed. A material that is not deleted is answered as it is. 404 once it was erased.
+         */
+        post: operations["postMaterialsByKindByIdRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -4298,6 +4362,8 @@ export interface components {
             fit: {
                 score: number;
             } | null;
+            /** @description The bot's materials: made by it or attached in its chat. GET /materials?bot= lists them. */
+            materialCount: number;
             /** @description null for the Push Bot and when the posting is gone. */
             posting: {
                 closed: boolean;
@@ -5618,6 +5684,94 @@ export interface components {
             referenceId: string | null;
             /** @description PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>, then writeoff:<jobId>:<n> for a retried job written off again). Not a payment: amountUsd is null. */
             type: string;
+        };
+        /** @description A material of the caller. doc is file and document, bookmark is posting, link is link. */
+        Material: {
+            /** @description The bot that made it. null when the user made it, or when that bot was deleted. */
+            createdBy: components["schemas"]["BotRef"] | null;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "file";
+            mimeType: string;
+            /** @enum {string} */
+            origin: "UPLOAD" | "AI";
+            pageCount: number | null;
+            size: number;
+            title: string;
+            /**
+             * Format: date-time
+             * @description When the file was saved.
+             */
+            updatedAt: string;
+        } | {
+            /** @description The bot that made it. null when the user made it, or when that bot was deleted. */
+            createdBy: components["schemas"]["BotRef"] | null;
+            docKind: string;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "document";
+            /** @enum {string} */
+            origin: "UPLOAD" | "AI";
+            title: string;
+            /**
+             * Format: date-time
+             * @description The document's last edit.
+             */
+            updatedAt: string;
+        } | {
+            /** Format: date-time */
+            bookmarkedAt: string;
+            careerMax: number | null;
+            careerMin: number | null;
+            /** @description The posting no longer takes applications. */
+            closed: boolean;
+            company: string;
+            deadline: string | null;
+            employmentType: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "posting";
+            location: string | null;
+            title: string;
+        } | {
+            /** Format: date-time */
+            addedAt: string;
+            /** @description The url's host name in lower case. The app marks a linkedin.com link from it: LinkedIn is not a link kind. */
+            host: string;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "link";
+            /** @description Whether that open succeeded. */
+            lastCheckOk: boolean | null;
+            /** @description When a bot last opened the link. null until one has. */
+            lastCheckedAt: string | null;
+            /** @enum {string} */
+            linkKind: "job" | "github" | "portfolio" | "blog" | "other";
+            /** @description The saved title, or the url when the title is empty. */
+            title: string;
+            url: string;
+        };
+        MaterialDetail: components["schemas"]["Material"] & {
+            /** @description The bot that made it first, then the bots whose chat it was attached in, most recent first. */
+            usedBy: components["schemas"]["BotRef"][];
+        };
+        MaterialsPage: {
+            /** @description Every section, after q and bot. */
+            counts: {
+                bookmark: number;
+                doc: number;
+                link: number;
+            };
+            sections: {
+                items: components["schemas"]["Material"][];
+                nextCursor: string | null;
+                /** @enum {string} */
+                section: "doc" | "bookmark" | "link";
+            }[];
         };
         Message: {
             attachments: components["schemas"]["ConversationsMessageAttachment"][];
@@ -11563,6 +11717,116 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["Operation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMaterials: {
+        parameters: {
+            query?: {
+                tab?: "all" | "doc" | "bookmark" | "link";
+                /** @description Outer spaces are dropped. Empty is no filter. */
+                q?: string;
+                /** @description A bot id, or push for the caller's Push Bot. */
+                bot?: string;
+                /** @description Rows per page of a section tab. A larger integer is clamped to 100. */
+                limit?: number;
+                /** @description Opaque cursor from the section's nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["MaterialsPage"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMaterialsByKindById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["MaterialDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMaterialsByKindById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMaterialsByKindByIdRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Material"];
                     };
                 };
             };

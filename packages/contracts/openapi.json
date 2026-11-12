@@ -1505,6 +1505,10 @@
                 ],
                 "description": "The newest fit score computed for this posting, 0 to 10. null until one exists."
               },
+              "materialCount": {
+                "description": "The bot's materials: made by it or attached in its chat. GET /materials?bot= lists them.",
+                "type": "integer"
+              },
               "posting": {
                 "anyOf": [
                   {
@@ -1548,7 +1552,8 @@
             },
             "required": [
               "posting",
-              "fit"
+              "fit",
+              "materialCount"
             ],
             "type": "object"
           }
@@ -6728,6 +6733,379 @@
           "description",
           "amountUsd",
           "receiptUrl"
+        ],
+        "type": "object"
+      },
+      "Material": {
+        "description": "A material of the caller. doc is file and document, bookmark is posting, link is link.",
+        "oneOf": [
+          {
+            "properties": {
+              "createdBy": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BotRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The bot that made it. null when the user made it, or when that bot was deleted."
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "file",
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "origin": {
+                "enum": [
+                  "UPLOAD",
+                  "AI"
+                ],
+                "type": "string"
+              },
+              "pageCount": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "size": {
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "description": "When the file was saved.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "title",
+              "mimeType",
+              "size",
+              "pageCount",
+              "origin",
+              "createdBy",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "createdBy": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BotRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The bot that made it. null when the user made it, or when that bot was deleted."
+              },
+              "docKind": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "document",
+                "type": "string"
+              },
+              "origin": {
+                "enum": [
+                  "UPLOAD",
+                  "AI"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "description": "The document's last edit.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "title",
+              "docKind",
+              "origin",
+              "createdBy",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "bookmarkedAt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "careerMax": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "careerMin": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "closed": {
+                "description": "The posting no longer takes applications.",
+                "type": "boolean"
+              },
+              "company": {
+                "type": "string"
+              },
+              "deadline": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "employmentType": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "posting",
+                "type": "string"
+              },
+              "location": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "title",
+              "company",
+              "deadline",
+              "closed",
+              "careerMin",
+              "careerMax",
+              "employmentType",
+              "location",
+              "bookmarkedAt"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "addedAt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "host": {
+                "description": "The url's host name in lower case. The app marks a linkedin.com link from it: LinkedIn is not a link kind.",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "link",
+                "type": "string"
+              },
+              "lastCheckOk": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether that open succeeded."
+              },
+              "lastCheckedAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When a bot last opened the link. null until one has."
+              },
+              "linkKind": {
+                "enum": [
+                  "job",
+                  "github",
+                  "portfolio",
+                  "blog",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "description": "The saved title, or the url when the title is empty.",
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "title",
+              "url",
+              "host",
+              "linkKind",
+              "addedAt",
+              "lastCheckedAt",
+              "lastCheckOk"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MaterialDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Material"
+          },
+          {
+            "properties": {
+              "usedBy": {
+                "description": "The bot that made it first, then the bots whose chat it was attached in, most recent first.",
+                "items": {
+                  "$ref": "#/components/schemas/BotRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "usedBy"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MaterialsPage": {
+        "properties": {
+          "counts": {
+            "description": "Every section, after q and bot.",
+            "properties": {
+              "bookmark": {
+                "type": "integer"
+              },
+              "doc": {
+                "type": "integer"
+              },
+              "link": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "doc",
+              "bookmark",
+              "link"
+            ],
+            "type": "object"
+          },
+          "sections": {
+            "items": {
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/components/schemas/Material"
+                  },
+                  "type": "array"
+                },
+                "nextCursor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "section": {
+                  "enum": [
+                    "doc",
+                    "bookmark",
+                    "link"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "section",
+                "items",
+                "nextCursor"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "counts",
+          "sections"
         ],
         "type": "object"
       },
@@ -29580,6 +29958,263 @@
           "jobs"
         ],
         "x-owner": "ai"
+      }
+    },
+    "/api/v1/materials": {
+      "get": {
+        "description": "Files and Push documents (doc), bookmarked postings (bookmark), and saved links (link), each newest first. A file is sorted by when it was saved, a document by its last edit. tab=all gives the first 4 docs, 3 bookmarks and 3 links with no cursor. Another tab gives that section, paged. q keeps materials whose name contains it, without letter case: a file's name, a document's title or its application's company, a posting's company or title, a link's title or url. bot keeps the materials that bot made or that were attached in its chat. 404 when bot is not the caller's.",
+        "operationId": "getMaterials",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tab",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "doc",
+                "bookmark",
+                "link"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Outer spaces are dropped. Empty is no filter.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A bot id, or push for the caller's Push Bot.",
+            "in": "query",
+            "name": "bot",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page of a section tab. A larger integer is clamped to 100.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from the section's nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MaterialsPage"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List the caller's materials",
+        "tags": [
+          "materials"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/materials/{kind}/{id}": {
+      "delete": {
+        "description": "A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. 404 when there is no such live material.",
+        "operationId": "deleteMaterialsByKindById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "description": "file is an uploaded or bot-made file, document a Push document, posting a bookmark, link a saved link.",
+              "enum": [
+                "file",
+                "document",
+                "posting",
+                "link"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a material",
+        "tags": [
+          "materials"
+        ],
+        "x-owner": "core"
+      },
+      "get": {
+        "description": "404 for a deleted material.",
+        "operationId": "getMaterialsByKindById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "description": "file is an uploaded or bot-made file, document a Push document, posting a bookmark, link a saved link.",
+              "enum": [
+                "file",
+                "document",
+                "posting",
+                "link"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MaterialDetail"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Get one material with the bots that used it",
+        "tags": [
+          "materials"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/materials/{kind}/{id}/restore": {
+      "post": {
+        "description": "A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Answers the material as it is listed. A material that is not deleted is answered as it is. 404 once it was erased.",
+        "operationId": "postMaterialsByKindByIdRestore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "description": "file is an uploaded or bot-made file, document a Push document, posting a bookmark, link a saved link.",
+              "enum": [
+                "file",
+                "document",
+                "posting",
+                "link"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Material"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Undo the delete of a material",
+        "tags": [
+          "materials"
+        ],
+        "x-owner": "core"
       }
     },
     "/api/v1/me": {
