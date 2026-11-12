@@ -36,6 +36,8 @@ grep -HE '^\s*(su|daily|rotate|ifempty|notifempty|create)\b' /etc/logrotate.d/{r
 if [ -n "${1:-}" ]; then
   if grep -q 'su root adm' "$1"; then
     echo "== $1 already passes su root adm; no failure to reproduce"
+  elif ! grep -q '^purge_pre_14d_logs() {$' "$1"; then
+    echo "== $1 has no purge_pre_14d_logs; no failure to reproduce"
   else
     eval "$(sed -n '/^purge_pre_14d_logs() {$/,/^}$/p' "$1")"
     set +e
