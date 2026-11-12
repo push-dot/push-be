@@ -37,7 +37,15 @@ async def find_matching_postings(postings, user_vectors, conditions, *, score_fi
     return {"items": items, "scored": len(chosen), "text": render_matches(items, header=header)}
 
 
-async def run_quick_match(db, user_id, inputs, job_id=None):
+def _only_attached_document(access):
+    found = [item_id for kind, item_id in access.attached if kind == "document"]
+    if len(found) != 1:
+        return None
+    return _uuid(found[0])
+
+
+async def run_quick_match(db, user_id, inputs, job_id=None, access=None):
+    from app.harness.material_access import announce, current_access, refusal
     from app.harness.personal.tools import current_ai_gate
     from app.infrastructure.posting_fit_cache import load_fit
     from app.infrastructure.posting_match import load_corpus, latest_document_id, require_live_document
@@ -46,12 +54,24 @@ async def run_quick_match(db, user_id, inputs, job_id=None):
     user = _uuid(user_id)
     document_id = _uuid(conditions.get("documentId"))
     query = None if db is None else db.q()
-    if query is not None and document_id is not None and user is not None:
-        await require_live_document(query, user, document_id)
-    if query is not None and document_id is None and user is not None:
-        document_id = await latest_document_id(query, user)
-        if document_id is not None:
-            conditions["documentId"] = str(document_id)
+    if access is None:
+        access = current_access.get()
+    if access is not None and not access.may_search():
+        if document_id is None:
+            document_id = _only_attached_document(access)
+        if document_id is None or not access.allows("document", str(document_id)):
+            announce()
+            return refusal(match=True)
+        conditions["documentId"] = str(document_id)
+        if query is not None and user is not None:
+            await require_live_document(query, user, document_id)
+    else:
+        if query is not None and document_id is not None and user is not None:
+            await require_live_document(query, user, document_id)
+        if query is not None and document_id is None and user is not None:
+            document_id = await latest_document_id(query, user)
+            if document_id is not None:
+                conditions["documentId"] = str(document_id)
     postings, user_vectors = await load_corpus(query, user, document_id)
     gate = current_ai_gate()
 

@@ -277,7 +277,7 @@ def test_worker_accepts_personal_quick_start_intents():
 
 
 async def test_find_postings_returns_the_ranked_list(monkeypatch):
-    async def fake(_db, _user_id, _inputs, job_id=None):
+    async def fake(_db, _user_id, _inputs, job_id=None, access=None):
         return {
             "items": [{
                 "postingId": "p1",

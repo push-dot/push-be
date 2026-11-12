@@ -536,12 +536,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 return finish({})
             if started["intent"] == "find_postings":
                 from app.domain.services import posting_match as matching
+                from app.harness.material_access import current_access
 
                 result = await matching.run_quick_match(
                     db,
                     state.get("user_id"),
                     started["inputs"],
                     job_id=state.get("job_id"),
+                    access=current_access.get(),
                 ) or {}
                 text_out = result.get("text") or "조건에 맞는 공고가 없어요."
                 payload = {"items": result.get("items") or [], "text": text_out}

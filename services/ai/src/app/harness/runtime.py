@@ -17,6 +17,9 @@ from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
 from app.harness.document_edits import env_core
+from app.harness.material_access import (
+    READ_SWITCH_OFF, REFUSED, current_access, material_access, message_refused,
+)
 from app.harness.graph import (
     RECURSION_LIMIT, _open_calls, build_harness_graph, quick_start_resume, turn_model,
 )
@@ -215,6 +218,18 @@ def _rejections(values: dict, result: dict | None = None) -> list:
     return [ToolMessage(content=content, tool_call_id=call["id"]) for call in _open_calls(values)]
 
 
+def _materials_closed(payload, spec, waiting, resume) -> bool:
+    from app.domain.employer_chat import PERSONAL_INTENTS
+
+    if spec.id != "personal" or waiting is not None or resume.get("approvalId"):
+        return False
+    intent = payload.get("intent")
+    if not isinstance(intent, str) or intent not in PERSONAL_INTENTS:
+        return False
+    access = current_access.get()
+    return bool(access is not None and not access.may_search() and not access.attached)
+
+
 def _final_text(values: dict) -> str:
     for message in reversed(values.get("messages") or []):
         if isinstance(message, AIMessage):
@@ -375,12 +390,16 @@ class HarnessRuntime:
         started = conversation.get("job_created_at") or datetime.now(UTC)
         run = Run(str(payload.get("job_id") or ""), wire_time(started),
                   announce=conversation.get("bot") is not None)
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else None
+        access = await material_access(
+            self.svc.db, payload.get("user_id"), payload.get("conversation_id"), context)
         tokens = [
             (bound_services, bound_services.set(self.svc)),
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
             (bound_core, bound_core.set(self._core)),
             (current_run, current_run.set(run)),
             (current_sources, current_sources.set(TurnSources())),
+            (current_access, current_access.set(access)),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         ok = False
@@ -417,6 +436,12 @@ class HarnessRuntime:
                 )
                 return
             resume["optionId"] = "cancel"
+        if _materials_closed(payload, spec, waiting, resume):
+            yield "custom", {"type": "notice", "text": REFUSED, "code": READ_SWITCH_OFF}
+            yield "custom", {"token": REFUSED}
+            operation = await self._persist(payload, REFUSED, ai, turn)
+            yield "values", {"operation": operation}
+            return
         if resume.get("approvalId"):
             if waiting is None:
                 return
@@ -481,7 +506,16 @@ class HarnessRuntime:
             if reply and reply_job == str(payload.get("job_id") or ""):
                 operation = await self._persist(payload, reply, ai, turn)
         else:
-            operation = await self._persist(payload, _final_text(after.values), ai, turn)
+            reply = _final_text(after.values)
+            access = current_access.get()
+            if (
+                access is not None
+                and not access.may_search()
+                and REFUSED not in (reply or "")
+                and message_refused((after.values or {}).get("messages"))
+            ):
+                reply = REFUSED
+            operation = await self._persist(payload, reply, ai, turn)
         found = listed()
         if done is not None:
             extra = {"operation": to_jsonable(operation)} if operation is not None else {}

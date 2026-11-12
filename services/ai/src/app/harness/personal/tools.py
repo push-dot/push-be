@@ -20,6 +20,7 @@ from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
+from app.harness.material_access import blocked_id, blocked_search, current_access
 from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
@@ -230,6 +231,9 @@ async def _library_sources(ctx: ToolContext) -> list:
 
 
 async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    denied = blocked_search()
+    if denied is not None:
+        return denied
     items = []
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
@@ -241,6 +245,9 @@ async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
 
 
 async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:
+    denied = blocked_id("document", args.document_id)
+    if denied is not None:
+        return denied
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
     if document_svc is None:
@@ -280,6 +287,9 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
+    denied = blocked_id("document", args.document_id)
+    if denied is not None:
+        return denied
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
         event = _document_event(
             ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
@@ -394,10 +404,30 @@ def _user_id(ctx: ToolContext):
         return None
 
 
+async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    denied = blocked_search()
+    if denied is not None:
+        return denied
+    return await ctx.core.call(
+        "GET", "/api/v1/me/bookmarks", user_id=ctx.user_id, company_id=ctx.company_id,
+    )
+
+
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
     gate = current_ai_gate()
     job_id = ctx.job_id or None
+    access = current_access.get()
     if args.posting_id is not None and ctx.db is not None:
+        allowed = (
+            access is None
+            or access.may_search()
+            or (
+                args.document_id is not None
+                and access.allows("document", str(args.document_id))
+            )
+        )
+        if not allowed:
+            return blocked_search()
         view = await load_fit(
             ctx.db.q(), UUID(ctx.user_id), args.posting_id,
             args.document_id or UUID(int=0), gate=gate, job_id=job_id)
@@ -428,10 +458,17 @@ async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
     if args.document_id is not None:
         conditions["documentId"] = str(args.document_id)
     result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
-    return {"items": result.get("items") or [], "text": result.get("text") or ""}
+    out = {"items": result.get("items") or [], "text": result.get("text") or ""}
+    if result.get("notice"):
+        out["notice"] = result["notice"]
+        out["code"] = result.get("code")
+    return out
 
 
 async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
+    denied = blocked_search()
+    if denied is not None:
+        return denied
     svc = _svc()
     if svc is None or getattr(svc, "ai", None) is None:
         return {"text": ""}
@@ -444,21 +481,77 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     return {"text": text or ""}
 
 
+async def _message_has_url(ctx: ToolContext, url: str) -> bool:
+    from app.harness.approval import normalize_url
+    from app.ingest.web_page import find_urls
+
+    wanted = normalize_url(url)
+    if wanted is None or ctx.db is None:
+        return False
+    try:
+        rows = await ctx.db.q().fetch(
+            "SELECT text FROM messages WHERE conversation_id = $1 "
+            "AND user_id = $2 AND role = 'USER'",
+            UUID(str(ctx.conversation_id)),
+            UUID(ctx.user_id),
+        )
+    except Exception:
+        return False
+    return any(
+        normalize_url(found) == wanted
+        for row in rows or []
+        for found in find_urls(row["text"] or "")
+    )
+
+
+async def _attached_link(ctx: ToolContext, url: str) -> bool:
+    from app.harness.approval import normalize_url
+
+    access = current_access.get()
+    if access is None or ctx.db is None:
+        return False
+    ids = []
+    for kind, raw in access.attached:
+        if kind != "link":
+            continue
+        try:
+            ids.append(UUID(str(raw)))
+        except ValueError:
+            continue
+    if not ids:
+        return False
+    wanted = normalize_url(url)
+    rows = await ctx.db.q().fetch(
+        "SELECT url FROM user_links WHERE user_id = $1 "
+        "AND id = ANY($2::uuid[]) AND deleted_at IS NULL",
+        UUID(ctx.user_id),
+        ids,
+    )
+    return any(normalize_url(row["url"]) == wanted for row in rows or [])
+
+
 async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
     """A URL the user gave is followed wherever it leads, a short link included. A page read on
     an approval or a site grant stays on that host: a redirect elsewhere is a new decision for the
     model."""
     host = site_host(args.url)
-    supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
+    access = current_access.get()
+    gated = access is not None and not access.may_search()
+    if gated:
+        supplied = await _message_has_url(ctx, args.url) or await _attached_link(ctx, args.url)
+    else:
+        supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
     same_site = None if supplied else lambda hop: site_host(hop) == host
     try:
         page = await fetch_page(args.url, allow_hop=same_site)
     except LeftSite as left:
         return {"error": "REDIRECTED", "to": left.to}
     except Exception:
-        await _mark_link_check(ctx, args.url, False)
+        if not gated:
+            await _mark_link_check(ctx, args.url, False)
         raise
-    await _mark_link_check(ctx, args.url, True)
+    if not gated:
+        await _mark_link_check(ctx, args.url, True)
     return {"url": page.url, "text": page.text}
 
 
@@ -544,8 +637,7 @@ PERSONAL_TOOLS = [
     _spec("find_matching_postings", Tier.READ, MatchArgs, _find_matching_postings, "공고를 찾아요"),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
-    _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",
-          lambda _args: "/api/v1/me/bookmarks"),
+    _spec("list_bookmarks", Tier.READ, EmptyArgs, _list_bookmarks, "저장한 공고를 봐요"),
     _spec("list_applications", Tier.READ, EmptyArgs, _list_applications, "지원 현황을 봐요"),
     _spec("list_documents", Tier.READ, EmptyArgs, _list_documents, "서류를 봐요"),
     _spec("get_document", Tier.READ, DocumentId, _get_document, "서류 내용을 봐요"),

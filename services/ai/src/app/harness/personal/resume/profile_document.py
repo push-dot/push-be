@@ -23,6 +23,11 @@ async def load_document_markdown(db, state: dict) -> str:
     raw = inputs.get("documentId")
     if not raw or db is None:
         return ""
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
+    if access is not None and not access.allows("document", str(raw)):
+        return ""
     try:
         user_id = UUID(str(state.get("user_id") or ""))
         doc_id = UUID(str(raw))
@@ -143,7 +148,17 @@ async def resolve_uploaded_source(db, state: dict) -> dict:
     if db is None or user_id is None:
         nxt["sourceLookup"] = "done"
         return {"inputs": nxt}
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
     for source_id in ids:
+        if (
+            access is not None
+            and not access.may_search()
+            and not access.allows("file", str(source_id))
+            and not access.allows("document", str(source_id))
+        ):
+            continue
         try:
             row = await _source_file(db, source_id, user_id)
         except Exception:
@@ -185,6 +200,11 @@ async def profile_card_names(db, state: dict) -> tuple[str, str]:
 
 
 async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int) -> bool:
+    from app.harness.material_access import current_access
+
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        return False
     if db is None:
         return False
     try:
@@ -235,7 +255,12 @@ async def save_edited_file(db, state: dict, file_name: str) -> dict:
 
 
 async def save_profile_document(state: dict, title: str | None = None) -> str:
+    from app.harness.material_access import current_access
     from app.harness.personal.tools import bound_services
+
+    access = current_access.get()
+    if access is not None and not access.may_search():
+        return ""
     from app.infrastructure.resume_workspace import md_to_doc
 
     svc = bound_services.get()
