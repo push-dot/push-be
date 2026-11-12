@@ -1002,6 +1002,137 @@
       },
       "Bot": {
         "properties": {
+          "activity": {
+            "anyOf": [
+              {
+                "description": "What the bot's thread is doing. since is the run's start for queued, thinking and working, and the card's asking time for waiting.",
+                "oneOf": [
+                  {
+                    "properties": {
+                      "ahead": {
+                        "description": "The caller's own chat runs that started before this one and are not finished.",
+                        "type": "integer"
+                      },
+                      "phase": {
+                        "const": "queued",
+                        "type": "string"
+                      },
+                      "since": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "phase",
+                      "since",
+                      "ahead"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "label": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "The newest working sentence of this run."
+                      },
+                      "phase": {
+                        "const": "thinking",
+                        "type": "string"
+                      },
+                      "since": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "phase",
+                      "since",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "phase": {
+                        "const": "working",
+                        "type": "string"
+                      },
+                      "since": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "phase",
+                      "since",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "cardId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "cardTitle": {
+                        "type": "string"
+                      },
+                      "expiresAt": {
+                        "anyOf": [
+                          {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "for": {
+                        "enum": [
+                          "answer",
+                          "confirm"
+                        ],
+                        "type": "string"
+                      },
+                      "phase": {
+                        "const": "waiting",
+                        "type": "string"
+                      },
+                      "since": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "phase",
+                      "since",
+                      "for",
+                      "cardId",
+                      "cardTitle",
+                      "expiresAt"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when nothing runs and no card is open."
+          },
           "avatarKey": {
             "anyOf": [
               {
@@ -1010,25 +1141,13 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "deprecated": true
           },
           "color": {
             "anyOf": [
               {
-                "enum": [
-                  "teal",
-                  "sky",
-                  "blue",
-                  "violet",
-                  "pink",
-                  "red",
-                  "coral",
-                  "amber",
-                  "green",
-                  "brown",
-                  "gray"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/BotColor"
               },
               {
                 "type": "null"
@@ -1045,7 +1164,9 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "deprecated": true,
+            "description": "Always null."
           },
           "companyName": {
             "type": "string"
@@ -1068,7 +1189,42 @@
             ],
             "type": "string"
           },
+          "lastActivityAt": {
+            "description": "The newest of: the bot was made, its newest message, its open card. The list is ordered by it.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "lastMessage": {
+            "anyOf": [
+              {
+                "properties": {
+                  "at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "fromBot": {
+                    "type": "boolean"
+                  },
+                  "preview": {
+                    "maxLength": 140,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "preview",
+                  "at",
+                  "fromBot"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lastMessagePreview": {
+            "deprecated": true,
+            "description": "lastMessage.preview, or an empty string.",
             "type": "string"
           },
           "mascotKey": {
@@ -1079,7 +1235,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "deprecated": true
           },
           "notificationsMuted": {
             "type": "boolean"
@@ -1103,12 +1260,15 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "deprecated": true
           },
           "revision": {
             "type": "integer"
           },
           "status": {
+            "deprecated": true,
+            "description": "NEEDS_APPROVAL for a waiting activity, RUNNING for any other activity, else DONE.",
             "enum": [
               "DONE",
               "RUNNING",
@@ -1117,9 +1277,11 @@
             "type": "string"
           },
           "unread": {
+            "description": "The bot wrote a message or asked a card after the caller last read it.",
             "type": "boolean"
           },
           "updatedAt": {
+            "deprecated": true,
             "format": "date-time",
             "type": "string"
           }
@@ -1128,22 +1290,148 @@
           "id",
           "kind",
           "displayName",
-          "companyId",
           "companyName",
           "color",
           "postingId",
-          "postingUrl",
-          "avatarKey",
-          "mascotKey",
           "notificationsMuted",
           "revision",
           "createdAt",
+          "lastActivityAt",
+          "lastMessage",
+          "unread",
+          "activity",
+          "companyId",
+          "postingUrl",
+          "avatarKey",
+          "mascotKey",
           "updatedAt",
           "lastMessagePreview",
-          "unread",
           "status"
         ],
         "type": "object"
+      },
+      "BotActivity": {
+        "description": "What the bot's thread is doing. since is the run's start for queued, thinking and working, and the card's asking time for waiting.",
+        "oneOf": [
+          {
+            "properties": {
+              "ahead": {
+                "description": "The caller's own chat runs that started before this one and are not finished.",
+                "type": "integer"
+              },
+              "phase": {
+                "const": "queued",
+                "type": "string"
+              },
+              "since": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "phase",
+              "since",
+              "ahead"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The newest working sentence of this run."
+              },
+              "phase": {
+                "const": "thinking",
+                "type": "string"
+              },
+              "since": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "phase",
+              "since",
+              "label"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "working",
+                "type": "string"
+              },
+              "since": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "phase",
+              "since",
+              "label"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "cardId": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "cardTitle": {
+                "type": "string"
+              },
+              "expiresAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "for": {
+                "enum": [
+                  "answer",
+                  "confirm"
+                ],
+                "type": "string"
+              },
+              "phase": {
+                "const": "waiting",
+                "type": "string"
+              },
+              "since": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "phase",
+              "since",
+              "for",
+              "cardId",
+              "cardTitle",
+              "expiresAt"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "BotCardAnswer": {
         "properties": {
@@ -1175,13 +1463,203 @@
         ],
         "type": "object"
       },
+      "BotColor": {
+        "enum": [
+          "teal",
+          "sky",
+          "blue",
+          "violet",
+          "pink",
+          "red",
+          "coral",
+          "amber",
+          "green",
+          "brown",
+          "gray"
+        ],
+        "type": "string"
+      },
+      "BotDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Bot"
+          },
+          {
+            "properties": {
+              "fit": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "score": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "score"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The newest fit score computed for this posting, 0 to 10. null until one exists."
+              },
+              "posting": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "deadline": {
+                        "anyOf": [
+                          {
+                            "format": "date",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "id": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "deadline",
+                      "closed"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "null for the Push Bot and when the posting is gone."
+              }
+            },
+            "required": [
+              "posting",
+              "fit"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "BotLimit": {
+        "properties": {
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null is unlimited."
+          },
+          "plan": {
+            "enum": [
+              "FREE",
+              "PRO",
+              "ULTRA"
+            ],
+            "type": "string"
+          },
+          "table": {
+            "properties": {
+              "FREE": {
+                "type": "integer"
+              },
+              "PRO": {
+                "type": "integer"
+              },
+              "ULTRA": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "null is unlimited."
+              }
+            },
+            "required": [
+              "FREE",
+              "PRO",
+              "ULTRA"
+            ],
+            "type": "object"
+          },
+          "used": {
+            "description": "The caller's company bots. The Push Bot is not counted.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan",
+          "max",
+          "used",
+          "table"
+        ],
+        "type": "object"
+      },
       "BotLinkPreview": {
         "oneOf": [
           {
             "additionalProperties": false,
             "properties": {
+              "careerMax": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "careerMin": {
+                "type": "integer"
+              },
               "company": {
                 "type": "string"
+              },
+              "deadline": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "host": {
+                "description": "The host of the url that was sent.",
+                "type": "string"
+              },
+              "location": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "postingId": {
                 "format": "uuid",
@@ -1197,9 +1675,14 @@
             },
             "required": [
               "status",
+              "postingId",
               "company",
               "title",
-              "postingId"
+              "deadline",
+              "careerMin",
+              "careerMax",
+              "location",
+              "host"
             ],
             "type": "object"
           },
@@ -1217,6 +1700,134 @@
             "type": "object"
           }
         ]
+      },
+      "BotList": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Bot"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/BotLimit"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "BotRef": {
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BotColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "push",
+              "company"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "displayName",
+          "color"
+        ],
+        "type": "object"
+      },
+      "BotSearch": {
+        "properties": {
+          "botTotal": {
+            "type": "integer"
+          },
+          "bots": {
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Bot"
+                },
+                {
+                  "properties": {
+                    "line": {
+                      "description": "Company and posting title joined by a middle dot, or the display name when the bot has no posting.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "line"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "messageTotal": {
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "properties": {
+                "at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "bot": {
+                  "$ref": "#/components/schemas/BotRef"
+                },
+                "messageId": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "USER",
+                    "ASSISTANT"
+                  ],
+                  "type": "string"
+                },
+                "snippet": {
+                  "description": "Up to 30 characters before the first match and 60 after it. Starts with an ellipsis when the text before it was cut.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "bot",
+                "messageId",
+                "at",
+                "role",
+                "snippet"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "bots",
+          "botTotal",
+          "messages",
+          "messageTotal"
+        ],
+        "type": "object"
       },
       "BotSendBody": {
         "additionalProperties": false,
@@ -4896,22 +5507,10 @@
         "additionalProperties": false,
         "properties": {
           "color": {
-            "enum": [
-              "teal",
-              "sky",
-              "blue",
-              "violet",
-              "pink",
-              "red",
-              "coral",
-              "amber",
-              "green",
-              "brown",
-              "gray"
-            ],
-            "type": "string"
+            "$ref": "#/components/schemas/BotColor"
           },
           "displayName": {
+            "description": "Outer spaces are dropped. A name of spaces only is 400.",
             "maxLength": 120,
             "minLength": 1,
             "type": "string"
@@ -9823,22 +10422,10 @@
         "additionalProperties": false,
         "properties": {
           "color": {
-            "enum": [
-              "teal",
-              "sky",
-              "blue",
-              "violet",
-              "pink",
-              "red",
-              "coral",
-              "amber",
-              "green",
-              "brown",
-              "gray"
-            ],
-            "type": "string"
+            "$ref": "#/components/schemas/BotColor"
           },
           "displayName": {
+            "description": "Outer spaces are dropped. A name of spaces only is 400.",
             "maxLength": 120,
             "minLength": 1,
             "type": "string"
@@ -12961,25 +13548,26 @@
     },
     "/api/v1/bots": {
       "get": {
-        "description": "Ensures the default Push bot exists. Push bot is listed first. Includes last message preview, unread flag, and aggregate status when cheap.",
+        "description": "Without postingId: every bot, the Push Bot first and then by lastActivityAt, newest first. Not paged. limit says how many company bots the plan allows and how many exist. Makes the Push Bot when it is missing. With postingId: zero or one bot, the caller's company bot for that posting's company, compared as POST /bots compares it, and no limit. An unknown or draft posting gives an empty list.",
         "operationId": "getBots",
+        "parameters": [
+          {
+            "description": "A posting id. Narrows the list to the caller's bot for that posting's company.",
+            "in": "query",
+            "name": "postingId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/Bot"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/BotList"
                 }
               }
             },
@@ -12989,14 +13577,14 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "List bots for the signed-in user",
+        "summary": "List the caller's bots, or find the bot of a posting's company",
         "tags": [
           "bots"
         ],
         "x-owner": "core"
       },
       "post": {
-        "description": "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist or is a draft.",
+        "description": "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.",
         "operationId": "postBots",
         "parameters": [
           {
@@ -13063,6 +13651,7 @@
     },
     "/api/v1/bots/link-preview": {
       "post": {
+        "description": "Resolves only a posting Push already has, by the id in the url or by the posting's source url. No page is fetched. A draft posting and a posting with a blank company are not_a_posting, as POST /bots answers 404 for them.",
         "operationId": "postBotsLinkPreview",
         "parameters": [
           {
@@ -13118,6 +13707,77 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/bots/search": {
+      "get": {
+        "description": "bots holds every bot whose display name, company name or posting title contains q, in list order. messages holds the messages of the caller's bot chats whose text contains q, newest first, and page pages them. Matching ignores letter case. % and _ in q are plain characters. 400 when q is missing, blank, or longer than 200 characters.",
+        "operationId": "getBotsSearch",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Message hits per page. A larger integer is clamped to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BotSearch"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Search the caller's bots and the messages of their chats",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/bots/{id}": {
       "delete": {
         "description": "Deletes the bot with its thread, messages, jobs, events, cards, workspace files, work-done notifications and read marker. Usage rows stay. 403 DEFAULT_BOT_PROTECTED for the Push bot.",
@@ -13167,7 +13827,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Bot"
+                      "$ref": "#/components/schemas/BotDetail"
                     }
                   },
                   "required": [
