@@ -287,17 +287,27 @@ async def test_start_document_continue_choice_keeps_the_flow():
     assert select_harness(rows.conversation).id == "personal"
 
 
-async def test_answering_a_gate_without_new_work_saves_nothing():
+async def test_a_flow_reply_made_in_a_job_that_resumed_from_a_card_is_stored():
     from tests.harness_fakes import Rows
+    ScriptedLC.replies = [
+        {"content": json.dumps({"message": "어떤 방식으로 쓸지 골라 주세요"})},
+        {"content": json.dumps({"message": "자료를 받았어요. 이력서 1개와 공고 1개예요."})},
+    ]
     rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
     svc = service(rows)
-    runtime = HarnessRuntime(svc)
-    first = await run(runtime, _payload("서류", ai=None))
+    runtime = HarnessRuntime(svc, model_cls=ScriptedLC)
+    first = await run(runtime, _payload("서류 만들어줘"))
     gate_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "choice")
     before = len(svc.messages)
-    await run(runtime, _payload("", ai=None, job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-                                resume={"approvalId": gate_id, "optionId": "resume_based"}))
-    assert len(svc.messages) == before
+
+    resumed = await run(runtime, _payload("", job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                                          resume={"approvalId": gate_id, "optionId": "resume_based"}))
+
+    streamed = [chunk["token"] for mode, chunk in resumed if mode == "custom" and "token" in chunk]
+    assert streamed == ["자료를 받았어요. 이력서 1개와 공고 1개예요."]
+    assert [(m.role, m.text) for m in svc.messages[before:]] == [("ASSISTANT", streamed[0])]
+    done = next(chunk for mode, chunk in resumed if mode == "custom" and chunk.get("type") == "done")
+    assert done["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
 
 
 def _fit_call(call_id: str) -> dict:
