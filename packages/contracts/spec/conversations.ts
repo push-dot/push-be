@@ -102,6 +102,12 @@ export const statusPhases: Schema[] = [
   statusOf({ phase: enumOf("waiting"), since, for: enumOf("answer", "confirm"), cardId: uuid }),
 ];
 
+const materialSource = obj({
+  kind: enumOf("file", "document", "posting", "link"),
+  id: uuid,
+  title: str,
+}, ["kind", "id", "title"]);
+
 export const chatEvents: Record<string, Schema> = {
   status: { anyOf: [statusOf({}), ...statusPhases] },
   token: obj({ type: enumOf("token"), text: str, seq }),
@@ -333,6 +339,10 @@ export const chatEvents: Record<string, Schema> = {
     type: enumOf("done"),
     operation: nullable(ref("Operation")),
     awaiting: enumOf("approval", "choice"),
+    sources: {
+      ...arr(materialSource),
+      description: "Materials this turn read or saved, first use, at most 5. Omitted when empty. A link title is the page read after redirects.",
+    },
     seq,
   }, ["type", "operation", "seq"]),
   error: obj({ type: enumOf("error"), error: sseError, seq }, ["type", "error"]),

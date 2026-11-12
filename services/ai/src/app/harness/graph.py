@@ -26,6 +26,7 @@ from app.harness.approval import (
 )
 from app.harness.memory import memory_update, merge_memory
 from app.harness.policy import Decision, Tier, decide
+from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
 from app.harness.status import thinking, waiting, working
 from app.harness.tools import (
@@ -484,6 +485,9 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             return Command(update=update, goto=result.goto)
         tool_state = "ok" if ok else "err"
         emit(_tool_event(tool.name, tool_state, summary, tier, result, retried))
+        if ok:
+            await note_tool(
+                tool.name, args, result, user_id=str(state.get("user_id") or ""), db=db)
         return _tool_command(
             state,
             [ToolMessage(content=json.dumps(result), tool_call_id=call_id)],
