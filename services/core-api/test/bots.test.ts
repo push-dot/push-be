@@ -405,6 +405,15 @@ test("GET /bots/search refuses a missing, blank or too long q and a bad page", a
   }
 });
 
+test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {
+  const collations = async (q: string): Promise<boolean[]> => {
+    const { seen } = await call("GET", `/api/v1/bots/search?q=${encodeURIComponent(q)}`, undefined);
+    return seen.filter((c) => c.sql.includes("ILIKE")).map((c) => c.sql.includes('COLLATE "C"'));
+  };
+  for (const q of ["acme", "모아페이", "100%", "AWS 경력"]) assert.deepEqual(await collations(q), [true, true], q);
+  for (const q of ["résumé", "Ünal", "я"]) assert.deepEqual(await collations(q), [false, false], q);
+});
+
 test("a search snippet is the match with up to 30 characters before it and 60 after", () => {
   const before = "가".repeat(40);
   const after = "나".repeat(80);
