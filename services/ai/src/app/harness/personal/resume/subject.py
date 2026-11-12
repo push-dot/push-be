@@ -23,11 +23,12 @@ def _dict(value: object) -> dict[str, Any]:
 
 
 def turn_links(payload: dict[str, Any]) -> list[str]:
-    """Every link a turn brings, attached ones first."""
+    """Every link a turn brings, pasted ones first: a turn reads only its first two pages, and a
+    link typed into this message must not lose its page to links attached from 자료."""
     context = _dict(payload.get("context"))
     attached = [url for url in context.get("urls") or [] if isinstance(url, str)]
     found = find_urls(payload.get("text") or "")
-    return list(dict.fromkeys([*attached, *found]))
+    return list(dict.fromkeys([*found, *attached]))
 
 
 def turn_posting(payload: dict[str, Any], bot: dict[str, Any] | None) -> str | None:

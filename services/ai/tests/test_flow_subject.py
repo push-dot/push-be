@@ -185,11 +185,11 @@ async def test_a_portfolio_link_does_not_carry_a_flow_about_a_into_posting_b(mon
     )
 
     assert (sent["analysis"], sent["drafts"]) == ({}, {})
-    assert list(sent["inputs"]["pages"]) == [PORTFOLIO, B_URL]
+    assert list(sent["inputs"]["pages"]) == [B_URL, PORTFOLIO]
     assert "A사" not in json.dumps(saved, ensure_ascii=False)
 
 
-async def test_posting_b_after_two_read_links_does_not_carry_the_flow_about_a(monkeypatch):
+async def test_posting_b_after_two_read_links_reads_b_and_drops_the_flow_about_a(monkeypatch):
     read_all = {
         **FINISHED_ABOUT_A,
         "inputs": {"pages": {**WITH_PORTFOLIO["inputs"]["pages"], GITHUB: "서준의 GitHub"}},
@@ -203,6 +203,7 @@ async def test_posting_b_after_two_read_links_does_not_carry_the_flow_about_a(mo
         {"urls": [PORTFOLIO, GITHUB]},
     )
 
+    assert list(sent["inputs"]["pages"]) == [B_URL, PORTFOLIO], "the pasted posting is read"
     assert (sent["analysis"], sent["drafts"]) == ({}, {})
     assert "A사" not in json.dumps(saved, ensure_ascii=False)
 
@@ -219,13 +220,13 @@ async def test_a_link_the_flow_already_read_goes_on_with_the_flow(monkeypatch):
     assert sent["drafts"]["markdown"] == "A사 백엔드 지원용 이력서 초안"
 
 
-def test_a_turn_brings_every_link_once_attached_ones_first():
-    payload = {"context": {"urls": [PORTFOLIO]}, "text": f"{A_URL} {PORTFOLIO} {B_URL}"}
+def test_a_turn_brings_every_link_once_pasted_ones_first():
+    payload = {"context": {"urls": [GITHUB, PORTFOLIO]}, "text": f"{A_URL} {PORTFOLIO} {B_URL}"}
 
-    assert turn_links(payload) == [PORTFOLIO, A_URL, B_URL]
+    assert turn_links(payload) == [A_URL, PORTFOLIO, B_URL, GITHUB]
 
 
-async def test_a_turn_reads_at_most_two_pages_attached_ones_first(monkeypatch):
+async def test_a_turn_reads_at_most_two_pages_pasted_ones_first(monkeypatch):
     sent, _saved = await _quick_start(
         monkeypatch,
         _after_a(),
@@ -234,7 +235,7 @@ async def test_a_turn_reads_at_most_two_pages_attached_ones_first(monkeypatch):
         {"urls": [PORTFOLIO]},
     )
 
-    assert list(sent["inputs"]["pages"]) == [PORTFOLIO, A_URL]
+    assert list(sent["inputs"]["pages"]) == [A_URL, B_URL]
 
 
 @pytest.mark.parametrize(

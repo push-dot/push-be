@@ -152,7 +152,7 @@ async def test_no_event_and_no_operation_of_the_turn_names_its_thread(db):
         await db.q().execute("DELETE FROM users WHERE id = $1", turn.user)
 
 
-_WIRE_TIME = "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'"
+_WIRE_TIME = '\'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\''
 
 
 async def test_the_first_status_of_a_run_counts_from_the_jobs_creation(db):

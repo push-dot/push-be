@@ -319,8 +319,9 @@ async def test_the_push_bot_calls_itself_a_bot_and_a_web_conversation_keeps_its_
     _svc, web = _runtime(Rows(), SeeingLC)
     await run(web, _payload("안녕"))
 
-    assert pushed.startswith('당신은 Push에서 구직자의 커리어를 돕는 "Push Bot"이에요.')
-    assert "에이전트예요" not in pushed
+    who, rest = pushed.split("\n", 1)
+    assert who.startswith('당신은 Push에서 구직자의 커리어를 돕는 "Push Bot"이에요.')
+    assert "에이전트" not in rest, "the web's first line is not there to contradict the bot's"
     assert _system_prompt() == REGISTRY["personal"].prompt
 
 
