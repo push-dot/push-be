@@ -73,7 +73,7 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | --- | --- |
 | Node | CI와 로컬 권장은 22 |
 | TypeScript | gateway·core 7.0.2 |
-| Wrangler | 4.156.0 |
+| Wrangler | 4.158.0 |
 | Neon 드라이버 | `@neondatabase/serverless` 1.2.0 |
 | Python | `requires-python >= 3.12`. Docker 이미지는 3.15.0. CI 테스트 매트릭스는 3.12와 3.15 |
 | 패키지 | uv. 잠금 파일 `services/ai/uv.lock`. CI의 setup-uv는 10.3.3 |
@@ -211,10 +211,11 @@ DB 검사는 마이그레이션 뒤에 `db/tests/schema_checks.sql`을 실행한
 | `lint-ai` | ai 경로 | ruff, mypy. 실패해도 job은 넘어간다 |
 | `test-gateway` | gateway 경로 | `push-be-front` 테스트·타입체크 |
 | `test-core` | core 경로 | `push-be-core` |
-| `test-db` | db 경로 | `migrate.py` 후 `schema_checks.sql` |
+| `test-db` | db 경로, 또는 core·gateway·ai가 바뀐 경우 | `migrate.py` 후 `schema_checks.sql` |
 | `bundle-core`, `bundle-gateway` | 해당 경로 | `wrangler deploy --dry-run` |
 | `test-vps` | vps 경로 또는 배포 | `infra/vps/test/run.sh` |
-| `deploy` | `DEPLOY_BRANCH`(기본 `main`) push이고 필요한 테스트가 성공일 때 | VPS 이미지, `push-be-core`, `push-be` |
+| `test-vps-logs` | vps 경로 | `infra/vps/test/real-logrotate.sh`. PR이면 base의 `harden.sh`도 먼저 검사한다 |
+| `deploy` | `develop` push(스테이징) 또는 `DEPLOY_BRANCH`(기본 `main`) push이고, 필요한 테스트가 성공일 때 | 아래 「배포 대상」 |
 
 배포 명령은 워크플로와 같다.
 
@@ -227,10 +228,34 @@ npx wrangler deploy --var AI_ORIGIN:https://${AI_HOST}
 
 Python Worker `push-be-python`은 배포하지 않는다. 게이트웨이 `workers_dev`는 켜져 있고, 코어 `workers_dev`는 꺼져 있다. 코어 크론은 `15 * * * *`이다. 게이트웨이 크론 목록은 비어 있다.
 
-스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 전송 기본은 `tcp`다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
+스키마는 배포에 포함되지 않는다. Actions의 **Migrate database**(`workflow_dispatch`)가 `services/ai/scripts/migrate.py`를 실행한다. 입력 `environment`는 `production` 또는 `staging`이고, 선택한 GitHub environment의 시크릿 `DATABASE_URL`을 쓴다. 전송 기본은 `tcp`이며, 입력 `transport`로 `websocket`을 고를 수 있다. `db/migrations/`는 파일 이름 순으로 한 번씩 적용되고 `schema_migrations`에 기록된다. 적용한 파일은 고치지 않고 다음 번호로 추가한다.
 
 `0046_rag_nodes_archived.sql`은 코드와 순서가 무관하다. 배포 전에 적용하면 이미 보관된 서류·경력 근거·저장 공고의 검색 노드가 바로 지워지고, 서류 노드의 `document_id`가 채워져 빠른 매칭이 서류 기준으로 동작한다. 되돌릴 때는 `DROP FUNCTION rag_nodes_drop_archived() CASCADE;`를 실행한다. 지운 노드와 채운 `document_id`는 되돌릴 필요가 없다.
 
 `0048_documents_purge_index_fit_cache_fk.sql`도 코드와 순서가 무관하다. 보관된 서류의 `updated_at` 부분 인덱스를 만들고, `posting_fit_cache`의 고아 행을 지운 뒤 `document_id`와 `posting_id`에 `ON DELETE CASCADE` 외래 키를 건다. 운영 적용은 이 파일 하나다. 번호가 더 큰 마이그레이션이 있으면 0048 다음에 번호 순으로 적용한다. 되돌릴 때는 헤더의 `DROP INDEX`와 두 `DROP CONSTRAINT`를 실행한다.
 
-`develop`에 대한 PR과 push는 바뀐 경로의 테스트만 돌린다. `DEPLOY_BRANCH`(기본 `main`) push는 ai, gateway, core, db 테스트를 모두 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다.
+`develop`으로 들어오는 PR은 바뀐 경로의 테스트만 돌린다.
+
+### 배포 대상
+
+저장소 변수 `DEPLOY_BRANCH`가 비어 있으면 프로덕션 배포 브랜치는 `main`이다. `DEPLOY_BRANCH`가 `develop`이 아닐 때, `develop` push는 스테이징을 배포한다.
+
+| 조건 | GitHub environment | Worker | VPS compose |
+| --- | --- | --- | --- |
+| `develop` push (`DEPLOY_BRANCH` ≠ `develop`) | `staging` | `push-be-staging`, `push-be-core-staging` (`wrangler deploy --env staging`) | `infra/vps/compose.staging.yaml` |
+| `DEPLOY_BRANCH`(기본 `main`) push | `production` | `push-be`, `push-be-core` | `infra/vps/compose.yaml` |
+
+두 경우 모두 ai·gateway·core·db 테스트를 켜고 `deploy`를 켠다. `test-vps`는 vps 경로이거나 `deploy`가 켜졌을 때 돈다. 스테이징 게이트웨이의 `workers_dev` 호스트는 `push-be-staging`이다.
+
+## 브랜치 규칙
+
+기본 브랜치는 `develop`이다. 작업 브랜치는 `develop`에서 만들고, PR은 `develop`으로 연다. `main`에는 릴리스 PR로만 반영한다.
+
+## 관련 저장소
+
+- [push-be](https://github.com/push-dot/push-be) — 이 저장소
+- [push-fe](https://github.com/push-dot/push-fe) — 웹·모바일 모노레포
+- [fo-web](https://github.com/push-dot/fo-web) — 웹 앱
+- [fo-mobile](https://github.com/push-dot/fo-mobile) — 모바일 앱
+- [push-workspace](https://github.com/push-dot/push-workspace) — 통합 워크스페이스와 제품 문서
+- [push-langdig](https://github.com/push-dot/push-langdig) — 랜딩 페이지
