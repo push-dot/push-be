@@ -38,8 +38,10 @@ test("parallel FREE creates at the limit allow only one more company bot", async
 test("two parallel creates for one company give 201 and 200 and one bot", async (t) => {
   if (!db) return t.skip(SKIP);
   const { person, posting, call } = db;
-  for (const plan of ["FREE", "ULTRA"]) {
+  // FREE starts one bot under its limit of 3: the loser must get the winner's bot, not BOT_LIMIT.
+  for (const [plan, others] of [["FREE", ["Acme", "Beta"]], ["ULTRA", []]] as const) {
     const user = await person(plan);
+    for (const company of others) await call(user, "POST", "/bots", { postingId: await posting(company) });
     const [first, second] = [await posting("Moa Pay"), await posting("  moa pay ")];
     const answers = await Promise.all([
       call(user, "POST", "/bots", { postingId: first }),
@@ -47,7 +49,7 @@ test("two parallel creates for one company give 201 and 200 and one bot", async 
     ]);
     assert.deepEqual(answers.map((a) => a.status).sort(), [200, 201], plan);
     assert.equal(answers[0].data.id, answers[1].data.id, plan);
-    assert.equal((await companyBots(user)).length, 1, plan);
+    assert.equal((await companyBots(user)).length, others.length + 1, plan);
   }
 });
 
