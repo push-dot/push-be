@@ -122,7 +122,7 @@ class Run:
 
     job_id: str
     since: str
-    announce: bool = True
+    announce: bool
     last: tuple[str, str] | None = None
 
     def status(self, phase: str, text: str) -> dict[str, str] | None:

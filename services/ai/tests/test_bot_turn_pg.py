@@ -53,9 +53,10 @@ async def queued_turn(db, attachments: list, *, bot: bool = True) -> SimpleNames
             user,
         )
     await q.execute(
-        "INSERT INTO conversations (id, user_id, title, bot_id) VALUES ($1, $2, '채팅', $3)",
+        "INSERT INTO conversations (id, user_id, title, bot_id) VALUES ($1, $2, $3, $4)",
         thread,
         user,
+        "Push Bot" if bot else "채팅",
         bot_id if bot else None,
     )
     await q.execute(

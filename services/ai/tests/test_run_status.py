@@ -268,7 +268,7 @@ async def test_writing_a_cover_letter_alone_says_so():
 
     node = with_status("p3_craft", craft)
     for targets in (["resume", "cover_letter"], ["cover_letter"]):
-        token = current_run.set(Run("job", "2026-11-13T00:00:00.000000Z"))
+        token = current_run.set(Run("job", "2026-11-13T00:00:00.000000Z", announce=True))
         try:
             with patch("app.harness.status.emit", seen.append):
                 await node({"output_targets": targets})
@@ -287,7 +287,10 @@ async def test_a_conversation_without_a_bot_sends_the_stream_it_always_did():
 
     items = await run(runtime, _payload("이 공고 요건 알려 줘"))
 
+    customs = [chunk for mode, chunk in items if mode == "custom"]
     assert _statuses(items) == []
+    assert not [c for c in customs if c.get("type") == "notice"]
+    assert any(c.get("type") == "tool" for c in customs)
 
 
 async def test_a_card_in_a_conversation_without_a_bot_waits_for_no_status():

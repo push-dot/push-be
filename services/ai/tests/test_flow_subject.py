@@ -16,6 +16,7 @@ A_URL = "https://jobs.a-corp.example/backend"
 B_URL = "https://jobs.b-corp.example/frontend"
 PORTFOLIO = "https://seojun.notion.site/portfolio"
 GITHUB = "https://github.com/seojun"
+QUERY_MENTIONS_GITHUB = "https://jobs.example.com/?from=github.com"
 BOT_POSTING = "11111111-1111-4111-8111-111111111111"
 ATTACHED_POSTING = "22222222-2222-4222-8222-222222222222"
 FINISHED_ABOUT_A = {
@@ -266,7 +267,9 @@ ABOUT_ATTACHED = {"tone": "담백하게", "inputs": {"postingId": ATTACHED_POSTI
         (FINISHED_ABOUT_A, None, [GITHUB], FINISHED_ABOUT_A),
         (FINISHED_ABOUT_A, None, ["https://gist.github.com/seojun/1"], FINISHED_ABOUT_A),
         (FINISHED_ABOUT_A, None, ["https://notgithub.com/jobs/7"], {"tone": "담백하게"}),
-        (FINISHED_ABOUT_A, None, ["https://jobs.example.com/?from=github.com"], {"tone": "담백하게"}),
+        (FINISHED_ABOUT_A, None, [QUERY_MENTIONS_GITHUB], {"tone": "담백하게"}),
+        (FINISHED_ABOUT_A, None, ["https://[jobs.example/x"], {"tone": "담백하게"}),
+        (FINISHED_ABOUT_A, None, ["https://[github.com/x"], {"tone": "담백하게"}),
         (FINISHED_ABOUT_A, None, ["https://github.com.evil.example/jobs/7"], {"tone": "담백하게"}),
         (FINISHED_ABOUT_A, None, [B_URL], {"tone": "담백하게"}),
         (FINISHED_ABOUT_A, ATTACHED_POSTING, [], {"tone": "담백하게"}),
