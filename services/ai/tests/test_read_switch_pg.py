@@ -374,6 +374,42 @@ async def test_attached_link_reads_only_that_link(db, monkeypatch):
         await _drop(db, made.user)
 
 
+async def test_read_page_turn_off_sends_no_user_links_statement(db, monkeypatch):
+    url = "https://example.com/job"
+
+    async def page(target, allow_hop=None):
+        return SimpleNamespace(url=target, text="page")
+
+    monkeypatch.setattr("app.harness.personal.tools.fetch_page", page)
+    made = await _user(db, read=False)
+    try:
+        await db.raw.execute(
+            "INSERT INTO messages (id, user_id, conversation_id, role, text, attachments) "
+            "VALUES ($1, $2, $3, 'USER', $4, '[]'::jsonb)",
+            uuid4(),
+            made.user,
+            made.thread,
+            f"이 페이지 {url}",
+        )
+        ScriptedLC.replies = [
+            {"tool_calls": [{
+                "name": "read_page",
+                "id": "call-page",
+                "type": "tool_call",
+                "args": {"url": url},
+            }]},
+            {"content": "읽었어요"},
+        ]
+        db.pool.sql.clear()
+        await _turn(made, text=f"이 페이지 {url}")
+        joined = "\n".join(sql for sql, _args in db.pool.sql)
+        assert "user_links" not in joined.lower()
+        assert _assistant(made) == "읽었어요"
+    finally:
+        ScriptedLC.replies = []
+        await _drop(db, made.user)
+
+
 async def test_list_documents_turn_off_says_why(db):
     made = await _user(db, read=False)
     try:

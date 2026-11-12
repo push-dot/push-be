@@ -422,8 +422,16 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:
             thread = state.get("conversation_id")
+            from app.harness.material_access import current_access, supplied_closed
+
+            access = current_access.get()
+            closed = access is not None and not access.may_search()
             page = {
-                "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
+                "supplied": await (
+                    supplied_closed(db, thread, state.get("user_id"), args.url)
+                    if closed
+                    else user_supplied(db, thread, state.get("user_id"), args.url)
+                ),
                 "granted": await site_granted(db, thread, args.url),
             }
         if (

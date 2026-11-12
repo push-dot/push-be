@@ -107,6 +107,49 @@ def _from_context(context) -> list[tuple[str, str]]:
     return found
 
 
+def _items(raw) -> list:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+async def supplied_closed(db, conversation_id, user_id, url: str) -> bool:
+    from app.harness.approval import normalize_url
+    from app.ingest.web_page import find_urls
+
+    wanted = normalize_url(url)
+    if wanted is None or db is None:
+        return False
+    access = current_access.get()
+    ids = set()
+    if access is not None:
+        ids = {item for kind, item in access.attached if kind == "link"}
+    try:
+        rows = await db.q().fetch(
+            "SELECT text, attachments FROM messages WHERE conversation_id = $1 "
+            "AND user_id = $2 AND role = 'USER'",
+            UUID(str(conversation_id)),
+            UUID(str(user_id)),
+        )
+    except Exception:
+        return False
+    for row in rows or []:
+        blob = row["text"] or ""
+        for item in _items(row["attachments"]):
+            if not isinstance(item, dict) or item.get("kind") != "link":
+                continue
+            ident = str(item.get("id") or "")
+            if ids and ident not in ids:
+                continue
+            blob = f"{blob}\n{ident}\n{item.get('url') or ''}"
+        if any(normalize_url(found) == wanted for found in find_urls(blob)):
+            return True
+    return False
+
+
 async def material_access(db, user_id, conversation_id, context=None) -> MaterialAccess:
     own = True
     attached: list[tuple[str, str]] = []
