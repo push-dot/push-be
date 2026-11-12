@@ -16,8 +16,15 @@ from typing_extensions import TypedDict
 
 from app.domain.access_mode import AccessMode
 from app.framework.models import _content
-from app.harness.approval import create_tool_approval
-from app.harness.policy import Tier, decide
+from app.harness.approval import (
+    APPROVE_ALWAYS,
+    APPROVING,
+    create_tool_approval,
+    remember_site,
+    site_granted,
+    user_supplied,
+)
+from app.harness.policy import Decision, Tier, decide
 from app.harness.status import thinking, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
@@ -125,19 +132,11 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
     return {**_carried(current), **seed}
 
 
-def _tier_name(tier) -> str:
-    if isinstance(tier, Tier):
-        return tier.value
-    if hasattr(tier, "metadata"):
-        return tier.metadata["tier"].value
-    return str(tier)
-
-
-def write_needs_approval(mode, tier, quick_start, tool: str | None = None) -> bool:
-    if isinstance(quick_start, dict) and _tier_name(tier) != Tier.READ:
-        return True
+def write_needs_approval(mode, tier, quick_start, tool: str | None = None, *,
+                         supplied: bool = False, granted: bool = False) -> bool:
     resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
-    return decide(mode, resolved, tool).value == "ASK"
+    return decide(mode, resolved, tool, quick_start=isinstance(quick_start, dict),
+                  supplied=supplied, granted=granted) is Decision.ASK
 
 
 def leave_flow(summary: str, **update) -> Command:
@@ -410,9 +409,18 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
         meta = bound.metadata
         summary = meta["summary"](args)
-        tier = meta["tier"].value
+        # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three
+        # values and may not change shape before push-fe F3. Send EXTERNAL_READ once it knows it.
+        tier = (Tier.READ if meta["tier"] is Tier.EXTERNAL_READ else meta["tier"]).value
+        page = {}
+        if meta["tier"] is Tier.EXTERNAL_READ:
+            thread = state.get("conversation_id")
+            page = {
+                "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
+                "granted": await site_granted(db, thread, args.url),
+            }
         if (
-            write_needs_approval(mode, meta["tier"], state.get("quick_start"), tool.name)
+            write_needs_approval(mode, meta["tier"], state.get("quick_start"), tool.name, **page)
             and meta["approval_kind"] != "DOCUMENT_EDIT"
         ):
             event, created = await create_tool_approval(
@@ -433,7 +441,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 "awaiting": "approval",
                 "kind": "TOOL_ACTION",
             }) or {}
-            if answer.get("option_id") != "approve":
+            if answer.get("option_id") not in APPROVING:
                 rejected = {"rejected": True}
                 emit(_tool_event(tool.name, "err", summary, tier, rejected))
                 return _tool_command(
@@ -442,6 +450,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                     {call_id},
                     tool_calls_used=used + 1,
                 )
+            if answer.get("option_id") == APPROVE_ALWAYS:
+                await remember_site(db, state.get("conversation_id"), args.url)
         ctx = ToolContext(
             user_id=str(state.get("user_id") or ""),
             company_id=state.get("company_id"),

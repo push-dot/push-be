@@ -7,14 +7,15 @@ from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.types import interrupt
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
+from app.domain.validators import validate_https_url
 from app.framework.fit_judge import judge_fit
-from app.harness.approval import approval_id_for
+from app.harness.approval import approval_id_for, site_host, user_supplied
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
@@ -23,6 +24,7 @@ from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
+from app.ingest.web_page import LeftSite, fetch_page
 from app.jsonutil import to_jsonable
 
 bound_services: contextvars.ContextVar = contextvars.ContextVar(
@@ -148,6 +150,16 @@ class MatchArgs(BaseModel):
 class PrepareArgs(BaseModel):
     interview_id: UUID
     expected_revision: int = 0
+
+
+class PageArgs(BaseModel):
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _web(cls, value: str) -> str:
+        validate_https_url(value)
+        return value
 
 
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
@@ -432,6 +444,36 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     return {"text": text or ""}
 
 
+async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
+    """A URL the user gave is followed wherever it leads, a short link included. A page read on
+    an approval or a site grant stays on that host: a redirect elsewhere is a new decision for the
+    model."""
+    host = site_host(args.url)
+    supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
+    same_site = None if supplied else lambda hop: site_host(hop) == host
+    try:
+        page = await fetch_page(args.url, allow_hop=same_site)
+    except LeftSite as left:
+        return {"error": "REDIRECTED", "to": left.to}
+    except Exception:
+        await _mark_link_check(ctx, args.url, False)
+        raise
+    await _mark_link_check(ctx, args.url, True)
+    return {"url": page.url, "text": page.text}
+
+
+async def _mark_link_check(ctx: ToolContext, url: str, ok: bool) -> None:
+    """The only writer of a saved link's 마지막 확인. There is no link-check job."""
+    await ctx.db.q().execute(
+        "UPDATE user_links SET last_checked_at = now(), last_check_ok = $3 "
+        "WHERE user_id = $1 AND url = $2 AND deleted_at IS NULL",
+        UUID(ctx.user_id), url, ok)
+
+
+def _page_summary(args: PageArgs | None) -> str:
+    return f"{site_host(args.url)} 페이지를 읽어요" if args else "웹 페이지를 읽어요"
+
+
 def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
     return ToolSpec(name, tier, model, run, lambda _args: summary, approval_kind)
 
@@ -453,6 +495,7 @@ PROGRESS = {
     "list_posts": "글을 보는 중",
     "get_fit_score": "적합도를 계산하는 중",
     "search_career_context": "경력 자료를 찾는 중",
+    "read_page": "페이지를 읽는 중",
     "bookmark_posting": "공고를 저장하는 중",
     "unbookmark_posting": "저장한 공고에서 빼는 중",
     "create_calendar_event": "일정을 추가하는 중",
@@ -521,6 +564,7 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/posts"),
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
     _spec("search_career_context", Tier.READ, CareerQuery, _search_career, "내 경력 자료를 찾아요"),
+    ToolSpec("read_page", Tier.EXTERNAL_READ, PageArgs, _read_page, _page_summary),
     _core("bookmark_posting", Tier.SAFE_WRITE, PostingId, "공고를 저장해요", "POST",
           lambda args: f"/api/v1/postings/{args.posting_id}/bookmark",
           write=True, drop=("posting_id",)),

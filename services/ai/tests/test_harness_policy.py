@@ -5,6 +5,8 @@ from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.registry import REGISTRY
 
 _ASK = {
+    (AccessMode.ALWAYS_ASK, Tier.EXTERNAL_READ),
+    (AccessMode.AUTO, Tier.EXTERNAL_READ),
     (AccessMode.ALWAYS_ASK, Tier.SAFE_WRITE),
     (AccessMode.ALWAYS_ASK, Tier.RISKY_WRITE),
     (AccessMode.AUTO, Tier.RISKY_WRITE),

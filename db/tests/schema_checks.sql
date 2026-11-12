@@ -40,8 +40,9 @@ BEGIN
     END IF;
 END $$;
 
--- Everything a chat thread holds is deleted with it, and the thread is deleted with its bot (0053).
--- A table that gains a conversation_id column fails here until that column is a cascading key.
+-- Everything a chat thread holds is deleted with it, and what a bot holds (its thread, read marker,
+-- site grants) is deleted with the bot (0053, 0058).
+-- A table that gains a conversation_id or bot_id column fails here until that column is a cascading key.
 DO $$
 DECLARE bad text;
 BEGIN
@@ -51,7 +52,7 @@ BEGIN
     CROSS JOIN LATERAL (
         SELECT CASE
             WHEN a.attname = 'conversation_id' THEN 'conversations'::regclass
-            WHEN a.attname = 'bot_id' AND t.oid = 'conversations'::regclass THEN 'bots'::regclass
+            WHEN a.attname = 'bot_id' THEN 'bots'::regclass
         END AS parent
     ) owner
     WHERE NOT a.attisdropped AND owner.parent IS NOT NULL

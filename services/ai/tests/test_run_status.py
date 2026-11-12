@@ -220,8 +220,10 @@ def test_every_personal_tool_says_what_it_does_while_it_runs():
     assert [name for name, text in PROGRESS.items() if not text.endswith("는 중")] == []
 
 
-def test_every_personal_tool_that_can_ask_names_its_card():
-    writes = {tool.name for tool in REGISTRY["personal"].tools if tool.tier is not Tier.READ}
+def test_every_personal_write_names_its_card():
+    """A page-read card waits on its board's own line (ChatBotStatusApprove)."""
+    write_tiers = {Tier.SAFE_WRITE, Tier.RISKY_WRITE}
+    writes = {tool.name for tool in REGISTRY["personal"].tools if tool.tier in write_tiers}
 
     assert set(CARD_LABEL) == writes, "a quick start asks before every write"
 

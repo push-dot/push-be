@@ -1956,6 +1956,34 @@
         ],
         "type": "object"
       },
+      "BotSiteGrant": {
+        "properties": {
+          "grantedAt": {
+            "description": "When 항상 허용 was answered for this host.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "host": {
+            "description": "Lowercase, without a leading www.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What the page granted was, as the server knew it then: posting is a posting page (the bot's posting or one Push has, 채용 공고), company is a page of the bot's company site (회사 소개), other is anything else and has no label.",
+            "enum": [
+              "posting",
+              "company",
+              "other"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "kind",
+          "grantedAt"
+        ],
+        "type": "object"
+      },
       "BotTurn": {
         "properties": {
           "answer": {
@@ -3991,6 +4019,37 @@
         ],
         "type": "object"
       },
+      "CardRetry": {
+        "properties": {
+          "expiresAt": {
+            "description": "openedAt plus the card's whole lifetime, so a second retry gives the same span.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "openedAt": {
+            "description": "When the card asks again: the time of this retry.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "openedAt",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
       "CareerAiOptions": {
         "additionalProperties": false,
         "description": "Client provider and model are ignored; the plan selects the managed model.",
@@ -5539,6 +5598,11 @@
                       "type": "object"
                     },
                     "documentId": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                      "format": "date-time",
                       "type": "string"
                     },
                     "foot": {
@@ -11523,6 +11587,11 @@
               "documentId": {
                 "type": "string"
               },
+              "expiresAt": {
+                "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                "format": "date-time",
+                "type": "string"
+              },
               "foot": {
                 "description": "Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting",
                 "type": "string"
@@ -16425,6 +16494,63 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/bots/{id}/approvals/{approvalId}/retry": {
+      "post": {
+        "description": "다시 요청 on an expired tool card of the bot's thread. The card is PENDING again, and its openedAt and expiresAt both move to now, so its lifetime stays the same on every retry. The run still waits on this card, so the next answer to it resumes the run (POST /bots/{id}/approvals/{approvalId}). Nothing is queued by the retry. 200 with the card's current times when it is still open. 409 APPROVAL_SUPERSEDED when the user sent a message after the card, or the card was answered and its run moved on. 409 APPROVAL_ALREADY_RESOLVED when it was closed with reject. 404 for a card that is not a tool card with a lifetime in this bot's thread.",
+        "operationId": "postBotsByIdApprovalsByApprovalIdRetry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approvalId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardRetry"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Ask an expired card again",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/bots/{id}/messages/stream": {
       "post": {
         "description": "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.",
@@ -16473,6 +16599,11 @@
                     "type": "string"
                   },
                   "documentId": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                    "format": "date-time",
                     "type": "string"
                   },
                   "foot": {
@@ -18352,6 +18483,95 @@
         "x-owner": "core"
       }
     },
+    "/api/v1/bots/{id}/site-grants": {
+      "get": {
+        "description": "The hosts the user answered 항상 허용 for on a page-read card of this bot, by host name. Deleting the bot deletes its grants. Clearing its chat keeps them.",
+        "operationId": "getBotsByIdSiteGrants",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/BotSiteGrant"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List the sites a bot may read without asking",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/site-grants/{host}": {
+      "delete": {
+        "description": "From the bot's next page read on, this host asks again. No confirm: 204 also when the bot holds no grant for the host.",
+        "operationId": "deleteBotsByIdSiteGrantsByHost",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "host",
+            "required": true,
+            "schema": {
+              "description": "A host of GET /bots/{id}/site-grants",
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Take back 항상 허용 for one site",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
     "/api/v1/bots/{id}/stream": {
       "get": {
         "description": "Streams the events of the bot's queued or running job after the given seq. 204 when nothing runs, also for a bot with no thread: the run is over and the newest transcript page holds its terminal event. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.",
@@ -18408,6 +18628,11 @@
                     "type": "string"
                   },
                   "documentId": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                    "format": "date-time",
                     "type": "string"
                   },
                   "foot": {
@@ -22386,7 +22611,7 @@
     },
     "/api/v1/conversations/{id}/approvals/{approvalId}": {
       "post": {
-        "description": "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
+        "description": "Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED past the card's expiresAt. Past expiresAt, reject still closes the card: 200 {status REJECTED} and nothing resumes. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.",
         "operationId": "postConversationsByIdApprovalsByApprovalId",
         "parameters": [
           {
@@ -23305,6 +23530,11 @@
                     "type": "string"
                   },
                   "documentId": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                    "format": "date-time",
                     "type": "string"
                   },
                   "foot": {
@@ -25619,6 +25849,11 @@
                     "type": "string"
                   },
                   "documentId": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "description": "TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.",
+                    "format": "date-time",
                     "type": "string"
                   },
                   "foot": {

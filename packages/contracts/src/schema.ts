@@ -862,6 +862,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{id}/approvals/{approvalId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask an expired card again
+         * @description 다시 요청 on an expired tool card of the bot's thread. The card is PENDING again, and its openedAt and expiresAt both move to now, so its lifetime stays the same on every retry. The run still waits on this card, so the next answer to it resumes the run (POST /bots/{id}/approvals/{approvalId}). Nothing is queued by the retry. 200 with the card's current times when it is still open. 409 APPROVAL_SUPERSEDED when the user sent a message after the card, or the card was answered and its run moved on. 409 APPROVAL_ALREADY_RESOLVED when it was closed with reject. 404 for a card that is not a tool card with a lifetime in this bot's thread.
+         */
+        post: operations["postBotsByIdApprovalsByApprovalIdRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{id}/messages/stream": {
         parameters: {
             query?: never;
@@ -894,6 +914,46 @@ export interface paths {
         /** Mark a bot read */
         post: operations["postBotsByIdRead"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/site-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the sites a bot may read without asking
+         * @description The hosts the user answered 항상 허용 for on a page-read card of this bot, by host name. Deleting the bot deletes its grants. Clearing its chat keeps them.
+         */
+        get: operations["getBotsByIdSiteGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/site-grants/{host}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Take back 항상 허용 for one site
+         * @description From the bot's next page read on, this host asks again. No confirm: 204 also when the bot holds no grant for the host.
+         */
+        delete: operations["deleteBotsByIdSiteGrantsByHost"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1392,7 +1452,7 @@ export interface paths {
         put?: never;
         /**
          * Answer a chat approval or choice card
-         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.
+         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED past the card's expiresAt. Past expiresAt, reject still closes the card: 200 {status REJECTED} and nothing resumes. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.
          */
         post: operations["postConversationsByIdApprovalsByApprovalId"];
         delete?: never;
@@ -4475,6 +4535,20 @@ export interface components {
             intent?: "match_posting" | "fit" | "gaps" | "experience" | "boost" | "find_postings" | "deadline_postings" | "applications" | "calendar" | "hub_profile" | "offer_reply" | "coffee_chat" | "career_post";
             text: string;
         };
+        BotSiteGrant: {
+            /**
+             * Format: date-time
+             * @description When 항상 허용 was answered for this host.
+             */
+            grantedAt: string;
+            /** @description Lowercase, without a leading www. */
+            host: string;
+            /**
+             * @description What the page granted was, as the server knew it then: posting is a posting page (the bot's posting or one Push has, 채용 공고), company is a page of the bot's company site (회사 소개), other is anything else and has no label.
+             * @enum {string}
+             */
+            kind: "posting" | "company" | "other";
+        };
         BotTurn: {
             answer: {
                 /** Format: uuid */
@@ -5140,6 +5214,22 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        CardRetry: {
+            /**
+             * Format: date-time
+             * @description openedAt plus the card's whole lifetime, so a second retry gives the same span.
+             */
+            expiresAt: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description When the card asks again: the time of this retry.
+             */
+            openedAt: string;
+            /** @enum {string} */
+            status: "PENDING";
+        };
         /** @description Client provider and model are ignored; the plan selects the managed model. */
         CareerAiOptions: {
             /**
@@ -5511,6 +5601,11 @@ export interface components {
                     [key: string]: unknown;
                 };
                 documentId?: string;
+                /**
+                 * Format: date-time
+                 * @description TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.
+                 */
+                expiresAt?: string;
                 /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
                 foot?: string;
                 /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
@@ -7020,6 +7115,11 @@ export interface components {
              */
             at: string;
             documentId?: string;
+            /**
+             * Format: date-time
+             * @description TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.
+             */
+            expiresAt?: string;
             /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
             foot?: string;
             /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
@@ -9125,6 +9225,35 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    postBotsByIdApprovalsByApprovalIdRetry: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+                approvalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CardRetry"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     postBotsByIdMessagesStream: {
         parameters: {
             query?: never;
@@ -9179,6 +9308,53 @@ export interface operations {
                         };
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdSiteGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSiteGrant"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsByIdSiteGrantsByHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                host: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
