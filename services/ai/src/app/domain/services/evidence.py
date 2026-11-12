@@ -13,9 +13,6 @@ from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import to_jsonable
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 IMPORT_FORMATS = {"TEXT", "MARKDOWN", "PDF", "DOCX", "GITHUB"}
 
@@ -67,7 +64,7 @@ class EvidenceService:
                 raise validation_field("sourceUrl", "must be an http(s) URL without credentials")
         if source_id is not None and not text:
             text = await self._source_text(user_id, source_id)
-        now = _now()
+        now = utcnow()
         op = ent.Operation(
             id=uuid4(), user_id=user_id, type=ent.OP_EVIDENCE_IMPORT, status="",
             pending_payload={"text": text, "sourceUrl": source_url,
@@ -126,7 +123,7 @@ class EvidenceService:
                 type="TEXT"))
         if not p.get("title"):
             missing.append(ent.InputField(name="title", label="Evidence title", type="TEXT"))
-        now = _now()
+        now = utcnow()
         if missing:
             op.status = ent.OP_NEEDS_INPUT
             op.input_request = ent.InputRequest(

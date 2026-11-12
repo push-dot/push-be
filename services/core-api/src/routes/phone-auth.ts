@@ -5,6 +5,7 @@ import { ts } from "../page.ts";
 import { createSmsSender, smsConfigured } from "../sms/sender.ts";
 import type { Ctx, UserRow } from "../types.ts";
 import { clearDeletion, issue, resolveUser } from "./auth.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const SEND_PATH = "/api/v1/auth/phone/send";
 const VERIFY_PATH = "/api/v1/auth/phone/verify";
@@ -28,21 +29,6 @@ const ME = "SELECT id, provider, provider_subject, is_employer FROM users WHERE 
 const LIST_PROVIDERS = "SELECT provider FROM user_identities WHERE user_id = $1";
 const IDENTITY = "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2";
 const INSERT_IDENTITY = "INSERT INTO user_identities (user_id, provider, provider_subject, created_at) VALUES ($1,$2,$3,$4)";
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-};
 
 const envInt = (value: string | undefined, fallback: number, max: number): number => {
   if (value == null || value.trim() === "") return fallback;
@@ -126,7 +112,7 @@ const pendingOf = async (ctx: Ctx, body: Record<string, unknown>): Promise<Pendi
 };
 
 const sendPhone = async (ctx: Ctx): Promise<Response> => {
-  const phone = phoneOf(await readJson(ctx.request));
+  const phone = phoneOf(await readObject(ctx.request));
   await callerOf(ctx);
   const cooldown = envInt(ctx.env.PHONE_CODE_COOLDOWN_SEC, DEFAULT_COOLDOWN, 3600);
   const ttl = envInt(ctx.env.PHONE_CODE_TTL_SEC, DEFAULT_TTL, 3600);
@@ -207,7 +193,7 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
 };
 
 const verifyPhone = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const phone = phoneOf(body);
   const code = codeOf(body);
   const max = envInt(ctx.env.PHONE_CODE_MAX_ATTEMPTS, DEFAULT_ATTEMPTS, 20);

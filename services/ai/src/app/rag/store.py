@@ -25,11 +25,15 @@ class RagNodeStore:
             nonlocal rows
             q = self.db.q()
             await lock_source(self.db, f"{source_type}:{source_id}")
-            if source_type in ("document", "evidence", "job") and await q.fetchval(
-                _LIVE_DOCUMENT if source_type == "document" else _LIVE_EVIDENCE if source_type == "evidence" else _LIVE_JOB,
-                source_id,
-            ) is None:
-                rows = []
+            if source_type in ("document", "evidence", "job"):
+                if source_type == "document":
+                    archived = await q.fetchval(_LIVE_DOCUMENT, source_id) is None
+                elif source_type == "evidence":
+                    archived = await q.fetchval(_LIVE_EVIDENCE, source_id) is None
+                else:
+                    archived = await q.fetchval(_LIVE_JOB, source_id) is None
+                if archived:
+                    rows = []
             user_id = rows[0]["user_id"] if rows else None
             company_id = rows[0]["company_id"] if rows else None
             if rows and (user_id is not None or company_id is not None):

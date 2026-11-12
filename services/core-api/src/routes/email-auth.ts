@@ -6,6 +6,7 @@ import { allow } from "../ratelimit.ts";
 import type { Ctx } from "../types.ts";
 import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
 import { TERMS_VERSION } from "./consents.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const VERIFY_MS = 24 * HOUR_MS;
@@ -21,21 +22,6 @@ const decoyHash = (): Promise<string> => (decoy ??= hashPassword(crypto.randomUU
 const limitEmail = async (ctx: Ctx, kind: "login" | "mail", email: string, limit: number): Promise<void> => {
   if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime()))) {
     throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 60 });
-  }
-};
-
-const readJson = async (request: Request): Promise<Record<string, unknown>> => {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
 };
 
@@ -125,7 +111,7 @@ const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown
 };
 
 const signup = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   const password = requirePassword(body.password);
   const accountType = requireAccountType(body.accountType);
@@ -150,7 +136,7 @@ const signup = async (ctx: Ctx): Promise<Response> => {
 };
 
 const verify = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const token = requireString(body, "token");
   const hash = await sha256Hex(token);
   const found = await one(ctx.deps.query,
@@ -190,7 +176,7 @@ const NEWEST_VERIFY = "SELECT expires_at FROM email_tokens WHERE signup_id = $1:
 
 // Always 204. The mail limit runs before the lookup, so an unknown address and a real one look the same.
 const resendVerify = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const signup = await one(ctx.deps.query, VERIFY_SIGNUP, [email]);
@@ -206,7 +192,7 @@ const resendVerify = async (ctx: Ctx): Promise<Response> => {
 };
 
 const login = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   const password = typeof body.password === "string" ? body.password : "";
   await limitEmail(ctx, "login", email, LOGIN_PER_MINUTE);
@@ -229,7 +215,7 @@ const login = async (ctx: Ctx): Promise<Response> => {
 };
 
 const requestReset = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const user = await one(ctx.deps.query, "SELECT id FROM users WHERE lower(email) = lower($1)", [email]);
@@ -241,7 +227,7 @@ const requestReset = async (ctx: Ctx): Promise<Response> => {
 };
 
 const confirmReset = async (ctx: Ctx): Promise<Response> => {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const token = requireString(body, "token");
   const password = requirePassword(body.password);
   const row = await resetRow(ctx, token);

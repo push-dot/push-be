@@ -5,6 +5,7 @@ import { HttpError, asBool, data, randomToken, requireUuid, sha256Hex } from "..
 import { ts } from "../page.ts";
 import type { Ctx, UserRow } from "../types.ts";
 import { cancelSubscriptions } from "./billing.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const ACCESS_TTL = 900;
 const REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -30,14 +31,11 @@ const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, par
   }
 };
 
-const employerFlag = (value: unknown): boolean =>
-  value === true || value === "t" || value === "true" || value === 1;
-
 const textOrNull = (value: unknown): string | null =>
   value == null || value === "" ? null : String(value);
 
 export const emailTaken = (row: Record<string, unknown>): HttpError => {
-  const employer = employerFlag(row.is_employer);
+  const employer = asBool(row.is_employer);
   const accountType = employer ? "EMPLOYER" : "PERSONAL";
   const message = employer
     ? "이 이메일은 기업 계정으로 가입되어 있어요"
@@ -134,7 +132,7 @@ function userFrom(row: Record<string, unknown>): UserRow {
     stripeCustomerId: row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
     periodEndsAt: row.period_ends_at == null ? null : String(row.period_ends_at),
     createdAt: String(row.created_at),
-    accountType: employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL",
+    accountType: asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL",
     companyId: textOrNull(row.company_id),
     companyRole: textOrNull(row.company_role),
   };
@@ -191,21 +189,6 @@ export async function issue(ctx: Ctx, userId: string): Promise<Record<string, un
   ]);
   if (!row) throw new HttpError(500, "INTERNAL", "internal error");
   return sessionBody(access, refresh, userFrom(row));
-}
-
-async function readJson(request: Request): Promise<Record<string, unknown>> {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-    }
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
 }
 
 function requireString(body: Record<string, unknown>, key: string): string {
@@ -340,7 +323,7 @@ export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => 
 };
 
 const accountLabel = (row: Record<string, unknown>): "PERSONAL" | "EMPLOYER" =>
-  employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL";
+  asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL";
 
 const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise<string> => {
   const provider = rec.provider == null || rec.provider === "" ? "" : String(rec.provider);
@@ -405,7 +388,7 @@ export const completePersonalSocial = async (ctx: Ctx, rec: Record<string, unkno
 };
 
 export async function exchange(ctx: Ctx): Promise<Response> {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const code = requireString(body, "code");
   const verifier = requireString(body, "codeVerifier");
   const rec = await one(ctx.deps.query,
@@ -435,7 +418,7 @@ export async function revokeAll(ctx: Ctx, userId: string): Promise<void> {
 }
 
 export async function refresh(ctx: Ctx): Promise<Response> {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const token = requireString(body, "refreshToken");
   const hash = await sha256Hex(token);
   const rec = await one(ctx.deps.query,
@@ -458,7 +441,7 @@ export async function refresh(ctx: Ctx): Promise<Response> {
 }
 
 export async function logout(ctx: Ctx): Promise<Response> {
-  const body = await readJson(ctx.request);
+  const body = await readObject(ctx.request);
   const token = requireString(body, "refreshToken");
   const pushToken = typeof body.pushToken === "string" && body.pushToken ? body.pushToken : null;
   if (token) await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString(), pushToken]);
@@ -514,5 +497,3 @@ export async function me(ctx: Ctx): Promise<Response> {
     plan: ctx.user.plan,
   }, ctx.rid);
 }
-
-export { requireUuid };

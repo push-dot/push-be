@@ -7,7 +7,7 @@ import type { CachedUser } from "./cache.ts";
 import { clampTtl } from "./cache.ts";
 import type { Deps, FrontEnv } from "../types.ts";
 import type { User } from "../types.ts";
-import { codedError, errorResponse, secretEquals, sha256Hex } from "../http.ts";
+import { asBool, codedError, errorResponse, secretEquals, sha256Hex } from "../http.ts";
 import {
   acceptGrant, allow, allowShared, AUTH_RATE_SQL, AUTH_SQL, isolate, leases,
   nextBatch, queryToleratingCompany, rateParams, readCap, releaseExpired, remoteHits, spendLease, tsText, windowOf,
@@ -222,9 +222,6 @@ async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
   return userFrom(rows[0]);
 }
 
-const employerFlag = (value: unknown): boolean =>
-  value === true || value === "t" || value === "true" || value === 1;
-
 const textOrNull = (value: unknown): string | null =>
   value == null || value === "" ? null : String(value);
 
@@ -234,7 +231,7 @@ export function userFrom(row: Record<string, unknown>): User {
     displayName: String(row.display_name ?? ""),
     locale: String(row.locale ?? "ko"),
     createdAt: formatJsonTimestamp(row.created_at),
-    accountType: employerFlag(row.is_employer) ? "EMPLOYER" : "PERSONAL",
+    accountType: asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL",
     companyId: textOrNull(row.company_id),
     companyRole: textOrNull(row.company_role),
     email: row.email == null ? "" : String(row.email),

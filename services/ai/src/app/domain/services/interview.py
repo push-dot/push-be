@@ -18,9 +18,6 @@ from app.infrastructure.store_operations import OperationStore
 from app.jsonutil import _ts
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 class InterviewService:
     def __init__(self, db: DB, ai: AIGate):
@@ -75,7 +72,7 @@ class InterviewService:
                     "claim": claim, "sourceUrl": cs.source_url,
                     "accessedAt": _ts(cs.accessed_at),
                     "verificationStatus": ent.VERIFICATION_USER_PROVIDED})
-            now = _now()
+            now = utcnow()
             op = ent.Operation(
                 id=uuid4(), user_id=user_id, type=ent.OP_INTERVIEW_PREPARE,
                 application_id=v.application_id, status=ent.OP_SUCCEEDED,

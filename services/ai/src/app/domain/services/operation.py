@@ -11,9 +11,6 @@ from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_operations import OperationStore
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 class OperationService:
     def __init__(self, db: DB, evidence_svc):
@@ -54,7 +51,7 @@ class OperationService:
                 op.input_request = None
                 if not ent.terminal_operation_status(op.status):
                     op.status = ent.OP_QUEUED
-            op.updated_at = _now()
+            op.updated_at = utcnow()
             await self.ops.update(op)
             out = op
 
@@ -75,7 +72,7 @@ class OperationService:
                 out = op
                 return
             op.status = ent.OP_CANCELLED
-            op.updated_at = _now()
+            op.updated_at = utcnow()
             await self.ops.update(op)
             out = op
 

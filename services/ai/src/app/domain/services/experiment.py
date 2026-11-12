@@ -10,9 +10,6 @@ from app.domain.errors import internal, not_found, validation_field
 from app.infrastructure.store_experiments import ExperimentStore
 
 
-def _now() -> datetime:
-    return utcnow()
-
 
 def bucket_variant(user_id: UUID, key: str, variants: list[str]) -> str:
     h = int(hashlib.sha256(f"{user_id}:{key}".encode()).hexdigest(), 16)
@@ -25,7 +22,7 @@ class ExperimentService:
         self.experiments = ExperimentStore(db)
 
     async def seed(self, specs: list[dict]) -> None:
-        now = _now()
+        now = utcnow()
         for spec in specs:
             key = spec.get("key") or ""
             variants = spec.get("variants") or []
@@ -47,13 +44,13 @@ class ExperimentService:
         if exp.status == ent.EXPERIMENT_ENDED:
             return ent.ExperimentAssignment(
                 experiment_key=key, user_id=user_id,
-                variant=exp.variants[0], created_at=_now())
+                variant=exp.variants[0], created_at=utcnow())
         if exp.exclusion_group and not await self._enrolled(
                 user_id, key, exp.exclusion_group):
             return ent.ExperimentAssignment(
                 experiment_key=key, user_id=user_id,
                 variant=exp.variants[0], enrolled=False,
-                created_at=_now())
+                created_at=utcnow())
         try:
             return await self.experiments.get_assignment(key, user_id)
         except NotFoundError:
@@ -63,7 +60,7 @@ class ExperimentService:
         a = ent.ExperimentAssignment(
             experiment_key=key, user_id=user_id,
             variant=bucket_variant(user_id, key, exp.variants),
-            created_at=_now())
+            created_at=utcnow())
         try:
             await self.experiments.create_assignment(a)
             return await self.experiments.get_assignment(key, user_id)
@@ -81,7 +78,7 @@ class ExperimentService:
         try:
             await self.experiments.record_event(ent.ExperimentEvent(
                 id=uuid4(), experiment_key=key, user_id=user_id,
-                variant=a.variant, event=event, created_at=_now()))
+                variant=a.variant, event=event, created_at=utcnow()))
         except Exception:
             raise internal()
 

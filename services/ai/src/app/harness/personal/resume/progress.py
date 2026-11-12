@@ -17,7 +17,12 @@ _RIEUL = 8
 def todo_event(list_id: str, steps: list[tuple[str, str]], cursor: int, added=frozenset()) -> dict:
     items = []
     for index, (key, text) in enumerate(steps):
-        state = "done" if index < cursor else "now" if index == cursor else "todo"
+        if index < cursor:
+            state = "done"
+        elif index == cursor:
+            state = "now"
+        else:
+            state = "todo"
         item = {"id": key, "text": text, "state": state}
         if key in added:
             item["added"] = True

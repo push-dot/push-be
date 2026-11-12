@@ -6,6 +6,7 @@ import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
+import { readObject } from "./recruiting-shared.ts";
 
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
 const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
@@ -18,19 +19,6 @@ const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
 // Written on the cancel that refunds a replaced subscription's unused time, so the successor carries that period's credits.
 const REFUNDED = "push: replaced, unused time refunded";
 const UUID = /^[0-9a-f-]{36}$/i;
-
-async function readObject(request: Request): Promise<Record<string, unknown>> {
-  const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
-  try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  }
-}
 
 function configured(ctx: Ctx): boolean {
   return Boolean(ctx.env.STRIPE_SECRET_KEY);
@@ -93,7 +81,11 @@ const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
 const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: string }, micro: number, referenceId: string): Promise<void> => {
   const companyId = "companyId" in owner ? owner.companyId : undefined;
   const left = await availableMicro(ctx.deps.query, "userId" in owner ? owner.userId : "", companyId);
-  const amount = -Number(left <= 0n ? 0n : left < BigInt(micro) ? left : BigInt(micro));
+  let deduct: bigint;
+  if (left <= 0n) deduct = 0n;
+  else if (left < BigInt(micro)) deduct = left;
+  else deduct = BigInt(micro);
+  const amount = -Number(deduct);
   if (companyId) {
     await companyLedger(ctx, companyId, amount, referenceId, { description: TOPUP_REFUND_DESCRIPTION, amountUsdCents: null, receiptUrl: null }, "REFUND");
   }
