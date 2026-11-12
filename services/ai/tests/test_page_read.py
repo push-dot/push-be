@@ -104,6 +104,31 @@ def test_a_grant_is_one_host_and_a_supplied_url_is_one_page():
     )
 
 
+def test_a_link_in_a_korean_sentence_ends_where_the_particle_starts():
+    assert web_page.find_urls("https://careers.moapay.example/jobs/1을 요약해 줘") == [
+        "https://careers.moapay.example/jobs/1"
+    ]
+    found = web_page.find_urls("https://moapay.example에서 찾아 줘, https://x.example/채용/1 봐 줘")
+    assert found == [
+        "https://moapay.example",
+        "https://x.example/채용/1",
+    ]
+    assert web_page.find_urls("https://x.example/search?q=개발자 결과") == [
+        "https://x.example/search?q=개발자"
+    ]
+
+
+def test_a_korean_path_typed_as_text_is_the_same_page_as_the_encoded_link():
+    typed = normalize_url("https://x.example/채용/1?q=개발자")
+    assert typed == normalize_url(
+        "https://x.example/%EC%B1%84%EC%9A%A9/1?q=%EA%B0%9C%EB%B0%9C%EC%9E%90"
+    )
+    assert typed == normalize_url(
+        "https://x.example/%ec%b1%84%ec%9a%a9/1/?q=%ea%b0%9c%eb%b0%9c%ec%9e%90"
+    )
+    assert normalize_url("https://x.example/a%2Fb") != normalize_url("https://x.example/a/b")
+
+
 async def test_a_redirect_to_a_host_the_permission_does_not_cover_reads_nothing_of_it(monkeypatch):
     fetched = fake_web(
         monkeypatch,

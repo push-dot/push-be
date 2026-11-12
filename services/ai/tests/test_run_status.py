@@ -211,7 +211,7 @@ def test_every_personal_tool_says_what_it_does_while_it_runs():
 
 
 def test_every_personal_write_names_its_card():
-    """A page-read card waits on the board's own line, 확인을 기다리고 있어요 (ChatBotStatusApprove)."""
+    """A page-read card waits on its board's own line (ChatBotStatusApprove)."""
     write_tiers = {Tier.SAFE_WRITE, Tier.RISKY_WRITE}
     writes = {tool.name for tool in REGISTRY["personal"].tools if tool.tier in write_tiers}
 

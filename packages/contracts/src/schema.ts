@@ -4543,6 +4543,11 @@ export interface components {
             grantedAt: string;
             /** @description Lowercase, without a leading www. */
             host: string;
+            /**
+             * @description What the page granted was, as the server knew it then: posting is a posting page (the bot's posting or one Push has, 채용 공고), company is a page of the bot's company site (회사 소개), other is anything else and has no label.
+             * @enum {string}
+             */
+            kind: "posting" | "company" | "other";
         };
         BotTurn: {
             answer: {

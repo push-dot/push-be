@@ -33,6 +33,11 @@ _HTTP_TIMEOUT = 15
 _FETCH_DEADLINE = 25
 _RENDER_DEADLINE = 60
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
+# A Korean particle typed straight after a URL ("…/jobs/1을 요약해 줘") is not part of it. Hangul
+# right after a letter or digit ends the URL; a Hangul path segment ("/채용/1") or value ("?q=개발")
+# stays. shortcut: a particle after a Hangul segment ("/채용을") stays, since a Korean word can
+# end in that syllable, so such a link still asks; match by prefix in user_supplied if it bites.
+_PARTICLE_RE = re.compile(r"(?<=[A-Za-z0-9])[가-힣]+$")
 _WS_RE = re.compile(r"\s+")
 _BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIX = (".localhost", ".internal", ".local", ".lan", ".home")
@@ -247,7 +252,7 @@ async def _start_egress_proxy() -> tuple[asyncio.AbstractServer, int]:
 def find_urls(text: str) -> list[str]:
     seen, out = set(), []
     for u in _URL_RE.findall(text or ""):
-        u = u.rstrip(".,;:!?")
+        u = _PARTICLE_RE.sub("", u.rstrip(".,;:!?"))
         if u not in seen:
             seen.add(u)
             out.append(u)

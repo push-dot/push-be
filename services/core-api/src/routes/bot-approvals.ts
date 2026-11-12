@@ -12,13 +12,11 @@ const RETRYABLE_CARD = `a.id = $1 AND a.user_id = $2 AND a.kind = 'TOOL_ACTION' 
 
 // The card is asked again at $4, so both of its times move and the span between them stays: every retry
 // gives the card its whole lifetime. Nothing resumes a run when its card expires, so the run still waits
-// on this card and the next answer resumes it. approval_superseded (0058) is the rule that a newer chat
-// job has moved the thread on; the transcript's retryable reads it too.
+// on this card and the next answer resumes it. approval_retryable (0058) is the rule the transcript's
+// retryable reads too.
 const REARM = `UPDATE approvals a SET status = 'PENDING', created_at = $4,
     expires_at = $4::timestamptz + (a.expires_at - a.created_at), updated_at = $4, revision = a.revision + 1
-  WHERE ${RETRYABLE_CARD}
-    AND (a.status = 'EXPIRED' OR (a.status = 'PENDING' AND a.expires_at <= $4))
-    AND NOT approval_superseded(a.conversation_id, a.created_at)
+  WHERE ${RETRYABLE_CARD} AND a.expires_at <= $4 AND approval_retryable(a)
   RETURNING a.id, a.created_at, a.expires_at`;
 
 const CARD = `SELECT a.id, a.status, a.created_at, a.expires_at, a.expires_at > $4 AS open,
@@ -46,8 +44,8 @@ const retryCard = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<
 const listSiteGrants = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
   const rows = await query(ctx.deps.query,
-    "SELECT host, created_at FROM bot_site_grants WHERE bot_id = $1 ORDER BY host", [bot.id]);
-  return data(200, rows.rows.map((row) => ({ host: String(row.host), grantedAt: ts(row.created_at) })), ctx.rid);
+    "SELECT host, kind, created_at FROM bot_site_grants WHERE bot_id = $1 ORDER BY host", [bot.id]);
+  return data(200, rows.rows.map((row) => ({ host: String(row.host), kind: String(row.kind), grantedAt: ts(row.created_at) })), ctx.rid);
 };
 
 // No confirm on the board, so a second revoke of the same host answers the same.

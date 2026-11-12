@@ -134,21 +134,21 @@ test("a bot's allowed sites are listed by host and taken back without a confirm"
   const user = await db.person("PRO");
   const { bot } = await botWithThread(user);
   await rows(
-    `INSERT INTO bot_site_grants (bot_id, host, created_at) VALUES
-       ($1::uuid, 'moapay.notion.site', '2026-11-05T01:00:00Z'), ($1::uuid, 'careers.moapay.co.kr', '2026-11-03T01:00:00Z')`, [bot]);
+    `INSERT INTO bot_site_grants (bot_id, host, kind, created_at) VALUES
+       ($1::uuid, 'moapay.notion.site', 'company', '2026-11-05T01:00:00Z'), ($1::uuid, 'careers.moapay.co.kr', 'posting', '2026-11-03T01:00:00Z')`, [bot]);
 
   const listed = await db.call(user, "GET", `/bots/${bot}/site-grants`);
   assert.equal(listed.status, 200);
   assert.deepEqual(listed.body.data, [
-    { host: "careers.moapay.co.kr", grantedAt: "2026-11-03T01:00:00Z" },
-    { host: "moapay.notion.site", grantedAt: "2026-11-05T01:00:00Z" },
-  ]);
+    { host: "careers.moapay.co.kr", kind: "posting", grantedAt: "2026-11-03T01:00:00Z" },
+    { host: "moapay.notion.site", kind: "company", grantedAt: "2026-11-05T01:00:00Z" },
+  ], "BotProfileAllowed: 11월 3일 허용 · 채용 공고, 11월 5일 허용 · 회사 소개");
 
   for (let i = 0; i < 2; i++) {
     assert.equal((await db.call(user, "DELETE", `/bots/${bot}/site-grants/careers.moapay.co.kr`)).status, 204);
   }
   assert.deepEqual((await db.call(user, "GET", `/bots/${bot}/site-grants`)).body.data,
-    [{ host: "moapay.notion.site", grantedAt: "2026-11-05T01:00:00Z" }]);
+    [{ host: "moapay.notion.site", kind: "company", grantedAt: "2026-11-05T01:00:00Z" }]);
 
   const stranger = await db.person("PRO");
   assert.equal((await db.call(stranger, "GET", `/bots/${bot}/site-grants`)).status, 404);
@@ -168,7 +168,7 @@ test("the Push Bot lists and revokes its sites by the literal push", async (t) =
   assert.deepEqual([empty.status, empty.body.data], [200, []]);
 
   const [push] = await rows("SELECT id FROM bots WHERE user_id = $1::uuid AND kind = 'push'", [user.id]);
-  await rows("INSERT INTO bot_site_grants (bot_id, host) VALUES ($1::uuid, 'nuricloud.career.greetinghr.com')", [push.id]);
+  await rows("INSERT INTO bot_site_grants (bot_id, host, kind) VALUES ($1::uuid, 'nuricloud.career.greetinghr.com', 'posting')", [push.id]);
   assert.deepEqual(((await db.call(user, "GET", "/bots/push/site-grants")).body.data as { host: string }[]).map((g) => g.host),
     ["nuricloud.career.greetinghr.com"]);
   assert.equal((await db.call(user, "DELETE", "/bots/push/site-grants/nuricloud.career.greetinghr.com")).status, 204);

@@ -3,9 +3,12 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import urlsplit, urlunsplit
+from typing import Literal
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.clock import utcnow
@@ -27,8 +30,9 @@ _PAGE_TTL = timedelta(minutes=10)
 class CardSpec:
     """How a tool card asks: its answers, how long it waits for one, and the line under the answers.
 
-    site: the card asks to read a web site. Its title names the bot's company, and 항상 허용 is
-    offered only in a bot thread, because a conversation without a bot has no bot to remember for.
+    site: the card asks to read a web page. Its title and summary say what the page is (SitePage),
+    and 항상 허용 is offered only in a bot thread, because a conversation without a bot has no bot
+    to remember for.
     """
 
     options: tuple[dict, ...] = (
@@ -74,7 +78,8 @@ def site_host(url: str) -> str:
 
 def normalize_url(url: str) -> str | None:
     """The form two URLs are compared in, None when it does not parse. Query strings are kept:
-    one page of a site is not the site."""
+    one page of a site is not the site. Path and query are compared percent-encoded, so a Korean
+    path typed as text equals the same link copied encoded."""
     try:
         parts = urlsplit(url.strip())
         port = parts.port
@@ -83,24 +88,33 @@ def normalize_url(url: str) -> str | None:
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").rstrip(".")
     netloc = host if port in (None, {"http": 80, "https": 443}.get(scheme)) else f"{host}:{port}"
-    return urlunsplit((scheme, netloc, parts.path.rstrip("/"), parts.query, ""))
+    path, query = (_encoded(part) for part in (parts.path.rstrip("/"), parts.query))
+    return urlunsplit((scheme, netloc, path, query, ""))
 
 
+def _encoded(part: str) -> str:
+    escaped = quote(part, safe="/%:@!$&'()*+,;=-._~?")
+    return re.sub(r"%[0-9a-fA-F]{2}", lambda m: m.group().upper(), escaped)
+
+
+# A URL the user gave in this thread, in a message or as an attached link, and with 내 자료 읽기
+# 허용 on, a saved link, hub profile links included (they are user_links rows, contract.md 1.4).
 _SUPPLIED = (
     "SELECT m.text, ARRAY(SELECT l.url FROM jsonb_array_elements(m.attachments) a "
     "JOIN user_links l ON l.id = (a->>'id')::uuid AND l.user_id = m.user_id "
     "WHERE a->>'kind' = 'link') AS links "
     "FROM messages m WHERE m.conversation_id = $1 AND m.user_id = $2 AND m.role = 'USER' "
-    "AND (strpos(lower(m.text), $3) > 0 OR m.attachments @> '[{\"kind\": \"link\"}]')"
+    "AND (strpos(lower(m.text), $3) > 0 OR m.attachments @> '[{\"kind\": \"link\"}]') "
+    "UNION ALL SELECT '', ARRAY(SELECT l.url FROM user_links l WHERE l.user_id = $2 "
+    "AND l.deleted_at IS NULL AND strpos(lower(l.url), $3) > 0) "
+    "WHERE COALESCE((SELECT s.allow_ai_read_my_files FROM user_settings s "
+    "WHERE s.user_id = $2), true)"
 )
 
 
 async def user_supplied(db, conversation_id, user_id, url: str) -> bool:
-    """True when the user gave this URL in this thread, in a message or as an attached link.
-
-    Then the user already chose the page and nothing asks. The whole URL must match, never only
-    the host.
-    """
+    """True when the user gave this URL (_SUPPLIED). Then the user already chose the page and
+    nothing asks. The whole URL must match, never only the host."""
     wanted = normalize_url(url)
     if wanted is None:
         return False
@@ -113,6 +127,56 @@ async def user_supplied(db, conversation_id, user_id, url: str) -> bool:
     )
 
 
+PageKind = Literal["posting", "company", "other"]
+
+
+@dataclass(frozen=True)
+class SitePage:
+    """What Push knows of a page a card asks to open, and the company it belongs to."""
+
+    kind: PageKind = "other"
+    owner: str = ""
+
+
+# What a page-read card says by the kind of page. Board ChatBotStatusApprove draws posting. A
+# page Push cannot name claims nothing about itself.
+_ASKS: dict[PageKind, tuple[str, str]] = {
+    "posting": ("{owner} 채용 페이지를 열어도 될까요?", "{host} · 공고 1개를 읽어요"),
+    "company": ("{owner} 회사 소개를 열어도 될까요?", "{host} · 회사 소개를 읽어요"),
+    "other": ("{host} 페이지를 열어도 될까요?", "{host} · 페이지 1개를 읽어요"),
+}
+
+# Every posting whose URL holds the host, and the site of the company this bot works for.
+# shortcut: job_postings.source_url has no index, so this scans the postings; index it when they
+# grow past what a scan per page card can afford.
+_KNOWN_PAGES = (
+    "SELECT 'posting' AS kind, p.company AS owner, p.source_url AS url FROM job_postings p "
+    "WHERE strpos(lower(p.source_url), $2) > 0 "
+    "UNION ALL SELECT 'company', COALESCE(NULLIF(b.company_name, ''), co.name), co.website "
+    "FROM conversations c JOIN bots b ON b.id = c.bot_id "
+    "JOIN companies co ON co.id = COALESCE(b.company_id, "
+    "(SELECT p.company_id FROM job_postings p WHERE p.id = b.posting_id)) "
+    "WHERE c.id = $1 AND co.website IS NOT NULL"
+)
+
+
+async def site_page(db, conversation_id, url: str) -> SitePage:
+    """Push names a page it knows: a posting it has, by the whole URL, or any page of the site of
+    the company this bot works for. Anything else is other."""
+    wanted = normalize_url(url)
+    rows = await db.q().fetch(_KNOWN_PAGES, UUID(str(conversation_id)), site_host(url))
+    found = {row["kind"]: row["owner"] for row in rows if _covers(row, wanted)}
+    named: tuple[PageKind, ...] = ("posting", "company")
+    return next((SitePage(kind, found[kind]) for kind in named if kind in found), SitePage())
+
+
+def _covers(row: Mapping[str, str], wanted: str | None) -> bool:
+    known = normalize_url(row["url"])
+    if wanted is None or known is None:
+        return False
+    return wanted == known or (row["kind"] == "company" and wanted.startswith(known + "/"))
+
+
 async def site_granted(db, conversation_id, url: str) -> bool:
     """False in a conversation without a bot: there every page the user did not give asks."""
     return bool(await db.q().fetchval(
@@ -122,23 +186,13 @@ async def site_granted(db, conversation_id, url: str) -> bool:
 
 
 async def remember_site(db, conversation_id, url: str) -> None:
-    """Written for an answered 항상 허용 just before the tool runs. A job that dies first
-    remembers nothing."""
+    """Written for an answered 항상 허용 just before the tool runs, with what the page is known
+    to be now. A job that dies first remembers nothing."""
+    page = await site_page(db, conversation_id, url)
     await db.q().execute(
-        "INSERT INTO bot_site_grants (bot_id, host) SELECT c.bot_id, $2 FROM conversations c "
-        "WHERE c.id = $1 AND c.bot_id IS NOT NULL ON CONFLICT DO NOTHING",
-        UUID(str(conversation_id)), site_host(url))
-
-
-async def _thread_company(db, conversation_id) -> tuple[bool, str]:
-    """Whether the conversation is a bot thread, and the bot's company ('' for the Push Bot)."""
-    row = await db.q().fetchrow(
-        "SELECT b.kind, b.company_name FROM bots b "
-        "JOIN conversations c ON c.bot_id = b.id WHERE c.id = $1",
-        UUID(str(conversation_id)))
-    if row is None:
-        return False, ""
-    return True, row["company_name"] if row["kind"] == "company" else ""
+        "INSERT INTO bot_site_grants (bot_id, host, kind) SELECT c.bot_id, $2, $3 "
+        "FROM conversations c WHERE c.id = $1 AND c.bot_id IS NOT NULL ON CONFLICT DO NOTHING",
+        UUID(str(conversation_id)), site_host(url), page.kind)
 
 
 def tool_action_event(
@@ -186,10 +240,13 @@ async def create_tool_approval(
     card = CARDS.get(tool.name, DEFAULT_CARD)
     title, options = summary, card.options
     if card.site:
-        in_bot, company = await _thread_company(db, conversation_id)
         host = site_host(payload["url"])
-        title = f"{company or host} 채용 페이지를 열어도 될까요?"
-        summary = f"{host} · 공고 1개를 읽어요"
+        page = await site_page(db, conversation_id, payload["url"])
+        title, summary = (
+            form.format(owner=page.owner or host, host=host) for form in _ASKS[page.kind])
+        in_bot = await db.q().fetchval(
+            "SELECT bot_id IS NOT NULL FROM conversations WHERE id = $1",
+            UUID(str(conversation_id)))
         if not in_bot:
             options = tuple(option for option in options if option["id"] != APPROVE_ALWAYS)
     # One clock for both times: a retry keeps the span between them as the card's lifetime.
