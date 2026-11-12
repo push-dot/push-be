@@ -642,7 +642,7 @@ export interface paths {
         };
         /**
          * Billing status and credit balance
-         * @description EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them.
+         * @description EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them. creditsRefillAt is the date to show for the next plan credits; a client must not derive it from the calendar.
          */
         get: operations["getBilling"];
         put?: never;
@@ -4043,6 +4043,11 @@ export interface components {
             /** @enum {string} */
             audience: "PERSONAL" | "EMPLOYER";
             balanceMicroCredits: number;
+            /**
+             * Format: date-time
+             * @description When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.
+             */
+            creditsRefillAt?: string;
             monthlyMicroCredits: number;
             /** @description False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it. */
             paymentsEnabled: boolean;

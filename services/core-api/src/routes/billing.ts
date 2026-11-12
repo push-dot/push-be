@@ -30,6 +30,12 @@ const utcMonth = (now: Date): { monthStart: string; monthEnd: string } => {
   return { monthStart, monthEnd };
 };
 
+// Plan credits are granted once per UTC calendar month (ensureMonthlyGrant), so the next ones come at the end of this month.
+// A company has no such date once it is on a Stripe period: grantPeriod pays out when a renewal invoice is paid, at a time
+// only Stripe knows. Without a plan it is granted nothing. The key is left out then, because pyJson writes undefined as null.
+const creditsRefill = (now: Date, company?: { plan: string | null; periodStart: unknown }): { creditsRefillAt?: string } =>
+  company && (company.plan == null || company.periodStart != null) ? {} : { creditsRefillAt: utcMonth(now).monthEnd };
+
 const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): number => {
   const named = plan?.trim() ?? "";
   if (audience === "PERSONAL" && named === "") return grantMicro("PERSONAL", "FREE");
@@ -164,7 +170,7 @@ const paymentsEnabled = (ctx: Ctx): boolean => ctx.env.PAYMENTS_ENABLED === "1";
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
     if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-    const company = await one(ctx.deps.query, "SELECT plan FROM companies WHERE id = $1", [ctx.user.companyId]);
+    const company = await one(ctx.deps.query, "SELECT plan, credit_period_start FROM companies WHERE id = $1", [ctx.user.companyId]);
     if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
     const plan = employerPlanOf(company.plan);
     await grantMonthly(ctx, "EMPLOYER", plan, ctx.user.companyId);
@@ -185,6 +191,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       audience: "EMPLOYER",
       source: plan ? "STRIPE" : null,
       paymentsEnabled: paymentsEnabled(ctx),
+      ...creditsRefill(ctx.now, { plan, periodStart: company.credit_period_start }),
     }, ctx.rid);
   }
   const plan = ctx.user.plan || null;
@@ -211,6 +218,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     audience: "PERSONAL",
     source,
     paymentsEnabled: paymentsEnabled(ctx),
+    ...creditsRefill(ctx.now),
   }, ctx.rid);
 }
 

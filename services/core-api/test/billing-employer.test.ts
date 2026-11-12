@@ -430,6 +430,7 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
       audience: "EMPLOYER",
       source: "STRIPE",
       paymentsEnabled: true,
+      creditsRefillAt: "2026-11-01T00:00:00.000Z",
     },
   });
   const second = await handle(get("/api/v1/billing"), envOf(), deps);
@@ -457,7 +458,25 @@ test("a null employer plan grants nothing and has no source", async () => {
   assert.equal(body.data.source, null);
   assert.equal(body.data.periodEndsAt, null);
   assert.equal(body.data.subscriptionStatus, "NONE");
+  assert.equal("creditsRefillAt" in body.data, false);
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO billing_ledger")), false);
+});
+
+test("personal status names the first instant of the next UTC month as the credits refill time", async () => {
+  const cases = [
+    ["2026-11-12T10:00:00.000Z", "2026-12-01T00:00:00.000Z"],
+    ["2026-12-31T23:59:59.000Z", "2027-01-01T00:00:00.000Z"],
+    ["2026-11-30T23:59:59.999Z", "2026-12-01T00:00:00.000Z"],
+    ["2026-12-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z"],
+    ["2028-02-29T12:00:00.000Z", "2028-03-01T00:00:00.000Z"],
+  ] as const;
+  for (const [now, refill] of cases) {
+    resetLimits();
+    const query = authed([], false, null, async (sql) => sql.includes("balance_after") ? { rows: [{ balance_after: 0 }], rowCount: 1 } : empty);
+    const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => new Date(now) });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json() as { data: { creditsRefillAt?: string } }).data.creditsRefillAt, refill, now);
+  }
 });
 
 test("personal status keeps the pro monthly amount and prefers an active store", async () => {

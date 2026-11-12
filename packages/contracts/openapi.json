@@ -887,6 +887,11 @@
           "balanceMicroCredits": {
             "type": "integer"
           },
+          "creditsRefillAt": {
+            "description": "When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.",
+            "format": "date-time",
+            "type": "string"
+          },
           "monthlyMicroCredits": {
             "type": "integer"
           },
@@ -10674,7 +10679,7 @@
     },
     "/api/v1/billing": {
       "get": {
-        "description": "EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them.",
+        "description": "EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them. creditsRefillAt is the date to show for the next plan credits; a client must not derive it from the calendar.",
         "operationId": "getBilling",
         "responses": {
           "200": {
