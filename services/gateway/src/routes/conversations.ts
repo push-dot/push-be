@@ -8,7 +8,7 @@ import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
 import {
   conversationRowSelect, employerOwnerPc, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL,
-  personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL,
+  personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL, tsText,
 } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
@@ -48,7 +48,7 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
   params.push(limit + 1);
   const ownerSql = audience === "EMPLOYER"
     ? "company_id = $1::uuid"
-    : "user_id = $1::uuid AND company_id IS NULL";
+    : "user_id = $1::uuid AND company_id IS NULL AND c.bot_id IS NULL";
   const ownerPc = audience === "EMPLOYER" ? employerOwnerPc("$1") : personalOwnerPc("$1");
   const rows = await deps.query(
     conversationRowSelect(ownerPc)
@@ -193,18 +193,35 @@ const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid) AS mine FROM chat_jobs j
   + "WHERE j.status IN ('PENDING', 'RUNNING') "
   + "ORDER BY j.created_at DESC LIMIT 1";
 
-// The cancel and its event commit together, so a stream always sees the
-// terminal event. A job that finished in the meantime updates no row.
-const CANCEL_SQL = SCOPED_FOUND + ", active AS (" + CANCEL_JOB + "), job AS ("
+// The job-end trigger (migration 0055) writes the cancelled event inside this
+// statement, so a stream always sees the terminal event. An insert here would
+// be a second row. A job that finished in the meantime updates no row.
+const cancelSql = (found: string, seen: string): string => found + ", active AS (" + CANCEL_JOB + "), job AS ("
   + "SELECT id FROM active WHERE mine), cancelled AS ("
   + "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
   + "WHERE id = (SELECT id FROM job) AND user_id = $2::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id"
-  + "), recorded AS ("
-  + "INSERT INTO chat_events (job_id, type, payload) SELECT id, 'cancelled', '{}'::jsonb FROM cancelled RETURNING job_id"
-  + ") SELECT (SELECT id FROM found) AS conversation_id, (SELECT job_id FROM recorded) AS job_id, "
-  + "(SELECT mine FROM active) AS mine";
+  + ") SELECT " + seen + ", (SELECT id FROM cancelled) AS job_id, "
+  + "(SELECT mine FROM active) AS mine, chat_run_resumable((SELECT id FROM found)) AS resumable";
+
+export const CANCEL_SQL = cancelSql(SCOPED_FOUND, "(SELECT id FROM found) AS conversation_id");
+
+// The same reads by bot. $1 a bot id or `push`, $2 the caller. `found` is empty
+// for a bot with no thread. Only core derives the Push Bot's id and inserts its
+// row, so `push` is matched by kind and is seen before that row exists.
+const BOT_FOUND = "WITH bot AS (SELECT b.id FROM bots b WHERE b.user_id = $2::uuid AND b.deleted_at IS NULL "
+  + "AND (b.id::text = $1 OR ($1 = 'push' AND b.kind = 'push'))), "
+  + "found AS (SELECT c.id, c.company_id FROM conversations c JOIN bot ON bot.id = c.bot_id)";
+
+const BOT_SEEN = "COALESCE((SELECT id::text FROM bot), CASE WHEN $1 = 'push' THEN $1 END) AS bot_id";
+
+const BOT_ACTIVE_JOB_SQL = BOT_FOUND + " SELECT " + BOT_SEEN + ", (" + ACTIVE_JOB + ") AS job_id";
+
+const BOT_CANCEL_SQL = cancelSql(BOT_FOUND, BOT_SEEN);
 
 const present = (value: unknown): boolean => value != null && value !== "";
+
+export const isBotThread = async (deps: Deps, conversationId: string): Promise<boolean> =>
+  (await deps.query("SELECT 1 FROM conversations WHERE id = $1::uuid AND bot_id IS NOT NULL", [conversationId])).length > 0;
 
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
@@ -402,25 +419,65 @@ async function activeJobFor(deps: Deps, userId: string, id: string, companyId: s
   return present(rows[0].job_id) ? String(rows[0].job_id) : null;
 }
 
+type Limits = { user: number; public: number; windowMs: number };
+
+/** The row of the job a cancel statement stopped, or the error it answers with. `seen` is the column that is null when the caller may not see the chat. */
+const cancelActive = async (deps: Deps, sql: string, params: unknown[], seen: string, rid: string): Promise<Record<string, unknown> | Response> => {
+  try {
+    const row = (await deps.query(sql, params))[0];
+    if (!present(row?.[seen])) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    if (present(row.job_id)) return row;
+    const mine = row.mine;
+    if (mine === false || mine === "f" || mine === "false") {
+      return errorResponse(403, "FORBIDDEN", "forbidden", rid);
+    }
+    return errorResponse(409, "CONFLICT", "no active stream", rid);
+  } catch {
+    return errorResponse(500, "INTERNAL", "internal error", rid);
+  }
+};
+
 export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> => {
   const id = parseUuid(rawId);
   if (!id) return fieldError("id", "must be a UUID", rid);
   const user = await requireUser(request, env, deps, rid, limits, now);
   if (user instanceof Response) return user;
+  const row = await cancelActive(deps, CANCEL_SQL, [id, user.id, user.companyId], "conversation_id", rid);
+  if (row instanceof Response) return row;
+  return jsonResponse(200, { data: { jobId: String(row.job_id), status: "CANCELLED" } }, rid);
+};
+
+const botAddress = (raw: string): string | null => (raw === "push" ? raw : parseUuid(raw));
+
+export const streamBotCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: Limits, now: () => Date): Promise<Response> => {
+  const address = botAddress(rawId);
+  if (!address) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  const row = await cancelActive(deps, BOT_CANCEL_SQL, [address, user.id], "bot_id", rid);
+  if (row instanceof Response) return row;
+  return jsonResponse(200, { data: { status: "CANCELLED", resumable: asBool(row.resumable) } }, rid);
+};
+
+const resumeSeq = (request: Request, url: URL): number => {
+  const raw = url.searchParams.get("after") || request.headers.get("last-event-id") || "";
+  return /^[0-9]+$/.test(raw) ? Number(raw) : 0;
+};
+
+export const streamBotActive = async (request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: Limits, now: () => Date): Promise<Response> => {
+  const address = botAddress(rawId);
+  if (!address) return fieldError("id", "must be a UUID", rid);
+  const user = await requireUser(request, env, deps, rid, limits, now);
+  if (user instanceof Response) return user;
+  let row: Record<string, unknown> | undefined;
   try {
-    const rows = await deps.query(CANCEL_SQL, [id, user.id, user.companyId]);
-    if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    if (!present(rows[0].job_id)) {
-      const mine = rows[0].mine;
-      if (mine === false || mine === "f" || mine === "false") {
-        return errorResponse(403, "FORBIDDEN", "forbidden", rid);
-      }
-      return errorResponse(409, "CONFLICT", "no active stream", rid);
-    }
-    return jsonResponse(200, { data: { jobId: String(rows[0].job_id), status: "CANCELLED" } }, rid);
+    row = (await deps.query(BOT_ACTIVE_JOB_SQL, [address, user.id]))[0];
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
+  if (!present(row?.bot_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  if (!present(row?.job_id)) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
+  return jobEvents(String(row?.job_id), resumeSeq(request, url), env, deps, rid, true);
 };
 
 export async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -468,11 +525,11 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     }
   }
   if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
-  const afterRaw = url.searchParams.get("after") || request.headers.get("last-event-id") || "";
-  return jobEvents(jobId, /^[0-9]+$/.test(afterRaw) ? Number(afterRaw) : 0, env, deps, rid);
+  return jobEvents(jobId, resumeSeq(request, url), env, deps, rid);
 }
 
-export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> => {
+/** Queues the send in core and streams its job. `bot` is true for a send addressed by bot. */
+export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps, rid: string, bot = false): Promise<Response> => {
   const queued = await proxy(request, env.CORE, rid);
   if (queued.status !== 202) return queued;
   let jobId = "";
@@ -483,7 +540,7 @@ export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps,
     jobId = "";
   }
   if (!parseUuid(jobId)) return errorResponse(500, "INTERNAL", "internal error", rid);
-  return jobEvents(jobId, 0, env, deps, rid);
+  return jobEvents(jobId, 0, env, deps, rid, bot);
 };
 
 // Each poll is a Neon read. Idle polls back off to MAX_POLL_MS; a full
@@ -492,7 +549,10 @@ const POLL_MS = 250;
 const MAX_POLL_MS = 1000;
 const EVENT_PAGE = 200;
 
-const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string): Response => {
+const EVENTS_SQL = "SELECT id, type, payload, " + tsText("created_at") + " AS created_at FROM chat_events "
+  + `WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`;
+
+const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string, bot = false): Response => {
   let after = start;
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -510,15 +570,13 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
         let idle = 0;
         for (let i = 0; i < polls; i++) {
           if (!open) break;
-          const rows = await deps.query(
-            `SELECT id, type, payload FROM chat_events WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`,
-            [jobId, after],
-          );
+          const rows = await deps.query(EVENTS_SQL, [jobId, after]);
           let terminal = false;
           for (const row of rows) {
             after = Number(row.id);
-            if (hiddenMarkdownFile(row)) continue;
-            send(sseFrame(row));
+            const payload = payloadOf(row);
+            if (hidden(row.type, payload, bot)) continue;
+            send(sseFrame(row, payload, jobId));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
@@ -554,32 +612,41 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
   });
 };
 
-function hiddenMarkdownFile(row: Record<string, unknown>): boolean {
-  if (row.type !== "file") return false;
+const payloadOf = (row: Record<string, unknown>): Record<string, unknown> => {
   let payload = row.payload ?? {};
   if (typeof payload === "string") {
     try { payload = JSON.parse(payload); } catch { payload = {}; }
   }
-  const p = (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+  return (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+};
+
+// A bot stream promises a phase on every status. A row without one was stored
+// before phases, or by a run of the AI service that does not write them yet.
+const hidden = (type: unknown, p: Record<string, unknown>, bot: boolean): boolean => {
+  if (type === "status") return bot && p.phase == null;
+  if (type !== "file") return false;
   const name = String(p.name ?? p.fileName ?? "");
   const mime = String(p.mime ?? p.mimeType ?? "");
   return name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown";
-}
+};
 
-function sseFrame(row: Record<string, unknown>): string {
+const STATUS_FIELDS = ["phase", "since", "ahead", "for", "cardId"];
+
+/** `turn` is the job id: opaque to a client and equal for every frame of one run. */
+const sseFrame = (row: Record<string, unknown>, p: Record<string, unknown>, turn: string): string => {
   const seq = Number(row.id);
-  let payload = row.payload ?? {};
-  if (typeof payload === "string") {
-    try { payload = JSON.parse(payload); } catch { payload = {}; }
-  }
-  const p = (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
   let body: Record<string, unknown>;
   if (row.type === "token") body = { type: "token", text: String(p.text ?? "") };
-  else if (row.type === "status") body = { type: "status", text: String(p.text ?? "") };
+  else if (row.type === "status") {
+    body = { type: "status", text: String(p.text ?? "") };
+    for (const field of STATUS_FIELDS) if (p[field] != null) body[field] = p[field];
+  }
   else if (row.type === "error") body = { type: "error", error: p.error ?? {} };
   else if (row.type === "done") body = { type: "done", operation: p.operation ?? null, ...(p.awaiting ? { awaiting: p.awaiting } : {}) };
-  else if (row.type === "cancelled") body = { type: "cancelled" };
+  else if (row.type === "cancelled") body = { type: "cancelled", resumable: p.resumable === true };
   else body = { type: row.type, ...p };
   body.seq = seq;
+  body.at = formatJsonTimestamp(row.created_at);
+  body.turn = turn;
   return `id: ${seq}\ndata: ${pyJson(body)}\n\n`;
-}
+};

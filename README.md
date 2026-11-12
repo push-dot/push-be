@@ -36,6 +36,8 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 
 `/internal`과 소유가 애매한 경로는 게이트웨이가 404로 막는다. 공개 계약은 `packages/contracts/openapi.json`이다. 경로마다 `x-owner`가 `gateway`, `core`, `ai` 중 하나다. 스펙 소스는 `packages/contracts/spec/*.ts`이고, `npm run contracts`가 `openapi.json`과 `src/schema.ts`를 다시 만든다. gateway·core·ai 테스트가 실제 라우트와 스펙이 어긋나면 실패한다.
 
+봇의 대화는 서버 안에서만 대화 행으로 저장한다. 그 행의 id로 `/api/v1/conversations/:id` 아래 경로를 부르면 게이트웨이가 404로 답하고, UUID가 아닌 id는 400으로 답한다. 대화 목록에도 나오지 않는다.
+
 게이트웨이가 직접 답하는 경로 (`services/gateway/src/handler.ts`):
 
 | 메서드와 경로 | 내용 |
@@ -47,6 +49,9 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 재생 |
 | `POST /api/v1/conversations/:id/messages/stream` | 코어에 202를 받은 뒤 게이트웨이가 SSE를 연다 |
 | `POST /api/v1/conversations/:id/stream/cancel` | 스트림 취소 |
+| `POST /api/v1/bots/:id/messages/stream` | 봇에게 보낸다. 코어에 202를 받은 뒤 게이트웨이가 SSE를 연다. `:id`는 봇 id 또는 `push` |
+| `GET /api/v1/bots/:id/stream` | 봇의 실행 중인 작업을 `after` 뒤부터 SSE로 재생. 실행 중인 작업이 없으면 204 |
+| `POST /api/v1/bots/:id/stream/cancel` | 봇의 실행 취소. `resumable`을 돌려준다 |
 | `GET /api/v1/ai/models` | 모델 카탈로그 |
 | `GET /api/v1/integrations/job-sites` | 채용 사이트 체크리스트 |
 | `OPTIONS` | CORS |

@@ -6,10 +6,13 @@
  */
 
 import type { Deps, FrontEnv } from "./types.ts";
-import { errorResponse, preflight, requestIdOf, withCors } from "./http.ts";
+import { errorResponse, fieldError, parseUuid, preflight, requestIdOf, withCors } from "./http.ts";
 import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
-import { getConversation, listConversations, listMessages, streamActive, streamCancel, streamMessage } from "./routes/conversations.ts";
+import {
+  getConversation, isBotThread, listConversations, listMessages, streamActive, streamBotActive, streamBotCancel,
+  streamCancel, streamMessage,
+} from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
 import { ownerOf } from "./routes/owner.ts";
 import { invalidateAfterWrite, isInternalCall, proxy, proxyPython } from "./routes/proxy.ts";
@@ -54,6 +57,16 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (request.method === "GET" && path === "/api/v1/auth/me") {
     return authMe(request, env, deps, rid, limits, now);
   }
+  // A bot's thread is stored as a conversation and is not one to any client. Every route under
+  // /conversations/{id}, in this worker, core and the AI service, is reached through here, so the
+  // rule sits here once. An id this parser cannot read goes no further: the AI service reads other
+  // spellings of one id, such as {…} and urn:uuid:…, and the probe below would not see them.
+  const named = path.match(/^\/api\/v1\/conversations\/([^/]+)/);
+  if (named && named[1] !== "shared") {
+    const conversationId = parseUuid(named[1]);
+    if (!conversationId) return fieldError("id", "must be a UUID", rid);
+    if (await isBotThread(deps, conversationId)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  }
   if (request.method === "GET" && path === "/api/v1/conversations") {
     return listConversations(request, env, deps, url, rid, limits, now);
   }
@@ -75,6 +88,17 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   const cancel = path.match(/^\/api\/v1\/conversations\/([^/]+)\/stream\/cancel$/);
   if (request.method === "POST" && cancel) {
     return streamCancel(request, env, deps, cancel[1], rid, limits, now);
+  }
+  if (request.method === "POST" && /^\/api\/v1\/bots\/[^/]+\/messages\/stream$/.test(path)) {
+    return streamMessage(request, env, deps, rid, true);
+  }
+  const botStream = path.match(/^\/api\/v1\/bots\/([^/]+)\/stream$/);
+  if (request.method === "GET" && botStream) {
+    return streamBotActive(request, env, deps, url, botStream[1], rid, limits, now);
+  }
+  const botCancel = path.match(/^\/api\/v1\/bots\/([^/]+)\/stream\/cancel$/);
+  if (request.method === "POST" && botCancel) {
+    return streamBotCancel(request, env, deps, botCancel[1], rid, limits, now);
   }
   if (request.method === "GET" && path === "/api/v1/ai/models") {
     return aiModels(request, env, deps, url, rid, limits, now);

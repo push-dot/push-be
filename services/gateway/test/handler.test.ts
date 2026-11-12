@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
 import { ownerOf } from "../src/routes/owner.ts";
+import { complete, STORED } from "./fakes.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -22,7 +23,7 @@ function env(core?: NonNullable<FrontEnv["CORE"]>): FrontEnv {
 
 function deps(query: Query, extra: Partial<Deps> = {}): Deps {
   return {
-    query,
+    query: complete(query),
     sleep: async () => {},
     now: () => NOW,
     ...extra,
@@ -272,8 +273,9 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.match(res.headers.get("cache-control") || "", /no-cache/);
   const text = await res.text();
   assert.ok(text.startsWith("retry: 400\n\n"));
-  assert.match(text, /id: 7\ndata: \{"type": "token", "text": "\\uc548\\ub155", "seq": 7\}/);
-  assert.match(text, /id: 8\ndata: \{"type": "done", "operation": \{"status": "SUCCEEDED"\}, "seq": 8\}/);
+  const stamp = `"at": "${STORED}", "turn": "cccccccc-cccc-cccc-cccc-cccccccccccc"`;
+  assert.ok(text.includes(`id: 7\ndata: {"type": "token", "text": "\\uc548\\ub155", "seq": 7, ${stamp}}`));
+  assert.ok(text.includes(`id: 8\ndata: {"type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 8, ${stamp}}`));
 });
 
 test("model catalog follows the deployed flags and validates provider", async () => {

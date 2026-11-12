@@ -77,7 +77,8 @@ async def test_message_writes():
     assert "ON CONFLICT (id) DO NOTHING" in conn.last[1]
     assert conn.last[2][5] == [{"type": "EVIDENCE", "id": str(att.id)}]
     await s.upsert_user_message(m)
-    assert "DO UPDATE SET attachments = EXCLUDED.attachments" in conn.last[1]
+    assert "ON CONFLICT (id) DO UPDATE SET" in conn.last[1]
+    assert "attachments = EXCLUDED" not in conn.last[1]
     await s.delete_unlinked_user_message(m.id)
     assert "role = 'USER' AND operation_id IS NULL" in conn.last[1]
     assert conn.last[2] == (m.id,)
