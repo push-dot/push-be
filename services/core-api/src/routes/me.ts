@@ -90,16 +90,21 @@ async function createLink(ctx: Ctx): Promise<Response> {
   return data(201, linkDto({ id, kind, url, title, status, fit_count: 0, ai_read: aiRead, created_at: now }), ctx.rid);
 }
 
+/** A deleted link keeps its row, stamped with the delete time, until the retention purge. False when the caller has no such live link. */
+export const softDeleteLink = async (ctx: Ctx, id: string): Promise<boolean> =>
+  (await one(ctx.deps.query, "UPDATE user_links SET deleted_at = $3 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id", [id, ctx.user.id, ctx.now.toISOString()])) != null;
+
+/** Undoes `softDeleteLink`. The caller's link as it is now, or null when there is no such link. */
+export const undeleteLink = (ctx: Ctx, id: string): Promise<Record<string, unknown> | null> =>
+  one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
+
 async function deleteLink(ctx: Ctx, idRaw: string): Promise<Response> {
-  const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = $3 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id", [id, ctx.user.id, ctx.now.toISOString()]);
-  if (!row) throw notFound();
+  if (!(await softDeleteLink(ctx, requireUuid(idRaw, "id")))) throw notFound();
   return noContent(ctx.rid);
 }
 
 async function restoreLink(ctx: Ctx, idRaw: string): Promise<Response> {
-  const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
+  const row = await undeleteLink(ctx, requireUuid(idRaw, "id"));
   if (!row) throw notFound();
   return data(200, linkDto(row), ctx.rid);
 }

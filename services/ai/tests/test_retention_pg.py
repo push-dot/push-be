@@ -536,3 +536,42 @@ async def test_archived_documents_are_hard_deleted_after_30_days(db):
     assert await counts(old) == gone
     assert await counts(recent) == kept
     assert await counts(active) == kept
+
+
+async def test_the_30_day_purge_keeps_a_bots_turns_and_deletes_every_other_old_job(db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.queue.admin import AdminJobs
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=31)
+    user, company, bot, thread, web, employer = (uuid.uuid4() for _ in range(6))
+    await db.execute(
+        "INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'test', $2, 'u')",
+        user, str(user))
+    await db.execute("INSERT INTO companies (id, name) VALUES ($1, 'co')", company)
+    await db.execute(
+        "INSERT INTO bots (id, user_id, kind, company_name, display_name) VALUES ($1, $2, 'company', '모아페이', '모아페이')",
+        bot, user)
+    await db.execute(
+        "INSERT INTO conversations (id, user_id, title, bot_id, company_id) VALUES "
+        "($1, $4, 'bot', $2, NULL), ($3, $4, 'web', NULL, NULL), ($5, $4, 'employer', NULL, $6)",
+        thread, bot, web, user, employer, company)
+    jobs = {
+        "bot turn": ("chat", thread), "bot notify": ("notify", thread),
+        "web turn": ("chat", web), "employer turn": ("employer_ai", employer),
+    }
+    ids = {name: uuid.uuid4() for name in jobs}
+    for name, (kind, conversation) in jobs.items():
+        await db.execute(
+            "INSERT INTO ai_jobs (id, type, queue, user_id, status, max_attempts, payload, conversation_id, "
+            "created_at, updated_at) VALUES ($1, $2, 'q:chat', $3, 'DONE', 3, '{}', $4, $5, $5)",
+            ids[name], kind, user, conversation, old)
+        await db.execute(
+            "INSERT INTO chat_events (job_id, type, payload) VALUES ($1, 'approval', '{\"id\": \"card\"}')", ids[name])
+
+    await AdminJobs(db).purge_finished(now)
+
+    left = {row["id"] for row in await db.fetch("SELECT id FROM ai_jobs WHERE user_id = $1", user)}
+    assert left == {ids["bot turn"]}
+    assert await db.fetchval("SELECT count(*) FROM chat_events WHERE job_id = $1", ids["bot turn"]) == 1

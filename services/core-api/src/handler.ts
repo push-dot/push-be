@@ -33,6 +33,7 @@ import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
 import { dispatchBotChat } from "./routes/bot-chat.ts";
 import { dispatchBots } from "./routes/bots.ts";
+import { dispatchMaterials } from "./routes/materials.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 
 const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
@@ -229,6 +230,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (botChat) return botChat;
   const bots = await dispatchBots(ctx, path);
   if (bots) return bots;
+  const materials = await dispatchMaterials(ctx, path);
+  if (materials) return materials;
   const profiles = await dispatchProfiles(ctx, path);
   if (profiles) return profiles;
   const offers = await dispatchOffers(ctx, path);

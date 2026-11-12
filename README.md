@@ -64,6 +64,15 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `GET /api/v1/documents?archived=1` | 내가 최근 30일 안에 보관한 서류. `updatedAt`이 최근인 순. 각 항목에 `archivedAt`과 `purgeAt`(보관 시각 + 30일)이 붙는다 |
 | `DELETE /api/v1/sources/:id` | 경력 근거가 가리키면 409 `INVALID_TRANSITION`. `details.reason`은 `REFERENCED_BY_EVIDENCE`이고 `details.evidenceCount`는 그 근거 수다 |
 
+앱의 자료 (`services/core-api/src/routes/materials.ts`). 종류마다 목록, 검색, 만든 봇, 삭제 규칙이 표 한 곳(`KINDS`)에 있다:
+
+| 메서드와 경로 | 내용 |
+| --- | --- |
+| `GET /api/v1/materials` | 서류(파일과 Push 서류), 북마크, 링크. 섹션마다 개수를 함께 준다. `tab=all`은 4, 3, 3개 미리보기이고 다른 탭은 커서로 넘긴다. `q`는 이름을 대소문자 없이 찾는다. `bot`(봇 id 또는 `push`)은 그 봇이 만들었거나 그 봇 채팅에 첨부된 자료만 남기고, `GET /api/v1/bots/:id`의 `materialCount`와 같은 수를 센다 |
+| `GET /api/v1/materials/:kind/:id` | 자료 하나. `usedBy`는 만든 봇, 그다음 그 자료를 첨부한 채팅의 봇을 최근 순으로 |
+| `DELETE /api/v1/materials/:kind/:id` | 삭제한 자료는 30일 보관한 뒤 지운다. 서류는 보관, 링크는 `deleted_at`, 파일과 북마크는 `material_bin`으로 간다. 경력 근거가 가리키는 파일은 409 `INVALID_TRANSITION` |
+| `POST /api/v1/materials/:kind/:id/restore` | 삭제를 되돌린다. 파일과 서류는 검색 색인을 다시 넣는다. 이미 지워졌으면 404 |
+
 그 밖의 분기는 `services/gateway/src/routes/owner.ts`의 `ownerOf`다. Python으로 가는 예는 근거 가져오기, 공고·문서·면접·프로젝트의 AI 실행, `operations`, 승인 결정, 대화 공유와 아티팩트다. 인증, 대화 쓰기, 결제, 공고·지원·회사·소셜·프로필, 문서 enqueue, `GET /api/v1/ai/jobs/:id`는 코어다.
 
 코어가 채팅을 넣을 때는 `chat_jobs`에 쓴다. 그 밖의 AI 작업은 `ai_jobs`와 `outbox`에 쓴다. `QUEUE_BACKEND=redis`이면 디스패처가 outbox를 Redis Streams로 넘긴다. 스트림은 `q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`다. fit 작업도 `q:document`를 쓴다. `QUEUE_BACKEND=postgres`이면 프로세스 안 채팅 폴러가 `chat_jobs`를 가져간다. 그 폴러는 `CHAT_EXECUTOR=external`이거나 큐가 redis이면 켜지지 않는다 (`services/ai/src/app/jobs.py`).
@@ -106,7 +115,7 @@ services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
-db/migrations/          0001_init.sql … 0052_bots.sql
+db/migrations/          0001_init.sql … 0056_materials.sql
 db/tests/               schema_checks.sql
 infra/docker-compose.yml
 infra/vps/              운영 compose, Traefik, env.example, 배포 스크립트

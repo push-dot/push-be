@@ -25,7 +25,7 @@ RETENTION = {
     "email_signup": "1 day",     # unverified email signups with no live verify mail left
     "payment": "5 years",        # billing_ledger rows whose owner was purged (전자상거래법)
     "report": "3 years",         # offer_reports (전자상거래법 불만·분쟁 기록)
-    "document": "30 days",      # documents the user archived (status ARCHIVED)
+    "document": "30 days",      # deleted materials: archived documents, links, material_bin rows
 }
 
 # Foreign keys cascade from users (migration 0018). workspace_files has no
@@ -139,6 +139,16 @@ DOCUMENTS_SQL = (
     "DELETE FROM documents WHERE ctid IN (SELECT ctid FROM documents "
     "WHERE status = 'ARCHIVED' AND updated_at < now() - $1::text::interval LIMIT $2)"
 )
+# A deleted link keeps its row with deleted_at set (core-api me.ts, materials.ts), and a
+# deleted file or bookmark waits in material_bin (materials.ts): 되돌리기 works until then.
+LINKS_SQL = (
+    "DELETE FROM user_links WHERE ctid IN (SELECT ctid FROM user_links "
+    "WHERE deleted_at < now() - $1::text::interval LIMIT $2)"
+)
+MATERIAL_BIN_SQL = (
+    "DELETE FROM material_bin WHERE ctid IN (SELECT ctid FROM material_bin "
+    "WHERE deleted_at < now() - $1::text::interval LIMIT $2)"
+)
 
 
 def remove_images(storage_dir: str, keys) -> None:
@@ -195,6 +205,8 @@ async def purge_deleted(pool, storage_dir: str | None) -> None:
     await _sweep(pool, PAYMENTS_SQL, "payment")
     await _sweep(pool, REPORTS_SQL, "report")
     await _sweep(pool, DOCUMENTS_SQL, "document")
+    await _sweep(pool, LINKS_SQL, "document")
+    await _sweep(pool, MATERIAL_BIN_SQL, "document")
     if storage_dir and keys:
         # Up to 50 users' files: keep the unlinks off the event loop.
         await asyncio.to_thread(remove_images, storage_dir, keys)

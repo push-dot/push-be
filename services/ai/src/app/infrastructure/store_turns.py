@@ -14,13 +14,17 @@ _JOBS = (
 )
 
 _EVENTS = (
-    "SELECT id, job_id, type, payload FROM chat_events WHERE job_id = ANY($1::uuid[]) ORDER BY id"
+    "SELECT id, job_id, type, payload, created_at FROM chat_events WHERE job_id = ANY($1::uuid[]) ORDER BY id"
 )
 
+# retryable: a tool card with a lifetime that no newer chat job of the thread has passed by.
 _CARDS = (
-    "SELECT a.id, a.option_id, "
+    "SELECT a.id, a.option_id, a.created_at AS opened_at, a.expires_at, "
     "CASE WHEN a.status = 'PENDING' AND a.expires_at <= now() THEN 'EXPIRED' "
     "ELSE a.status END AS status, "
+    "(a.kind = 'TOOL_ACTION' AND a.expires_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ai_jobs n "
+    "WHERE n.conversation_id = a.conversation_id AND n.type = 'chat' AND n.created_at > a.created_at)) "
+    "AS retryable, "
     "(SELECT j.payload->'resume'->'optionIds' FROM chat_jobs j "
     "WHERE j.conversation_id = $1 AND j.payload->'resume'->>'approvalId' = a.id::text "
     "ORDER BY j.created_at DESC LIMIT 1) AS option_ids "
@@ -28,6 +32,17 @@ _CARDS = (
 )
 
 _MESSAGES = "SELECT id FROM messages WHERE conversation_id = $1 AND id = ANY($2::uuid[])"
+
+_TURN_MESSAGES = (
+    "SELECT id, text, attachments FROM messages WHERE conversation_id = $1 AND id = ANY($2::uuid[])"
+)
+
+# $2 NULL is the caller's Push Bot.
+_BOT_THREAD = (
+    "SELECT t.id AS thread_id FROM bots b LEFT JOIN conversations t ON t.bot_id = b.id "
+    "WHERE b.user_id = $1 AND b.deleted_at IS NULL "
+    "AND (CASE WHEN $2::uuid IS NULL THEN b.kind = 'push' ELSE b.id = $2::uuid END)"
+)
 
 
 def _uuid(raw) -> UUID | None:
@@ -73,3 +88,16 @@ class TurnStore:
             return set()
         rows = await self.db.q().fetch(_MESSAGES, conversation_id, wanted)
         return {row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"])) for row in rows}
+
+    async def bot_thread(self, user_id: UUID, bot_id: UUID | None) -> dict | None:
+        """The caller's bot as {thread_id}, thread_id None before its first message. None: no such bot."""
+        row = await self.db.q().fetchrow(_BOT_THREAD, user_id, bot_id)
+        return None if row is None else dict(row)
+
+    async def turn_messages(self, conversation_id: UUID, job_ids: list[UUID]) -> dict[UUID, dict]:
+        """The USER and ASSISTANT rows the jobs wrote, by message id."""
+        wanted = [make(job) for job in job_ids for make in (user_message_id, assistant_message_id)]
+        if not wanted:
+            return {}
+        rows = await self.db.q().fetch(_TURN_MESSAGES, conversation_id, wanted)
+        return {_uuid(row["id"]): dict(row) for row in rows}
