@@ -269,8 +269,10 @@ test("each kind's delete keeps the material, and restore brings it back as it wa
 
     assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, kind);
     assert.equal((await db.call(user, "GET", `/materials/${kind}/${id}`)).status, 404, `${kind} is gone from its detail`);
-    assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 404, `${kind} cannot be deleted twice`);
+    assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, `${kind}: a second delete answers as the first`);
+    assert.equal((await db.call(stranger, "DELETE", `/materials/${kind}/${id}`)).status, 404, `${kind}: a deleted material is not the stranger's either`);
   }
+  assert.equal((await db.call(user, "DELETE", `/materials/link/${crypto.randomUUID()}`)).status, 404);
   assert.deepEqual((await db.call(user, "GET", "/materials")).data.counts, { doc: 0, bookmark: 0, link: 0 });
   const [pin] = await sql("SELECT resume_source_id FROM profiles WHERE user_id = $1", [user.id]);
   assert.equal(pin.resume_source_id, null);
@@ -291,7 +293,7 @@ test("each kind's delete keeps the material, and restore brings it back as it wa
   assert.equal((await db.call(user, "POST", `/materials/file/${crypto.randomUUID()}/restore`)).status, 404);
 });
 
-test("a file that career evidence cites is not deleted", async (t) => {
+test("a file that career evidence cites is refused alike by DELETE /sources and the materials delete", async (t) => {
   if (!db) return t.skip(SKIP);
   const user = await db.person("PRO");
   const cited = await file(user, "경력기술서_2026.pdf", 1);
@@ -299,11 +301,160 @@ test("a file that career evidence cites is not deleted", async (t) => {
     "INSERT INTO career_evidence (id, user_id, kind, title, source_text, provenance) VALUES ($1, $2, 'PROJECT', '결제', 't', $3::jsonb)",
     [crypto.randomUUID(), user.id, JSON.stringify({ sourceId: cited })]);
 
-  const refused = await db.call(user, "DELETE", `/materials/file/${cited}`);
-
-  assert.equal(refused.status, 409);
-  assert.deepEqual([refused.error?.code, refused.error?.details], ["INVALID_TRANSITION", { reason: "REFERENCED_BY_EVIDENCE", evidenceCount: 1 }]);
+  for (const path of [`/sources/${cited}`, `/materials/file/${cited}`]) {
+    const refused = await db.call(user, "DELETE", path);
+    assert.equal(refused.status, 409, path);
+    assert.deepEqual([refused.error?.code, refused.error?.details], ["INVALID_TRANSITION", { reason: "REFERENCED_BY_EVIDENCE", evidenceCount: 1 }], path);
+  }
   assert.equal((await db.call(user, "GET", `/materials/file/${cited}`)).status, 200);
+});
+
+const archivedDoc = async (user: Person, finalized: boolean): Promise<string> => {
+  const id = await doc(user, finalized ? "확정한 이력서" : "초안 이력서", 1, { status: "ARCHIVED" });
+  if (finalized) {
+    const version = crypto.randomUUID();
+    await sql("INSERT INTO document_versions (id, document_id, user_id, number, content, blocks) VALUES ($1, $2, $3, 1, '{}'::jsonb, '[]'::jsonb)",
+      [version, id, user.id]);
+    await sql("UPDATE documents SET finalized_version_id = $2 WHERE id = $1", [id, version]);
+  }
+  return id;
+};
+
+test("a document is archived and restored alike by the documents routes and the materials routes", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  const routes = {
+    documents: { archived: 200, archive: (id: string) => db!.call(user, "POST", `/documents/${id}/archive`, { expectedRevision: 1 }),
+      restore: (id: string) => db!.call(user, "POST", `/documents/${id}/restore`, { expectedRevision: 1 }) },
+    materials: { archived: 204, archive: (id: string) => db!.call(user, "DELETE", `/materials/document/${id}`),
+      restore: (id: string) => db!.call(user, "POST", `/materials/document/${id}/restore`) },
+  };
+  const stateOf = async (id: string) => {
+    const read = await db!.call(user, "GET", `/documents/${id}`);
+    return [read.data.status, read.data.revision];
+  };
+
+  for (const [name, route] of Object.entries(routes)) {
+    const live = await doc(user, "보관할 이력서", 1);
+    assert.equal((await route.archive(live)).status, route.archived, name);
+    assert.deepEqual(await stateOf(live), ["ARCHIVED", 2], `${name} archives once`);
+
+    const finalized = await archivedDoc(user, true);
+    const draft = await archivedDoc(user, false);
+    for (const id of [finalized, draft]) assert.equal((await route.restore(id)).status, 200, name);
+    assert.deepEqual([await stateOf(finalized), await stateOf(draft)], [["FINALIZED", 2], ["DRAFT", 2]], `${name} restores to the last state`);
+    const reread = await sql("SELECT payload->>'documentId' AS id FROM ai_jobs WHERE user_id = $1 AND type = 'ingest' AND payload->>'documentId' = ANY($2)",
+      [user.id, [finalized, draft]]);
+    assert.deepEqual(reread.map((job) => job.id).sort(), [finalized, draft].sort(), `${name} reads a restored document again`);
+  }
+});
+
+test("a link is deleted and restored alike by /me/links and the materials routes", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  const routes = {
+    me: { remove: (id: string) => db!.call(user, "DELETE", `/me/links/${id}`), restore: (id: string) => db!.call(user, "POST", `/me/links/${id}/restore`) },
+    materials: { remove: (id: string) => db!.call(user, "DELETE", `/materials/link/${id}`),
+      restore: (id: string) => db!.call(user, "POST", `/materials/link/${id}/restore`) },
+  };
+  const listed = async (id: string): Promise<boolean[]> => [
+    ((await db!.call(user, "GET", "/me/links")).data as unknown as Item[]).some((item) => item.id === id),
+    sectionsOf((await db!.call(user, "GET", "/materials?tab=link")).data)[0].items.some((item) => item.id === id),
+  ];
+
+  for (const [name, route] of Object.entries(routes)) {
+    const id = await link(user, `https://${name}.example.com/portfolio`, "portfolio", 1);
+    assert.equal((await route.remove(id)).status, 204, name);
+    assert.deepEqual(await listed(id), [false, false], `${name}: a deleted link leaves both lists`);
+    const [kept] = await sql("SELECT deleted_at IS NOT NULL AS kept FROM user_links WHERE id = $1", [id]);
+    assert.equal(kept?.kept, true, `${name}: the row is kept for the 30-day purge`);
+
+    assert.equal((await route.restore(id)).status, 200, name);
+    assert.deepEqual(await listed(id), [true, true], `${name}: a restored link is back in both lists`);
+  }
+});
+
+type Answer = Awaited<ReturnType<BotsPg["call"]>>;
+
+// Every backend waiting behind `pid`, directly or behind another waiter.
+const WAITING = `WITH RECURSIVE behind(pid) AS (
+    SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+    UNION SELECT a.pid FROM pg_stat_activity a JOIN behind b ON b.pid = ANY(pg_blocking_pids(a.pid)))
+  SELECT count(*)::int AS n FROM behind`;
+
+/**
+ * Two identical requests that overlap: a transaction holds the row the request locks first until both
+ * requests wait for it, then lets them go. Left alone, the second one rarely starts before the first ends.
+ */
+const twoAtOnce = async (user: Person, method: string, path: string, hold: string, id: string): Promise<Answer[]> => {
+  const { both } = await db!.pg.transaction!(async (tx) => {
+    const [{ pid }] = (await tx("SELECT pg_backend_pid() AS pid")).rows;
+    await tx(hold, [id]);
+    const both = Promise.all([db!.call(user, method, path), db!.call(user, method, path)]);
+    // Asked outside the holding transaction, which would keep reading pg_stat_activity as of its first look.
+    const until = Date.now() + 10_000;
+    while (Number((await sql(WAITING, [pid]))[0].n) < 2) {
+      assert.ok(Date.now() < until, `both requests of ${method} ${path} wait on the held row`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return { both };
+  });
+  return both;
+};
+
+const HOLD_LIVE: Record<string, string> = {
+  file: "SELECT 1 FROM sources WHERE id = $1 FOR UPDATE",
+  document: "SELECT 1 FROM documents WHERE id = $1 FOR UPDATE",
+  posting: "SELECT 1 FROM bookmarks WHERE posting_id = $1 FOR UPDATE",
+  link: "SELECT 1 FROM user_links WHERE id = $1 FOR UPDATE",
+};
+const HOLD_DELETED: Record<string, string> = {
+  ...HOLD_LIVE, file: "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE", posting: "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE",
+};
+
+const oneOfEach = async (user: Person) => ({
+  file: await file(user, "포트폴리오_2026.pdf", 1),
+  document: await doc(user, "한빛뱅크 자기소개서", 2),
+  posting: await bookmark(user, "한빛뱅크", 3),
+  link: await link(user, "https://velog.io/@seojun", "blog", 4),
+});
+
+test("two deletes of one material at once both answer 204 and delete it once", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  const ids = await oneOfEach(user);
+
+  const answers: Record<string, number[]> = {};
+  for (const [kind, id] of Object.entries(ids)) {
+    answers[kind] = (await twoAtOnce(user, "DELETE", `/materials/${kind}/${id}`, HOLD_LIVE[kind], id)).map((answer) => answer.status);
+  }
+
+  assert.deepEqual(answers, { file: [204, 204], document: [204, 204], posting: [204, 204], link: [204, 204] });
+  assert.deepEqual((await db.call(user, "GET", "/materials")).data.counts, { doc: 0, bookmark: 0, link: 0 });
+  const [archived] = await sql("SELECT revision FROM documents WHERE id = $1", [ids.document]);
+  assert.equal(Number(archived.revision), 2, "the document is archived once");
+  for (const [kind, id] of Object.entries(ids)) {
+    assert.equal((await db.call(user, "POST", `/materials/${kind}/${id}/restore`)).status, 200, `${kind} can be restored`);
+  }
+});
+
+test("two restores of one material at once both answer it and restore it once", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  const ids = await oneOfEach(user);
+  for (const [kind, id] of Object.entries(ids)) assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, kind);
+
+  for (const [kind, id] of Object.entries(ids)) {
+    const answers = await twoAtOnce(user, "POST", `/materials/${kind}/${id}/restore`, HOLD_DELETED[kind], id);
+    assert.deepEqual(answers.map((answer) => answer.status), [200, 200], kind);
+    assert.deepEqual(answers[1].data, answers[0].data, `${kind}: both answer the same material`);
+  }
+
+  assert.deepEqual((await db.call(user, "GET", "/materials")).data.counts, { doc: 2, bookmark: 1, link: 1 });
+  const [restored] = await sql("SELECT revision FROM documents WHERE id = $1", [ids.document]);
+  assert.equal(Number(restored.revision), 3, "the document is restored once");
+  const reread = await sql("SELECT payload->>'sourceId' AS source, payload->>'documentId' AS document FROM ai_jobs WHERE user_id = $1 AND type = 'ingest'", [user.id]);
+  assert.deepEqual(reread.map((job) => job.source ?? job.document).sort(), [ids.document, ids.file].sort(), "each is read again once");
 });
 
 test("a posting bookmarked again after a delete can be deleted and restored again", async (t) => {

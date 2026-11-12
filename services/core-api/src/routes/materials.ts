@@ -5,6 +5,9 @@ import { pageOf, ts } from "../page.ts";
 import { encodeCursor } from "../time.ts";
 import type { Ctx } from "../types.ts";
 import { botRef, resolveBot } from "./bots.ts";
+import { archiveDoc, unarchiveDoc } from "./documents.ts";
+import { softDeleteLink, undeleteLink } from "./me.ts";
+import { CITING_EVIDENCE, refuseCited } from "./sources.ts";
 
 const KIND_NAMES = ["file", "document", "posting", "link"] as const;
 type Kind = (typeof KIND_NAMES)[number];
@@ -36,6 +39,8 @@ type KindRule = {
   dto: (row: Row) => Row;
   /** Puts a live material into its deleted state. False when the caller has no such live material. */
   remove: (ctx: Ctx, id: string) => Promise<boolean>;
+  /** Finds the caller's material $2 in its deleted state. */
+  kept: string;
   /** Brings a deleted material back. A material that is live already stays as it is. */
   restore: (ctx: Ctx, id: string) => Promise<void>;
 };
@@ -61,10 +66,11 @@ const changed = async (ctx: Ctx, sql: string, params: unknown[]): Promise<boolea
 // Markdown files are the resume flow's working notes, kept off every list the user sees.
 const FILE_LIVE = "x.user_id = $1 AND lower(x.file_name) NOT LIKE '%.md' AND lower(x.mime_type) <> 'text/markdown'";
 
-// Evidence that cites the file keeps it, as DELETE /sources does. The profile's pin goes with the
+// The lock makes the second of two deletes at once wait for the first and then find no live file.
+// Unlocked, both bin the file and the second fails on the bin's key. The profile's pin goes with the
 // row (ON DELETE SET NULL), so the snapshot remembers it for the restore.
-const BIN_FILE = `WITH src AS (SELECT x.* FROM sources x WHERE ${FILE_LIVE} AND x.id = $2),
-  used AS (SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $1 AND provenance->>'sourceId' = $2::uuid::text),
+const BIN_FILE = `WITH src AS (SELECT x.* FROM sources x WHERE ${FILE_LIVE} AND x.id = $2 FOR UPDATE),
+  ${CITING_EVIDENCE},
   binned AS (
     INSERT INTO material_bin (user_id, kind, id, deleted_at, snapshot)
     SELECT src.user_id, 'file', src.id, $3::timestamptz, to_jsonb(src) || jsonb_build_object('resume_pinned',
@@ -114,13 +120,10 @@ const KINDS: Record<Kind, KindRule> = {
     remove: async (ctx, id) => {
       const row = await one(ctx.deps.query, BIN_FILE, [ctx.user.id, id, ctx.now.toISOString()]);
       if (!Number(row?.found)) return false;
-      if (Number(row?.used) > 0) {
-        throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
-          reason: "REFERENCED_BY_EVIDENCE", evidenceCount: Number(row?.used),
-        });
-      }
+      refuseCited(row?.used);
       return Number(row?.deleted) > 0;
     },
+    kept: "SELECT 1 FROM material_bin WHERE user_id = $1 AND kind = 'file' AND id = $2",
     // Its search nodes went with the row, so the file is read again.
     restore: async (ctx, id) => {
       if (await changed(ctx, UNBIN_FILE, [ctx.user.id, id])) await enqueueIngest(ctx, { sourceId: id });
@@ -138,17 +141,10 @@ const KINDS: Record<Kind, KindRule> = {
       kind: "document", id: String(row.id), title: String(row.title), docKind: String(row.doc_kind ?? ""), origin: "AI",
       createdBy: makerOf(row), updatedAt: ts(row.at),
     }),
-    remove: (ctx, id) => changed(ctx,
-      "UPDATE documents x SET revision = revision + 1, status = 'ARCHIVED', updated_at = $3 WHERE x.user_id = $1 AND x.status <> 'ARCHIVED' AND x.id = $2 RETURNING x.id",
-      [ctx.user.id, id, ctx.now.toISOString()]),
-    // As POST /documents/{id}/restore, without its revision check. Archiving dropped its search nodes.
+    remove: (ctx, id) => archiveDoc(ctx, id, null),
+    kept: "SELECT 1 FROM documents WHERE user_id = $1 AND id = $2 AND status = 'ARCHIVED'",
     restore: async (ctx, id) => {
-      const restored = await changed(ctx,
-        `UPDATE documents SET revision = revision + 1,
-           status = CASE WHEN finalized_version_id IS NOT NULL THEN 'FINALIZED' ELSE 'DRAFT' END, updated_at = $3
-         WHERE user_id = $1 AND id = $2 AND status = 'ARCHIVED' RETURNING id`,
-        [ctx.user.id, id, ctx.now.toISOString()]);
-      if (restored) await enqueueIngest(ctx, { documentId: id });
+      await unarchiveDoc(ctx, id, null);
     },
   },
   posting: {
@@ -166,6 +162,7 @@ const KINDS: Record<Kind, KindRule> = {
       employmentType: textOrNull(row.employment_type), location: textOrNull(row.location), bookmarkedAt: ts(row.at),
     }),
     remove: (ctx, id) => changed(ctx, BIN_BOOKMARK, [ctx.user.id, id, ctx.now.toISOString()]),
+    kept: "SELECT 1 FROM material_bin WHERE user_id = $1 AND kind = 'posting' AND id = $2",
     restore: async (ctx, id) => {
       await query(ctx.deps.query, UNBIN_BOOKMARK, [ctx.user.id, id]);
     },
@@ -183,12 +180,10 @@ const KINDS: Record<Kind, KindRule> = {
       linkKind: String(row.link_kind), addedAt: ts(row.at), lastCheckedAt: ts(row.last_checked_at),
       lastCheckOk: row.last_check_ok == null ? null : asBool(row.last_check_ok),
     }),
-    remove: (ctx, id) => changed(ctx,
-      "UPDATE user_links x SET deleted_at = $3 WHERE x.user_id = $1 AND x.deleted_at IS NULL AND x.id = $2 RETURNING x.id",
-      [ctx.user.id, id, ctx.now.toISOString()]),
+    remove: softDeleteLink,
+    kept: "SELECT 1 FROM user_links WHERE user_id = $1 AND id = $2 AND deleted_at IS NOT NULL",
     restore: async (ctx, id) => {
-      await query(ctx.deps.query,
-        "UPDATE user_links SET deleted_at = NULL WHERE user_id = $1 AND id = $2 AND deleted_at IS NOT NULL", [ctx.user.id, id]);
+      await undeleteLink(ctx, id);
     },
   },
 };
@@ -316,9 +311,12 @@ const getMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promise<Re
   return data(200, { ...material, usedBy }, ctx.rid);
 };
 
+// A repeat, or the second of two at once, finds the material deleted already: it answers as the first did
+// and changes nothing, so a double tap does not show an error for a delete that worked.
 const deleteMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promise<Response> => {
   const kind = kindOf(kindRaw);
-  if (!(await KINDS[kind].remove(ctx, requireUuid(idRaw, "id")))) throw notFound();
+  const id = requireUuid(idRaw, "id");
+  if (!(await KINDS[kind].remove(ctx, id)) && !(await one(ctx.deps.query, KINDS[kind].kept, [ctx.user.id, id]))) throw notFound();
   return noContent(ctx.rid);
 };
 
