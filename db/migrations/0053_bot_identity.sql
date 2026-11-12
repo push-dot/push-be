@@ -107,4 +107,4 @@ SET result = jsonb_build_object(
             'assistantMessageId', result->'value'->'assistantMessage'->'id',
             'userMessageId', result->'value'->'userMessage'->'id',
             'approvalIds', COALESCE(result->'value'->'approvalIds', '[]'::jsonb))))
-WHERE result->'value' ? 'assistantMessage';
+WHERE type = 'CHAT_MESSAGE' AND result->'value' ? 'assistantMessage';
