@@ -94,12 +94,14 @@ async function createLink(ctx: Ctx): Promise<Response> {
 export const softDeleteLink = async (ctx: Ctx, id: string): Promise<boolean> =>
   (await one(ctx.deps.query, "UPDATE user_links SET deleted_at = $3 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id", [id, ctx.user.id, ctx.now.toISOString()])) != null;
 
-/** Undoes `softDeleteLink`. The caller's link as it is now, or null when there is no such link. */
+/** Undoes `softDeleteLink`. The restored link, or null when the caller has no deleted link with this id. */
 export const undeleteLink = (ctx: Ctx, id: string): Promise<Record<string, unknown> | null> =>
-  one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
+  one(ctx.deps.query, "UPDATE user_links SET deleted_at = NULL WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL RETURNING id, kind, url, title, status, fit_count, ai_read, created_at", [id, ctx.user.id]);
 
 async function deleteLink(ctx: Ctx, idRaw: string): Promise<Response> {
-  if (!(await softDeleteLink(ctx, requireUuid(idRaw, "id")))) throw notFound();
+  const id = requireUuid(idRaw, "id");
+  // A repeat answers 204 like DELETE /materials/link/{id}.
+  if (!(await softDeleteLink(ctx, id)) && !(await one(ctx.deps.query, "SELECT 1 FROM user_links WHERE user_id = $1 AND id = $2 AND deleted_at IS NOT NULL", [ctx.user.id, id]))) throw notFound();
   return noContent(ctx.rid);
 }
 

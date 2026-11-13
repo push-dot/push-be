@@ -393,7 +393,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   }
   const draftSource = body.draftSource == null ? null : String(body.draftSource);
   const account = await verifiedCompany(ctx);
-  const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
+  const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200).trim();
   if (!company) throw fieldError("company", "company must be 1-200 characters");
   const fields = searchFields(`${title} ${company}`);
   const id = crypto.randomUUID();
@@ -652,7 +652,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   if (Number(current.revision) !== expected) throw revisionConflict(Number(current.revision));
   const next = { ...current };
   if ("title" in body) next.title = textOf(body.title, "title", 1, 300);
-  if ("company" in body) next.company = textOf(body.company, "company", 1, 200);
+  if ("company" in body) next.company = textOf(body.company, "company", 1, 200).trim();
   if ("jobCategory" in body) {
     if (typeof body.jobCategory !== "string" || !JOB_CATEGORIES.has(body.jobCategory)) {
       throw unprocessable("jobCategory", "unsupported jobCategory");

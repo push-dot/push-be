@@ -28,8 +28,8 @@ RETENTION = {
     "document": "30 days",      # deleted materials: archived documents, links, material_bin rows
 }
 
-# Foreign keys cascade from users (migration 0018). workspace_files has no
-# foreign key, so it is cleared through the user's conversations first.
+# Foreign keys cascade from users (migration 0018); workspace_files cascades from
+# conversations (migration 0053).
 # Returns the image keys (post images, avatar) the deleted users owned.
 PURGE_SQL = (
     "WITH gone AS (SELECT id FROM users "
@@ -38,8 +38,6 @@ PURGE_SQL = (
     "WHERE user_id IN (SELECT id FROM gone) AND jsonb_typeof(image_keys) = 'array' "
     "UNION SELECT avatar_key FROM profiles "
     "WHERE user_id IN (SELECT id FROM gone) AND avatar_key IS NOT NULL), "
-    "files AS (DELETE FROM workspace_files WHERE conversation_id IN "
-    "(SELECT id FROM conversations WHERE user_id IN (SELECT id FROM gone))), "
     "users_deleted AS (DELETE FROM users WHERE id IN (SELECT id FROM gone)) "
     "SELECT key FROM images"
 )
@@ -56,8 +54,6 @@ PURGE_SQL = (
 COMPANY_PURGE_SQL = (
     "WITH gone AS (SELECT id, logo_key FROM companies "
     "WHERE deletion_requested_at < now() - $1::text::interval LIMIT 50), "
-    "files AS (DELETE FROM workspace_files WHERE conversation_id IN "
-    "(SELECT id FROM conversations WHERE company_id IN (SELECT id FROM gone))), "
     "fits AS (DELETE FROM posting_fit_cache WHERE posting_id IN "
     "(SELECT id FROM job_postings WHERE company_id IN (SELECT id FROM gone))), "
     "logos AS (DELETE FROM upload_images WHERE key IN (SELECT logo_key FROM gone)), "

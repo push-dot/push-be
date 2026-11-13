@@ -206,14 +206,12 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
 
 const DELETE_OWNED = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
   + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
-  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
-  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)) "
   + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
 
 const DELETE_COMPANY = "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND company_id IS NOT NULL), "
   + "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
-  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
-  + "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+  + "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)) "
   + "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id";
 
 export async function deleteConversation(ctx: Ctx, idRaw: string): Promise<Response> {

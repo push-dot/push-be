@@ -405,6 +405,14 @@ test("GET /bots/search refuses a missing, blank or too long q and a bad page", a
   }
 });
 
+test("an empty ?limit= on /bots/search pages like a missing one", async () => {
+  const pageSize = async (query: string): Promise<unknown> =>
+    (await call("GET", `/api/v1/bots/search?q=acme${query}`, undefined)).seen.find((c) => c.sql.includes("LIMIT $5"))!.params[4];
+  assert.equal(await pageSize(""), 21);
+  assert.equal(await pageSize("&limit="), 21);
+  assert.equal(await pageSize("&limit=7"), 8);
+});
+
 test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {
   const collations = async (q: string): Promise<boolean[]> => {
     const { seen } = await call("GET", `/api/v1/bots/search?q=${encodeURIComponent(q)}`, undefined);
