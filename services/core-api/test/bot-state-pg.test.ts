@@ -226,6 +226,55 @@ describe("bot state on the shared database", () => {
     assert.deepEqual([now[0].displayName, now[0].lastActivityAt], ["Push Bot", ago(9000)], "the Push Bot stays first whatever its activity");
   });
 
+  test("a bot whose card ran out or whose run failed says so until something newer happens", async (t) => {
+    if (!db) return t.skip(SKIP);
+    const outcomeOf = async (user: Person, id: string): Promise<unknown> => (await botOf(user, id)).outcome;
+    const user = await db.person("PRO");
+    const failedAt = async (id: string, when: string): Promise<void> => {
+      await db!.pg.query("UPDATE ai_jobs SET updated_at = $2::timestamptz WHERE conversation_id = (SELECT id FROM conversations WHERE bot_id = $1::uuid)", [id, when]);
+    };
+
+    const expired = await made(user, "Acme");
+    const a = scene(db, user, expired);
+    assert.equal(await outcomeOf(user, expired), null, "a bot with no thread");
+    await a.job("DONE", ago(30), [QUEUED]);
+    await a.ask({ when: ago(20), expires: ago(10) });
+    assert.deepEqual(await outcomeOf(user, expired), { kind: "expired", at: ago(10) }, "a pending card past its time");
+    await a.ask({ when: ago(2), expires: ago(-8) });
+    assert.equal(await outcomeOf(user, expired), null, "asked again: the open card is the activity");
+    await db.pg.query("UPDATE approvals SET status = 'EXPIRED' WHERE conversation_id = (SELECT id FROM conversations WHERE bot_id = $1::uuid) AND expires_at > now()", [expired]);
+    assert.deepEqual(await outcomeOf(user, expired), { kind: "expired", at: ago(-8) }, "a card the sweeper closed");
+    await a.job("RUNNING", ago(1), [QUEUED]);
+    assert.equal(await outcomeOf(user, expired), null, "the answer started a run");
+    await db.pg.query("UPDATE ai_jobs SET status = 'DONE' WHERE conversation_id = (SELECT id FROM conversations WHERE bot_id = $1::uuid)", [expired]);
+    assert.equal(await outcomeOf(user, expired), null, "a newer run that finished leaves the old card behind");
+
+    const failed = await made(user, "Beta");
+    const b = scene(db, user, failed);
+    await b.say("USER", "고쳐 줘", ago(41));
+    await b.job("DEAD", ago(40), [QUEUED]);
+    await failedAt(failed, ago(39));
+    assert.deepEqual(await outcomeOf(user, failed), { kind: "failed", at: ago(39) });
+    await b.job("CANCELLED", ago(30), []);
+    assert.equal(await outcomeOf(user, failed), null, "a cancelled run is newer than the failed one");
+    await b.job("FAILED", ago(20), []);
+    await failedAt(failed, ago(19));
+    assert.deepEqual(await outcomeOf(user, failed), { kind: "failed", at: ago(19) }, "the newest run decides");
+    await b.job("QUEUED", ago(5), [QUEUED]);
+    assert.equal(await outcomeOf(user, failed), null, "a retry is the activity");
+    await b.job("DONE", ago(1), []);
+    await db.pg.query("UPDATE ai_jobs SET status = 'DONE' WHERE conversation_id = (SELECT id FROM conversations WHERE bot_id = $1::uuid) AND status = 'QUEUED'", [failed]);
+    assert.equal(await outcomeOf(user, failed), null, "a run that succeeded after the failure");
+
+    const card = await made(user, "Gamma");
+    const c = scene(db, user, card);
+    await c.job("DEAD", ago(20), []);
+    await c.ask({ when: ago(10), expires: ago(5) });
+    assert.equal(((await botOf(user, card)).outcome as Row).kind, "expired", "a card newer than the failed run");
+    await c.job("DEAD", ago(2), []);
+    assert.equal(((await botOf(user, card)).outcome as Row).kind, "failed", "a failed run newer than the card");
+  });
+
   test("the list carries the plan's limit and counts company bots only", async (t) => {
     if (!db) return t.skip(SKIP);
     const user = await db.person("FREE");

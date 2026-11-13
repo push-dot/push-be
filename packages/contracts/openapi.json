@@ -1241,6 +1241,35 @@
           "notificationsMuted": {
             "type": "boolean"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "properties": {
+                  "at": {
+                    "description": "expired: when the card ran out. failed: when the run ended.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "expired",
+                      "failed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "at"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the last run ended while nothing runs and no card is open: expired when the newest card ran out unanswered, failed when the newest chat run failed. A later message, card or run replaces it. null otherwise."
+          },
           "postingId": {
             "anyOf": [
               {
@@ -1300,6 +1329,7 @@
           "lastMessage",
           "unread",
           "activity",
+          "outcome",
           "companyId",
           "postingUrl",
           "avatarKey",
@@ -1720,6 +1750,27 @@
         },
         "required": [
           "data"
+        ],
+        "type": "object"
+      },
+      "BotOutcome": {
+        "properties": {
+          "at": {
+            "description": "expired: when the card ran out. failed: when the run ended.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "expired",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "at"
         ],
         "type": "object"
       },

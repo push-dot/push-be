@@ -133,6 +133,7 @@ const botDto = (row: BotRow): Record<string, unknown> => {
     lastMessage,
     unread: asBool(row.unread),
     activity,
+    outcome: row.outcome_kind == null ? null : { kind: String(row.outcome_kind), at: ts(row.outcome_at) },
     // The app build from before the bot contract reads the fields below. They go with migration 0058.
     companyId: null,
     postingUrl: textOrNull(row.posting_url),

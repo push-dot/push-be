@@ -4360,6 +4360,16 @@ export interface components {
             /** @deprecated */
             mascotKey: string | null;
             notificationsMuted: boolean;
+            /** @description How the last run ended while nothing runs and no card is open: expired when the newest card ran out unanswered, failed when the newest chat run failed. A later message, card or run replaces it. null otherwise. */
+            outcome: {
+                /**
+                 * Format: date-time
+                 * @description expired: when the card ran out. failed: when the run ended.
+                 */
+                at: string;
+                /** @enum {string} */
+                kind: "expired" | "failed";
+            } | null;
             postingId: string | null;
             /** @deprecated */
             postingUrl: string | null;
@@ -4471,6 +4481,15 @@ export interface components {
         BotList: {
             data: components["schemas"]["Bot"][];
             limit?: components["schemas"]["BotLimit"];
+        };
+        BotOutcome: {
+            /**
+             * Format: date-time
+             * @description expired: when the card ran out. failed: when the run ended.
+             */
+            at: string;
+            /** @enum {string} */
+            kind: "expired" | "failed";
         };
         BotRef: {
             color: components["schemas"]["BotColor"] | null;

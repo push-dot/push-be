@@ -33,7 +33,7 @@ const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> =
     last_message_at: null, last_message_preview: null, last_message_from_bot: null,
     card_id: null, card_title: null, card_for: null, card_at: null, card_expires_at: null,
     job_id: null, job_at: null, job_phase: null, job_text: null, job_recent_text: null, job_ahead: null,
-    last_activity_at: bot.created_at, unread: false,
+    last_activity_at: bot.created_at, unread: false, outcome_kind: null, outcome_at: null,
     ...state,
   };
 };
