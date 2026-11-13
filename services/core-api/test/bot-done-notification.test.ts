@@ -111,7 +111,7 @@ test("a web conversation keeps the old target and stores the conversation", asyn
   assert.equal("pushBody" in payload, false);
   assert.deepEqual(payload.target, { kind: "conversation", id: CONV });
   assert.equal(payload.conversationId, CONV);
-  assert.equal(JSON.stringify(payload).includes("봇"), false);
+  assert.equal(JSON.stringify(payload).includes("Bot"), false);
   const job = rec.seen.find((call) => call.sql.includes("INSERT INTO ai_jobs"));
   assert.equal(job?.params[9], CONV);
 });
@@ -122,7 +122,8 @@ test("a bot thread stores the preview and pushes a fixed sentence", async () => 
   const res = await handle(done({ title: "클라이언트가 적은 제목" }), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
   assert.equal(res.status, 201);
   const payload = payloadOf(rec.seen);
-  assert.equal(payload.title, "봇 작업 완료");
+  assert.equal(payload.title, "Bot 작업 완료");
+  assert.equal(JSON.stringify(payload).includes("봇"), false, "the app writes Bot, never 봇");
   assert.equal(payload.body, PREVIEW);
   assert.equal(payload.pushBody, "Push Bot이 작업을 마쳤어요");
   assert.equal(String(payload.pushBody).includes(PREVIEW), false);
@@ -137,15 +138,15 @@ test("a company bot names itself in the push sentence", async () => {
   const rec = recording(bot({ display_name: "모아페이" }));
   const res = await handle(done({}), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
   assert.equal(res.status, 201);
-  assert.equal(payloadOf(rec.seen).pushBody, "모아페이 봇이 작업을 마쳤어요");
+  assert.equal(payloadOf(rec.seen).pushBody, "모아페이 Bot이 작업을 마쳤어요");
 });
 
-test("a bot with no name still says 봇", async () => {
+test("a bot with no name still says Bot", async () => {
   resetLimits();
   const rec = recording(bot({ display_name: "  " }));
   const res = await handle(done({}), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
   assert.equal(res.status, 201);
-  assert.equal(payloadOf(rec.seen).pushBody, "봇이 작업을 마쳤어요");
+  assert.equal(payloadOf(rec.seen).pushBody, "Bot이 작업을 마쳤어요");
 });
 
 test("an already read bot thread sends nothing and does not claim the job", async () => {
@@ -196,7 +197,7 @@ test("postgres stores the conversation and pushes the fixed sentence, not the pr
   assert.ok(insert);
   assert.equal(insert.params.includes(CONV), true);
   assert.equal(insert.params.includes(PREVIEW), true);
-  assert.equal(insert.params.includes("봇 작업 완료"), true);
+  assert.equal(insert.params.includes("Bot 작업 완료"), true);
   assert.equal(rec.seen.some((call) => call.sql.includes("INSERT INTO ai_jobs")), false);
   assert.equal(rec.pushed.length, 1);
   assert.equal(rec.pushed[0].includes(PREVIEW), false);

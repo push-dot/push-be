@@ -149,7 +149,7 @@ async def test_notify_stores_the_preview_and_pushes_the_fixed_sentence():
     preview = "급여 명세는 비밀"
     payload = {
         "notificationId": str(NOTE), "userId": str(USER), "kind": "AI_DONE",
-        "title": "봇 작업 완료", "body": preview,
+        "title": "Bot 작업 완료", "body": preview,
         "pushBody": "Push Bot이 작업을 마쳤어요",
         "target": {"kind": "bot", "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
         "createdAt": "2026-10-22T00:00:00.000Z",
@@ -164,7 +164,7 @@ async def test_notify_stores_the_preview_and_pushes_the_fixed_sentence():
     assert CONV in args
     assert pushed == [{
         "to": "ExponentPushToken[abc]",
-        "title": "봇 작업 완료",
+        "title": "Bot 작업 완료",
         "body": "Push Bot이 작업을 마쳤어요",
         "data": payload["target"],
     }]
@@ -187,7 +187,7 @@ async def test_notify_drops_the_push_when_the_thread_is_gone():
     query = NotifyQuery(error=Gone("fk"))
     payload = {
         "notificationId": str(NOTE), "userId": str(USER), "kind": "AI_DONE",
-        "title": "봇 작업 완료", "body": "x", "pushBody": "봇이 작업을 마쳤어요",
+        "title": "Bot 작업 완료", "body": "x", "pushBody": "Bot이 작업을 마쳤어요",
         "target": {"kind": "bot", "id": "b"}, "createdAt": "2026-10-22T00:00:00.000Z",
         "conversationId": str(CONV),
     }
