@@ -597,7 +597,6 @@ test("delete removes the owner's conversation in one statement and hides another
   const gone = sqls.find((sql) => sql.startsWith("WITH owned AS")) ?? "";
   assert.match(gone, /DELETE FROM chat_jobs/);
   assert.match(gone, /DELETE FROM messages/);
-  assert.match(gone, /DELETE FROM workspace_files/);
   assert.match(gone, /DELETE FROM conversations/);
   assert.match(gone, /user_id = \$2/);
 

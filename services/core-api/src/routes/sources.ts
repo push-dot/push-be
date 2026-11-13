@@ -184,9 +184,9 @@ export const refuseCited = (used: unknown): void => {
 };
 
 /**
- * One round trip: find, check evidence references, delete. Migration 0018 made
- * profiles.resume_source_id ON DELETE CASCADE, so deleting a pinned resume used to delete
- * the whole profile; the pointer is cleared in the same statement first.
+ * One round trip: find, check evidence references, delete. Migration 0028 made
+ * profiles.resume_source_id ON DELETE SET NULL (0018 had it cascade and deleted the whole profile);
+ * the pointer is still cleared in the same statement so the profile never points at a gone source.
  */
 const DELETE_SOURCE = `WITH src AS (SELECT id FROM sources WHERE id = $2::uuid AND user_id = $1),
   ${CITING_EVIDENCE},
