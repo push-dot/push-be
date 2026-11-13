@@ -6,22 +6,23 @@ import { resolveBot } from "./bots.ts";
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-// $3 is the bot. A tool card of its thread with a lifetime is the only card that can be asked again.
-const RETRYABLE_CARD = `a.id = $1 AND a.user_id = $2 AND a.kind = 'TOOL_ACTION' AND a.expires_at IS NOT NULL
+// $3 is the bot. A tool card of its thread with a lifetime (approval_expires, 0059) is the only card that
+// can be asked again.
+const BOT_CARD = `a.id = $1 AND a.user_id = $2 AND approval_expires(a)
   AND a.conversation_id = (SELECT c.id FROM conversations c WHERE c.bot_id = $3)`;
 
 // The card is asked again at $4, so both of its times move and the span between them stays: every retry
 // gives the card its whole lifetime. Nothing resumes a run when its card expires, so the run still waits
-// on this card and the next answer resumes it. approval_retryable (0058) is the rule the transcript's
+// on this card and the next answer resumes it. approval_retryable (0059) is the rule the transcript's
 // retryable reads too.
 const REARM = `UPDATE approvals a SET status = 'PENDING', created_at = $4,
     expires_at = $4::timestamptz + (a.expires_at - a.created_at), updated_at = $4, revision = a.revision + 1
-  WHERE ${RETRYABLE_CARD} AND a.expires_at <= $4 AND approval_retryable(a)
+  WHERE ${BOT_CARD} AND a.expires_at <= $4 AND approval_retryable(a)
   RETURNING a.id, a.created_at, a.expires_at`;
 
 const CARD = `SELECT a.id, a.status, a.created_at, a.expires_at, a.expires_at > $4 AS open,
     approval_superseded(a.conversation_id, a.created_at) AS superseded
-  FROM approvals a WHERE ${RETRYABLE_CARD}`;
+  FROM approvals a WHERE ${BOT_CARD}`;
 
 const cardRetry = (row: Record<string, unknown>) => ({
   id: String(row.id), status: "PENDING", openedAt: ts(row.created_at), expiresAt: ts(row.expires_at),

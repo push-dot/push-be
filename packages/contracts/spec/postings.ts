@@ -204,7 +204,7 @@ export const routes: Route[] = [
     tag: "postings",
     summary: "Result counts per search type",
     auth: "optional",
-    description: "Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.",
+    description: "Each count is the page.total of GET /search for that type, so it equals the full list: private profiles, the caller and non-matching hangul forms are left out. Guests get 0 for people and posts, as /search refuses them. Does not record the term. Whitespace-only q is 400. Over 200 code points is 400.",
     params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" }, "Search term. Whitespace-only is 400. Max 200 code points.")],
     responses: { 200: ok(obj({ postings: int, people: int, posts: int })) },
   }),
