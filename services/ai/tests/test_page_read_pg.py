@@ -334,6 +334,8 @@ async def test_a_posting_is_found_by_its_page_among_the_others_of_its_host_in_ei
         await posting(db, people, f"회사{n}", f"{board}/jobs/{n}")
     await posting(db, people, "한글회사", f"{board}/채용/1?q=개발자")
     await posting(db, people, "인코딩회사", f"{board}/%EC%B1%84%EC%9A%A9/2/")
+    await posting(db, people, "섞인회사", f"{board}/채용/3?q=a%20b")
+    await posting(db, people, "절반회사", f"{board}/%EC%B1%84%EC%9A%A9/채용4")
 
     async def owner(url: str) -> tuple[str, str]:
         page = await site_page(db, c.thread, url)
@@ -343,6 +345,9 @@ async def test_a_posting_is_found_by_its_page_among_the_others_of_its_host_in_ei
     assert await owner(f"{board}/채용/1?q=개발자") == ("posting", "한글회사")
     assert await owner(encoded) == ("posting", "한글회사")
     assert await owner(f"{board}/채용/2") == ("posting", "인코딩회사")
+    assert await owner(f"{board}/채용/3?q=a%20b") == ("posting", "섞인회사")
+    assert await owner(f"{board}/채용/3?q=a b") == ("posting", "섞인회사")
+    assert await owner(f"{board}/채용/채용4") == ("posting", "절반회사")
     assert await owner(f"{board}/jobs/7/") == ("posting", "회사7")
     assert await owner(f"{board}/jobs/99") == ("other", "")
     assert await owner(f"http://{board.removeprefix('https://')}/jobs/7") == ("other", "")

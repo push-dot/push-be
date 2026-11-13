@@ -147,8 +147,10 @@ _ASKS: dict[PageKind, tuple[str, str]] = {
 }
 
 # The posting whose URL is this page, and the site of the company this bot works for. A posting is
-# matched by host and path in SQL (case-folded, in the encoded and the decoded form), so a job
-# board with thousands of postings answers one row; _covers makes the exact decision.
+# matched by host in SQL and by path when the stored URL is plain ASCII (case-folded, in the encoded
+# and the decoded form), so a job board with thousands of postings answers about one row. A stored
+# URL with raw Hangul or a percent escape in any part may equal the page in a form SQL cannot
+# compare, so it always comes back; _covers makes the exact decision.
 # shortcut: job_postings.source_url has no index, so this still scans the postings; index it when
 # they grow past what a scan per page card can afford.
 _KNOWN_PAGES = (
@@ -156,8 +158,8 @@ _KNOWN_PAGES = (
     "CROSS JOIN LATERAL regexp_match(p.source_url, "
     "'^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(\\?[^#]*)?') AS m "
     "WHERE lower(m[1]) = $4 AND lower(m[2]) ~ $2 "
-    "AND lower(rtrim(m[3], '/') || COALESCE(m[4], '')) = ANY($3::text[]) "
-    "LIMIT 1) "
+    "AND (lower(rtrim(m[3], '/') || COALESCE(m[4], '')) = ANY($3::text[]) "
+    "OR p.source_url ~ '[^ -~]|%')) "
     "UNION ALL SELECT 'company', COALESCE(NULLIF(b.company_name, ''), co.name), co.website "
     "FROM conversations c JOIN bots b ON b.id = c.bot_id "
     "JOIN companies co ON co.id = COALESCE(b.company_id, "

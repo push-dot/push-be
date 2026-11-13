@@ -128,6 +128,15 @@ def test_hangul_that_is_a_value_after_a_letter_or_digit_stays_in_the_link():
     ]
 
 
+@pytest.mark.parametrize(
+    "ending", ["에서는", "에는", "으로만", "보다는", "이고", "인데", "이나", "이라서", "을요", "을(를)"]
+)
+def test_a_chain_of_particles_after_a_link_is_not_part_of_it(ending):
+    assert web_page.find_urls(f"https://x.example/jobs/1{ending} 봐줘") == [
+        "https://x.example/jobs/1"
+    ]
+
+
 def test_a_korean_path_typed_as_text_is_the_same_page_as_the_encoded_link():
     typed = normalize_url("https://x.example/채용/1?q=개발자")
     assert typed == normalize_url(
