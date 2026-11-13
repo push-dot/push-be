@@ -3861,7 +3861,7 @@ export interface paths {
         };
         /**
          * Result counts per search type
-         * @description Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.
+         * @description Each count is the page.total of GET /search for that type, so it equals the full list: private profiles, the caller and non-matching hangul forms are left out. Guests get 0 for people and posts, as /search refuses them. Does not record the term. Whitespace-only q is 400. Over 200 code points is 400.
          */
         get: operations["getSearchCounts"];
         put?: never;
