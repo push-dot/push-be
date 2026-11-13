@@ -35,9 +35,9 @@ const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES 
 
 const pushSentence = (name: unknown): string => {
   const text = String(name ?? "").trim();
-  if (!text) return "봇이 작업을 마쳤어요";
+  if (!text) return "Bot이 작업을 마쳤어요";
   if (text.endsWith("봇") || text.endsWith("Bot")) return `${text}이 작업을 마쳤어요`;
-  return `${text} 봇이 작업을 마쳤어요`;
+  return `${text} Bot이 작업을 마쳤어요`;
 };
 
 const alreadyRead = (value: unknown): boolean => value === false || value === "f" || value === "false";
@@ -73,7 +73,7 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
   const claim = await one(ctx.deps.query, CLAIM, [`ai-done:${jobId}`, ctx.now.toISOString()]);
   if (!claim) return data(201, { id: null }, ctx.rid);
   const botId = row.bot_id == null || row.bot_id === "" ? "" : String(row.bot_id);
-  const title = botId ? "봇 작업 완료" : (body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
+  const title = botId ? "Bot 작업 완료" : (body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
   if (title.length > 200) throw fieldError("title", "must be at most 200 characters");
   const id = await sendNotification(ctx, {
     userId,

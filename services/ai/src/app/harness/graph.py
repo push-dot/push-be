@@ -327,7 +327,7 @@ async def _complete(chat, messages, *, text_only: bool = False):
 
 def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
     """The system prompt of a thread. A bot thread exists only in the app, where the model is a
-    봇 and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
+    Bot and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
     also says 플랜 where the web says 요금제."""
     if not bot:
         return prompt
@@ -336,13 +336,13 @@ def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
     if bot.get("kind") == "push":
         name, helps = "Push Bot", "구직자의 커리어를"
     else:
-        name = f"{bot.get('name') or bot.get('company')} 봇"
+        name = f"{bot.get('name') or bot.get('company')} Bot"
         helps = f"{quote(bot.get('company') or '')} 회사에 지원하는 구직자를"
     line = f"당신은 Push에서 {helps} 돕는 {quote(name)}이에요."
     if bot.get("postingId"):
         title = quote(bot.get("postingTitle") or "제목 없음")
         line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
-    line += f" 자신을 말할 때는 {quote(name)}이나 봇이라고 하고, 에이전트라고 하지 않아요."
+    line += f" 자신을 말할 때는 {quote(name)}이나 Bot이라고 하고, 에이전트라고 하지 않아요."
     return line + "\n" + prompt.partition("\n")[2].replace("요금제", "플랜")
 
 

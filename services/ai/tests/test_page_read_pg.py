@@ -501,6 +501,7 @@ async def test_a_conversation_without_a_bot_offers_no_always_allow_and_never_say
     ]
     assert card["title"] == "careers.moapay.example 페이지를 열어도 될까요?"
     assert "봇" not in json.dumps(card, ensure_ascii=False)
+    assert "Bot" not in json.dumps(card, ensure_ascii=False)
 
 
 async def test_an_expired_card_resumes_nothing_and_a_rearmed_card_resumes_the_same_interrupt(

@@ -56,7 +56,7 @@ CARDS: dict[str, CardSpec] = {
             {
                 "id": APPROVE_ALWAYS,
                 "label": "항상 허용",
-                "desc": "이 봇이 이 사이트를 읽을 때 다시 묻지 않아요",
+                "desc": "이 Bot이 이 사이트를 읽을 때 다시 묻지 않아요",
             },
             {"id": "reject", "label": "거절"},
         ),

@@ -71,7 +71,7 @@ def test_the_page_card_has_three_answers_ten_minutes_and_a_foot_that_names_the_l
     card = CARDS["read_page"]
     assert [(o["id"], o["label"], o.get("desc")) for o in card.options] == [
         ("approve", "한 번 허용", None),
-        ("approve_always", "항상 허용", "이 봇이 이 사이트를 읽을 때 다시 묻지 않아요"),
+        ("approve_always", "항상 허용", "이 Bot이 이 사이트를 읽을 때 다시 묻지 않아요"),
         ("reject", "거절", None),
     ]
     assert card.ttl == timedelta(minutes=10)

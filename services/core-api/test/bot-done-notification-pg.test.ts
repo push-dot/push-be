@@ -106,13 +106,13 @@ test("a muted bot sends nothing, one job sends once, and erase drops the row", a
   assert.equal(second.id, null);
   const row = (await db.pg.query(
     "SELECT title, body, target, conversation_id FROM notifications WHERE id = $1::uuid", [first.id])).rows[0];
-  assert.equal(row.title, "봇 작업 완료");
+  assert.equal(row.title, "Bot 작업 완료");
   assert.equal(row.body, PREVIEW);
   assert.equal(String(row.conversation_id), thread);
   assert.deepEqual(row.target, { kind: "bot", id: botId });
   assert.equal(first.pushed.length, 1);
   assert.equal(first.pushed[0].includes(PREVIEW), false);
-  assert.equal(first.pushed[0].includes("모아페이 봇이 작업을 마쳤어요"), true);
+  assert.equal(first.pushed[0].includes("모아페이 Bot이 작업을 마쳤어요"), true);
   assert.equal((await db.call(user, "DELETE", `/bots/${botId}`)).status, 204);
   assert.equal(Number((await db.pg.query("SELECT count(*)::int AS n FROM notifications WHERE conversation_id = $1::uuid", [thread])).rows[0].n), 0);
 });
@@ -129,7 +129,7 @@ test("a web conversation keeps the conversation target", async (t) => {
   assert.equal(row.body, "");
   assert.deepEqual(row.target, { kind: "conversation", id: thread });
   assert.equal(String(row.conversation_id), thread);
-  assert.equal(sent.pushed[0].includes("봇"), false);
+  assert.equal(sent.pushed[0].includes("Bot"), false);
 });
 
 test("redis stores the job, the worker row, and erase removes both", async (t) => {

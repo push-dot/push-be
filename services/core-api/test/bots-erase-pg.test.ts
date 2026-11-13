@@ -49,7 +49,7 @@ const seedTurn = async (user: Person, botId: string, text: string): Promise<{ th
      VALUES ($1::uuid, $2::uuid, $3::uuid, 'OPENROUTER', 'm', true, 10, 5, 'SETTLED', $4::uuid)`,
     [crypto.randomUUID(), user.id, operation, job]);
   await run(
-    "INSERT INTO notifications (id, user_id, type, title, body, target, conversation_id) VALUES ($1::uuid, $2::uuid, 'AI_DONE', '봇 작업 완료', $3, $4::jsonb, $5::uuid)",
+    "INSERT INTO notifications (id, user_id, type, title, body, target, conversation_id) VALUES ($1::uuid, $2::uuid, 'AI_DONE', 'Bot 작업 완료', $3, $4::jsonb, $5::uuid)",
     [crypto.randomUUID(), user.id, text, JSON.stringify({ kind: "bot", id: botId }), thread]);
   await run("INSERT INTO bot_read_markers (user_id, bot_id, read_at) VALUES ($1::uuid, $2::uuid, now())", [user.id, botId]);
   return { thread, operation };
