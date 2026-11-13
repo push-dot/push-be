@@ -118,6 +118,16 @@ def test_a_link_in_a_korean_sentence_ends_where_the_particle_starts():
     ]
 
 
+def test_hangul_that_is_a_value_after_a_letter_or_digit_stays_in_the_link():
+    assert web_page.find_urls("https://x.example/a?q=react개발자 봐 줘") == [
+        "https://x.example/a?q=react개발자"
+    ]
+    assert web_page.find_urls("https://x.example/2024년 공고") == ["https://x.example/2024년"]
+    assert web_page.find_urls("https://x.example/jobs/1에서 찾아 줘") == [
+        "https://x.example/jobs/1"
+    ]
+
+
 def test_a_korean_path_typed_as_text_is_the_same_page_as_the_encoded_link():
     typed = normalize_url("https://x.example/채용/1?q=개발자")
     assert typed == normalize_url(

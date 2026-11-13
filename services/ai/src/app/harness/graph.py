@@ -476,6 +476,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             db=db,
             core=core,
             access_mode=mode.value,
+            supplied=page.get("supplied"),
         )
         if tool.name in progress:
             working(progress[tool.name])

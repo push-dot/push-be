@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.clock import utcnow
@@ -146,12 +146,18 @@ _ASKS: dict[PageKind, tuple[str, str]] = {
     "other": ("{host} 페이지를 열어도 될까요?", "{host} · 페이지 1개를 읽어요"),
 }
 
-# Every posting whose URL holds the host, and the site of the company this bot works for.
-# shortcut: job_postings.source_url has no index, so this scans the postings; index it when they
-# grow past what a scan per page card can afford.
+# The posting whose URL is this page, and the site of the company this bot works for. A posting is
+# matched by host and path in SQL (case-folded, in the encoded and the decoded form), so a job
+# board with thousands of postings answers one row; _covers makes the exact decision.
+# shortcut: job_postings.source_url has no index, so this still scans the postings; index it when
+# they grow past what a scan per page card can afford.
 _KNOWN_PAGES = (
-    "SELECT 'posting' AS kind, p.company AS owner, p.source_url AS url FROM job_postings p "
-    "WHERE strpos(lower(p.source_url), $2) > 0 "
+    "(SELECT 'posting' AS kind, p.company AS owner, p.source_url AS url FROM job_postings p "
+    "CROSS JOIN LATERAL regexp_match(p.source_url, "
+    "'^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(\\?[^#]*)?') AS m "
+    "WHERE lower(m[1]) = $4 AND lower(m[2]) ~ $2 "
+    "AND lower(rtrim(m[3], '/') || COALESCE(m[4], '')) = ANY($3::text[]) "
+    "LIMIT 1) "
     "UNION ALL SELECT 'company', COALESCE(NULLIF(b.company_name, ''), co.name), co.website "
     "FROM conversations c JOIN bots b ON b.id = c.bot_id "
     "JOIN companies co ON co.id = COALESCE(b.company_id, "
@@ -160,11 +166,23 @@ _KNOWN_PAGES = (
 )
 
 
+def _posting_filter(url: str, wanted: str) -> tuple[str, list[str], str]:
+    """The host pattern, the path-and-query forms (encoded and decoded, lowercase) and the scheme
+    _KNOWN_PAGES compares a posting's URL with."""
+    parts = urlsplit(wanted)
+    path_query = parts.path + (f"?{parts.query}" if parts.query else "")
+    forms = {path_query.lower(), unquote(path_query).lower()}
+    return rf"^(www\.)?{re.escape(site_host(url))}(:[0-9]+)?$", sorted(forms), parts.scheme
+
+
 async def site_page(db, conversation_id, url: str) -> SitePage:
     """Push names a page it knows: a posting it has, by the whole URL, or any page of the site of
     the company this bot works for. Anything else is other."""
     wanted = normalize_url(url)
-    rows = await db.q().fetch(_KNOWN_PAGES, UUID(str(conversation_id)), site_host(url))
+    if wanted is None:
+        return SitePage()
+    rows = await db.q().fetch(
+        _KNOWN_PAGES, UUID(str(conversation_id)), *_posting_filter(url, wanted))
     found = {row["kind"]: row["owner"] for row in rows if _covers(row, wanted)}
     named: tuple[PageKind, ...] = ("posting", "company")
     return next((SitePage(kind, found[kind]) for kind in named if kind in found), SitePage())

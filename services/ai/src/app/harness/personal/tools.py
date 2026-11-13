@@ -539,6 +539,8 @@ async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
     gated = access is not None and not access.may_search()
     if gated:
         supplied = await _message_has_url(ctx, args.url) or await _attached_link(ctx, args.url)
+    elif ctx.supplied is not None:
+        supplied = ctx.supplied
     else:
         supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
     same_site = None if supplied else lambda hop: site_host(hop) == host
