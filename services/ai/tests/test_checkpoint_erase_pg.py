@@ -103,8 +103,7 @@ DELETE_PATHS = {
     "web conversation delete": ("web", lambda conn, ids: conn.execute(
         "WITH owned AS (SELECT id FROM conversations WHERE id = $1 AND user_id = $2), "
         "dropped_jobs AS (DELETE FROM chat_jobs WHERE conversation_id IN (SELECT id FROM owned)), "
-        "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)), "
-        "dropped_files AS (DELETE FROM workspace_files WHERE conversation_id IN (SELECT id FROM owned)) "
+        "dropped_messages AS (DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)) "
         "DELETE FROM conversations WHERE id IN (SELECT id FROM owned) RETURNING id", ids["web"], ids["user"])),
     "account purge": ("thread", lambda conn, ids: purge_account(conn, ids["user"])),
 }

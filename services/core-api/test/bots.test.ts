@@ -33,7 +33,7 @@ const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> =
     last_message_at: null, last_message_preview: null, last_message_from_bot: null,
     card_id: null, card_title: null, card_for: null, card_at: null, card_expires_at: null,
     job_id: null, job_at: null, job_phase: null, job_text: null, job_recent_text: null, job_ahead: null,
-    last_activity_at: bot.created_at, unread: false,
+    last_activity_at: bot.created_at, unread: false, outcome_kind: null, outcome_at: null,
     ...state,
   };
 };
@@ -403,6 +403,14 @@ test("GET /bots/search refuses a missing, blank or too long q and a bad page", a
     const { res, json } = await call("GET", `/api/v1/bots/search${query}`, undefined);
     assert.deepEqual([res.status, json!.error!.details.field], [400, field], query);
   }
+});
+
+test("an empty ?limit= on /bots/search pages like a missing one", async () => {
+  const pageSize = async (query: string): Promise<unknown> =>
+    (await call("GET", `/api/v1/bots/search?q=acme${query}`, undefined)).seen.find((c) => c.sql.includes("LIMIT $5"))!.params[4];
+  assert.equal(await pageSize(""), 21);
+  assert.equal(await pageSize("&limit="), 21);
+  assert.equal(await pageSize("&limit=7"), 8);
 });
 
 test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {

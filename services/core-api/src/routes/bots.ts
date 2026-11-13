@@ -133,6 +133,7 @@ const botDto = (row: BotRow): Record<string, unknown> => {
     lastMessage,
     unread: asBool(row.unread),
     activity,
+    outcome: row.outcome_kind == null ? null : { kind: String(row.outcome_kind), at: ts(row.outcome_at) },
     // The app build from before the bot contract reads the fields below. They go with migration 0058.
     companyId: null,
     postingUrl: textOrNull(row.posting_url),
@@ -306,7 +307,7 @@ const searchBots = async (ctx: Ctx): Promise<Response> => {
   const q = (ctx.url.searchParams.get("q") ?? "").trim();
   if (!q || [...q].length > SEARCH_Q_MAX) throw fieldError("q", `q must be 1-${SEARCH_Q_MAX} characters`);
   const page = pageOf(ctx.url);
-  const limit = ctx.url.searchParams.has("limit") ? Math.min(page.limit, SEARCH_LIMIT.max) : SEARCH_LIMIT.default;
+  const limit = ctx.url.searchParams.get("limit") ? Math.min(page.limit, SEARCH_LIMIT.max) : SEARCH_LIMIT.default;
   const pattern = likePattern(q);
   const fold = foldOf(q);
   const [named, said] = await Promise.all([

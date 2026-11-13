@@ -23,6 +23,11 @@ const botActivity = {
   ],
 };
 
+const botOutcome = obj({
+  kind: enumOf("expired", "failed"),
+  at: { ...dateTime, description: "expired: when the card ran out. failed: when the run ended." },
+});
+
 const bot = obj({
   id: uuid,
   kind: botKind,
@@ -37,6 +42,7 @@ const bot = obj({
   lastMessage: nullable(obj({ preview: { type: "string", maxLength: 140 }, at: dateTime, fromBot: bool })),
   unread: { ...bool, description: "The bot wrote a message or asked a card after the caller last read it." },
   activity: { ...nullable(botActivity), description: "null when nothing runs and no card is open." },
+  outcome: { ...nullable(botOutcome), description: "How the last run ended while nothing runs and no card is open: expired when the newest card ran out unanswered, failed when the newest chat run failed. A later message, card or run replaces it. null otherwise." },
   companyId: { ...nullable(uuid), deprecated: true, description: "Always null." },
   postingUrl: { ...nullable(str), deprecated: true },
   avatarKey: { ...nullable(str), deprecated: true },
@@ -112,6 +118,7 @@ const updateBotBody = closed({
 export const schemas: Record<string, Schema> = {
   BotColor: enumOf("teal", "sky", "blue", "violet", "pink", "red", "coral", "amber", "green", "brown", "gray"),
   BotActivity: botActivity,
+  BotOutcome: botOutcome,
   Bot: bot,
   BotLimit: botLimit,
   BotList: botList,
