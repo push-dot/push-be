@@ -33,11 +33,20 @@ _HTTP_TIMEOUT = 15
 _FETCH_DEADLINE = 25
 _RENDER_DEADLINE = 60
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
-# A Korean particle typed straight after a URL ("…/jobs/1을 요약해 줘") is not part of it. Hangul
-# right after a letter or digit ends the URL; a Hangul path segment ("/채용/1") or value ("?q=개발")
-# stays. shortcut: a particle after a Hangul segment ("/채용을") stays, since a Korean word can
-# end in that syllable, so such a link still asks; match by prefix in user_supplied if it bites.
-_PARTICLE_RE = re.compile(r"(?<=[A-Za-z0-9])[가-힣]+$")
+# A Korean particle typed straight after a URL ("…/jobs/1을 요약해 줘") is not part of it. Only a
+# real particle right after a letter or digit ends the URL: "?q=react개발자" and "/2024년" are
+# values, so they stay. A Hangul segment or value ("/채용/1", "?q=개발") stays too.
+# shortcut: a particle after a Hangul segment ("/채용을") stays, since a Korean word can end in that
+# syllable, so such a link still asks; match by prefix in user_supplied if it bites.
+_PARTICLES = ("에서", "에게", "으로", "까지", "부터", "처럼", "보다", "이랑", "한테", "이에요", "입니다",
+              "은", "는", "이", "가", "을", "를", "의", "에", "로", "와", "과", "도", "만", "랑", "요",
+              "을(를", "이(가", "은(는")
+_COPULA = ("이고", "이라서", "이라", "이나", "인데", "인가")
+# A chain is one particle or copula form, then more of them or a plain connective: "에서는", "으로만",
+# "이고", "인데", "이라서". Only a chain right after a letter or digit ends the URL.
+_PARTICLE_RE = re.compile(
+    rf"(?<=[A-Za-z0-9])(?:{'|'.join(map(re.escape, _PARTICLES + _COPULA))})"
+    rf"(?:{'|'.join(map(re.escape, _PARTICLES + _COPULA + ('고', '나', '서', '라서')))})*$")
 _WS_RE = re.compile(r"\s+")
 _BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIX = (".localhost", ".internal", ".local", ".lan", ".home")

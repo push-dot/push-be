@@ -34,6 +34,8 @@ class ToolContext:
     core: CoreClient
     access_mode: str = "AUTO"
     inputs: dict = field(default_factory=dict)
+    # Whether the user gave this call's URL, when the graph already decided it for the approval.
+    supplied: bool | None = None
 
 
 @dataclass(frozen=True)

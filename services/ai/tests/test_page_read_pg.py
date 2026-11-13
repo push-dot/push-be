@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import ToolMessage
 
+from app.harness.approval import site_page
 from app.harness.registry import REGISTRY
 from app.harness.runtime import HarnessRuntime, _pending
 from app.infrastructure.store_turns import TurnStore
@@ -191,6 +192,31 @@ async def test_a_link_pasted_in_a_plain_message_is_read_without_a_card(db, peopl
     ], "the clients know three tiers until push-fe F3"
 
 
+async def test_whether_the_user_gave_the_link_is_decided_once_per_page_read(
+    db, people, monkeypatch
+):
+    from app.harness import approval, graph
+    from app.harness.personal import tools
+
+    asked = []
+
+    async def counted(*args):
+        asked.append(args[-1])
+        return await approval.user_supplied(*args)
+
+    monkeypatch.setattr(graph, "user_supplied", counted)
+    monkeypatch.setattr(tools, "user_supplied", counted)
+    fetched = fake_web(monkeypatch, {POSTING: "공고 본문"})
+    c = await chat(db, people)
+    await said(db, c, f"이 공고 읽어 줘 {POSTING}")
+    reads(POSTING)
+
+    await turn(c, f"이 공고 읽어 줘 {POSTING}", mode="AUTO")
+
+    assert fetched == [POSTING]
+    assert asked == [POSTING]
+
+
 @pytest.mark.parametrize(
     ("text", "url"),
     [
@@ -199,8 +225,12 @@ async def test_a_link_pasted_in_a_plain_message_is_read_without_a_card(db, peopl
             "https://careers.moapay.example/채용/1 요약해 줘",
             "https://careers.moapay.example/%EC%B1%84%EC%9A%A9/1",
         ),
+        (
+            "https://careers.moapay.example/a?q=react개발자 봐 줘",
+            "https://careers.moapay.example/a?q=react%EA%B0%9C%EB%B0%9C%EC%9E%90",
+        ),
     ],
-    ids=["particle-after-the-link", "korean-path-read-encoded"],
+    ids=["particle-after-the-link", "korean-path-read-encoded", "hangul-value-after-a-letter"],
 )
 async def test_a_link_typed_in_a_korean_sentence_is_read_without_a_card(
     db, people, monkeypatch, text, url
@@ -293,6 +323,35 @@ async def test_a_page_the_bot_chose_asks_unless_the_turn_runs_at_once_or_the_hos
     assert cards(await turn(granted, "모아페이 공고 읽어 줘", mode="AUTO")) == []
 
     assert fetched == [POSTING, POSTING]
+
+
+async def test_a_posting_is_found_by_its_page_among_the_others_of_its_host_in_either_encoding(
+    db, people
+):
+    board = "https://board.example"
+    c = await chat(db, people)
+    for n in range(30):
+        await posting(db, people, f"회사{n}", f"{board}/jobs/{n}")
+    await posting(db, people, "한글회사", f"{board}/채용/1?q=개발자")
+    await posting(db, people, "인코딩회사", f"{board}/%EC%B1%84%EC%9A%A9/2/")
+    await posting(db, people, "섞인회사", f"{board}/채용/3?q=a%20b")
+    await posting(db, people, "절반회사", f"{board}/%EC%B1%84%EC%9A%A9/채용4")
+
+    async def owner(url: str) -> tuple[str, str]:
+        page = await site_page(db, c.thread, url)
+        return page.kind, page.owner
+
+    encoded = f"{board}/%ec%b1%84%ec%9a%a9/1?q=%EA%B0%9C%EB%B0%9C%EC%9E%90"
+    assert await owner(f"{board}/채용/1?q=개발자") == ("posting", "한글회사")
+    assert await owner(encoded) == ("posting", "한글회사")
+    assert await owner(f"{board}/채용/2") == ("posting", "인코딩회사")
+    assert await owner(f"{board}/채용/3?q=a%20b") == ("posting", "섞인회사")
+    assert await owner(f"{board}/채용/3?q=a b") == ("posting", "섞인회사")
+    assert await owner(f"{board}/채용/채용4") == ("posting", "절반회사")
+    assert await owner(f"{board}/jobs/7/") == ("posting", "회사7")
+    assert await owner(f"{board}/jobs/99") == ("other", "")
+    assert await owner(f"http://{board.removeprefix('https://')}/jobs/7") == ("other", "")
+    assert await owner("https://other.example/jobs/7") == ("other", "")
 
 
 async def test_a_grant_for_one_host_never_reads_another_through_a_redirect(db, people, monkeypatch):
