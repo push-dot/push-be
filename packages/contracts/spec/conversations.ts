@@ -221,7 +221,7 @@ export const chatEvents: Record<string, Schema> = {
     },
     topGap: str,
     plan: enumOf("FREE", "PRO", "ULTRA"),
-    band: { type: "string", description: "e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음)" },
+    band: { type: "string", description: "The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고)" },
     summary: { type: "string", description: "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요." },
     keywords: { ...arr(obj({ label: str, ok: bool })), description: "Up to 5 posting terms; ok when the resume text contains the term" },
     projected: {

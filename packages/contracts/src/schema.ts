@@ -4657,7 +4657,7 @@ export interface components {
                  * @description When the event was stored. A joined token has the time of its last row.
                  */
                 at: string;
-                /** @description e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음) */
+                /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
                 band?: string;
                 /** @description Boost card: signed change from from, e.g. +1.4 */
                 delta?: string;
@@ -5821,7 +5821,7 @@ export interface components {
                 /** @enum {string} */
                 type: "choice";
             } | {
-                /** @description e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음) */
+                /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
                 band?: string;
                 /** @description Boost card: signed change from from, e.g. +1.4 */
                 delta?: string;
@@ -7349,7 +7349,7 @@ export interface components {
              * @description When the event was stored
              */
             at: string;
-            /** @description e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음) */
+            /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
             band?: string;
             /** @description Boost card: signed change from from, e.g. +1.4 */
             delta?: string;

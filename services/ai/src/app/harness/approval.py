@@ -133,12 +133,12 @@ class SitePage:
     owner: str = ""
 
 
-# What a page-read card says by the kind of page. Board ChatBotStatusApprove draws posting. A
-# page Push cannot name claims nothing about itself.
+# What a page-read card says by the kind of page: a short title and the sentence as its summary.
+# Board ChatBotStatusApprove draws posting. A page Push cannot name claims nothing about itself.
 _ASKS: dict[PageKind, tuple[str, str]] = {
-    "posting": ("{owner} 채용 페이지를 열어도 될까요?", "{host} · 공고 1개를 읽어요"),
-    "company": ("{owner} 회사 소개를 열어도 될까요?", "{host} · 회사 소개를 읽어요"),
-    "other": ("{host} 페이지를 열어도 될까요?", "{host} · 페이지 1개를 읽어요"),
+    "posting": ("채용 페이지 열기", "{owner} 채용 페이지({host})를 열어도 될까요?"),
+    "company": ("회사 소개 열기", "{owner} 회사 소개({host})를 열어도 될까요?"),
+    "other": ("페이지 열기", "{host} 페이지를 열어도 될까요?"),
 }
 
 # The posting whose URL is this page, and the site of the company this bot works for. A posting is

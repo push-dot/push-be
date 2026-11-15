@@ -409,8 +409,8 @@ async def test_the_page_card_lives_ten_minutes_and_always_allow_stops_asking_for
 
     (card,) = cards(await turn(c, "모아페이 공고 읽어 줘"))
 
-    assert card["title"] == "모아페이 채용 페이지를 열어도 될까요?"
-    assert card["summary"] == "careers.moapay.example · 공고 1개를 읽어요"
+    assert card["title"] == "채용 페이지 열기"
+    assert card["summary"] == "모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?"
     assert "foot" not in card and "expiresAt" not in card
     assert [o["id"] for o in card["options"]] == ["approve", "approve_always", "reject"]
     row = await db.q().fetchrow(
@@ -440,29 +440,29 @@ NURI = "https://nuricloud.career.greetinghr.example/o/1"
         (
             "company",
             POSTING,
-            "모아페이 채용 페이지를 열어도 될까요?",
-            "careers.moapay.example · 공고 1개를 읽어요",
+            "채용 페이지 열기",
+            "모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?",
             "posting",
         ),
         (
             "company",
             "https://moapay.notion.example/about",
-            "모아페이 회사 소개를 열어도 될까요?",
-            "moapay.notion.example · 회사 소개를 읽어요",
+            "회사 소개 열기",
+            "모아페이 회사 소개(moapay.notion.example)를 열어도 될까요?",
             "company",
         ),
         (
             "company",
             "https://blog.example/post",
+            "페이지 열기",
             "blog.example 페이지를 열어도 될까요?",
-            "blog.example · 페이지 1개를 읽어요",
             "other",
         ),
         (
             "push",
             NURI,
-            "누리클라우드 채용 페이지를 열어도 될까요?",
-            "nuricloud.career.greetinghr.example · 공고 1개를 읽어요",
+            "채용 페이지 열기",
+            "누리클라우드 채용 페이지(nuricloud.career.greetinghr.example)를 열어도 될까요?",
             "posting",
         ),
     ],

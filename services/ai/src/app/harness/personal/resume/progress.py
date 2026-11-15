@@ -199,10 +199,10 @@ def _to(word: str) -> str:
 
 def fit_band(score: float) -> str:
     if score >= 8.0:
-        return "높음 · 잘 맞아요"
+        return "높고, 잘 맞아요."
     if score >= _WEAK:
-        return "보통 · 개선 여지 있어요"
-    return "낮음 · 고칠 곳이 많아요"
+        return "보통이고, 고칠 여지가 있어요."
+    return "낮고, 고칠 곳이 많아요."
 
 
 def fit_summary(parts: dict) -> str:
@@ -229,6 +229,12 @@ def _keywords(terms: list, resume_text: str) -> list[dict]:
         if text and text not in seen:
             seen.append(text)
     return [{"label": text, "ok": text.casefold() in folded} for text in seen[:5]]
+
+
+def added_keywords(terms: list, before: str, after: str) -> list[str]:
+    """The posting keywords the new text carries and the old one did not."""
+    had = {k["label"] for k in _keywords(terms, before) if k["ok"]}
+    return [k["label"] for k in _keywords(terms, after) if k["ok"] and k["label"] not in had]
 
 
 def _projected(parts: dict, plan: str, score: float, bullets: list) -> dict | None:
@@ -279,31 +285,72 @@ def done_summary(source: str, fit_from, fit_to, bullets: list) -> dict:
     return {"summary": f"다 됐어요! {what} 고쳤어요.", "bullets": lines}
 
 
-def _raised_part(before, after) -> tuple[str, float, float] | None:
-    """The fit dimension this round raised most, as (label, was, now)."""
+def _raised_part(before, after) -> tuple[str, str] | None:
+    """The fit dimension this round raised most, as (key, label)."""
     before, after = _dict(before), _dict(after)
     rises = [
-        (float(after[key]) - float(before[key]), label, float(before[key]), float(after[key]))
+        (float(after[key]) - float(before[key]), key, label)
         for key, label, _weight in FIT_DIMENSIONS
         if key in before and key in after and float(after[key]) > float(before[key])
     ]
     if not rises:
         return None
-    _gain, label, was, now = max(rises, key=lambda item: item[0])
-    return label, was, now
+    _gain, key, label = max(rises, key=lambda item: item[0])
+    return key, label
+
+
+_CAREER_KEYS = ("experienceLink", "careerLevel")
+_BOOST_CHANGED = {
+    "techStack": "공고 기술 스택을 앞으로 옮겼어요",
+    "experienceLink": "성과를 숫자로 보여 줬어요",
+    "careerLevel": "성과를 숫자로 보여 줬어요",
+    "keyword": "키워드를 경력 문장에 넣었어요",
+    "domain": "공고 도메인에 맞춰 고쳤어요",
+}
 
 
 def boost_line(
-    cycle: int, before: float, after: float, parts_before=None, parts_after=None
+    cycle: int,
+    before: float,
+    after: float,
+    parts_before=None,
+    parts_after=None,
+    *,
+    added: list[str] | None = None,
+    company: str = "",
 ) -> dict:
-    """One step per round, named boostN. The app reads target and resultLine for its grey line."""
+    """One step per round, named boostN. The app reads target and resultLine for its grey line:
+    the round's target and "a → b · what changed" (ChatPh3Boost)."""
     result = f"{before:.1f} → {after:.1f}"
     raised = _raised_part(parts_before, parts_after)
     target = None
     if raised is not None:
-        target = raised[0]
-        result = f"{result} · {target} {raised[1]:.1f} → {raised[2]:.1f}"
+        key, label = raised
+        target = f"경력 · {company}" if key in _CAREER_KEYS and company else label
+        if key == "keyword" and added:
+            changed = _josa(", ".join(added[:2]), "을", "를") + " 경력 문장에 넣었어요"
+        else:
+            changed = _BOOST_CHANGED[key]
+        result = f"{result} · {changed}"
     return _line(f"boost{cycle}", f"점수 올리기 {cycle}회", target=target, resultLine=result)
+
+
+def marked_text(head: str, items: list[str]) -> str:
+    """A bot line with the "• " list the boards draw under it."""
+    return "\n".join([head, *(f"• {item}" for item in items)])
+
+
+def quality_text(labels: list[str]) -> str:
+    return marked_text("품질 검사를 마치고 추천 수정까지 반영했어요.", labels) + "\n"
+
+
+def craft_text(version: int, changes: list[str]) -> str | None:
+    if not changes:
+        return None
+    head = f"초안(v{version})을 다시 만들었어요."
+    if version == 1:
+        head = "첫 번째 초안(v1)을 만들었어요."
+    return marked_text(head, changes[:4])
 
 
 def think_event(phase: str, seconds: float) -> dict:

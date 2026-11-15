@@ -269,6 +269,10 @@ def _diff(args: EditDocumentArgs) -> dict:
     }
 
 
+def _changed_lines(hunks: list) -> int:
+    return max((len(str(h.get("text") or "").splitlines()) for h in hunks), default=0)
+
+
 def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: list) -> dict:
     # tool_call_id keeps a second edit in the same job from reusing a resolved approval.
     approval_id = str(uuid5(NAMESPACE_URL, f"push:chat-approval:{job_id}:{tool_call_id}"))
@@ -276,7 +280,8 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
         "type": "approval",
         "id": approval_id,
         "kind": "DOCUMENT_EDIT",
-        "title": "이 수정을 적용할까요?",
+        "title": "수정 적용",
+        "summary": f"{_changed_lines(hunks)}줄을 고쳤어요. 적용하면 문서에 바로 반영돼요.",
         "documentId": document_id,
         "options": [
             {"id": "apply", "label": "적용"},
