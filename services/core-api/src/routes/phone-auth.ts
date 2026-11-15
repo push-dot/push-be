@@ -91,18 +91,10 @@ const session = async (ctx: Ctx, userId: string, created: boolean, link?: { prov
   return data(200, { ...body, created, ...(link ? { linked: true, provider: link.provider } : {}) }, ctx.rid);
 };
 
-const socialProviders = async (ctx: Ctx, userId: string): Promise<string[]> => {
+const hasSocial = async (ctx: Ctx, userId: string): Promise<boolean> => {
   const me = await one(ctx.deps.query, ME, [userId]);
   const listed = await query(ctx.deps.query, LIST_PROVIDERS, [userId]);
-  const found = new Set<string>();
-  const add = (value: unknown): void => {
-    const provider = String(value ?? "");
-    if (!provider || provider === "phone") return;
-    found.add(provider);
-  };
-  add(me?.provider);
-  for (const row of listed.rows) add(row.provider);
-  return [...found];
+  return [me?.provider, ...listed.rows.map((row) => row.provider)].some((provider) => provider && provider !== "phone");
 };
 
 const pendingOf = async (ctx: Ctx, body: Record<string, unknown>): Promise<PendingSignup | null> => {
@@ -146,10 +138,7 @@ const finishOwned = async (ctx: Ctx, userId: string, phone: string, created: boo
 };
 
 const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, phone: string): Promise<Response> => {
-  const existing = await socialProviders(ctx, userId);
-  if (existing.length > 0) {
-    throw new HttpError(409, "PHONE_ALREADY_REGISTERED", "phone is already registered", { existingProviders: existing });
-  }
+  if (await hasSocial(ctx, userId)) return finishOwned(ctx, userId, phone, false);
   const holder = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
   if (holder && String(holder.user_id) !== userId) {
     throw taken(pending.provider);
