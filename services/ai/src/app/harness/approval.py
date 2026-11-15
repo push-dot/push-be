@@ -6,7 +6,6 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import Literal
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -23,12 +22,10 @@ APPROVE_ALWAYS = "approve_always"
 # run the tool.
 APPROVING = frozenset({"approve", APPROVE_ALWAYS})
 
-_PAGE_TTL = timedelta(minutes=10)
-
 
 @dataclass(frozen=True)
 class CardSpec:
-    """How a tool card asks: its answers, how long it waits for one, and the line under the answers.
+    """How a tool card asks: its answers and the line under them. A card waits until it is answered.
 
     site: the card asks to read a web page. Its title and summary say what the page is (SitePage),
     and 항상 허용 is offered only in a bot thread, because a conversation without a bot has no bot
@@ -39,15 +36,13 @@ class CardSpec:
         {"id": "approve", "label": "실행"},
         {"id": "reject", "label": "취소"},
     )
-    ttl: timedelta = timedelta(hours=24)
     foot: str | None = None
     site: bool = False
 
 
 DEFAULT_CARD = CardSpec()
 
-# The only list of card variants. Core never names a lifetime: a retry reuses the span stored on
-# the row.
+# The only list of card variants.
 CARDS: dict[str, CardSpec] = {
     "apply_to_posting": CardSpec(foot="지원하면 취소할 수 없어요"),
     "read_page": CardSpec(
@@ -60,8 +55,6 @@ CARDS: dict[str, CardSpec] = {
             },
             {"id": "reject", "label": "거절"},
         ),
-        ttl=_PAGE_TTL,
-        foot=f"{_PAGE_TTL // timedelta(minutes=1)}분 동안 답이 없으면 이 요청은 만료돼요",
         site=True,
     ),
 }
@@ -219,7 +212,6 @@ def tool_action_event(
     approval_id: str, summary: str, tool_name: str, args: dict, display=None, *,
     title: str | None = None,
     options: tuple[dict, ...] | None = None,
-    expires_at: datetime | None = None,
 ) -> dict:
     card = CARDS.get(tool_name, DEFAULT_CARD)
     event = {
@@ -234,8 +226,6 @@ def tool_action_event(
     }
     if card.foot:
         event["foot"] = card.foot
-    if expires_at is not None:
-        event["expiresAt"] = expires_at.isoformat()
     # display is the row list from the tool's display(args, db) hook. No colour.
     if display:
         event["rows"] = display
@@ -269,12 +259,9 @@ async def create_tool_approval(
             UUID(str(conversation_id)))
         if not in_bot:
             options = tuple(option for option in options if option["id"] != APPROVE_ALWAYS)
-    # One clock for both times: a retry keeps the span between them as the card's lifetime.
-    asked_at = utcnow()
-    expires_at = asked_at + card.ttl
     event = tool_action_event(
         approval_id, summary, tool.name, payload, rows or None,
-        title=title, options=options, expires_at=expires_at)
+        title=title, options=options)
     existing = await db.q().fetchrow("SELECT id FROM approvals WHERE id = $1", UUID(approval_id))
     if existing is not None:
         return event, False
@@ -282,8 +269,8 @@ async def create_tool_approval(
     await db.q().execute(
         "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, "
         "conversation_id, title, options, tool_name, tool_args, tool_call_id, job_id, "
-        "expires_at, created_at) "
-        "VALUES ($1,$2,'TOOL_ACTION',$3,$4,'PENDING',$5,$6,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13) "
+        "created_at) "
+        "VALUES ($1,$2,'TOOL_ACTION',$3,$4,'PENDING',$5,$6,$7::jsonb,$8,$9::jsonb,$10,$11,$12) "
         "ON CONFLICT (id) DO NOTHING",
         UUID(approval_id),
         user_id,
@@ -296,7 +283,6 @@ async def create_tool_approval(
         json.dumps(payload, ensure_ascii=False),
         tool_call_id,
         job_id,
-        expires_at,
-        asked_at,
+        utcnow(),
     )
     return event, True

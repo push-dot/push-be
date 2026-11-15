@@ -411,13 +411,12 @@ async def test_the_page_card_lives_ten_minutes_and_always_allow_stops_asking_for
 
     assert card["title"] == "모아페이 채용 페이지를 열어도 될까요?"
     assert card["summary"] == "careers.moapay.example · 공고 1개를 읽어요"
-    assert card["foot"] == "10분 동안 답이 없으면 이 요청은 만료돼요"
+    assert "foot" not in card and "expiresAt" not in card
     assert [o["id"] for o in card["options"]] == ["approve", "approve_always", "reject"]
     row = await db.q().fetchrow(
         "SELECT created_at, expires_at FROM approvals WHERE id = $1", card["id"]
     )
-    assert row["expires_at"] - row["created_at"] == timedelta(minutes=10)
-    assert datetime.fromisoformat(card["expiresAt"]) == row["expires_at"]
+    assert row["expires_at"] is None
     assert fetched == []
 
     await turn(c, resume={"approvalId": card["id"], "optionId": "approve_always"})
@@ -504,87 +503,27 @@ async def test_a_conversation_without_a_bot_offers_no_always_allow_and_never_say
     assert "Bot" not in json.dumps(card, ensure_ascii=False)
 
 
-async def test_an_expired_card_resumes_nothing_and_a_rearmed_card_resumes_the_same_interrupt(
+async def test_an_unanswered_card_stays_open_through_every_sweep_and_still_resumes(
     db, people, monkeypatch
 ):
     fetched = fake_web(monkeypatch, {POSTING: "공고 본문"})
     c = await chat(db, people)
     reads(POSTING)
     (card,) = cards(await turn(c, "모아페이 공고 읽어 줘"))
-    await db.q().execute(
-        "UPDATE approvals SET created_at = now() - interval '11 minutes', "
-        "expires_at = now() - interval '1 minute' "
-        "WHERE id = $1",
-        card["id"],
-    )
 
-    await AdminJobs(db.q()).expire_approvals(datetime.now(UTC))
+    await AdminJobs(db.q()).expire_approvals(datetime.now(UTC) + timedelta(days=365))
 
     assert (
-        await db.q().fetchval("SELECT status FROM approvals WHERE id = $1", card["id"]) == "EXPIRED"
+        await db.q().fetchval("SELECT status FROM approvals WHERE id = $1", card["id"]) == "PENDING"
     )
     parked = await state(c)
     assert _pending(parked)["approval_id"] == card["id"] and parked.next == ("tools",)
     assert await results(c) == [] and fetched == []
-    assert (
-        await db.q().fetchval("SELECT count(*) FROM ai_jobs WHERE conversation_id = $1", c.thread)
-        == 0
-    )
     (stored,) = await TurnStore(db).cards(c.thread, [card["id"]])
-    assert (stored["status"], stored["retryable"]) == ("EXPIRED", True)
+    assert (stored["status"], stored["expires_at"], stored["retryable"]) == ("PENDING", None, False)
 
-    # As core's POST /bots/{id}/approvals/{cardId}/retry leaves the row: asked again now, same span.
-    await db.q().execute(
-        "UPDATE approvals SET status = 'PENDING', created_at = now(), "
-        "expires_at = now() + (expires_at - created_at) WHERE id = $1",
-        card["id"],
-    )
     await turn(c, resume={"approvalId": card["id"], "optionId": "approve"})
 
     assert fetched == [POSTING]
     assert await results(c) == [{"url": POSTING, "text": "공고 본문"}]
     assert not (await state(c)).next
-
-
-async def test_an_expired_card_closed_with_reject_is_no_longer_retryable(db, people, monkeypatch):
-    fake_web(monkeypatch, {POSTING: "공고 본문"})
-    c = await chat(db, people)
-    reads(POSTING)
-    (card,) = cards(await turn(c, "모아페이 공고 읽어 줘"))
-    await db.q().execute(
-        "UPDATE approvals SET created_at = now() - interval '11 minutes', "
-        "expires_at = now() - interval '1 minute' WHERE id = $1",
-        card["id"],
-    )
-    (expired,) = await TurnStore(db).cards(c.thread, [card["id"]])
-
-    # As core's 닫기 (an expired card answered reject) leaves the row: closed, and no job queued.
-    await db.q().execute(
-        "UPDATE approvals SET status = 'REJECTED', option_id = 'reject' WHERE id = $1", card["id"]
-    )
-
-    (closed,) = await TurnStore(db).cards(c.thread, [card["id"]])
-    assert (expired["status"], expired["retryable"]) == ("EXPIRED", True)
-    assert (closed["status"], closed["retryable"]) == ("REJECTED", False)
-
-
-async def test_a_card_is_retryable_until_a_newer_chat_job_of_its_thread_exists(
-    db, people, monkeypatch
-):
-    fake_web(monkeypatch, {POSTING: "공고 본문"})
-    c = await chat(db, people)
-    reads(POSTING)
-    (card,) = cards(await turn(c, "모아페이 공고 읽어 줘"))
-    (before,) = await TurnStore(db).cards(c.thread, [card["id"]])
-
-    await db.q().execute(
-        "INSERT INTO ai_jobs (id, type, queue, user_id, status, max_attempts, payload, "
-        "conversation_id, created_at) VALUES ($1, 'chat', 'q:chat', $2, 'QUEUED', 3, '{}'::jsonb, "
-        "$3, now() + interval '1 second')",
-        uuid4(),
-        c.user,
-        c.thread,
-    )
-
-    (after,) = await TurnStore(db).cards(c.thread, [card["id"]])
-    assert (before["retryable"], after["retryable"]) == (True, False)
