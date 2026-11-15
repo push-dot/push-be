@@ -520,7 +520,7 @@ async def test_an_unanswered_card_stays_open_through_every_sweep_and_still_resum
     assert _pending(parked)["approval_id"] == card["id"] and parked.next == ("tools",)
     assert await results(c) == [] and fetched == []
     (stored,) = await TurnStore(db).cards(c.thread, [card["id"]])
-    assert (stored["status"], stored["expiresAt"], stored["retryable"]) == ("PENDING", None, False)
+    assert (stored["status"], stored["expires_at"], stored["retryable"]) == ("PENDING", None, False)
 
     await turn(c, resume={"approvalId": card["id"], "optionId": "approve"})
 
