@@ -371,8 +371,8 @@ async def test_a_grant_for_one_host_never_reads_another_through_a_redirect(db, p
     assert await results(c) == [{"error": "REDIRECTED", "to": other}]
     (card,) = cards(events)
     assert (card["title"], card["summary"]) == (
+        "페이지 열기",
         "other-site.example 페이지를 열어도 될까요?",
-        "other-site.example · 페이지 1개를 읽어요",
     ), "the new question names the site the redirect led to, not the bot's company"
     assert {"type": "done", "awaiting": "approval"} in events
 
@@ -498,7 +498,8 @@ async def test_a_conversation_without_a_bot_offers_no_always_allow_and_never_say
         ("approve", "한 번 허용"),
         ("reject", "거절"),
     ]
-    assert card["title"] == "careers.moapay.example 페이지를 열어도 될까요?"
+    assert card["title"] == "페이지 열기"
+    assert card["summary"] == "careers.moapay.example 페이지를 열어도 될까요?"
     assert "봇" not in json.dumps(card, ensure_ascii=False)
     assert "Bot" not in json.dumps(card, ensure_ascii=False)
 
