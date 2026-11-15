@@ -29,10 +29,12 @@ from app.harness.personal.resume.profile_document import (
     save_profile_document,
 )
 from app.harness.personal.resume.progress import (
+    added_keywords,
     analyze_steps,
     apply_recommendations_line,
     boost_fit,
     boost_line,
+    craft_text,
     done_summary,
     feedback_line,
     feedback_plan,
@@ -45,6 +47,7 @@ from app.harness.personal.resume.progress import (
     posting_line,
     quality_diff,
     quality_line,
+    quality_text,
     resume_line,
     strategy_line,
     strategy_plan,
@@ -167,7 +170,7 @@ _GATES = {
         "options": [{"id": "continue", "label": "검토할게요"}],
     },
     "review": {
-        "title": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
+        "title": "검증을 마쳤어요. 디자인을 골라 주세요.",
         "detail": "템플릿을 골라 주세요. 처음이라면 클래식을 추천해요.",
         "recommended": "CLASSIC",
         "options": [
@@ -1347,6 +1350,12 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     card = _profile_result(doc_id, name, headline, view)
                     emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
+            if phase == "craft":
+                changes = (stored.get("drafts") or {}).get("changes")
+                reply = craft_text(
+                    int(current.get("draft_version") or 1),
+                    [str(item) for item in changes] if isinstance(changes, list) else [],
+                ) or reply
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": running_job(), "retry": False}
             if stamped.get("inputs"):
@@ -1576,7 +1585,20 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         await _emit_papers(db, current, stored)
         view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
-        emit(boost_line(len(scores) - 1, scores[-2], scores[-1], parts, view.get("parts")))
+        terms, _description = _posting(view_state)
+        emit(
+            boost_line(
+                len(scores) - 1,
+                scores[-2],
+                scores[-1],
+                parts,
+                view.get("parts"),
+                added=added_keywords(
+                    terms, draft_text(drafts), draft_text(stored.get("drafts"))
+                ),
+                company=_target_company(view_state),
+            )
+        )
         emit(boost_fit(scores[0], scores[-1]))
         return {
             **stored,
@@ -1734,6 +1756,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         line = apply_recommendations_line(labels)
         if line is not None:
             emit(line)
+            emit({"token": quality_text(labels)})
         return {
             "review": {**review, "apply": labels},
             "status": "active",
@@ -1811,7 +1834,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         return {"status": "active", "phase": "analyze", "goto": "g1"}
 
     async def design_node(state: ResumeGraphState) -> dict:
-        reply = "디자인을 골라 주세요."
+        reply = "이제 디자인을 고를게요."
         emit({"token": reply})
         return {"reply": reply, "reply_job": running_job(), "phase": "review"}
 

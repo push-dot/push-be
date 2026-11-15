@@ -117,7 +117,7 @@ def test_fit_card_has_band_summary_and_keyword_chips():
         "parts": _PARTS,
         "topGap": "키워드",
         "plan": "PRO",
-        "band": "보통 · 개선 여지 있어요",
+        "band": "보통이고, 고칠 여지가 있어요.",
         "summary": "경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
         "keywords": [{"label": "Kotlin", "ok": True}, {"label": "Kafka", "ok": False}],
     }
@@ -300,14 +300,14 @@ def test_boost_line_and_card_show_the_change_from_the_first_score():
     raised = boost_line(1, 6.9, 7.8, before, after)
     assert raised["name"] == "boost1"
     assert raised["target"] == "키워드"
-    assert raised["resultLine"] == "6.9 → 7.8 · 키워드 5.0 → 7.5"
+    assert raised["resultLine"] == "6.9 → 7.8 · 키워드를 경력 문장에 넣었어요"
     assert boost_fit(6.9, 8.3) == {
         "type": "fit",
         "score": 8.3,
         "from": 6.9,
         "delta": "+1.4",
         "note": "적합도 6.9 → 8.3 (+1.4)",
-        "band": "높음 · 잘 맞아요",
+        "band": "높고, 잘 맞아요.",
     }
 
 
