@@ -279,8 +279,31 @@ def done_summary(source: str, fit_from, fit_to, bullets: list) -> dict:
     return {"summary": f"다 됐어요! {what} 고쳤어요.", "bullets": lines}
 
 
-def boost_line(cycle: int, before: float, after: float) -> dict:
-    return _line("boost", f"점수 올리기 {cycle}회", resultLine=f"{before:.1f} → {after:.1f}")
+def _raised_part(before, after) -> tuple[str, float, float] | None:
+    """The fit dimension this round raised most, as (label, was, now)."""
+    before, after = _dict(before), _dict(after)
+    rises = [
+        (float(after[key]) - float(before[key]), label, float(before[key]), float(after[key]))
+        for key, label, _weight in FIT_DIMENSIONS
+        if key in before and key in after and float(after[key]) > float(before[key])
+    ]
+    if not rises:
+        return None
+    _gain, label, was, now = max(rises, key=lambda item: item[0])
+    return label, was, now
+
+
+def boost_line(
+    cycle: int, before: float, after: float, parts_before=None, parts_after=None
+) -> dict:
+    """One step per round, named boostN. The app reads target and resultLine for its grey line."""
+    result = f"{before:.1f} → {after:.1f}"
+    raised = _raised_part(parts_before, parts_after)
+    target = None
+    if raised is not None:
+        target = raised[0]
+        result = f"{result} · {target} {raised[1]:.1f} → {raised[2]:.1f}"
+    return _line(f"boost{cycle}", f"점수 올리기 {cycle}회", target=target, resultLine=result)
 
 
 def think_event(phase: str, seconds: float) -> dict:
@@ -543,50 +566,6 @@ def quality_diff(auto_fixes) -> dict | None:
     if not hunks:
         return None
     return {"type": "diff", "documentId": "", "revisionId": "", "hunks": hunks}
-
-
-def quality_choice(recommendations) -> dict | None:
-    options = []
-    selected = []
-    for rec in recommendations if isinstance(recommendations, list) else []:
-        if len(options) >= 6:
-            break
-        if not isinstance(rec, dict):
-            continue
-        label = str(rec.get("label") or "").strip()
-        if not label:
-            continue
-        item = {"id": f"rec{len(options) + 1}", "label": label}
-        desc = rec.get("desc")
-        if isinstance(desc, str) and desc.strip():
-            item["desc"] = desc.strip()
-        options.append(item)
-        if rec.get("priority") == "P1":
-            selected.append(item["id"])
-    if not options:
-        return None
-    copied = [dict(item) for item in options]
-    return {
-        "type": "choice",
-        "kind": "RESUME_GATE",
-        "gate": "quality",
-        "title": "추천 수정도 반영할까요?",
-        "multiple": True,
-        "recommended": "rec1",
-        "options": options,
-        "sections": [
-            {
-                "id": "recs",
-                "kind": "toggle",
-                "options": copied,
-                "selected": selected,
-            }
-        ],
-        "submit": {
-            "label": "{n}개 반영하고 디자인으로",
-            "zeroLabel": "그대로 디자인으로",
-        },
-    }
 
 
 def apply_recommendations_line(labels: list[str]) -> dict | None:

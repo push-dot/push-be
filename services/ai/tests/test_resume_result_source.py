@@ -14,8 +14,8 @@ _STEM = "김서준_모아페이_백엔드"
 _COMPANY = "도토리증권"
 _APPLY = f"{_COMPANY}에 바로 지원하기"
 _SAVED = "내 서류에 자동 저장됨"
-_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
-_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
+_FILE_GATE = "결과를 확인할까요?"
+_FILE_GATE_FAILED = _FILE_GATE
 _TASK_FILE = "이력서 수정 · 올린 파일 · 경력"
 _TASK_PROFILE = "프로필 수정 · Push 프로필 · 경력"
 _FILE_STEPS = (
@@ -166,7 +166,7 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert result["pageLine"].endswith("KB") or result["pageLine"].endswith("MB")
     assert " · " in result["pageLine"]
     assert result["savedLine"] == _SAVED
-    assert result["cardMeta"] == f"{result['pageLine']} · {_SAVED}"
+    assert result["cardMeta"] == result["pageLine"]
     assert "company" not in result
     assert result["documentId"]
     assert result["actions"] == [
@@ -337,7 +337,7 @@ async def test_external_present_title_is_the_saved_file():
     assert "note" not in choice
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
 
 
@@ -485,7 +485,7 @@ async def test_failed_insert_choice_does_not_claim_the_save():
     assert "note" not in choice
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
 
 
