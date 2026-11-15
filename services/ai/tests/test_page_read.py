@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -67,22 +66,21 @@ def test_a_write_in_a_quick_start_still_asks_in_every_mode(mode, tier):
     assert not write_needs_approval(mode, Tier.READ, {"intent": "calendar"})
 
 
-def test_the_page_card_has_three_answers_ten_minutes_and_a_foot_that_names_the_lifetime():
+def test_the_page_card_has_three_answers_and_no_lifetime():
     card = CARDS["read_page"]
     assert [(o["id"], o["label"], o.get("desc")) for o in card.options] == [
         ("approve", "한 번 허용", None),
         ("approve_always", "항상 허용", "이 Bot이 이 사이트를 읽을 때 다시 묻지 않아요"),
         ("reject", "거절", None),
     ]
-    assert card.ttl == timedelta(minutes=10)
-    assert card.foot == "10분 동안 답이 없으면 이 요청은 만료돼요"
+    assert not hasattr(card, "ttl") and card.foot is None
 
 
-def test_other_tool_cards_keep_two_answers_and_a_day():
+def test_other_tool_cards_keep_two_answers():
     for name in ("apply_to_posting", "delete_calendar_event"):
         card = CARDS.get(name, DEFAULT_CARD)
         assert [o["id"] for o in card.options] == ["approve", "reject"]
-        assert card.ttl == timedelta(hours=24)
+        assert not hasattr(card, "ttl")
         assert not card.site
 
 

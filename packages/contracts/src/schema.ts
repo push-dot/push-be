@@ -5622,7 +5622,7 @@ export interface components {
                 documentId?: string;
                 /**
                  * Format: date-time
-                 * @description TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.
+                 * @description TOOL_ACTION only: when the card stops taking any answer but reject. null for a card that waits until it is answered, which is every card the server asks now; only a card asked before then carries a time.
                  */
                 expiresAt?: string;
                 /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
@@ -7136,7 +7136,7 @@ export interface components {
             documentId?: string;
             /**
              * Format: date-time
-             * @description TOOL_ACTION only: when the card stops taking any answer but reject. 10 minutes after asking for read_page, 24 hours for other tools. A card that waits until it is answered has none.
+             * @description TOOL_ACTION only: when the card stops taking any answer but reject. null for a card that waits until it is answered, which is every card the server asks now; only a card asked before then carries a time.
              */
             expiresAt?: string;
             /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
