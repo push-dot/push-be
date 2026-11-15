@@ -43,7 +43,6 @@ from app.harness.personal.resume.progress import (
     intake_panel,
     paper_event,
     posting_line,
-    quality_choice,
     quality_diff,
     quality_line,
     resume_line,
@@ -179,7 +178,7 @@ _GATES = {
         ],
     },
     "present": {
-        "title": "Push 프로필에 저장했어요. 결과를 확인할까요?",
+        "title": "결과를 확인할까요?",
         "recommended": "done",
         "options": [{"id": "done", "label": "확인했어요"}],
     },
@@ -217,11 +216,6 @@ _GATES = {
         "title": "어떤 프로젝트를 구현할까요?",
         "recommended": "skip",
         "options": [{"id": "skip", "label": "기획만 볼게요"}],
-    },
-    "quality": {
-        "title": "추천 수정도 반영할까요?",
-        "recommended": "rec1",
-        "multiple": True,
     },
     "read_failed": {
         "title": "어떻게 할까요?",
@@ -283,6 +277,7 @@ class ResumeGraphState(TypedDict, total=False):
     validation_failures: int
     scores: list
     boost_acked: int
+    boost_parts: dict
     boost_stopped: str
     profile_document_id: str
     source_saved: bool | None
@@ -458,8 +453,7 @@ def _must_stop(state: dict, phase: str) -> bool:
 
 _RESUME_EXT = (".pdf", ".docx", ".doc")
 _SAVED_LINE = "내 서류에 자동 저장됨"
-_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
-_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
+_FILE_GATE = "결과를 확인할까요?"
 _FILE_TASK = "이력서 수정 · 올린 파일 · 경력"
 _PROFILE_TASK = "프로필 수정 · Push 프로필 · 경력"
 _PROFILE_SUB = "Push 프로필 · 방금 수정"
@@ -665,14 +659,12 @@ def _file_result(saved: dict, state: dict) -> dict:
         "checklist": list(_file_steps(state)),
         "fileName": saved["fileName"],
         "pageLine": page,
+        "cardMeta": page,
         "documentId": document_id,
     }
     follow = None
     if saved.get("stored"):
         event["savedLine"] = _SAVED_LINE
-        event["cardMeta"] = f"{page} · {_SAVED_LINE}"
-    else:
-        event["cardMeta"] = page
     if saved.get("stored") and document_id:
         follow = {
             "id": "convert",
@@ -718,7 +710,7 @@ def _cancelled(answer: dict) -> bool:
     if answer.get("option_id") == "cancel":
         return True
     text = str(answer.get("text") or "").strip()
-    return text.startswith(("그만", "취소", "중단"))
+    return text.startswith(("그만", "취소", "중단", "닫기"))
 
 
 def _feedback_text(state: dict) -> str:
@@ -797,7 +789,7 @@ def _choice(
         options.append(
             {
                 "id": "cancel",
-                "label": "그만할게요" if phase == "intake" else "그만하기",
+                "label": "닫기",
             }
         )
     event = {
@@ -816,7 +808,7 @@ def _choice(
         event["sections"] = _review_sections()
         event["submit"] = {"label": "만들기", "optionLabels": dict(_TEMPLATE_MAKE)}
     if phase == "present" and resume_source(state) == "external":
-        event["title"] = _FILE_GATE if state.get("source_saved") is not False else _FILE_GATE_FAILED
+        event["title"] = _FILE_GATE
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
     elif phase == "present":
@@ -1152,8 +1144,9 @@ _STRATEGY_NOTE = (
     "{section, action(keep|modify|expand|add|condense|remove), reason, suggested_keywords}다."
 )
 _REVIEW_NOTE = (
-    "바로 고친 것을 auto_fixes 배열({line, before, after})에, 사용자가 고를 추천 수정을 "
-    "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다."
+    "바로 고친 것을 auto_fixes 배열({line, before, after})에, 추천 수정을 "
+    "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다. "
+    "추천 수정은 묻지 않고 모두 반영한다."
 )
 _BOTTLENECK_STEPS = (
     "이번에는 content-strategy Step 1–3만 수행한다"
@@ -1242,8 +1235,6 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
     if gate_id == "output_targets":
         goto = "g_intake" if merged.get("tone") else "g_tone"
         return {**update, "status": "active", "phase": "intake", "goto": goto}
-    if gate_id == "quality":
-        return {**update, "status": "active", "phase": "review", "goto": "g4a"}
     if gate_id in _INTAKE_NEXT:
         return {**update, "status": "active", "phase": "intake", "goto": _INTAKE_NEXT[gate_id]}
     if gate_id == "approach":
@@ -1306,13 +1297,6 @@ def _quality_pending(state: dict) -> bool:
     return isinstance(recs, list) and any(
         isinstance(item, dict) and str(item.get("label") or "").strip() for item in recs
     )
-
-
-def _quality_labels(event: dict, answer: dict) -> list[str]:
-    sections = event.get("sections") or []
-    buckets = _section_answer(sections, answer)
-    picked = set(buckets.get("recs") or [])
-    return [opt["label"] for opt in (event.get("options") or []) if opt.get("id") in picked]
 
 
 def build_resume_graph(checkpointer, *, model=None, db=None):
@@ -1575,9 +1559,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 drafts = {"markdown": body}
         view_state = {**state, "drafts": drafts}
         scores = [float(item) for item in (view_state.get("scores") or [])]
+        parts = view_state.get("boost_parts") or {}
         if not scores:
             base = await score_draft(view_state)
             scores.append(float(base["fitScore"]))
+            parts = base.get("parts") or {}
         version = int(view_state.get("draft_version") or 1) + 1
         current = {**view_state, "phase": "craft", "draft_version": version}
         ctx = _context(db, view_state)
@@ -1590,9 +1576,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         await _emit_papers(db, current, stored)
         view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
-        emit(boost_line(len(scores) - 1, scores[-2], scores[-1]))
+        emit(boost_line(len(scores) - 1, scores[-2], scores[-1], parts, view.get("parts")))
         emit(boost_fit(scores[0], scores[-1]))
-        return {**stored, "scores": scores, "draft_version": version}
+        return {
+            **stored,
+            "scores": scores,
+            "boost_parts": view.get("parts") or {},
+            "draft_version": version,
+        }
 
     async def _finish_boost(state: ResumeGraphState, outcome: dict, stopped: str) -> dict:
         artifacts = dict(state.get("artifacts") or {})
@@ -1610,6 +1601,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             **fit,
             "phase": "review",
             "scores": [],
+            "boost_parts": {},
             "boost_acked": 0,
             "boost_stopped": stopped,
             "artifacts": artifacts,
@@ -1737,33 +1729,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             emit(diff)
         if not recs:
             return {"status": "active", "phase": "review", "goto": "g4a"}
-        event = quality_choice(recs)
-        if event is None:
-            return {"status": "active", "phase": "review", "goto": "g4a"}
-        event["id"] = _choice_id(current, "quality")
-        selected = list(event["sections"][0].get("selected") or [])
-        if not _must_stop(current, "quality"):
-            event["auto"] = True
-            emit(event)
-            answer = {"option_id": "submit", "option_ids": ["submit", *selected]}
-        else:
-            await _ask(db, current, event)
-            answer = (
-                interrupt(
-                    {
-                        "approval_id": event["id"],
-                        "awaiting": "choice",
-                        "kind": "RESUME_GATE",
-                        "gate": "quality",
-                    }
-                )
-                or {}
-            )
-            if _cancelled(answer):
-                return {"status": "cancelled", "phase": "review", "goto": "end"}
-            if not answer.get("option_id") and not _option_ids(answer) and not answer.get("text"):
-                answer = {"option_id": "submit", "option_ids": ["submit", *selected]}
-        labels = _quality_labels(event, answer)
+        labels = [str(item.get("label") or "").strip() for item in recs]
+        labels = [label for label in labels if label]
         line = apply_recommendations_line(labels)
         if line is not None:
             emit(line)

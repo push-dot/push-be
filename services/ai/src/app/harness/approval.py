@@ -30,21 +30,23 @@ class CardSpec:
     site: the card asks to read a web page. Its title and summary say what the page is (SitePage),
     and 항상 허용 is offered only in a bot thread, because a conversation without a bot has no bot
     to remember for.
+    posting: the title names the posting the card applies to.
     """
 
     options: tuple[dict, ...] = (
         {"id": "approve", "label": "실행"},
-        {"id": "reject", "label": "취소"},
+        {"id": "reject", "label": "닫기"},
     )
     foot: str | None = None
     site: bool = False
+    posting: bool = False
 
 
 DEFAULT_CARD = CardSpec()
 
 # The only list of card variants.
 CARDS: dict[str, CardSpec] = {
-    "apply_to_posting": CardSpec(foot="지원하면 취소할 수 없어요"),
+    "apply_to_posting": CardSpec(foot="지원하면 취소할 수 없어요", posting=True),
     "read_page": CardSpec(
         options=(
             {"id": "approve", "label": "한 번 허용"},
@@ -232,6 +234,19 @@ def tool_action_event(
     return event
 
 
+async def _apply_title(db, payload: dict, fallback: str) -> str:
+    """"{company} · {title}에 지원해요", the generic summary when the posting is not found."""
+    try:
+        posting_id = UUID(str(payload.get("posting_id")))
+    except ValueError:
+        return fallback
+    row = await db.q().fetchrow(
+        "SELECT company, title FROM job_postings WHERE id = $1", posting_id)
+    if row is None:
+        return fallback
+    return f"{row['company']} · {row['title']}에 지원해요"
+
+
 async def create_tool_approval(
     db, *, user_id, conversation_id, job_id, tool, args, tool_call_id,
 ) -> tuple[dict, bool]:
@@ -249,6 +264,8 @@ async def create_tool_approval(
         approval_conversation_id.reset(token)
     card = CARDS.get(tool.name, DEFAULT_CARD)
     title, options = summary, card.options
+    if card.posting:
+        title = await _apply_title(db, payload, summary)
     if card.site:
         host = site_host(payload["url"])
         page = await site_page(db, conversation_id, payload["url"])

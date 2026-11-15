@@ -114,7 +114,10 @@ async def test_auto_runs_safe_and_asks_risky():
     assert any(event.get("type") == "done" and event.get("awaiting") == "approval" for event in events)
     approval = next(event for event in events if event.get("type") == "approval")
     assert approval["kind"] == "TOOL_ACTION"
-    assert approval["options"] == [{"id": "approve", "label": "실행"}, {"id": "reject", "label": "취소"}]
+    assert approval["options"] == [
+        {"id": "approve", "label": "실행"},
+        {"id": "reject", "label": "닫기"},
+    ]
     assert approval["toolName"] == "apply_to_posting"
 
 
@@ -329,3 +332,50 @@ async def test_unknown_tool_calls_count_toward_the_cap_and_finish_within_the_ste
     assert sorted(m.tool_call_id for m in answers) == sorted(f"u{i}" for i in range(30))
     assert sum(m.content == "도구 호출 한도" for m in answers) == 22
     assert state.values["tool_calls_used"] == 8
+
+
+class _PostingDb(MemApprovals):
+    def __init__(self, posting):
+        super().__init__()
+        self.posting = posting
+
+    async def fetchrow(self, sql, *args):
+        if "job_postings" in sql:
+            return self.posting
+        return await super().fetchrow(sql, *args)
+
+
+async def _apply_card(db, posting_id):
+    from uuid import uuid4
+
+    from app.harness.approval import create_tool_approval
+    from app.harness.personal.tools import PERSONAL_TOOLS
+
+    tool = next(spec for spec in PERSONAL_TOOLS if spec.name == "apply_to_posting")
+    event, _created = await create_tool_approval(
+        db,
+        user_id=uuid4(),
+        conversation_id=uuid4(),
+        job_id="job-1",
+        tool=tool,
+        args=tool.args_model(posting_id=posting_id),
+        tool_call_id="c1",
+    )
+    return event
+
+
+async def test_apply_card_title_names_the_posting():
+    from uuid import uuid4
+
+    event = await _apply_card(
+        _PostingDb({"company": "모아페이", "title": "백엔드 엔지니어"}), uuid4()
+    )
+    assert event["title"] == "모아페이 · 백엔드 엔지니어에 지원해요"
+    assert event["summary"] == "이 공고에 지원해요"
+
+
+async def test_apply_card_title_stays_generic_for_an_unknown_posting():
+    from uuid import uuid4
+
+    event = await _apply_card(_PostingDb(None), uuid4())
+    assert event["title"] == "이 공고에 지원해요"

@@ -447,7 +447,7 @@ async def test_new_document_while_active_asks():
         db=db,
         core=CoreClient("http://core.test", "secret"),
     ), tool.args_model.model_validate({}))
-    assert result["choice"]["options"][-1] == {"id": "cancel", "label": "그만하기"}
+    assert result["choice"]["options"][-1] == {"id": "cancel", "label": "닫기"}
     assert any("INSERT INTO approvals" in sql for sql in db.wrote)
 
 
@@ -461,7 +461,7 @@ _GATE_QUESTIONS = {
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
     "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 어떤 디자인을 적용할까요?",
-    "present": "Push 프로필에 저장했어요. 결과를 확인할까요?",
+    "present": "결과를 확인할까요?",
 }
 
 
@@ -671,7 +671,7 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
     assert "validate_cap" in gates
     assert titles["validate_cap"] == "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?"
     assert [item["label"] for item in choices["validate_cap"]["options"]] == [
-        "다시 고르기", "그만하기",
+        "다시 고르기", "닫기",
     ]
     assert model.calls.count("validate") == 3
     assert "blueprints" not in model.calls

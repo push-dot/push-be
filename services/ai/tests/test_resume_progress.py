@@ -290,12 +290,17 @@ def test_boost_line_and_card_show_the_change_from_the_first_score():
 
     assert boost_line(2, 7.8, 8.3) == {
         "type": "tool",
-        "name": "boost",
+        "name": "boost2",
         "state": "ok",
         "summary": "점수 올리기 2회",
         "tier": "READ",
         "resultLine": "7.8 → 8.3",
     }
+    before, after = {"keyword": 5.0, "domain": 7.0}, {"keyword": 7.5, "domain": 7.1}
+    raised = boost_line(1, 6.9, 7.8, before, after)
+    assert raised["name"] == "boost1"
+    assert raised["target"] == "키워드"
+    assert raised["resultLine"] == "6.9 → 7.8 · 키워드 5.0 → 7.5"
     assert boost_fit(6.9, 8.3) == {
         "type": "fit",
         "score": 8.3,
@@ -319,7 +324,7 @@ async def test_each_boost_cycle_reports_its_score_and_stopping_keeps_fit_to(monk
         snap, _ = await _pull(graph, Command(resume={"option_id": "stop"}), config)
     finally:
         bound_services.reset(token)
-    line = next(event for event in events if event.get("name") == "boost")
+    line = next(event for event in events if event.get("name") == "boost1")
     card = next(event for event in events if event.get("type") == "fit")
     assert (line["summary"], line["resultLine"]) == ("점수 올리기 1회", "1.0 → 2.0")
     assert (card["score"], card["from"], card["delta"]) == (2.0, 1.0, "+1.0")
@@ -571,19 +576,3 @@ def test_quality_diff_pairs_before_after():
             {"line": 4, "sign": "+", "text": "new"},
         ],
     }
-
-
-def test_quality_choice_preselects_p1():
-    from app.harness.personal.resume.progress import quality_choice
-
-    event = quality_choice(
-        [
-            {"label": "숫자로", "priority": "P1"},
-            {"label": "키워드", "desc": "공고 단어", "priority": "P2"},
-            {"label": "도메인", "priority": "P1"},
-        ]
-    )
-    assert event["sections"][0]["selected"] == ["rec1", "rec3"]
-    assert event["options"][1]["desc"] == "공고 단어"
-    assert "cancel" not in {item["id"] for item in event["options"]}
-    assert event["submit"]["zeroLabel"] == "그대로 디자인으로"

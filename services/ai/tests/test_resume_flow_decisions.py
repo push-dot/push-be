@@ -18,7 +18,7 @@ from tests.test_harness_resume import (
 _DOC = "11111111-1111-4111-8111-111111111111"
 _SAVING = "Push 프로필에 저장하는 중…"
 _NOTE = "PDF는 Push 프로필에서 내보낼 수 있어요."
-_PRESENT = "Push 프로필에 저장했어요. 결과를 확인할까요?"
+_PRESENT = "결과를 확인할까요?"
 
 
 def _flat(monkeypatch):
@@ -73,10 +73,10 @@ async def test_intake_options_are_the_three_sentences():
     assert choice["options"] == [
         {"id": "ready", "label": "네, 시작해 주세요"},
         {"id": "change", "label": "자료를 바꿀래요"},
-        {"id": "cancel", "label": "그만할게요"},
+        {"id": "cancel", "label": "닫기"},
     ]
     assert choice["recommended"] == "ready"
-    assert mode["options"][-1] == {"id": "cancel", "label": "그만하기"}
+    assert mode["options"][-1] == {"id": "cancel", "label": "닫기"}
 
 
 async def test_intake_ready_starts_analyze():
@@ -215,7 +215,7 @@ async def test_present_card_points_at_the_profile(monkeypatch):
     assert choice["title"] == _PRESENT
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
     assert choice["note"] == _NOTE
     assert any(event.get("token") == _SAVING for event in events)
@@ -295,7 +295,7 @@ async def test_analyze_feedback_shows_fixes_then_the_feedback_card():
     assert choice["title"] == _FEEDBACK_TITLE
     assert choice["options"] == [
         {"id": "continue", "label": _APPLY_FEEDBACK},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
     assert "craft" not in model.calls
 

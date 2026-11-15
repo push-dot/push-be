@@ -34,16 +34,6 @@ def test_review_choice_has_template_and_photo_sections():
     assert choice["options"][-1]["id"] == "cancel"
 
 
-def test_quality_copy():
-    from app.harness.personal.resume.graph import _GATES
-    from app.harness.personal.resume.progress import quality_choice
-
-    assert _GATES["quality"]["title"] == "추천 수정도 반영할까요?"
-    event = quality_choice([{"label": "숫자로", "priority": "P1"}])
-    assert event["title"] == "추천 수정도 반영할까요?"
-    assert event["submit"]["label"] == "{n}개 반영하고 디자인으로"
-
-
 def test_read_failed_copy():
     from app.harness.personal.resume.graph import _GATES
 

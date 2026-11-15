@@ -365,7 +365,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
             "title": "이어서 작성할까요?",
             "options": [
                 {"id": "continue", "label": "이어서 작성하기"},
-                {"id": "cancel", "label": "그만하기"},
+                {"id": "cancel", "label": "닫기"},
             ],
         }
         if detail := _draft_detail(saved):
