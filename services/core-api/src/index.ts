@@ -2,9 +2,12 @@ import { Client, neon, types } from "@neondatabase/serverless";
 
 import { inTransaction, type QueryResult, type Transaction } from "./db.ts";
 import { handle, type CoreEnv } from "./handler.ts";
+import { ReadCache } from "./read-cache.ts";
 
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
+
+const readCache = new ReadCache();
 
 const queryOf = (env: CoreEnv) => (env.DATABASE_URL
   ? neonQuery(env.DATABASE_URL)
@@ -18,6 +21,7 @@ export default {
       const waitUntil = ctx?.waitUntil;
       return await handle(request, env, {
         query: queryOf(env),
+        cache: readCache,
         ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : {}),
         ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : {}),
       });
