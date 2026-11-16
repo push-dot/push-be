@@ -37,7 +37,6 @@ async def read_source(query, source_id: UUID) -> dict | None:
         return None
     mime = row["mime_type"]
     data = bytes(row["content"] or b"")
-    # CPU-bound parsing off the event loop (inline on Workers, where to_thread is patched).
     if mime == "application/pdf":
         text = await read_pdf_text(data)
     elif mime == DOCX:

@@ -12,6 +12,8 @@ MAX_CHARS: Final = 500_000
 # a child process that is killed at the deadline.
 READ_DEADLINE: Final = 30
 _MEMORY_LIMIT: Final = 1 << 30
+# Each child may use 1 GiB, so reads beyond this wait their turn instead of starting.
+_READ_SLOTS: Final = asyncio.Semaphore(2)
 
 
 def extract_pdf_bytes(data: bytes, max_chars: int = MAX_CHARS, max_pages: int = MAX_PAGES) -> str:
@@ -31,19 +33,20 @@ def extract_pdf_bytes(data: bytes, max_chars: int = MAX_CHARS, max_pages: int = 
 
 async def read_pdf_text(data: bytes) -> str:
     """``extract_pdf_bytes`` in a child process. ValueError when the PDF cannot be read in time."""
-    # -P: the script's directory (app/ingest) must not shadow stdlib or pypdf modules.
-    child = await asyncio.create_subprocess_exec(
-        sys.executable, "-P", __file__, str(int(READ_DEADLINE) + 1),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL)
-    try:
-        out, _ = await asyncio.wait_for(child.communicate(data), READ_DEADLINE)
-    except TimeoutError:
-        raise ValueError("the PDF took too long to read") from None
-    finally:
-        if child.returncode is None:
-            child.kill()
-            await child.wait()
+    async with _READ_SLOTS:
+        # -P: the script's directory (app/ingest) must not shadow stdlib or pypdf modules.
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, "-P", __file__, str(int(READ_DEADLINE) + 1),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+        try:
+            out, _ = await asyncio.wait_for(child.communicate(data), READ_DEADLINE)
+        except TimeoutError:
+            raise ValueError("the PDF took too long to read") from None
+        finally:
+            if child.returncode is None:
+                child.kill()
+                await asyncio.shield(child.wait())
     if child.returncode != 0:
         raise ValueError("the PDF cannot be read")
     return out.decode()

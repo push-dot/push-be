@@ -95,6 +95,27 @@ async def test_net_pdf_reader_is_killed_at_the_deadline(monkeypatch, slow_pdf):
     assert time.monotonic() - started < 3
 
 
+async def test_net_pdf_reads_run_at_most_two_at_once(monkeypatch, slow_pdf):
+    monkeypatch.setattr(pdf_text, "READ_DEADLINE", 0.5)
+    spawn = asyncio.create_subprocess_exec
+    children = []
+    most = 0
+
+    async def counted(*args, **kwargs):
+        nonlocal most
+        child = await spawn(*args, **kwargs)
+        children.append(child)
+        most = max(most, sum(c.returncode is None for c in children))
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counted)
+    results = await asyncio.gather(
+        *(pdf_text.read_pdf_text(slow_pdf) for _ in range(5)), return_exceptions=True)
+    assert len(children) == 5
+    assert all(isinstance(r, ValueError) for r in results)
+    assert most <= 2
+
+
 async def test_net_pdf_reader_still_reads_a_normal_pdf():
     reportlab = pytest.importorskip("reportlab.pdfgen.canvas")
     buf = io.BytesIO()

@@ -37,3 +37,10 @@ def test_verify_stripe_signature_stale():
     header = _sign(payload, "whsec_test", _now() - timedelta(minutes=10))
     with pytest.raises(ValueError):
         verify_stripe_signature(payload, header, "whsec_test", _now())
+
+
+def test_verify_stripe_signature_non_ascii_is_a_mismatch_not_a_crash():
+    payload = b"{}"
+    ts = int(_now().timestamp())
+    with pytest.raises(ValueError, match="mismatch"):
+        verify_stripe_signature(payload, f"t={ts},v1=\u00e9\u00e9", "whsec_test", _now())
