@@ -253,9 +253,8 @@ export function relevance(title: string, extra: string, raw = "$2", cho = "$3", 
     ELSE 4 END`;
 }
 
-// Hides accounts in the deletion grace period. Read through to_jsonb so it also runs before migration 0018.
-// shortcut: per-row jsonb cast, switch to u.deletion_requested_at IS NULL once 0018 is on Neon.
-export const NOT_DELETING = "to_jsonb(u) ->> 'deletion_requested_at' IS NULL";
+// Hides accounts in the deletion grace period.
+export const NOT_DELETING = "u.deletion_requested_at IS NULL";
 
 export function person(row: Record<string, unknown>, idKey: string, nameKey: string): { id: string; displayName: string } {
   return { id: String(row[idKey] ?? ""), displayName: String(row[nameKey] ?? "") };
