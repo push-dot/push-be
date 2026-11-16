@@ -35,6 +35,12 @@ test("the open-postings index is usable by every count and facet statement the r
   ].filter((c) => /count\(\*\)/.test(c.sql) && c.sql.includes("status = 'OPEN'"));
   assert.ok(statements.length >= 6, `captured ${statements.length} statements`);
   const plans = await db!.pg.transaction!(async (q) => {
+    // The planner picks by row count and stats, and other tests leave postings behind, so on the real table it can
+    // legitimately choose idx_postings_open_deadline. A temp table of the same name that carries only the facets
+    // index (pg_temp comes first in the search path) asks the one thing this test means: can the index serve it.
+    const [{ def }] = (await q("SELECT pg_get_indexdef('idx_postings_open_facets'::regclass) AS def")).rows;
+    await q("CREATE TEMP TABLE job_postings (LIKE public.job_postings) ON COMMIT DROP");
+    await q(String(def).replace(/ON (public\.)?job_postings/, "ON pg_temp.job_postings"));
     await q("SET LOCAL enable_seqscan = off");
     const out: string[] = [];
     for (const c of statements.filter((s) => !s.sql.includes("jsonb_array_elements_text"))) {
