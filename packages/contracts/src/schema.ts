@@ -3134,8 +3134,51 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update my profile */
+        /**
+         * Update my profile
+         * @description A request with an Idempotency-Key keeps the values it replaced under that key (a Bot run sends one). The response then carries changeId; see GET and POST undo under /me/profile/changes/{id}. No change, no changeId.
+         */
         patch: operations["patchMeProfile"];
+        trace?: never;
+    };
+    "/api/v1/me/profile/changes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a profile change
+         * @description What a Bot run changed: the field names and whether it was put back. A reopened chat reads this from the changeId on the update_my_profile tool line. 404 for a change that is not the caller's.
+         */
+        get: operations["getMeProfileChangesById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/profile/changes/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Put a profile change back
+         * @description Writes the replaced values back; fields the change did not move stay as they are. Works once: a second call is 409 CONFLICT, so a later edit is never overwritten. Needs an Idempotency-Key like every POST.
+         */
+        post: operations["postMeProfileChangesByIdUndo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/me/profile/pdf": {
@@ -6861,6 +6904,14 @@ export interface components {
             /** Format: uuid */
             userId: string;
         };
+        ProfileChange: {
+            /** Format: date-time */
+            createdAt: string;
+            fields: string[];
+            /** Format: uuid */
+            id: string;
+            undone: boolean;
+        };
         ProfileDetail: {
             avatarUrl: string | null;
             careerStatus: ("satisfied" | "seeking" | "feedback") | null;
@@ -6896,6 +6947,34 @@ export interface components {
             status: string;
             title: string;
             url: string;
+        };
+        ProfileUpdated: {
+            avatarUrl: string | null;
+            careerStatus: ("satisfied" | "seeking" | "feedback") | null;
+            careers: components["schemas"]["SocialProfileCareer"][];
+            /**
+             * Format: uuid
+             * @description Present only when the request had an Idempotency-Key and moved a field.
+             */
+            changeId?: string;
+            contact: string | null;
+            displayName: string;
+            followerCount: number;
+            following: boolean;
+            followingCount: number;
+            headline: string;
+            intro: string;
+            jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
+            offered: boolean;
+            openToOffers: boolean;
+            postCount: number;
+            resumeSourceId: string | null;
+            skills: string[];
+            tenureYears: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: uuid */
+            userId: string;
         };
         Project: {
             /** Format: uuid */
@@ -13889,6 +13968,59 @@ export interface operations {
                 };
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileUpdated"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeProfileChangesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileChange"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeProfileChangesByIdUndo: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {

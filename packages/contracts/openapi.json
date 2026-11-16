@@ -10381,6 +10381,34 @@
         ],
         "type": "object"
       },
+      "ProfileChange": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "undone": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "fields",
+          "undone",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "ProfileDetail": {
         "properties": {
           "avatarUrl": {
@@ -10575,6 +10603,160 @@
           "fitCount",
           "aiRead",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "ProfileUpdated": {
+        "properties": {
+          "avatarUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "careerStatus": {
+            "anyOf": [
+              {
+                "enum": [
+                  "satisfied",
+                  "seeking",
+                  "feedback"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "careers": {
+            "items": {
+              "$ref": "#/components/schemas/SocialProfileCareer"
+            },
+            "type": "array"
+          },
+          "changeId": {
+            "description": "Present only when the request had an Idempotency-Key and moved a field.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "followerCount": {
+            "type": "integer"
+          },
+          "following": {
+            "type": "boolean"
+          },
+          "followingCount": {
+            "type": "integer"
+          },
+          "headline": {
+            "type": "string"
+          },
+          "intro": {
+            "type": "string"
+          },
+          "jobCategory": {
+            "anyOf": [
+              {
+                "enum": [
+                  "dev",
+                  "data",
+                  "design",
+                  "plan",
+                  "marketing",
+                  "sales",
+                  "hr",
+                  "ops"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offered": {
+            "type": "boolean"
+          },
+          "openToOffers": {
+            "type": "boolean"
+          },
+          "postCount": {
+            "type": "integer"
+          },
+          "resumeSourceId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenureYears": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "userId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "displayName",
+          "avatarUrl",
+          "headline",
+          "jobCategory",
+          "tenureYears",
+          "careerStatus",
+          "openToOffers",
+          "intro",
+          "careers",
+          "skills",
+          "followerCount",
+          "followingCount",
+          "postCount",
+          "resumeSourceId",
+          "contact",
+          "updatedAt",
+          "following",
+          "offered"
         ],
         "type": "object"
       },
@@ -35002,6 +35184,7 @@
         "x-owner": "core"
       },
       "patch": {
+        "description": "A request with an Idempotency-Key keeps the values it replaced under that key (a Bot run sends one). The response then carries changeId; see GET and POST undo under /me/profile/changes/{id}. No change, no changeId.",
         "operationId": "patchMeProfile",
         "requestBody": {
           "content": {
@@ -35162,7 +35345,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/ProfileDetail"
+                      "$ref": "#/components/schemas/ProfileUpdated"
                     }
                   },
                   "required": [
@@ -35179,6 +35362,99 @@
           }
         },
         "summary": "Update my profile",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/profile/changes/{id}": {
+      "get": {
+        "description": "What a Bot run changed: the field names and whether it was put back. A reopened chat reads this from the changeId on the update_my_profile tool line. 404 for a change that is not the caller's.",
+        "operationId": "getMeProfileChangesById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProfileChange"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Get a profile change",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/profile/changes/{id}/undo": {
+      "post": {
+        "description": "Writes the replaced values back; fields the change did not move stay as they are. Works once: a second call is 409 CONFLICT, so a later edit is never overwritten. Needs an Idempotency-Key like every POST.",
+        "operationId": "postMeProfileChangesByIdUndo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProfileDetail"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Put a profile change back",
         "tags": [
           "social"
         ],

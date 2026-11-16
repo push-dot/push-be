@@ -604,3 +604,22 @@ async def test_edit_document_approval_previews_the_diff():
         {"line": None, "sign": "+", "text": "이후"},
     ]
     assert not any(event.get("type") == "diff" for event in events)
+
+
+async def test_profile_change_id_is_the_run_key_and_reaches_the_tool_line():
+    """core keeps the replaced values under the Idempotency-Key and answers changeId; the tool line carries it, so a reopened chat can offer 되돌리기."""
+    from app.harness.core_client import idempotency_key
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["idempotency-key"])
+        return httpx.Response(200, json={"data": {"headline": "시니어", "changeId": seen[0]}})
+
+    core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+    ctx = ToolContext(user_id="user-1", company_id=None, conversation_id="conv-1",
+                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+    tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "update_my_profile")
+    result = await tool.run(ctx, tool.args_model.model_validate({"headline": "시니어"}))
+    assert seen == [idempotency_key("job-1", "call-1")]
+    assert result["changeId"] == idempotency_key("job-1", "call-1")
