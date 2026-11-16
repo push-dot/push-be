@@ -3988,7 +3988,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Parse a profile draft from a source */
+        /**
+         * Parse a profile draft from a source
+         * @description 422 VALIDATION_ERROR (details.field sourceId) when the source has no stored file or its PDF cannot be read. 400 when the file is neither a PDF nor text.
+         */
         get: operations["getSourcesByIdProfileDraft"];
         put?: never;
         post?: never;
@@ -10965,8 +10968,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** Format: uuid */
-                    applicationId: string;
+                    /** @description The application (posting) the document belongs to. Leave it out or null for a document that belongs to none, such as a hub profile or a portfolio. A given id must be the caller's application, else 404. */
+                    applicationId?: string | null;
                     /** @enum {string} */
                     kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
                     language: string;

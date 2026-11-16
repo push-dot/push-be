@@ -113,10 +113,10 @@ class _Sources:
         return row[1]
 
 
-def _source(user_id, body: bytes) -> ent.Source:
+def _source(user_id, body: bytes, mime="text/plain", name="profile.txt") -> ent.Source:
     return ent.Source(
-        id=SOURCE_ID, user_id=user_id, file_name="profile.txt",
-        mime_type="text/plain", size=len(body), sha256="abc",
+        id=SOURCE_ID, user_id=user_id, file_name=name,
+        mime_type=mime, size=len(body), sha256="abc",
         path=f"db://sources/{SOURCE_ID}", status="STORED", created_at=NOW)
 
 
@@ -147,3 +147,69 @@ def test_other_users_source_is_404():
         f"/api/v1/sources/{SOURCE_ID}/profile-draft")
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def _pdf(body: bytes) -> TestClient:
+    return _client({(USER_ID, SOURCE_ID): (
+        _source(USER_ID, body, "application/pdf", "cv.pdf"), body)})
+
+
+def _draft(client: TestClient):
+    return client.get(f"/api/v1/sources/{SOURCE_ID}/profile-draft")
+
+
+def test_a_seeded_pdf_source_without_its_file_is_422_not_500():
+    res = _draft(_pdf(b""))
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert res.json()["error"]["details"] == {"field": "sourceId"}
+
+
+def test_a_pdf_pypdf_cannot_read_is_422_not_500():
+    for body in (b"%PDF-1.4\n%%EOF\n", b"%PDF-1.4\n1 0 obj\n<<", b"not a pdf at all"):
+        res = _draft(_pdf(body))
+        assert res.status_code == 422, body
+        assert res.json()["error"]["details"] == {"field": "sourceId"}
+
+
+def test_a_readable_pdf_without_text_is_a_blank_draft():
+    from app.infrastructure.doc_render import render_pdf
+
+    res = _draft(_pdf(render_pdf([""])))
+    assert res.status_code == 200
+    assert res.json() == {"data": BLANK}
+
+
+def test_a_readable_pdf_with_text_is_parsed():
+    from app.infrastructure.doc_render import render_pdf
+
+    res = _draft(_pdf(render_pdf(["Name: Ada"])))
+    assert res.status_code == 200
+    assert res.json()["data"]["intro"] == ""
+
+
+def test_a_text_source_without_its_file_is_422():
+    res = _client({(USER_ID, SOURCE_ID): (_source(USER_ID, b""), b"")}).get(
+        f"/api/v1/sources/{SOURCE_ID}/profile-draft")
+    assert res.status_code == 422
+
+
+def test_a_store_outage_is_still_500():
+    class _Down(_Sources):
+        async def content(self, user_id, id_):
+            raise RuntimeError("db down")
+
+    body = b"x"
+    sources = _Down({(USER_ID, SOURCE_ID): (_source(USER_ID, body), body)})
+    evidence = EvidenceService.__new__(EvidenceService)
+    evidence.sources = sources
+    app = FastAPI()
+    app.add_exception_handler(DomainError, domain_error_handler)
+    app.include_router(router, prefix="/api/v1")
+    app.add_middleware(_AsUser, user=ent.User(
+        id=USER_ID, display_name="Ada", created_at=NOW))
+    app.state.deps = SimpleNamespace(sources=sources, evidence=evidence)
+    res = TestClient(app, raise_server_exceptions=False).get(
+        f"/api/v1/sources/{SOURCE_ID}/profile-draft")
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "INTERNAL"

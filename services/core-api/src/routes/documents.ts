@@ -268,14 +268,14 @@ export const listDocuments = async (ctx: Ctx): Promise<Response> => {
 
 export const createDocument = async (ctx: Ctx): Promise<Response> => {
   const { values } = await strictBody(ctx.request, {
-    applicationId: { kind: "uuid", required: true },
+    applicationId: { kind: "uuid", nullable: true },
     title: { kind: "str", required: true },
     kind: { kind: "str", required: true },
     template: { kind: "str" },
     language: { kind: "str", required: true },
   });
-  const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
-  if (!app) throw notFound();
+  const applicationId = values.applicationId ?? null;
+  if (applicationId !== null && !await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id])) throw notFound();
   const title = String(values.title);
   const kind = String(values.kind);
   const template = String(values.template ?? "");
@@ -284,7 +284,7 @@ export const createDocument = async (ctx: Ctx): Promise<Response> => {
   if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
   const now = ts(ctx.now);
   const row: Row = {
-    id: crypto.randomUUID(), revision: 1, application_id: values.applicationId, title, kind,
+    id: crypto.randomUUID(), revision: 1, application_id: applicationId, title, kind,
     template: TEMPLATE_ALIASES[template] ?? template, language: String(values.language), status: "DRAFT",
     latest_version_id: null, finalized_version_id: null, created_at: now, updated_at: now,
   };
