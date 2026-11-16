@@ -50,7 +50,7 @@ test("many distinct keys stay under the entry cap and the oldest goes first", as
 
 test("a key longer than the cap is never stored", async () => {
   const cache = new ReadCache();
-  const key = "x".repeat(2000);
+  const key = "x".repeat(4097);
   assert.equal(await cache.get(key, 0, async () => 1), 1);
   assert.equal(await cache.get(key, 0, async () => 2), 2);
   assert.equal(cache.size, 0);

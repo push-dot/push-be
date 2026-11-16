@@ -50,7 +50,8 @@ test("the open-postings index is usable by every count and facet statement the r
 test("the popular sort returns the same order as the JSON expression it replaced", { skip: URL_ ? false : SKIP }, async () => {
   const user = await db!.person("FREE");
   const ids: string[] = [];
-  const views = [0, 3, 3, 9, 1, 3];
+  // Above any real count, so the rows are on the first page even in a database that holds other postings.
+  const views = [0, 3, 3, 9, 1, 3].map((n) => 2_000_000 + n);
   for (const [i, view] of views.entries()) {
     const id = await db!.posting(`order-${i}`);
     await sql("UPDATE job_postings SET view_count = $2, created_at = $3::timestamptz WHERE id = $1", [id, view, i < 3 ? "2026-11-01T00:00:00Z" : `2026-11-0${i}T00:00:00Z`]);

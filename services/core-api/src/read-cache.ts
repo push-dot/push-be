@@ -4,7 +4,7 @@
 
 export const READ_CACHE_TTL_MS = 60_000;
 export const READ_CACHE_MAX_ENTRIES = 128;
-const MAX_KEY_LENGTH = 1024;
+const MAX_KEY_LENGTH = 4096;
 
 export class ReadCache {
   private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
