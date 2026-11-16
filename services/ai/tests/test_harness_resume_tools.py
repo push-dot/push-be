@@ -13,6 +13,7 @@ from app.harness.personal.resume import tools as resume_tools
 from app.harness.personal.resume.graph import build_resume_graph
 from app.harness.personal.resume.tools import RESUME_TOOLS
 from app.harness.tools import ToolContext
+from tests.fakes import data_json
 
 USER = str(uuid4())
 CONV = str(uuid4())
@@ -114,7 +115,7 @@ class _ToolModel:
             return AIMessage(content="", tool_calls=[{
                 "name": "fetch_url", "id": "f1", "type": "tool_call",
                 "args": {"url": "https://jobs.example/1"}}])
-        tool_text = json.loads(messages[-1].content)["text"]
+        tool_text = data_json(messages[-1].content)["text"]
         return AIMessage(content=json.dumps({"posting": tool_text}))
 
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 from functools import partial
 from typing import Annotated, Any, Final
+from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
@@ -16,6 +18,7 @@ from typing_extensions import TypedDict
 
 from app.domain.access_mode import AccessMode
 from app.framework.models import _content
+from app.framework.untrusted import as_data
 from app.harness.approval import (
     APPROVE_ALWAYS,
     APPROVING,
@@ -25,7 +28,7 @@ from app.harness.approval import (
     user_supplied,
 )
 from app.harness.memory import memory_update, merge_memory
-from app.harness.policy import Decision, Tier, decide
+from app.harness.policy import TRUSTED_READS, Decision, Exposure, Tier, decide
 from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
 from app.harness.status import thinking, tool_status, waiting, working
@@ -55,6 +58,8 @@ class HarnessState(TypedDict, total=False):
     access_mode: str
     tool_calls_used: int
     bot: dict[str, Any] | None
+    # The system prompt of the last model call held other users' text (reference templates).
+    others_in_prompt: bool
 
 
 class PersonalState(HarnessState, ThreadMemory, total=False):
@@ -136,10 +141,58 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
 
 
 def write_needs_approval(mode, tier, quick_start, tool: str | None = None, *,
-                         supplied: bool = False, granted: bool = False) -> bool:
+                         supplied: bool = False, granted: bool = False,
+                         exposure: Exposure = Exposure.NONE, dictated: bool = False) -> bool:
     resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
     return decide(mode, resolved, tool, quick_start=isinstance(quick_start, dict),
-                  supplied=supplied, granted=granted) is Decision.ASK
+                  supplied=supplied, granted=granted, exposure=exposure,
+                  dictated=dictated) is Decision.ASK
+
+
+def _exposure(state: dict, tools_by_name: dict) -> Exposure:
+    """Where untrusted text sits in what the model sees: a result of a read that is not in
+    TRUSTED_READS, the thread summary, which folds such results, or other users' templates in the
+    system prompt."""
+    messages = state.get("messages") or []
+    names = {
+        _parts(call)[2]: _parts(call)[0]
+        for message in messages if isinstance(message, AIMessage)
+        for call in message.tool_calls or []
+    }
+    last_human = max(
+        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+        default=-1)
+    folded = (state.get("summary") or "").strip() or state.get("others_in_prompt")
+    found = Exposure.THREAD if folded else Exposure.NONE
+    for index, message in enumerate(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        tool = tools_by_name.get(names.get(message.tool_call_id))
+        if tool is None or tool.name in TRUSTED_READS:
+            continue
+        if tool.tier not in (Tier.READ, Tier.EXTERNAL_READ):
+            continue
+        if index > last_human:
+            return Exposure.RUN
+        found = Exposure.THREAD
+    return found
+
+
+def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
+    """Whether untrusted text could have built this address to carry the user's data out. Right
+    after such text, any address the thread does not hold; with such text only earlier in the
+    thread, one with a query string or off a granted host, so a bot still opens other pages of a
+    granted site."""
+    if exposure is Exposure.NONE or url in seen:
+        return False
+    return exposure is Exposure.RUN or not granted or bool(urlsplit(url).query)
+
+
+def _seen_text(state: dict) -> str:
+    """What the user and the tools put in the thread. A URL the model built is not in it."""
+    return "\n".join(
+        _content(message) for message in state.get("messages") or []
+        if not isinstance(message, AIMessage))
 
 
 def leave_flow(summary: str, **update) -> Command:
@@ -356,6 +409,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
     async def agent(state: dict) -> dict:
         messages = list(state.get("messages") or [])
         content = spec.prompt
+        lines = []
         if spec.id == "personal":
             from app.harness.personal.reference import reference_lines
             content = bot_prompt(content, state.get("bot"))
@@ -365,7 +419,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             except Exception:
                 lines = []
             if lines:
-                content = content.rstrip() + "\n\n" + "\n".join(lines)
+                # Sentence templates come from other users' documents.
+                content = content.rstrip() + "\n\n" + as_data("\n".join(lines), "reference_samples")
             quick = state.get("quick_start")
             if isinstance(quick, dict) and quick.get("instruction"):
                 sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
@@ -375,13 +430,15 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         if spec.id == "personal":
             remembered = (state.get("summary") or "").strip()
             if remembered:
-                messages = [messages[0], SystemMessage(content=remembered), *messages[1:]]
+                folded = SystemMessage(content=as_data(remembered, "summary", None))
+                messages = [messages[0], folded, *messages[1:]]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))
         thinking()
         reply = await _complete(target, messages, text_only=over)
-        return {"messages": [reply]} if reply is not None else {}
+        update = {"others_in_prompt": bool(lines)} if spec.id == "personal" else {}
+        return {"messages": [reply], **update} if reply is not None else update
 
     async def tools(state: HarnessState) -> Command:
         pending = _open_calls(state)
@@ -417,6 +474,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three
         # values and may not change shape before push-fe F3. Send EXTERNAL_READ once it knows it.
         tier = (Tier.READ if meta["tier"] is Tier.EXTERNAL_READ else meta["tier"]).value
+        exposure = _exposure(state, tools_by_name)
         page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:
             thread = state.get("conversation_id")
@@ -424,10 +482,15 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
                 "granted": await site_granted(db, thread, args.url),
             }
-        if (
-            write_needs_approval(mode, meta["tier"], state.get("quick_start"), tool.name, **page)
-            and meta["approval_kind"] != "DOCUMENT_EDIT"
-        ):
+        dictated = meta["tier"] is Tier.EXTERNAL_READ and _dictated(
+            args.url, exposure, _seen_text(state), page["granted"])
+        quick = state.get("quick_start")
+        asks = write_needs_approval(
+            mode, meta["tier"], quick, tool.name, **page, exposure=exposure, dictated=dictated)
+        if asks and not write_needs_approval(mode, meta["tier"], quick, tool.name, **page):
+            logging.getLogger(__name__).warning(
+                "tool %s held for the user: untrusted text in the thread (%s)", tool.name, exposure)
+        if asks and meta["approval_kind"] != "DOCUMENT_EDIT":
             event, created = await create_tool_approval(
                 db,
                 user_id=state.get("user_id"),
@@ -467,6 +530,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             core=core,
             access_mode=mode.value,
             supplied=page.get("supplied"),
+            exposure=exposure,
         )
         working(tool_status(tool.name))
         emit(_tool_event(tool.name, "run", summary, tier))
@@ -488,7 +552,9 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 tool.name, args, result, user_id=str(state.get("user_id") or ""), db=db)
         return _tool_command(
             state,
-            [ToolMessage(content=json.dumps(result), tool_call_id=call_id)],
+            [ToolMessage(
+                content=as_data(json.dumps(result, ensure_ascii=False), tool.name),
+                tool_call_id=call_id)],
             {call_id},
             tool_calls_used=used + 1,
         )

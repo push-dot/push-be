@@ -21,6 +21,7 @@ from app.harness.registry import REGISTRY
 from app.harness.runtime import HarnessRuntime, _pending
 from app.infrastructure.store_turns import TurnStore
 from app.queue.admin import AdminJobs
+from tests.fakes import data_json
 from tests.harness_fakes import ScriptedLC, managed_ai, run, service
 from tests.test_page_read import fake_web
 
@@ -164,7 +165,7 @@ async def state(c):
 
 async def results(c) -> list[dict]:
     return [
-        json.loads(m.content)
+        data_json(m.content)
         for m in (await state(c)).values["messages"]
         if isinstance(m, ToolMessage)
     ]

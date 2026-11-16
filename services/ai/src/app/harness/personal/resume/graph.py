@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from app.framework.models import _content
+from app.framework.untrusted import DATA_RULE, as_data
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
 from app.harness.personal.resume.booster import boost_cycle
@@ -1115,8 +1116,10 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
         SystemMessage(
             content=prompt
             + "\n\n결과는 JSON 객체 하나로만 답하고, 사용자에게 보여줄 한두 문장은 message 키에 넣는다."
+            + "\n\n" + DATA_RULE
         ),
-        HumanMessage(content=json.dumps(context, ensure_ascii=False)),
+        HumanMessage(
+            content=as_data(json.dumps(context, ensure_ascii=False), "resume_state", None)),
     ]
     used = 0
     while True:
@@ -1133,7 +1136,9 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
             result = await _read_tool(call, ctx) if used < _CAP else {"error": "도구 호출 한도"}
             used += 1
             messages.append(
-                ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=call["id"])
+                ToolMessage(
+                    content=as_data(json.dumps(result, ensure_ascii=False), str(call.get("name"))),
+                    tool_call_id=call["id"])
             )
 
 

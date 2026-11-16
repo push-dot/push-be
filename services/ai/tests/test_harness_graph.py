@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -11,7 +9,7 @@ from app.harness.core_client import CoreError
 from app.harness.graph import astream_harness, build_harness_graph
 from app.harness.policy import Tier
 from app.harness.tools import HarnessSpec, ToolContext, ToolSpec
-from tests.fakes import ScriptedChat
+from tests.fakes import ScriptedChat, data_json
 
 
 class IdArgs(BaseModel):
@@ -150,7 +148,7 @@ async def test_resume_reject_skips():
         message for message in model.seen[-1]
         if isinstance(message, ToolMessage)
     ]
-    assert json.loads(tool_messages[-1].content) == {"rejected": True}
+    assert data_json(tool_messages[-1].content) == {"rejected": True}
 
 
 async def test_bypass_runs_writes_but_asks_before_applying():
@@ -303,7 +301,7 @@ async def test_unexpected_tool_exception_becomes_tool_failed_result():
                for event in events)
     answer = model.seen[-1][-1]
     assert isinstance(answer, ToolMessage) and answer.tool_call_id == "c1"
-    assert json.loads(answer.content) == {"error": "TOOL_FAILED"}
+    assert data_json(answer.content) == {"error": "TOOL_FAILED"}
 
 
 async def test_domain_error_from_a_tool_becomes_its_code():
@@ -317,7 +315,7 @@ async def test_domain_error_from_a_tool_becomes_its_code():
     graph, _db = _graph(model, runs, DomainError(404, "NOT_FOUND", "gone"))
     events = await _events(graph, _input("BYPASS"))
     assert any(event.get("result") == {"error": "NOT_FOUND"} for event in events)
-    assert json.loads(model.seen[-1][-1].content) == {"error": "NOT_FOUND"}
+    assert data_json(model.seen[-1][-1].content) == {"error": "NOT_FOUND"}
 
 
 async def test_unknown_tool_calls_count_toward_the_cap_and_finish_within_the_step_limit():

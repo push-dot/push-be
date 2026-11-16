@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.harness.personal.resume.graph import build_resume_graph
+from tests.fakes import data_json
 from tests.test_harness_resume import _Approvals, _base, _config, _PhaseModel
 from tests.test_resume_flow_decisions import _events
 
@@ -19,7 +20,7 @@ class _Reread(_PhaseModel):
         self.payloads = []
 
     async def ainvoke(self, messages, **kwargs):
-        payload = json.loads(messages[-1].content)
+        payload = data_json(messages[-1].content)
         self.payloads.append(payload)
         phase = payload.get("phase")
         analyze_calls = [item for item in self.payloads if item.get("phase") == "analyze"]

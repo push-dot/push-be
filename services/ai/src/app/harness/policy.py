@@ -19,6 +19,19 @@ class Decision(StrEnum):
     ASK = "ASK"
 
 
+class Exposure(StrEnum):
+    """How close text the user did not write (a page, another person's writing, an upload) sits to
+    a tool call. Such text may carry instructions, so the model's call may be the text's, not the
+    user's."""
+
+    NONE = "NONE"
+    # In view but not from this run: an earlier turn's tool result, the thread summary, or
+    # other users' templates in the system prompt.
+    THREAD = "THREAD"
+    # A tool result of this run, after the user's last message.
+    RUN = "RUN"
+
+
 _DECISIONS = {
     (AccessMode.ALWAYS_ASK, Tier.READ): Decision.EXECUTE,
     (AccessMode.ALWAYS_ASK, Tier.EXTERNAL_READ): Decision.ASK,
@@ -46,18 +59,43 @@ _WRITES = frozenset({Tier.SAFE_WRITE, Tier.RISKY_WRITE})
 # Push and the change can be put back, so no card asks first.
 APPLY_THEN_REVIEW = frozenset({"update_my_profile"})
 
+# Reads whose results hold only what the user or their own company wrote.
+TRUSTED_READS = frozenset({
+    "get_my_profile", "get_company", "get_applicant_counts", "list_company_postings"})
+
+# Writes that only open a guided flow; each step that changes something asks on its own.
+FLOW_STARTS = frozenset({"start_document", "start_posting"})
+
+
+def _held(tier: Tier, tool: str | None, exposure: Exposure) -> bool:
+    """A write the user may not have asked for waits for them: every write after untrusted text
+    in the same run, and a write that reaches other people while such text is in the thread."""
+    if tier not in _WRITES or tool in FLOW_STARTS:
+        return False
+    if exposure is Exposure.RUN:
+        return True
+    return exposure is Exposure.THREAD and (tier is Tier.RISKY_WRITE or tool in APPLY_THEN_REVIEW)
+
 
 def decide(
     mode: AccessMode, tier: Tier, tool: str | None = None, *,
     quick_start: bool = False, supplied: bool = False, granted: bool = False,
+    exposure: Exposure = Exposure.NONE, dictated: bool = False,
 ) -> Decision:
     """supplied: the user gave this URL in the thread. granted: the bot holds a grant for its
-    host."""
+    host. dictated: untrusted text in view could have built this URL, so it may carry the user's
+    data out, and only the user may open it."""
     if tool in ALWAYS_ASK_TOOLS:
         return Decision.ASK
     if not isinstance(tier, Tier):
         tier = tier.metadata["tier"]
-    if tier is Tier.EXTERNAL_READ and (supplied or granted):
+    if _held(tier, tool, exposure):
+        return Decision.ASK
+    if tier is Tier.EXTERNAL_READ and supplied:
+        return Decision.EXECUTE
+    if tier is Tier.EXTERNAL_READ and dictated:
+        return Decision.ASK
+    if tier is Tier.EXTERNAL_READ and granted:
         return Decision.EXECUTE
     if tool in APPLY_THEN_REVIEW and mode is not AccessMode.ALWAYS_ASK:
         return Decision.EXECUTE

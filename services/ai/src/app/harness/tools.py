@@ -14,7 +14,7 @@ from pydantic import BaseModel, BeforeValidator
 
 from app.domain.errors import DomainError
 from app.harness.core_client import CoreError
-from app.harness.policy import Tier
+from app.harness.policy import Exposure, Tier
 
 if TYPE_CHECKING:
     from app.harness.core_client import CoreClient
@@ -36,6 +36,7 @@ class ToolContext:
     inputs: dict = field(default_factory=dict)
     # Whether the user gave this call's URL, when the graph already decided it for the approval.
     supplied: bool | None = None
+    exposure: Exposure = Exposure.NONE
 
 
 @dataclass(frozen=True)

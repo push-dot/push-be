@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from app.framework.untrusted import as_data
 from app.harness.memory import (
     COMPACT_ABOVE,
     KEEP_RECENT,
@@ -302,7 +303,8 @@ async def test_sixty_turn_thread_stays_under_the_budget(monkeypatch):
     sent = UsageLC.seen[-1]
     assert isinstance(sent[0], SystemMessage)
     assert not str(sent[0].content).startswith(summary)
-    assert isinstance(sent[1], SystemMessage) and sent[1].content == summary
+    assert isinstance(sent[1], SystemMessage)
+    assert sent[1].content == as_data(summary, "summary", None)
     assert "deepseek/deepseek-v4.1-flash" in UsageLC.models
     stored = _held(values["messages"], summary)
     assert stored <= COMPACT_ABOVE + 20

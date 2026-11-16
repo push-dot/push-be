@@ -5,6 +5,13 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.framework.llm import astructured_reply
+from app.framework.untrusted import DATA_RULE, as_data
+
+
+def _messages(system: str, user: str) -> list:
+    """A flow's user text is the posting, documents and profiles it works on: data only."""
+    return [SystemMessage(content=system + "\n\n" + DATA_RULE),
+            HumanMessage(content=as_data(user, "flow_input", None))]
 
 
 def structured_generate(model):
@@ -14,8 +21,7 @@ def structured_generate(model):
     """
 
     async def generate(schema, system: str, user: str):
-        messages = [SystemMessage(content=system), HumanMessage(content=user)]
-        _raw, result = await astructured_reply(model, schema, messages)
+        _raw, result = await astructured_reply(model, schema, _messages(system, user))
         if result is None:
             raise ValueError(f"model returned no {schema.__name__}")
         return result
@@ -30,6 +36,6 @@ def gate_generate(model):
         return structured_generate(model)
 
     async def generate(schema, system: str, user: str):
-        return await structured(schema, [SystemMessage(content=system), HumanMessage(content=user)])
+        return await structured(schema, _messages(system, user))
 
     return generate

@@ -16,10 +16,12 @@ from app.domain.quick_starts import quick_start_seed
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
+from app.framework.untrusted import strip_exfil
 from app.harness.document_edits import env_core
 from app.harness.consent import require_consent
 from app.harness.graph import (
-    RECURSION_LIMIT, _open_calls, build_harness_graph, quick_start_resume, turn_model,
+    RECURSION_LIMIT, _open_calls, _seen_text, build_harness_graph, quick_start_resume,
+    turn_model,
 )
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
@@ -479,13 +481,14 @@ class HarnessRuntime:
         if spec.id == "personal" and stored.get("status"):
             await self._save_resume_state(payload["conversation_id"], stored)
         operation = None
+        seen = _seen_text(after.values or {})
         if interrupted:
             reply, reply_job = _flow_reply(after)
             if reply and reply_job == str(payload.get("job_id") or ""):
-                operation = await self._persist(payload, reply, ai, turn)
+                operation = await self._persist(payload, strip_exfil(reply, seen), ai, turn)
         else:
             reply = _final_text(after.values)
-            operation = await self._persist(payload, reply, ai, turn)
+            operation = await self._persist(payload, strip_exfil(reply, seen), ai, turn)
         found = listed()
         if done is not None:
             extra = {"operation": to_jsonable(operation)} if operation is not None else {}

@@ -8,11 +8,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.graphs.resume_prompt import phase_prompt_for_harness
-from app.harness.registry import REGISTRY
+from app.harness.core_client import CoreClient
 from app.harness.personal.resume.graph import build_resume_graph
+from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
 from app.harness.tools import ToolContext
-from app.harness.core_client import CoreClient
+from tests.fakes import data_json
 
 _ORDER = (
     "mode_select", "output_targets", "tone", "intake",
@@ -45,7 +46,7 @@ class _PhaseModel:
         self.calls = []
 
     async def ainvoke(self, messages, **kwargs):
-        phase = json.loads(messages[-1].content)["phase"]
+        phase = data_json(messages[-1].content)["phase"]
         self.calls.append(phase)
         return AIMessage(content=json.dumps(self.outputs.get(phase) or {"summary": phase}))
 
