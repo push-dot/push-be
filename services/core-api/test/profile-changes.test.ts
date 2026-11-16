@@ -20,10 +20,17 @@ const current = (): Row => ({
 });
 
 // One fake database: the profile row, the change rows, and whatever the request wrote.
-const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(), failWrite = false) => {
+const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(), failWrite = false, failContact = false) => {
   const seen: Call[] = [];
+  // Rows that stuck: users/profiles writes and change rows. A transaction that throws puts all of it back.
+  const stuck: string[] = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
+    if (sql.startsWith("UPDATE users SET display_name") || sql.startsWith("UPDATE profiles SET")) {
+      if (failWrite && sql.startsWith("UPDATE profiles SET headline")) throw new Error("db down");
+      if (failContact && sql.startsWith("UPDATE profiles SET contact")) throw new Error("db down");
+      stuck.push(sql.split(" SET ")[0]);
+    }
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("access_tokens")) {
       return {
@@ -47,7 +54,6 @@ const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(
       if (change) change.undone = false;
       return { rows: [], rowCount: 1 };
     }
-    if (failWrite && sql.startsWith("UPDATE profiles SET headline")) throw new Error("db down");
     if (sql.includes("UPDATE profile_changes")) {
       const change = changes.get(String(params[1]));
       if (!change || change.undone) return empty;
@@ -64,7 +70,19 @@ const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(
     if (sql.includes("JOIN users u ON u.id = p.user_id WHERE p.user_id = $1")) return { rows: [current()], rowCount: 1 };
     return empty;
   };
-  return { seen, changes, deps: { query, now: () => new Date(NOW) } as Deps };
+  const transaction: Deps["transaction"] = async (work) => {
+    const kept = new Map([...changes].map(([id, change]) => [id, { before: change.before, undone: change.undone }]));
+    const wrote = stuck.length;
+    try {
+      return await work(query);
+    } catch (err) {
+      changes.clear();
+      for (const [id, change] of kept) changes.set(id, change);
+      stuck.length = wrote;
+      throw err;
+    }
+  };
+  return { seen, changes, stuck, deps: { query, transaction, now: () => new Date(NOW) } as Deps };
 };
 
 const send = (method: string, path: string, body?: unknown, key?: string): Request =>
@@ -150,4 +168,41 @@ test("an undo whose write fails can be tried again", async () => {
   const res = await handle(send("POST", `/api/v1/me/profile/changes/${CHANGE}/undo`, undefined, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"), env(), w.deps);
   assert.equal(res.status, 500);
   assert.equal(w.changes.get(CHANGE)?.undone, false);
+});
+
+test("an undo that fails between the users and profiles writes changes nothing", async () => {
+  resetLimits();
+  const w = world(new Map([[CHANGE, { before: { displayName: "옛 이름", headline: "옛 소개" }, undone: false }]]), true);
+  const res = await handle(send("POST", `/api/v1/me/profile/changes/${CHANGE}/undo`, undefined, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"), env(), w.deps);
+  assert.equal(res.status, 500);
+  assert.ok(w.seen.some((call) => call.sql.startsWith("UPDATE users SET display_name")), "the first write ran");
+  assert.deepEqual(w.stuck, [], "and was rolled back with the rest");
+  assert.equal(w.changes.get(CHANGE)?.undone, false);
+});
+
+test("a PATCH that fails between the writes keeps no change and no half write", async () => {
+  resetLimits();
+  const w = world(new Map(), true);
+  const res = await handle(send("PATCH", "/api/v1/me/profile", { displayName: "새 이름", headline: "새 소개" }, CHANGE), env(), w.deps);
+  assert.equal(res.status, 500);
+  assert.ok(w.seen.some((call) => call.sql.includes("INSERT INTO profile_changes")), "the change was inserted first");
+  assert.deepEqual(w.stuck, []);
+  assert.equal(w.changes.size, 0);
+});
+
+test("a PATCH whose contact write fails keeps nothing either", async () => {
+  resetLimits();
+  const w = world(new Map(), false, true);
+  const res = await handle(send("PATCH", "/api/v1/me/profile", { headline: "새 소개", contact: "a@b.c" }, CHANGE), env(), w.deps);
+  assert.equal(res.status, 500);
+  assert.deepEqual(w.stuck, []);
+  assert.equal(w.changes.size, 0);
+});
+
+test("a successful PATCH and undo each run in one transaction", async () => {
+  resetLimits();
+  const w = world();
+  assert.equal((await handle(send("PATCH", "/api/v1/me/profile", { displayName: "새 이름", headline: "새 소개" }, CHANGE), env(), w.deps)).status, 200);
+  assert.deepEqual(w.stuck, ["UPDATE users", "UPDATE profiles"]);
+  assert.equal(w.changes.has(CHANGE), true);
 });
