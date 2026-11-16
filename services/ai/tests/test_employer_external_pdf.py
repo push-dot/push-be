@@ -52,6 +52,10 @@ async def _generate(schema, system, user):
     raise AssertionError(schema)
 
 
+async def _resume_text(_data):
+    return "Kotlin 4년 결제 승인 API 운영"
+
+
 def _review(plan: str, store: FakeStore):
     _state, flows = build_flows(
         db=None,
@@ -59,7 +63,7 @@ def _review(plan: str, store: FakeStore):
         research_text=None,
         plan_of=lambda _s: plan,
         store=store,
-        read_pdf=lambda _b: "Kotlin 4년 결제 승인 API 운영",
+        read_pdf=_resume_text,
     )
     return flows["review"]
 

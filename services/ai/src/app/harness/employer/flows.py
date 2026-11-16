@@ -151,7 +151,7 @@ def build_flows(
         the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
     store = store or (EmployerStore(db) if db is not None else None)
     if read_pdf is None:
-        from app.ingest.pdf_text import extract_pdf_bytes as read_pdf
+        from app.ingest.pdf_text import read_pdf_text as read_pdf
     from app.harness.graph import HarnessState
 
     class EmployerState(HarnessState, total=False):
@@ -382,7 +382,7 @@ def build_flows(
             reply = "어떤 공고 기준으로 볼지 알려 주세요. 공고 관리에서 공고를 골라 주세요."
             emit({"token": reply})
             return _done(state, "cancelled", reply=reply)
-        text = read_pdf(bytes(found["content"]))
+        text = await read_pdf(bytes(found["content"]))
         emit({"type": "status", "text": "첨부 서류를 읽는 중"})
         return flow_update(
             state,
