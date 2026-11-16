@@ -5,6 +5,7 @@ import json
 import logging
 from functools import partial
 from typing import Annotated, Any, Final
+from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
@@ -174,6 +175,15 @@ def _exposure(state: dict, tools_by_name: dict) -> Exposure:
             return Exposure.RUN
         found = Exposure.THREAD
     return found
+
+
+def _grant_covers(url: str, exposure: Exposure, seen: str) -> bool:
+    """A model-built address can carry the user's data to a granted host. Right after untrusted
+    text a grant covers only an address the thread holds; with such text earlier in the thread it
+    also covers one without a query string, so a bot still opens other pages of the site."""
+    if exposure is Exposure.NONE or url in seen:
+        return True
+    return exposure is Exposure.THREAD and not urlsplit(url).query
 
 
 def _seen_text(state: dict) -> str:
@@ -470,10 +480,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
                 "granted": await site_granted(db, thread, args.url),
             }
-            # With untrusted text in view, a grant covers only an address the thread holds: one
-            # the model built can carry the user's data to the granted host.
-            page = {**trusted_page, "granted": trusted_page["granted"] and (
-                exposure is Exposure.NONE or args.url in _seen_text(state))}
+            page = {**trusted_page, "granted": trusted_page["granted"] and _grant_covers(
+                args.url, exposure, _seen_text(state))}
         quick = state.get("quick_start")
         asks = write_needs_approval(mode, meta["tier"], quick, tool.name, **page, exposure=exposure)
         if asks and not write_needs_approval(mode, meta["tier"], quick, tool.name, **trusted_page):
