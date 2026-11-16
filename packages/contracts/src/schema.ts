@@ -2629,7 +2629,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List posts I commented on */
+        /**
+         * List posts I commented on
+         * @description sort works as on /me/posts.
+         */
         get: operations["getMeCommentedPosts"];
         put?: never;
         post?: never;
@@ -12985,6 +12988,7 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
+                sort?: "latest" | "views" | "comments";
             };
             header?: never;
             path?: never;

@@ -418,7 +418,8 @@ export const routes: Route[] = [
   get("core", "/api/v1/me/commented-posts", {
     tag,
     summary: "List posts I commented on",
-    params: [...pageParams],
+    description: "sort works as on /me/posts.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
     responses: { 200: okPage(ref("Post")) },
   }),
   get("core", "/api/v1/posts", {

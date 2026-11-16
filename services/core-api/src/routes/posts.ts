@@ -275,6 +275,7 @@ const mySortOf = (url: URL): string => {
 type OwnedList = { join: string; where: string; at: string };
 const OWN_POSTS: OwnedList = { join: "", where: "p.user_id = $1", at: "p.created_at" };
 const SAVED_POSTS: OwnedList = { join: "JOIN post_saves s ON s.post_id = p.id", where: "s.user_id = $1", at: "s.created_at" };
+const COMMENTED_POSTS: OwnedList = { join: "", where: "p.id IN (SELECT post_id FROM post_comments WHERE user_id = $1)", at: "p.created_at" };
 
 // shortcut: views and comments ignore the cursor and answer the first `limit` rows without a next page, since the
 // (created_at, id) cursor is not their rank. A reader has few posts; upgrade to a rank cursor if lists pass the limit of 100.
@@ -313,29 +314,11 @@ async function unsavePost(ctx: Ctx, idRaw: string): Promise<Response> {
   return noContent(ctx.rid);
 }
 
-async function listCommentedPosts(ctx: Ctx): Promise<Response> {
-  const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
-  let sql = `SELECT ${POST_SQL}
-    WHERE p.id IN (SELECT post_id FROM post_comments WHERE user_id = $1)`;
-  const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
-  }
-  params.push(page.limit + 1);
-  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await queryPosts(ctx, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
-  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
-}
-
 export const dispatchPosts = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/me/posts" && method === "GET") return listOwnedPosts(ctx, OWN_POSTS);
   if (path === "/api/v1/me/saved-posts" && method === "GET") return listOwnedPosts(ctx, SAVED_POSTS);
-  if (path === "/api/v1/me/commented-posts" && method === "GET") return listCommentedPosts(ctx);
+  if (path === "/api/v1/me/commented-posts" && method === "GET") return listOwnedPosts(ctx, COMMENTED_POSTS);
   if (path === "/api/v1/posts" && method === "GET") return listPosts(ctx);
   if (path === "/api/v1/posts" && method === "POST") return createPost(ctx);
   const comments = path.match(/^\/api\/v1\/posts\/([^/]+)\/comments$/);

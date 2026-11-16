@@ -116,3 +116,23 @@ test("deleting a post or a user takes their saves with them", async (t) => {
   const count = await run("SELECT count(*)::int AS n FROM post_saves WHERE post_id = $1::uuid", [p]);
   assert.equal(count.rows[0]!.n, 0);
 });
+
+test("me/commented-posts sorts like me/posts and rejects an unknown sort", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const [me, author] = [await db.person("PRO"), await db.person("PRO")];
+  const [old, fresh, talked, unread] = [
+    await post(author, "old but viewed", { views: 90, comments: 1, minutesAgo: 30 }),
+    await post(author, "new", { views: 5, minutesAgo: 1 }),
+    await post(author, "most talked", { views: 40, comments: 3, minutesAgo: 10 }),
+    await post(author, "not commented by me", { views: 500 }),
+  ];
+  for (const id of [old, fresh, talked]) {
+    await run("INSERT INTO post_comments (id, post_id, user_id, body) VALUES ($1::uuid, $2::uuid, $3::uuid, 'c')", [crypto.randomUUID(), id, me.id]);
+  }
+  assert.ok(unread);
+  assert.deepEqual(await titles(me, "/me/commented-posts"), ["new", "most talked", "old but viewed"]);
+  assert.deepEqual(await titles(me, "/me/commented-posts?sort=views"), ["old but viewed", "most talked", "new"]);
+  assert.deepEqual(await titles(me, "/me/commented-posts?sort=comments"), ["most talked", "old but viewed", "new"]);
+  const bad = await db.call(me, "GET", "/me/commented-posts?sort=popular");
+  assert.equal(bad.status, 422);
+});

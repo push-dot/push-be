@@ -33219,6 +33219,7 @@
     },
     "/api/v1/me/commented-posts": {
       "get": {
+        "description": "sort works as on /me/posts.",
         "operationId": "getMeCommentedPosts",
         "parameters": [
           {
@@ -33239,6 +33240,20 @@
             "name": "cursor",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "views",
+                "comments"
+              ],
               "type": "string"
             }
           }
