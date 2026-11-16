@@ -25,8 +25,9 @@ WORKDIR /app
 # uv.lock pins every package with hashes; --locked fails if it is stale.
 # shortcut: zstandard 0.25.0 ships no cp315 wheels, so it compiles here and the compiler is
 # purged in the same layer; drop gcc once it publishes cp315 wheels.
+# libatomic1 is installed explicitly so the purge keeps it: playwright's bundled node links it.
 COPY pyproject.toml uv.lock ./
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libatomic1 \
     && uv sync --locked --no-dev --extra local --no-install-project \
     && apt-get purge -y --auto-remove gcc libc6-dev && rm -rf /var/lib/apt/lists/* \
     && playwright install --with-deps chromium \
