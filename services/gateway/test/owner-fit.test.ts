@@ -20,3 +20,9 @@ test("conversation approval answers go to core", () => {
   assert.equal(ownerOf("POST", `/api/v1/conversations/${ID}/approvals/${ID}`), "core");
   assert.equal(ownerOf("GET", `/api/v1/conversations/${ID}/approvals/${ID}`), "deny");
 });
+
+test("my profile PDF goes to python while my profile stays in core", () => {
+  assert.equal(ownerOf("GET", "/api/v1/me/profile/pdf"), "python");
+  assert.notEqual(ownerOf("POST", "/api/v1/me/profile/pdf"), "python");
+  assert.equal(ownerOf("GET", "/api/v1/me/profile"), "core");
+});
