@@ -32,12 +32,12 @@ function appendTextSearch(sql: string, params: unknown[], q: string, columns: st
   const jamo = params.length - 2;
   const hangul = params.length - 1;
   const hangulJamo = params.length;
-  const parts = columns.map((column) => `${column} ILIKE '%' || $${raw} || '%'`).join(" OR ");
-  const hangulParts = columns.map((column) => `${column} ILIKE '%' || $${hangul} || '%'`).join(" OR ");
+  const parts = columns.map((column) => `${column} ILIKE '%' || $${raw} || '%' ESCAPE '\\'`).join(" OR ");
+  const hangulParts = columns.map((column) => `${column} ILIKE '%' || $${hangul} || '%' ESCAPE '\\'`).join(" OR ");
   sql += ` AND ((${parts})
-    OR ($${cho} <> '' AND search_choseong LIKE '%' || $${cho} || '%')
-    OR ($${jamo} <> '' AND search_jamo LIKE $${jamo} || '%')
-    OR ($${hangul} <> '' AND ((${hangulParts}) OR search_jamo LIKE $${hangulJamo} || '%')))`;
+    OR ($${cho} <> '' AND search_choseong LIKE '%' || $${cho} || '%' ESCAPE '\\')
+    OR ($${jamo} <> '' AND search_jamo LIKE $${jamo} || '%' ESCAPE '\\')
+    OR ($${hangul} <> '' AND ((${hangulParts}) OR search_jamo LIKE $${hangulJamo} || '%' ESCAPE '\\')))`;
   return sql;
 }
 
@@ -131,10 +131,10 @@ export async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
   const forms = queryForms(q);
   const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo, ctx.user.id];
   let sql = `SELECT ${postSql("$6")} WHERE (
-      p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'
-      OR ($2 <> '' AND p.search_choseong LIKE '%' || $2 || '%')
-      OR ($3 <> '' AND p.search_jamo LIKE $3 || '%')
-      OR ($4 <> '' AND (p.title ILIKE '%' || $4 || '%' OR p.body ILIKE '%' || $4 || '%' OR p.search_jamo LIKE $5 || '%'))
+      p.title ILIKE '%' || $1 || '%' ESCAPE '\\' OR p.body ILIKE '%' || $1 || '%' ESCAPE '\\'
+      OR ($2 <> '' AND p.search_choseong LIKE '%' || $2 || '%' ESCAPE '\\')
+      OR ($3 <> '' AND p.search_jamo LIKE $3 || '%' ESCAPE '\\')
+      OR ($4 <> '' AND (p.title ILIKE '%' || $4 || '%' ESCAPE '\\' OR p.body ILIKE '%' || $4 || '%' ESCAPE '\\' OR p.search_jamo LIKE $5 || '%' ESCAPE '\\'))
     )`;
   const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (page.cursor) {

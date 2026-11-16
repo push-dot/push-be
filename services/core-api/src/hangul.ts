@@ -28,6 +28,12 @@ export interface QueryForms {
   hangulJamo: string;
 }
 
+/** Makes `s` literal for LIKE/ILIKE ... ESCAPE '\': the user's `%` and `_` stay characters, not wildcards. */
+export const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => "\\" + c);
+
+export const likeContains = (s: string): string => "%" + likeEscape(s) + "%";
+
+/** Every field is escaped for LIKE/ILIKE ... ESCAPE '\'; an empty field stays empty. */
 export function queryForms(q: string): QueryForms {
   const raw = q.normalize("NFC").trim();
   const ascii = /^[a-zA-Z]+$/.test(raw);
@@ -35,10 +41,10 @@ export function queryForms(q: string): QueryForms {
   const basis = hangul || raw;
   const fields = searchFields(basis);
   return {
-    raw,
-    choseong: fields.choseong,
-    jamo: ascii ? "" : fields.jamo,
-    hangul,
-    hangulJamo: hangul ? searchFields(hangul).jamo : "",
+    raw: likeEscape(raw),
+    choseong: likeEscape(fields.choseong),
+    jamo: ascii ? "" : likeEscape(fields.jamo),
+    hangul: likeEscape(hangul),
+    hangulJamo: hangul ? likeEscape(searchFields(hangul).jamo) : "",
   };
 }

@@ -199,10 +199,10 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     const hangul = params.length - 1;
     const hangulJamo = params.length;
     sql += ` AND (
-      u.display_name ILIKE '%' || $${raw} || '%' OR p.headline ILIKE '%' || $${raw} || '%' OR p.search_text ILIKE '%' || $${raw} || '%'
-      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%')
-      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%')
-      OR ($${hangul} <> '' AND (u.display_name ILIKE '%' || $${hangul} || '%' OR p.search_jamo LIKE $${hangulJamo} || '%'))
+      u.display_name ILIKE '%' || $${raw} || '%' ESCAPE '\\' OR p.headline ILIKE '%' || $${raw} || '%' ESCAPE '\\' OR p.search_text ILIKE '%' || $${raw} || '%' ESCAPE '\\'
+      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%' ESCAPE '\\')
+      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%' ESCAPE '\\')
+      OR ($${hangul} <> '' AND (u.display_name ILIKE '%' || $${hangul} || '%' ESCAPE '\\' OR p.search_jamo LIKE $${hangulJamo} || '%' ESCAPE '\\'))
     )`;
     rank = relevance("u.display_name", "p.headline", "$" + raw, "$" + cho, "$" + hangul) + ", ";
   }

@@ -188,7 +188,7 @@ test("jobs: list filters by archived and query and paginates with a cursor", asy
   const first = await w.call("GET", "/api/v1/jobs?limit=2&archived=true&query=acme");
   assert.equal(first.status, 200);
   const sql = w.seen.at(-1)!;
-  assert.match(sql.sql, /WHERE user_id = \$1 AND archived = \$2 AND \(company ILIKE \$3 OR title ILIKE \$4\) ORDER BY created_at DESC, id DESC LIMIT \$5$/);
+  assert.match(sql.sql, /WHERE user_id = \$1 AND archived = \$2 AND \(company ILIKE \$3 ESCAPE '\\' OR title ILIKE \$4 ESCAPE '\\'\) ORDER BY created_at DESC, id DESC LIMIT \$5$/);
   assert.deepEqual(sql.params, [ALICE, true, "%acme%", "%acme%", 3]);
   assert.equal(first.body.data.length, 2);
   assert.equal(first.body.page?.hasMore, true);

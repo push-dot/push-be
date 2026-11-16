@@ -244,12 +244,13 @@ export const stampSearchCursor = (cursor: string | null, sort: SearchSort): stri
   return encodeCursor(decoded.createdAt, decoded.id, sort);
 };
 
+// The pattern parameters come from queryForms, already escaped for LIKE; an unwildcarded ILIKE is the exact, case-insensitive match.
 export function relevance(title: string, extra: string, raw = "$2", cho = "$3", hangul = "$5"): string {
   return `CASE
-    WHEN lower(${title}) = lower(${raw}) OR lower(${extra}) = lower(${raw}) THEN 0
-    WHEN ${title} ILIKE ${raw} || '%' OR ${extra} ILIKE ${raw} || '%' THEN 1
-    WHEN search_choseong LIKE '%' || ${cho} || '%' THEN 2
-    WHEN ${hangul} <> '' AND (${title} ILIKE '%' || ${hangul} || '%' OR ${extra} ILIKE '%' || ${hangul} || '%') THEN 3
+    WHEN ${title} ILIKE ${raw} ESCAPE '\\' OR ${extra} ILIKE ${raw} ESCAPE '\\' THEN 0
+    WHEN ${title} ILIKE ${raw} || '%' ESCAPE '\\' OR ${extra} ILIKE ${raw} || '%' ESCAPE '\\' THEN 1
+    WHEN search_choseong LIKE '%' || ${cho} || '%' ESCAPE '\\' THEN 2
+    WHEN ${hangul} <> '' AND (${title} ILIKE '%' || ${hangul} || '%' ESCAPE '\\' OR ${extra} ILIKE '%' || ${hangul} || '%' ESCAPE '\\') THEN 3
     ELSE 4 END`;
 }
 
