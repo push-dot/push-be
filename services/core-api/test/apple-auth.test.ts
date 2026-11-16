@@ -65,6 +65,7 @@ const createDb = () => {
   const users: Row[] = [];
   const states: Row[] = [];
   const codes: Row[] = [];
+  const claimed = new Set<unknown>();
   const tokenBodies: string[] = [];
   let idToken = "";
 
@@ -77,6 +78,11 @@ const createDb = () => {
   const query: Deps["query"] = async (sql, params = []) => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO notification_dedupes")) {
+      if (claimed.has(params[0])) return { rows: [], rowCount: 0 };
+      claimed.add(params[0]);
+      return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
+    }
     if (sql.startsWith("INSERT INTO oauth_states")) {
       states.push({
         state: params[0],
@@ -397,4 +403,19 @@ test("apple callback failures stay closed", async () => {
   assert.equal(failedKeys.status, 502);
   assert.equal((await failedKeys.json() as Err).error.message, "apple jwks fetch failed");
   assert.equal(db.codes.length, 0);
+});
+
+test("an identity token logs in once", async () => {
+  prepare();
+  const db = createDb();
+  const token = signJwt(claims());
+  const login = () => handle(new Request("https://core.example/api/v1/auth/apple/native", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ identityToken: token, nonce: NONCE }),
+  }), env(), deps(db));
+  assert.equal((await login()).status, 200);
+  const replay = await login();
+  assert.equal(replay.status, 401);
+  assert.equal((await replay.json() as { error: { code: string } }).error.code, "UNAUTHENTICATED");
 });

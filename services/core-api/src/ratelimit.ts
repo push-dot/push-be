@@ -105,15 +105,18 @@ export async function allow(
   limit: number,
   nowMs: number,
   chunk = 1,
+  windowMinutes = 1,
 ): Promise<boolean> {
-  const window = Math.floor(nowMs / 1000 / 60);
+  // The in-isolate caches roll over every minute whatever the window; shortcut: a longer window is only exact while Neon answers.
+  const minute = Math.floor(nowMs / 1000 / 60);
+  const window = Math.floor(minute / windowMinutes);
   const bucket = `${kind}:${key || "unknown"}:${window}`;
-  syncRemoteWindow(window);
-  if (chunk > 1) return lease(q, bucket, limit, window, chunk);
+  syncRemoteWindow(minute);
+  if (chunk > 1) return lease(q, bucket, limit, minute, chunk);
   const known = remoteHits.get(bucket);
   if (known !== undefined && known >= limit) return false;
   try {
-    const result = await query(q, CONSUME_SQL, [bucket, window * 60 + 120, limit]);
+    const result = await query(q, CONSUME_SQL, [bucket, (window + 2) * windowMinutes * 60, limit]);
     if (result.rows.length === 0) {
       rememberHits(bucket, null, limit);
       return false;
@@ -122,6 +125,6 @@ export async function allow(
     rememberHits(bucket, hits, limit);
     return hits <= limit;
   } catch {
-    return memoryAllow(bucket, limit, window);
+    return memoryAllow(bucket, limit, minute);
   }
 }

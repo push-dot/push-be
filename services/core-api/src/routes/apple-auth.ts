@@ -230,6 +230,11 @@ export const appleNative = async (ctx: Ctx): Promise<Response> => {
   const identityToken = requireText(body, "identityToken");
   const nonce = requireText(body, "nonce");
   const identity = await verifyIdentity(ctx, identityToken, bundleId, nonce);
+  // The client picks the nonce, so a captured request replays until the token expires; one token signs in once.
+  const fresh = await one(ctx.deps.query,
+    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key",
+    ["apple-native:" + await sha256Hex(identityToken), ctx.now.toISOString()]);
+  if (!fresh) throw new HttpError(401, "UNAUTHENTICATED", "identity token already used");
   return completePersonalSocial(ctx, {
     provider: "apple",
     provider_subject: identity.sub,
