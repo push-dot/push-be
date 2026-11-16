@@ -439,11 +439,7 @@ async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
     if args.document_id is not None:
         conditions["documentId"] = str(args.document_id)
     result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
-    out = {"items": result.get("items") or [], "text": result.get("text") or ""}
-    if result.get("notice"):
-        out["notice"] = result["notice"]
-        out["code"] = result.get("code")
-    return out
+    return {"items": result.get("items") or [], "text": result.get("text") or ""}
 
 
 async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
