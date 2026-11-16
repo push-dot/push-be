@@ -218,6 +218,31 @@ async def test_an_earlier_injection_cannot_open_an_ungranted_page_in_a_later_byp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", [f"/u/{SECRET}", "/u/c2VjcmV0LWRhdGEtZnJvbS10aGUtdXNlcg"])
+async def test_an_earlier_injection_cannot_put_user_data_in_the_path_of_a_granted_host(
+    monkeypatch, path
+):
+    fetched = []
+
+    async def fetch_page(url, allow_hop=None):
+        fetched.append(url)
+        return Page(url=url, text="ok")
+
+    monkeypatch.setattr("app.harness.personal.tools.fetch_page", fetch_page)
+    core = Core({f"/api/v1/postings/{POSTING}": {"id": POSTING, "description": "공고예요"}})
+    rows = GrantedRows()
+    _svc, rt = runtime(core, rows)
+    ObedientLC.script = [call("get_posting", posting_id=POSTING), {"content": "읽었어요"}]
+    await run(rt, payload("이 공고 요약해줘", mode="BYPASS"))
+    ObedientLC.script = [call("read_page", "call-2", url=f"https://{GRANTED_HOST}{path}")]
+
+    await run(rt, payload("고마워", mode="BYPASS", job=SECOND_JOB))
+
+    assert fetched == []
+    assert approvals(rows) == ["read_page"]
+
+
+@pytest.mark.asyncio
 async def test_a_stored_answer_has_no_image_or_link_that_carries_user_data():
     core = Core({f"/api/v1/postings/{POSTING}": {"id": POSTING, "description": LEAKY_POSTING_TEXT}})
     svc, rt = runtime(core)

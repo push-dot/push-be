@@ -30,15 +30,19 @@ def as_data(text: str, source: str, limit: int | None = DATA_MAX) -> str:
     return f'<data source="{_SOURCE.sub("", source)}">\n{body}\n</data>'
 
 
-_IMAGE = re.compile(r"!\[([^\]]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
+_IMAGE = re.compile(
+    r"!\[((?:[^\[\]]|\[[^\[\]]{0,500}\]){0,500})\]"
+    r"\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
 _LINK = re.compile(r"(?<!!)\[([^\]]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
 _AUTOLINK = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096})>", re.IGNORECASE)
 _ANCHOR = re.compile(
-    r"<a\b[^>]{0,4096}?href\s*=\s*[\"']?([^\"'\s>]{1,4096})[^>]{0,4096}>(.{0,2000}?)</a\s*>",
+    r"<a\b[^>]{0,4096}?(?<![\w-])href\s*=\s*[\"']?([^\"'\s>]{1,4096})"
+    r"[^>]{0,4096}>(.{0,2000}?)</a\s*>",
     re.IGNORECASE | re.DOTALL)
 # Tags that fetch on render.
 _HTML_FETCH = re.compile(
-    r"<(?:img|image|source|video|audio|iframe|embed|object)\b[^>]{0,4096}>", re.IGNORECASE)
+    r"<(?:img|image|source|video|audio|iframe|embed|object|link)\b[^>]{0,4096}>", re.IGNORECASE)
+_CSS_URL = re.compile(r"url\(\s*[\"']?([^)\"'\s]{1,4096})[\"']?\s*\)", re.IGNORECASE)
 _REF_DEF = re.compile(
     r"^[ \t]{0,3}\[[^\]\n]{1,500}\]:[ \t]*<?(\S{1,4096}?)>?(?:[ \t].*)?$", re.MULTILINE)
 
@@ -59,6 +63,7 @@ def strip_exfil(text: str, context: str) -> str:
     out = _LINK.sub(link, out)
     out = _ANCHOR.sub(lambda m: m.group(0) if m.group(1) in context else m.group(2), out)
     out = _AUTOLINK.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
+    out = _CSS_URL.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _REF_DEF.sub(ref, out)
     if out != (text or ""):
         _log.warning("answer lost an image or an unseen link before it was stored")

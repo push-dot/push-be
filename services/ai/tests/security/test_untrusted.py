@@ -60,6 +60,22 @@ def test_other_fetching_or_linking_forms_lose_unseen_addresses():
     assert "<https://jobs.example/p/1>" in out
 
 
+def test_nested_brackets_data_href_link_tag_and_css_url_lose_unseen_addresses():
+    answer = (
+        "![a [b] c](https://evil.example/p.png) "
+        '<a data-href="https://jobs.example/p/1" href="https://evil.example/x">t</a> '
+        '<link href="https://evil.example/s.css"> '
+        '<p style="background:url(https://evil.example/bg.png)">x</p> '
+        "<https://jobs.example/p/1>"
+    )
+
+    out = strip_exfil(answer, "https://jobs.example/p/1")
+
+    assert "evil.example" not in out
+    assert "a [b] c" in out
+    assert "<https://jobs.example/p/1>" in out
+
+
 def test_an_answer_without_markup_is_unchanged():
     text = "공고를 저장했어요. https://jobs.example/p/1 에서 볼 수 있어요."
 

@@ -269,6 +269,8 @@ async def create_tool_approval(
         page = await site_page(db, conversation_id, payload["url"])
         title, summary = (
             form.format(owner=page.owner or host, host=host) for form in _ASKS[page.kind])
+        # The host alone hides what rides in the path and query, so the card shows the whole address.
+        summary = f"{summary}\n{payload['url']}"
         in_bot = await db.q().fetchval(
             "SELECT bot_id IS NOT NULL FROM conversations WHERE id = $1",
             UUID(str(conversation_id)))
