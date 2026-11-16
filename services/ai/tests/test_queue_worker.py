@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fakeredis.aioredis import FakeRedis
@@ -457,3 +457,65 @@ async def test_malformed_message_is_dead_lettered_not_fatal():
     assert [m.job_id for m in msgs] == [FIRST]
     assert await redis.xlen("q:dead") == 1
     assert (await redis.xpending("q:chat", "ai"))["pending"] == 1
+
+
+async def _backlog(queue, db, name, count):
+    ids = [uuid4() for _ in range(count)]
+    for id_ in ids:
+        db.jobs[id_] = queued(id_, name)
+        await queue.add(name, id_)
+    return ids
+
+
+async def _picks(box, count):
+    return [(await box.next_messages())[0].queue for _ in range(count)]
+
+
+@pytest.mark.asyncio
+async def test_document_queue_is_read_every_fourth_pick_while_chat_keeps_arriving():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    db = MemoryJobs()
+    await _backlog(queue, db, "q:document", 3)
+    box = worker(redis, db, {"chat": handler}, block_ms=0, fair_queue="q:document", fair_every=3)
+    order = []
+    for _ in range(12):
+        await _backlog(queue, db, "q:chat", 1)
+        order.extend(await _picks(box, 1))
+    assert order == (["q:chat"] * 3 + ["q:document"]) * 3
+
+
+@pytest.mark.asyncio
+async def test_priority_chat_keeps_three_of_four_picks_and_beats_plain_chat():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    db = MemoryJobs()
+    await _backlog(queue, db, "q:chat:priority", 12)
+    await _backlog(queue, db, "q:chat", 12)
+    await _backlog(queue, db, "q:document", 4)
+    box = worker(redis, db, {"chat": handler}, block_ms=0, fair_queue="q:document", fair_every=3)
+    order = await _picks(box, 16)
+    assert order == (["q:chat:priority"] * 3 + ["q:document"]) * 4
+    assert "q:chat" not in order
+
+
+@pytest.mark.asyncio
+async def test_empty_document_queue_costs_chat_nothing():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    db = MemoryJobs()
+    await _backlog(queue, db, "q:chat:priority", 6)
+    await _backlog(queue, db, "q:chat", 6)
+    box = worker(redis, db, {"chat": handler}, block_ms=0, fair_queue="q:document", fair_every=3)
+    assert await _picks(box, 12) == ["q:chat:priority"] * 6 + ["q:chat"] * 6
+
+
+@pytest.mark.asyncio
+async def test_without_a_fair_queue_reads_stay_strictly_ordered():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    db = MemoryJobs()
+    await _backlog(queue, db, "q:chat", 8)
+    await _backlog(queue, db, "q:document", 2)
+    box = worker(redis, db, {"chat": handler}, block_ms=0)
+    assert await _picks(box, 10) == ["q:chat"] * 8 + ["q:document"] * 2
