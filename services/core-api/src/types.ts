@@ -1,6 +1,7 @@
 import type { StoreReceipts } from "./billing/stores.ts";
 import type { Query, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
+import type { ReadCache } from "./read-cache.ts";
 import type { SmsSender } from "./sms/sender.ts";
 
 export interface CoreEnv {
@@ -77,6 +78,8 @@ export interface Deps {
   mailer?: Mailer;
   sms?: SmsSender;
   stores?: StoreReceipts;
+  /** Isolate-local cache for caller-independent reads. Absent in tests, so they always hit the fake database. */
+  cache?: ReadCache;
 }
 
 export interface UserRow {

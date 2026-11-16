@@ -1,4 +1,4 @@
-import { isMissingRelation, isUndefinedColumn, isUnique, one, query } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, isUnique, one, query, type QueryResult } from "../db.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
@@ -68,6 +68,14 @@ function plainList(url: URL, name: string, maxLen: number, field: string): strin
   }
   return values;
 }
+
+// Counts, facets and skill tallies read the same rows for every caller; $1 is only a placeholder, so the key leaves it out.
+// A free-text search is as varied as its text and is never cached.
+const sharedRows = (ctx: Ctx, sql: string, params: unknown[]): Promise<QueryResult> => {
+  const run = (): Promise<QueryResult> => query(ctx.deps.query, sql, params);
+  if (!ctx.deps.cache || ctx.url.searchParams.get("q")) return run();
+  return ctx.deps.cache.get(`${sql}\u0000${JSON.stringify(params.slice(1))}`, ctx.now.getTime(), run);
+};
 
 function appendPostingFilters(
   sql: string,
@@ -184,7 +192,7 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     where = appendPostingFilters(where, params, ctx.url, true);
     where = deadlineWindow(ctx, params, where);
     // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
-    const counted = one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
+    const counted = sharedRows(ctx, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
     // shortcut: deadline and popular ignore the cursor; (created_at, id) is not their rank
@@ -196,11 +204,11 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     const order = sort === "deadline"
       ? "p.deadline ASC NULLS LAST, p.created_at DESC, p.id DESC"
       : sort === "popular"
-        ? "COALESCE((to_jsonb(p) ->> 'view_count')::int, 0) DESC, p.created_at DESC, p.id DESC"
+        ? "p.view_count DESC, p.created_at DESC, p.id DESC"
         : "p.created_at DESC, p.id DESC";
     sql += ` ORDER BY ${order} LIMIT $${params.length}`;
     const [count, rows] = await Promise.all([counted, query(ctx.deps.query, sql, params)]);
-    return { total: Number(count?.total ?? 0), rows, page };
+    return { total: Number(count.rows[0]?.total ?? 0), rows, page };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
@@ -230,7 +238,7 @@ const careerFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> =
     const selects = CAREER_BUCKETS.map((bucket) => `count(*) FILTER (WHERE ${bucket.where})::int AS ${bucket.alias}`).join(", ");
     let sql = `SELECT ${selects}` + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { career: true });
-    return one(ctx.deps.query, sql, params);
+    return (await sharedRows(ctx, sql, params)).rows[0] ?? null;
   });
   return CAREER_BUCKETS.map((bucket) => ({ id: bucket.id, count: Number(row?.[bucket.alias] ?? 0) }));
 };
@@ -241,7 +249,7 @@ const categoryFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
     let sql = "SELECT p.job_category AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { category: true });
     sql += " GROUP BY p.job_category";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
   return [...JOB_CATEGORIES].map((id) => ({ id, count: counts.get(id) ?? 0 }));
@@ -253,7 +261,7 @@ const employmentFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[
     let sql = "SELECT p.employment_type AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { employment: true });
     sql += " GROUP BY p.employment_type";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
   return [...EMPLOYMENT].map((id) => ({ id, count: counts.get(id) ?? 0 }));
@@ -265,7 +273,7 @@ const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
     let sql = "SELECT p.location AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, false);
     sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   return rows.rows
     .filter((item) => Number(item.count ?? 0) > 0)
@@ -278,7 +286,7 @@ export const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: stri
     let sql = `SELECT sk AS id, count(*)::int AS count FROM job_postings p, jsonb_array_elements_text(COALESCE(p.skills, '[]'::jsonb)) sk WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
     if (filtered) sql = appendPostingFilters(sql, params, ctx.url, true, { skills: true });
     sql += " GROUP BY sk ORDER BY count DESC, sk ASC";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   return rows.rows
     .filter((row) => Number(row.count ?? 0) > 0)
@@ -418,6 +426,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
       if (!isUndefinedColumn(err) || at === tiers.length - 1) throw err;
     }
   }
+  ctx.deps.cache?.clear();
   await enqueueIngest(ctx, { postingId: id });
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
@@ -705,6 +714,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     if (!again) throw notFound();
     throw revisionConflict(Number(again.revision));
   }
+  ctx.deps.cache?.clear();
   return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true, true), ctx.rid);
 };
 
@@ -730,6 +740,7 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     if (!again) throw notFound();
     throw revisionConflict(Number(again.revision));
   }
+  ctx.deps.cache?.clear();
   return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true, true), ctx.rid);
 };
 
