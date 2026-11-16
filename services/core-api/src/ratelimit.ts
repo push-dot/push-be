@@ -37,11 +37,9 @@ const remoteHits = new Map<string, number>();
 let remoteWindow = -1;
 
 const leases = new Map<string, number>();
-const acquiring = new Map<string, Promise<boolean>>();
 
 export function resetLimits(): void {
   leases.clear();
-  acquiring.clear();
   memory.clear();
   memoryWindow = -1;
   remoteHits.clear();
@@ -82,20 +80,19 @@ async function lease(q: Query, bucket: string, limit: number, window: number, ch
       return true;
     }
     if ((remoteHits.get(bucket) ?? 0) >= limit) return false;
-    const pending = acquiring.get(bucket);
-    if (pending) {
-      await pending;
-      continue;
-    }
-    const run = (async () => {
+    // Only resolved counts are stored: a promise shared between requests would break Workers' per-request I/O.
+    try {
       const result = await query(q, LEASE_SQL, [bucket, window * 60 + 120, limit, size]);
-      if (result.rows.length === 0) return void rememberHits(bucket, null, limit);
+      if (result.rows.length === 0) {
+        rememberHits(bucket, null, limit);
+        continue;
+      }
       const granted = Math.min(size, limit - (Number(result.rows[0].hits) - size));
       if (granted < size) rememberHits(bucket, null, limit);
-      if (granted > 0) leases.set(bucket, granted);
-    })().then(() => true, () => false).finally(() => acquiring.delete(bucket));
-    acquiring.set(bucket, run);
-    if (!(await run)) return memoryAllow(bucket, limit, window);
+      if (granted > 0) leases.set(bucket, (leases.get(bucket) ?? 0) + granted);
+    } catch {
+      return memoryAllow(bucket, limit, window);
+    }
   }
 }
 
