@@ -57,6 +57,23 @@ const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<n
   }
 };
 
+// A usage row belongs to the Bot whose thread its job ran in. Usage outside a Bot thread (fit, documents) has no Bot and is left out.
+// Bot chats always run as queue jobs, so job_id is the link; messages has no operation_id index to follow the older one.
+const USAGE_BY_BOT = `SELECT b.id, b.display_name, SUM(u.cost_micro_credits)::float8 AS used
+  FROM ai_usage u
+  JOIN ai_jobs j ON j.id = u.job_id
+  JOIN conversations c ON c.id = j.conversation_id
+  JOIN bots b ON b.id = c.bot_id AND b.user_id = $3 AND b.deleted_at IS NULL
+  WHERE u.user_id = $3 AND u.status = 'SETTLED' AND u.created_at >= $1 AND u.created_at < $2
+  GROUP BY b.id, b.display_name
+  HAVING SUM(u.cost_micro_credits) > 0
+  ORDER BY used DESC, b.display_name, b.id`;
+
+const usageByBot = async (ctx: Ctx, monthStart: string, monthEnd: string): Promise<{ id: string; name: string; usedMicroCredits: number }[]> => {
+  const rows = await query(ctx.deps.query, USAGE_BY_BOT, [monthStart, monthEnd, ctx.user.id]);
+  return rows.rows.map((row) => ({ id: String(row.id), name: String(row.display_name), usedMicroCredits: Number(row.used) }));
+};
+
 const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
   const plan = value == null ? "" : String(value);
   if (plan === "BASIC" || plan === "PRO" || plan === "ULTRA") return plan;
@@ -197,11 +214,12 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
   const plan = ctx.user.plan || null;
   await grantMonthly(ctx, "PERSONAL", plan, ctx.user.id);
   const { monthStart, monthEnd } = utcMonth(ctx.now);
-  const [spentMicroCredits, available, reserved, iap] = await Promise.all([
+  const [spentMicroCredits, available, reserved, iap, byBot] = await Promise.all([
     spentInMonth(ctx, PERSONAL_SPEND, [monthStart, monthEnd, ctx.user.id]),
     availableMicro(ctx.deps.query, ctx.user.id),
     reservedMicro(ctx.deps.query, ctx.user.id),
     one(ctx.deps.query, "SELECT platform FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1", [ctx.user.id]),
+    usageByBot(ctx, monthStart, monthEnd),
   ]);
   const platform = iap?.platform == null ? "" : String(iap.platform);
   const source = platform === "APP_STORE" || platform === "GOOGLE_PLAY"
@@ -215,6 +233,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     reservedMicroCredits: Number(reserved),
     monthlyMicroCredits: monthlyMicro("PERSONAL", plan),
     spentMicroCredits,
+    usageByBot: byBot,
     audience: "PERSONAL",
     source,
     paymentsEnabled: paymentsEnabled(ctx),
