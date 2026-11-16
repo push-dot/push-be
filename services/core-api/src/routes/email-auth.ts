@@ -110,7 +110,7 @@ const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown
   });
 };
 
-// Each attempt is its own row (0065), so a later signup for the same address cannot change an earlier link's password.
+// Each attempt is its own row (0066), so a later signup for the same address cannot change an earlier link's password.
 const INSERT_SIGNUP = "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)";
 
 const signup = async (ctx: Ctx): Promise<Response> => {
@@ -131,7 +131,7 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const id = crypto.randomUUID();
   const values = [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now];
   await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (err: unknown) => {
-    // shortcut: a database without 0065 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0065.
+    // shortcut: a database without 0066 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0066.
     if (!isUnique(err)) throw err;
     await query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]);
     await query(ctx.deps.query, INSERT_SIGNUP, values);
