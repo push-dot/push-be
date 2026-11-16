@@ -164,7 +164,11 @@ export const getSourceContent = async (ctx: Ctx, idRaw: string): Promise<Respons
   const body = fromBase64(String(row.content || "").replace(/\s+/g, ""));
   return new Response(body as unknown as BodyInit, {
     status: 200,
-    headers: { "content-type": mime.startsWith("text/") ? mime + "; charset=utf-8" : mime, "x-request-id": ctx.rid },
+    headers: {
+      "content-type": mime.startsWith("text/") ? mime + "; charset=utf-8" : mime,
+      "x-content-type-options": "nosniff",
+      "x-request-id": ctx.rid,
+    },
   });
 };
 

@@ -545,6 +545,8 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
     const payload = verified.payload;
     const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
       ? payload.data as Record<string, unknown> : {};
+    if (!env.APPLE_BUNDLE_ID) throw notConfigured("app store is not configured");
+    if (data.bundleId !== env.APPLE_BUNDLE_ID) throw invalidSignature();
     const signed = typeof data.signedTransactionInfo === "string"
       ? await verifyJws(data.signedTransactionInfo, verified.leaf, invalidSignature)
       : payload;

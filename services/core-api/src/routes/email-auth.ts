@@ -14,14 +14,15 @@ const RESEND_AFTER_MS = 60 * 1000;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 const LOGIN_PER_MINUTE = 10;
+const LOGIN_PER_HOUR = 30;
 const MAIL_PER_MINUTE = 3;
 
 let decoy: string | null = null;
 const decoyHash = async (): Promise<string> => (decoy ??= await hashPassword(crypto.randomUUID()));
 
-const limitEmail = async (ctx: Ctx, kind: "login" | "mail", email: string, limit: number): Promise<void> => {
-  if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime()))) {
-    throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 60 });
+const limitEmail = async (ctx: Ctx, kind: "login" | "login-h" | "mail", email: string, limit: number, windowMinutes = 1): Promise<void> => {
+  if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime(), 1, windowMinutes))) {
+    throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: windowMinutes * 60 });
   }
 };
 
@@ -202,6 +203,7 @@ const login = async (ctx: Ctx): Promise<Response> => {
   const email = requireEmail(body.email);
   const password = typeof body.password === "string" ? body.password : "";
   await limitEmail(ctx, "login", email, LOGIN_PER_MINUTE);
+  await limitEmail(ctx, "login-h", email, LOGIN_PER_HOUR, 60);
   const user = await one(ctx.deps.query,
     "SELECT id, password_hash, email_verified_at, is_employer FROM users WHERE lower(email) = lower($1)",
     [email]);

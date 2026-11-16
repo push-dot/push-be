@@ -568,7 +568,7 @@ test("github employer start is rejected and google stores the account type", asy
   resetLimits();
   const local = await handle(new Request(
     "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent("http://127.0.0.1:5174/auth/callback"),
-  ), env(), deps(db));
+  ), env({ APP_ENV: "development" }), deps(db));
   assert.equal(local.status, 200);
   const personal = db.sqls.filter((call) => call.sql.startsWith("INSERT INTO oauth_states")).at(-1);
   assert.equal(personal?.params[7], "PERSONAL");
@@ -584,6 +584,22 @@ test("github employer start is rejected and google stores the account type", asy
   ), env({ OAUTH_REDIRECT_ORIGINS: "https://web.example" }), deps(db));
   assert.equal(evil.status, 400);
   assert.equal((await evil.json() as Err).error.details?.field, "redirectUri");
+});
+
+test("production refuses a localhost redirectUri", async () => {
+  const start = (redirect: string, appEnv: string) => handle(new Request(
+    "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent(redirect),
+  ), env({ APP_ENV: appEnv }), deps(createDb()));
+  for (const redirect of ["http://localhost:5173/auth/callback", "http://127.0.0.1:4000/auth/callback"]) {
+    resetLimits();
+    const prod = await start(redirect, "production");
+    assert.equal(prod.status, 400, redirect);
+    assert.equal((await prod.json() as Err).error.details?.field, "redirectUri");
+    resetLimits();
+    assert.equal((await start(redirect, "development")).status, 200, redirect);
+  }
+  resetLimits();
+  assert.equal((await start("push://auth/callback", "production")).status, 200);
 });
 
 const googleFetch = (verified: boolean) => async (input: RequestInfo | URL) => {
@@ -905,6 +921,27 @@ test("a Resend error status throws and the log has the status without the key", 
   }
 });
 
+test("an unconfigured mailer logs the recipient and the link only in development", async () => {
+  const sent = { to: EMAIL, subject: "이메일 인증", text: "http://localhost:5174/auth/verify?token=live", html: "<p>x</p>" };
+  const logged = async (appEnv: string) => {
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+    try {
+      await createMailer({ APP_ENV: appEnv }).send(sent);
+    } finally {
+      console.log = original;
+    }
+    return logs.join("\n");
+  };
+  const production = await logged("production");
+  assert.equal(production.includes(EMAIL), false);
+  assert.equal(production.includes("token=live"), false);
+  const development = await logged("development");
+  assert.ok(development.includes(EMAIL));
+  assert.ok(development.includes("token=live"));
+});
+
 test("RESEND_API_KEY skips the EMAIL binding", async () => {
   resetLimits();
   const sent: { to: string }[] = [];
@@ -997,6 +1034,33 @@ test("login is limited per email across addresses", async () => {
   }
   assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
   assert.equal(statuses[10], 429);
+});
+
+test("a password is guessed at most 30 times an hour", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  resetLimits();
+  let now = NOW.getTime();
+  const query = counted(db);
+  const attempt = (password: string, ip: number) => handle(
+    post("/api/v1/auth/email/login", { email: EMAIL, password }, { "cf-connecting-ip": `10.0.0.${ip}` }),
+    env(),
+    { query, now: () => new Date(now), mailer },
+  );
+  for (let i = 0; i < 30; i++) {
+    if (i > 0 && i % 10 === 0) now += 60 * 1000;
+    assert.equal((await attempt("wrong-password-" + i, i)).status, 401, "guess " + i);
+  }
+  now += 60 * 1000;
+  const locked = await attempt(PASSWORD, 31);
+  assert.equal(locked.status, 429);
+  assert.equal((await locked.json() as Err).error.details?.retryAfterSec, 3600);
+  now += 61 * 60 * 1000;
+  assert.equal((await attempt(PASSWORD, 32)).status, 200);
 });
 
 test("signup and reset mails are limited per email", async () => {
