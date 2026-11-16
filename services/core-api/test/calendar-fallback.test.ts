@@ -1,4 +1,3 @@
-// A core-api that deploys before migration 0063 (calendar_events.posting_id) still bookmarks, applies and bins.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

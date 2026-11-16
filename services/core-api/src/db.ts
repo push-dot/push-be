@@ -24,7 +24,6 @@ export const namesUndefinedColumn = (err: unknown, column: string): boolean => {
   return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
 };
 
-/** Runs with the calendar part first; a database without calendar_events.posting_id (migration 0063) reruns without it. */
 export async function withCalendar<T>(run: (calendar: boolean) => Promise<T>): Promise<T> {
   try {
     return await run(true);

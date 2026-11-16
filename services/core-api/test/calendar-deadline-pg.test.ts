@@ -1,5 +1,3 @@
-// A posting's deadline enters the calendar when the user bookmarks or applies (migration 0063), on a migrated
-// Postgres (BILLING_PG_URL): one event per user and posting, committed with the bookmark or application.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
@@ -14,7 +12,6 @@ after(async () => { await db?.close(); });
 
 const sql = async (text: string, params: unknown[] = []) => (await db!.pg.query(text, params)).rows;
 
-/** A posting whose deadline is `days` from today (Seoul), or none. */
 const posting = async (company: string, days: number | null): Promise<string> => {
   const id = await db!.posting(company);
   if (days !== null) await sql("UPDATE job_postings SET deadline = (now() AT TIME ZONE 'Asia/Seoul')::date + $2::int WHERE id = $1", [id, days]);

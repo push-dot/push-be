@@ -455,7 +455,6 @@ const bookmarkSql = (calendar: boolean): string => calendar ? `WITH bk AS (${BOO
   FROM job_postings p WHERE p.id = $2 AND p.deadline >= ($3::timestamptz AT TIME ZONE 'Asia/Seoul')::date
   ${ON_DEADLINE_EVENT} DO NOTHING` : BOOKMARK_INSERT;
 
-// An applied posting keeps its event (application_id is set), whatever happens to the bookmark.
 const unbookmarkSql = (calendar: boolean): string => calendar
   ? `WITH bk AS (DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2)
   DELETE FROM calendar_events WHERE user_id = $1 AND posting_id = $2 AND application_id IS NULL`
@@ -463,7 +462,6 @@ const unbookmarkSql = (calendar: boolean): string => calendar
 
 async function bookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
-  // One statement: the bookmark and its deadline event commit together. A deadline already past or absent adds no event.
   await withCalendar((calendar) => query(ctx.deps.query, bookmarkSql(calendar), [ctx.user.id, id, ctx.now.toISOString()]));
   return noContent(ctx.rid);
 }
@@ -614,7 +612,6 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
       throw err;
     }
   };
-  // A database behind on migrations (0063 posting_id, snapshot, stage_entered_at) drops the newest part the error names and retries.
   let tier: ApplyTier = { calendar: true, stamp: true, snapshot: true };
   for (;;) {
     try {

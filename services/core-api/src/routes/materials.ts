@@ -105,7 +105,6 @@ const REBOOKMARK = `INSERT INTO bookmarks SELECT (jsonb_populate_record(NULL::bo
   FROM back JOIN job_postings x ON x.id = $2
   ON CONFLICT (user_id, posting_id) DO NOTHING`;
 
-// Bringing a posting back from the bin brings its deadline event back too, unless the deadline has passed.
 const unbinBookmark = (calendar: boolean): string => `WITH back AS (DELETE FROM material_bin WHERE user_id = $1 AND kind = 'posting' AND id = $2 RETURNING snapshot)${calendar ? `,
   bk AS (${REBOOKMARK} RETURNING user_id, posting_id)
   INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})

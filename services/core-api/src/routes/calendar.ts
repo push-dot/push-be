@@ -6,11 +6,6 @@ import { readObject } from "./recruiting-shared.ts";
 
 const TYPES = new Set(["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT"]);
 
-/**
- * A posting's deadline as an event, for `INSERT INTO calendar_events (DEADLINE_EVENT_COLS) SELECT ... FROM job_postings p`.
- * The posting's deadline is a date: the event is its last minute (23:59 to 24:00) in Korea, which is where Push postings live.
- * One per user and posting: callers add ON CONFLICT (user_id, posting_id) WHERE posting_id IS NOT NULL (migration 0063).
- */
 export const DEADLINE_EVENT_COLS = "id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, posting_id, created_at, updated_at";
 export const deadlineEventSelect = (user: string, application: string, now: string): string => {
   const at = "((p.deadline + time '23:59') AT TIME ZONE 'Asia/Seoul')";
