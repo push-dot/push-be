@@ -27,6 +27,8 @@ test("thirty concurrent wrong codes get five comparisons, not thirty", { skip: U
   await pg!.query(
     "INSERT INTO phone_codes (id, phone, code_hash, expires_at, attempts, sent_at) VALUES ($1, $2, $3, now() + interval '3 minutes', 0, now())",
     [id, phone, await sha256Hex(`${id}:123456`)]);
+  // Open every pooled connection first, so the thirty requests run side by side instead of queuing on a connect.
+  await Promise.all(Array.from({ length: 30 }, () => pg!.query("SELECT pg_sleep(0.05)")));
   const wrong = Array.from({ length: 30 }, (_, i) => String(200000 + i));
   const answers = await Promise.all(wrong.map((code) => handle(verify(phone, code), { APP_ENV: "production" }, { query: pg!.query })));
   const codes = await Promise.all(answers.map(async (res) => (await res.json() as { error: { code: string } }).error.code));

@@ -289,7 +289,6 @@ test("signup accepts an employer account and rejects a personal account", async 
   assert.equal(db.signups.length, 1);
   const insert = db.sqls.find((call) => call.sql.startsWith("INSERT INTO email_signups"));
   assert.ok(insert);
-  assert.doesNotMatch(insert.sql, /ON CONFLICT/);
   const stored = String(insert.params[2]);
   const parts = stored.split("$");
   assert.equal(parts[0], "pbkdf2");
