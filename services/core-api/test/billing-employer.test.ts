@@ -17,8 +17,11 @@ type Err = { error: { code: string; message: string; details: { field?: string }
 
 const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
 
+const PUBSUB_SENDER = "play-rtdn@push.iam.gserviceaccount.com";
+
 const envOf = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production", PAYMENTS_ENABLED: "1",
+  GOOGLE_OIDC_EMAIL: PUBSUB_SENDER,
   STRIPE_SECRET_KEY: "sk_test",
   STRIPE_WEBHOOK_SECRET: "whsec_test",
   STRIPE_PRICE_PRO: "price_pro",
@@ -668,7 +671,7 @@ const rsaOidc = async (kid: string) => {
   const jwk = { kty: "RSA", alg: "RS256", use: "sig", kid, n: exported.n, e: exported.e };
   const sign = async (payload: Record<string, unknown>) => {
     const head = text64(JSON.stringify({ alg: "RS256", kid, typ: "JWT" }));
-    const body = text64(JSON.stringify(payload));
+    const body = text64(JSON.stringify({ email: PUBSUB_SENDER, email_verified: true, ...payload }));
     const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(`${head}.${body}`)));
     return `${head}.${body}.${b64url(sig)}`;
   };
@@ -743,6 +746,8 @@ const certDer = async (
   subject: string,
   issuer: string,
   serial: number,
+  extensions: Uint8Array[] = [],
+  validity = ["260101000000Z", "361231235959Z"],
 ): Promise<Uint8Array> => {
   const alg = tag(0x30, oid("1.2.840.10045.4.3.2"));
   const dn = (cn: string): Uint8Array => tag(0x30, tag(0x31, tag(0x30, concat(oid("2.5.4.3"), tag(0x0c, new TextEncoder().encode(cn))))));
@@ -752,9 +757,10 @@ const certDer = async (
     derInt(Uint8Array.from([serial])),
     alg,
     dn(issuer),
-    tag(0x30, concat(tag(0x17, new TextEncoder().encode("260101000000Z")), tag(0x17, new TextEncoder().encode("361231235959Z")))),
+    tag(0x30, concat(tag(0x17, new TextEncoder().encode(validity[0]!)), tag(0x17, new TextEncoder().encode(validity[1]!)))),
     dn(subject),
     spki,
+    ...(extensions.length ? [tag(0xa3, tag(0x30, concat(...extensions)))] : []),
   ));
   const signed = new ArrayBuffer(tbs.byteLength);
   new Uint8Array(signed).set(tbs);
@@ -763,13 +769,22 @@ const certDer = async (
   return tag(0x30, concat(tbs, alg, tag(0x03, concat(Uint8Array.from([0x00]), signature))));
 };
 
-const appleChain = async () => {
+const extension = (id: string, value: Uint8Array, critical = false): Uint8Array =>
+  tag(0x30, concat(oid(id), critical ? tag(0x01, Uint8Array.from([0xff])) : new Uint8Array(), tag(0x04, value)));
+const CA = extension("2.5.29.19", tag(0x30, tag(0x01, Uint8Array.from([0xff]))), true);
+const APPLE_LEAF = extension("1.2.840.113635.100.6.11.1", tag(0x05, new Uint8Array()));
+const APPLE_MID = extension("1.2.840.113635.100.6.2.1", tag(0x05, new Uint8Array()));
+
+type ChainShape = { mid?: Uint8Array[]; leaf?: Uint8Array[]; leafValidity?: string[] };
+
+// Real App Store chains: a CA intermediate with the WWDR marker, a leaf with the receipt-signing marker.
+const appleChain = async (shape: ChainShape = {}) => {
   const root = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const mid = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const leaf = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-  const rootDer = await certDer(root.publicKey, root.privateKey, "root", "root", 1);
-  const midDer = await certDer(mid.publicKey, root.privateKey, "mid", "root", 2);
-  const leafDer = await certDer(leaf.publicKey, mid.privateKey, "leaf", "mid", 3);
+  const rootDer = await certDer(root.publicKey, root.privateKey, "root", "root", 1, [CA]);
+  const midDer = await certDer(mid.publicKey, root.privateKey, "mid", "root", 2, shape.mid ?? [CA, APPLE_MID]);
+  const leafDer = await certDer(leaf.publicKey, mid.privateKey, "leaf", "mid", 3, shape.leaf ?? [APPLE_LEAF], shape.leafValidity);
   const spki = new Uint8Array(await crypto.subtle.exportKey("spki", leaf.publicKey));
   return {
     rootPem: `-----BEGIN CERTIFICATE-----\n${b64std(rootDer)}\n-----END CERTIFICATE-----`,
@@ -950,6 +965,49 @@ test("an unverified store webhook is rejected", async () => {
   );
   assert.equal(googleWrongKey.status, 400);
   assert.equal((await codeOf(googleWrongKey)).message, "invalid webhook signature");
+});
+
+test("an app store chain that only reaches Apple's root is not enough", async () => {
+  resetLimits();
+  const query: Deps["query"] = async (sql) => sql.includes("rate_limits") ? { rows: [{ hits: 1 }], rowCount: 1 } : empty;
+  const note = async (shape: ChainShape = {}) => {
+    const chain = await appleChain(shape);
+    const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1792886400000 }, chain.privateKey);
+    const body = await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
+    return handle(storeHook("/api/v1/billing/webhook/app-store", body), envOf({ APPLE_ROOT_PEM: chain.rootPem }), { query, now: () => NOW });
+  };
+  assert.equal((await note()).status, 200);
+  const forged = {
+    // A certificate Apple issued for something else, used to sign a leaf of the sender's own.
+    endEntityIssuer: await note({ mid: [APPLE_MID] }),
+    noReceiptMarker: await note({ leaf: [] }),
+    noWwdrMarker: await note({ mid: [CA] }),
+    expiredLeaf: await note({ leafValidity: ["240101000000Z", "250101000000Z"] }),
+  };
+  for (const [name, res] of Object.entries(forged)) {
+    assert.equal(res.status, 400, name);
+    assert.equal((await codeOf(res)).message, "invalid webhook signature", name);
+  }
+});
+
+test("a google play push signed for another service account is rejected", async () => {
+  resetLimits();
+  const oidc = await rsaOidc("oidc-sender");
+  const audience = "push-google-webhook";
+  const body = JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } });
+  const send = async (claims: Record<string, unknown>, extra: Partial<CoreEnv> = {}) => handle(
+    storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + await oidc.sign({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600, ...claims })),
+    envOf({ GOOGLE_OIDC_AUDIENCE: audience, ...extra }),
+    { query: rejectQuery(), now: () => NOW, fetch: certsFetch([oidc.jwk]) },
+  );
+  assert.equal((await send({})).status, 200);
+  for (const claims of [{ email: "someone@else.iam.gserviceaccount.com" }, { email_verified: false }, { email: undefined }]) {
+    const res = await send(claims);
+    assert.equal(res.status, 400, JSON.stringify(claims));
+    assert.equal((await codeOf(res)).message, "invalid webhook signature");
+  }
+  const unset = await send({}, { GOOGLE_OIDC_EMAIL: undefined });
+  assert.equal(unset.status, 503);
 });
 
 const noStores = {
