@@ -6,6 +6,7 @@ import zlib
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
@@ -149,6 +150,7 @@ def test_export_works_for_a_user_without_a_profile_row():
 
 
 def test_photo_1_embeds_the_avatar_and_otherwise_it_is_left_out():
+    pytest.importorskip("reportlab")  # photo embedding needs the local extra
     key = "ab" * 16 + ".png"
     db = _Db({USER_ID: {**ROW, "avatar_key": key}}, {key: _png()})
     client = _client(db)
