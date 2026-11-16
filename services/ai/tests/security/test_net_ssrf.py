@@ -136,8 +136,11 @@ async def test_net_dns_rebinding_dials_the_address_that_was_checked(monkeypatch)
     assert dialed == ["93.184.216.34"]
 
 
+_open_connection = asyncio.open_connection
+
+
 async def _connect_line(port: int, target: str) -> bytes:
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    reader, writer = await _open_connection("127.0.0.1", port)
     writer.write(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
     await writer.drain()
     line = await reader.readline()
@@ -159,9 +162,17 @@ async def _connect_line(port: int, target: str) -> bytes:
 )
 async def test_net_browser_proxy_refuses_internal_targets_and_ports(monkeypatch, target):
     _answers(monkeypatch, ["127.0.0.1"])
+    dialed: list[tuple] = []
+
+    async def refuse(*args, **_kwargs):
+        dialed.append(args)
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(asyncio, "open_connection", refuse)
     server, port = await web_page._start_egress_proxy()
     try:
         assert b"403" in await _connect_line(port, target)
+        assert dialed == []
     finally:
         server.close()
         await server.wait_closed()

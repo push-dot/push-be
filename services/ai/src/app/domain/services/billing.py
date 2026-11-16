@@ -29,5 +29,5 @@ def verify_stripe_signature(payload: bytes, header: str, secret: str,
         raise ValueError("stale timestamp")
     expected = hmac_mod.new(
         secret.encode(), f"{ts}.".encode() + payload, hashlib.sha256).hexdigest()
-    if not any(hmac_mod.compare_digest(sig, expected) for sig in sigs):
+    if not any(hmac_mod.compare_digest(sig.encode(), expected.encode()) for sig in sigs):
         raise ValueError("signature mismatch")
