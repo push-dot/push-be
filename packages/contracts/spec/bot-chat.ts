@@ -54,7 +54,7 @@ export const routes: Route[] = [
   post("gateway", "/api/v1/bots/{id}/messages/stream", {
     tag: "bots",
     summary: "Send a message to a bot and stream the reply",
-    description: "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. " + botStreamDescription,
+    description: "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. " + botStreamDescription,
     params: [id],
     body: body(ref("BotSendBody")),
     responses: { 200: sse(botEvents, "Bot reply stream") },
@@ -80,7 +80,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/bots/{id}/approvals/{approvalId}", {
     tag: "bots",
     summary: "Answer a card of the bot's thread",
-    description: "The answer rules of POST /conversations/{id}/approvals/{approvalId}. 202 when the answer resumes the run; follow GET /bots/{id}/stream. 403 CONSENT_REQUIRED without reference-data consent, because an answer starts a run. 404 for a bot with no thread or a card of another thread. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED, 402 INSUFFICIENT_CREDITS.",
+    description: "The answer rules of POST /conversations/{id}/approvals/{approvalId}. 202 when the answer resumes the run; follow GET /bots/{id}/stream. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, because an answer starts a run. 404 for a bot with no thread or a card of another thread. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED, 402 INSUFFICIENT_CREDITS.",
     params: [id, pathParam("approvalId")],
     body: body(closed({
       optionId: { type: "string", minLength: 1 },

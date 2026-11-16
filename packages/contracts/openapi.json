@@ -16181,7 +16181,7 @@
         "x-owner": "core"
       },
       "post": {
-        "description": "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.",
+        "description": "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.",
         "operationId": "postBots",
         "parameters": [
           {
@@ -16502,7 +16502,7 @@
     },
     "/api/v1/bots/{id}/approvals/{approvalId}": {
       "post": {
-        "description": "The answer rules of POST /conversations/{id}/approvals/{approvalId}. 202 when the answer resumes the run; follow GET /bots/{id}/stream. 403 CONSENT_REQUIRED without reference-data consent, because an answer starts a run. 404 for a bot with no thread or a card of another thread. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED, 402 INSUFFICIENT_CREDITS.",
+        "description": "The answer rules of POST /conversations/{id}/approvals/{approvalId}. 202 when the answer resumes the run; follow GET /bots/{id}/stream. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, because an answer starts a run. 404 for a bot with no thread or a card of another thread. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED, 402 INSUFFICIENT_CREDITS.",
         "operationId": "postBotsByIdApprovalsByApprovalId",
         "parameters": [
           {
@@ -16659,7 +16659,7 @@
     },
     "/api/v1/bots/{id}/messages/stream": {
       "post": {
-        "description": "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.",
+        "description": "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.",
         "operationId": "postBotsByIdMessagesStream",
         "parameters": [
           {
@@ -22455,7 +22455,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.",
+        "description": "audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent and allowAiReadMyFiles first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.",
         "operationId": "postConversations",
         "parameters": [
           {
@@ -23225,7 +23225,7 @@
         "x-owner": "gateway"
       },
       "post": {
-        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. context.documentId must be one of the caller's documents (404 NOT_FOUND otherwise) and not archived (409 INVALID_TRANSITION). On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's). Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request.",
+        "description": "Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. context.documentId must be one of the caller's documents (404 NOT_FOUND otherwise) and not archived (409 INVALID_TRANSITION). On a personal conversation, missing reference-data consent, or allowAiReadMyFiles off, is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's). Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request.",
         "operationId": "postConversationsByIdMessages",
         "parameters": [
           {

@@ -182,6 +182,21 @@ test("without consent a send creates no thread and a card answer starts no run",
   assert.equal((await rows("SELECT id FROM ai_jobs WHERE user_id = $1::uuid", [user.id])).length, 1, "only the send's job");
 });
 
+test("a send with the read switch off is refused like a send without consent, and nothing starts", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const user = await db.person("PRO");
+  await db.pg.query("INSERT INTO user_settings (user_id, allow_ai_read_my_files) VALUES ($1::uuid, false)", [user.id]);
+
+  const refused = await call(user, "POST", "/bots/push/messages/stream", { text: "안녕" });
+
+  assert.deepEqual([refused.status, refused.error?.code], [403, "CONSENT_REQUIRED"]);
+  assert.deepEqual(await rows("SELECT id FROM conversations WHERE user_id = $1::uuid", [user.id]), []);
+  assert.deepEqual(await rows("SELECT id FROM ai_jobs WHERE user_id = $1::uuid", [user.id]), []);
+
+  await db.pg.query("UPDATE user_settings SET allow_ai_read_my_files = true WHERE user_id = $1::uuid", [user.id]);
+  assert.equal((await call(user, "POST", "/bots/push/messages/stream", { text: "안녕" })).status, 202);
+});
+
 test("a card is answered by bot, and the answer names no job", async (t) => {
   if (!db) return t.skip(SKIP);
   const user = await db.person("PRO");
