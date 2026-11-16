@@ -7,6 +7,7 @@ import {
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { stageEnteredAt } from "./applications.ts";
+import { DEADLINE_EVENT_COLS, ON_DEADLINE_EVENT, deadlineEventSelect } from "./calendar.ts";
 import {
   JOB_CATEGORIES,
   GUEST_ID,
@@ -446,11 +447,22 @@ async function requireOpenPosting(ctx: Ctx, idRaw: string): Promise<string> {
   return id;
 }
 
+const BOOKMARK_SQL = `WITH bk AS (
+    INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3::timestamptz) ON CONFLICT (user_id, posting_id) DO NOTHING
+  )
+  INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
+  ${deadlineEventSelect("$1::uuid", "NULL::uuid", "$3::timestamptz")}
+  FROM job_postings p WHERE p.id = $2 AND p.deadline >= ($3::timestamptz AT TIME ZONE 'Asia/Seoul')::date
+  ${ON_DEADLINE_EVENT} DO NOTHING`;
+
+// An applied posting keeps its event (application_id is set), whatever happens to the bookmark.
+const UNBOOKMARK_SQL = `WITH bk AS (DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2)
+  DELETE FROM calendar_events WHERE user_id = $1 AND posting_id = $2 AND application_id IS NULL`;
+
 async function bookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
-  await query(ctx.deps.query,
-    "INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, posting_id) DO NOTHING",
-    [ctx.user.id, id, ctx.now.toISOString()]);
+  // One statement: the bookmark and its deadline event commit together. A deadline already past or absent adds no event.
+  await query(ctx.deps.query, BOOKMARK_SQL, [ctx.user.id, id, ctx.now.toISOString()]);
   return noContent(ctx.rid);
 }
 
@@ -458,7 +470,7 @@ async function unbookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [id]);
   if (!row) throw notFound();
-  await query(ctx.deps.query, "DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2", [ctx.user.id, id]);
+  await query(ctx.deps.query, UNBOOKMARK_SQL, [ctx.user.id, id]);
   return noContent(ctx.rid);
 }
 
@@ -527,6 +539,11 @@ const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
       ) FROM profiles p WHERE p.user_id = $2
     )` : ""} FROM job
     RETURNING id
+  ), cal AS (
+    INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
+    ${deadlineEventSelect("$2::uuid", "app.id", "$9::timestamptz")}
+    FROM app JOIN job_postings p ON p.id = $3 WHERE p.deadline IS NOT NULL
+    ${ON_DEADLINE_EVENT} DO UPDATE SET application_id = EXCLUDED.application_id, revision = calendar_events.revision + 1, updated_at = EXCLUDED.updated_at
   ), ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
     SELECT gen_random_uuid(), $2, app.id, 'APPLIED', $13::jsonb, $9 FROM app

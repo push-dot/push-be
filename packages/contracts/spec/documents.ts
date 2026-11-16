@@ -655,7 +655,7 @@ export const schemas: Record<string, Schema> = {
     startsAt: dateTime,
     endsAt: dateTime,
     timeZone: str,
-    source: { type: "string", description: "LOCAL or an external calendar source" },
+    source: { type: "string", description: "LOCAL, GOOGLE, or POSTING. POSTING is a posting deadline the server added when the user bookmarked or applied: one DEADLINE event per posting, 23:59 on the deadline day (Asia/Seoul), removed on un-bookmark unless applied" },
     externalId: nullable(str),
     notes: str,
     remindAt: nullable(dateTime),

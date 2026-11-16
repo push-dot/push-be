@@ -5299,7 +5299,7 @@ export interface components {
             notes: string;
             remindAt: string | null;
             revision: number;
-            /** @description LOCAL or an external calendar source */
+            /** @description LOCAL, GOOGLE, or POSTING. POSTING is a posting deadline the server added when the user bookmarked or applied: one DEADLINE event per posting, 23:59 on the deadline day (Asia/Seoul), removed on un-bookmark unless applied */
             source: string;
             /** Format: date-time */
             startsAt: string;
