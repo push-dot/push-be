@@ -50,6 +50,8 @@ _PARTICLE_RE = re.compile(
 _WS_RE = re.compile(r"\s+")
 _BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIX = (".localhost", ".internal", ".local", ".lan", ".home")
+# A public IP can still be this VPS, whose other ports are internal services.
+_PORTS = frozenset({80, 443})
 # IPv6 ranges that carry an IPv4 target (NAT64, 6to4, v4-compatible) and that
 # ``is_global`` reports as public: 64:ff9b::7f00:1 reaches 127.0.0.1 via NAT64.
 _V4_EMBEDDING_NETS = tuple(ipaddress.ip_network(n) for n in (
@@ -124,7 +126,10 @@ def _resolve_public(host: str) -> list[str]:
 
 def _assert_public_sync(url: str) -> list[str]:
     validate_https_url(url)
-    return _resolve_public(_url_host(url))
+    host = _url_host(url)
+    if httpx.URL(url).port not in (None, *_PORTS):
+        raise ValueError("port not allowed")
+    return _resolve_public(host)
 
 
 async def _assert_public(url: str) -> list[str]:
@@ -225,6 +230,8 @@ async def _start_egress_proxy() -> tuple[asyncio.AbstractServer, int]:
                 return
             host, port = parsed
             try:
+                if port not in _PORTS:
+                    raise ValueError("port not allowed")
                 ips = await asyncio.to_thread(_resolve_public, host)
             except Exception:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")

@@ -60,6 +60,7 @@ async def test_proxy_pipes_to_validated_ip(monkeypatch):
     monkeypatch.setattr(
         web_page, "_resolve_public", lambda host: ["127.0.0.1"]
     )
+    monkeypatch.setattr(web_page, "_PORTS", frozenset({echo_port}))
     server, port = await _start_egress_proxy()
     try:
         reader, writer = await _connect(

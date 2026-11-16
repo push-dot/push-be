@@ -95,9 +95,9 @@ class EvidenceService:
         if not data:
             raise unprocessable_field("sourceId", "the source has no file to read")
         if src.mime_type == "application/pdf":
-            from app.ingest.pdf_text import extract_pdf_bytes
+            from app.ingest.pdf_text import read_pdf_text
             try:
-                return extract_pdf_bytes(data)
+                return await read_pdf_text(data)
             except Exception:
                 raise unprocessable_field("sourceId", "the PDF cannot be read")
         if src.mime_type.startswith("text/") or src.file_name.lower().endswith(

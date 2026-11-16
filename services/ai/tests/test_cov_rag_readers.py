@@ -74,11 +74,11 @@ async def test_read_source_handles_null_content_and_memoryview():
 async def test_read_source_extracts_pdf_bytes(monkeypatch):
     seen = []
 
-    def fake_extract(data):
+    async def fake_read(data):
         seen.append(data)
         return "pdf text"
 
-    monkeypatch.setattr(readers, "extract_pdf_bytes", fake_extract)
+    monkeypatch.setattr(readers, "read_pdf_text", fake_read)
     out = await read_source(RowQuery(source_row("application/pdf", b"%PDF-1.4")), SOURCE)
     assert out == {"user_id": USER, "text": "pdf text"}
     assert seen == [b"%PDF-1.4"]
