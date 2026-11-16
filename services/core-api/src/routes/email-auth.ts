@@ -111,13 +111,12 @@ const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown
   });
 };
 
-// Each attempt is its own row (0066), so a later signup for the same address cannot change an earlier link's password.
-const INSERT_SIGNUP = "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)";
+// The password is chosen at verify (0067), by whoever holds the mailbox link. Each attempt is its own row (0066).
+const INSERT_SIGNUP = "INSERT INTO email_signups (id, email, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6)";
 
 const signup = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
-  const password = requirePassword(body.password);
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
   // The agreement record (약관·처리방침) needs the client to say yes; a missing box is not a yes.
@@ -127,10 +126,9 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (existing) throw emailTaken(existing);
-  const passwordHash = await hashPassword(password);
   const now = ctx.now.toISOString();
   const id = crypto.randomUUID();
-  const values = [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now];
+  const values = [id, email, accountType === "EMPLOYER", displayName, consent, now];
   await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (err: unknown) => {
     // shortcut: a database without 0066 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0066.
     if (!isUnique(err)) throw err;
@@ -145,11 +143,16 @@ const signup = async (ctx: Ctx): Promise<Response> => {
 const verify = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const token = requireString(body, "token");
+  // A wrong password is refused before the link is spent, so the person can type it again.
+  // shortcut: a signup row made before 0067 still holds its own hash and verifies without a password; drop that branch 24 hours after 0067 runs in production.
+  const chosen = body.password === undefined ? null : requirePassword(body.password);
   const hash = await sha256Hex(token);
   const found = await one(ctx.deps.query,
     "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference, s.created_at FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
     [hash]);
   const row = await requireFresh(found, ctx.now, async (r) => String(r.email).toLowerCase());
+  if (chosen === null && row.password_hash == null) throw fieldError("password", "must be 8 to 128 characters");
+  const passwordHash = chosen === null ? String(row.password_hash) : await hashPassword(chosen);
   if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
   const email = String(row.email).toLowerCase();
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
@@ -160,7 +163,7 @@ const verify = async (ctx: Ctx): Promise<Response> => {
   try {
     await query(ctx.deps.query,
       "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-      [userId, "email", email, String(row.display_name), "ko", now, email, now, employer, String(row.password_hash)]);
+      [userId, "email", email, String(row.display_name), "ko", now, email, now, employer, passwordHash]);
   } catch (err) {
     if (!isUnique(err)) throw err;
     const taken = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);

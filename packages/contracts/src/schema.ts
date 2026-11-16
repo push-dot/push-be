@@ -424,7 +424,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. The password is chosen when the link is opened (POST /auth/email/verify), not here; a password field in the body is ignored. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -444,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Verify email and create the account
-         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
+         * @description The person who opens the mailed link chooses the password. A password of 8 to 128 characters is required (400 VALIDATION_ERROR, details.field password, and the link stays usable); a signup made before this change may omit it and keeps the password it was made with. 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
         delete?: never;
@@ -8634,8 +8634,6 @@ export interface operations {
                     displayName: string;
                     /** Format: email */
                     email: string;
-                    /** @description 8 to 128 code points */
-                    password: string;
                 };
             };
         };
@@ -8667,6 +8665,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description 8 to 128 code points */
+                    password?: string;
                     token: string;
                 };
             };
