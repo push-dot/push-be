@@ -113,7 +113,7 @@ def strip_exfil(text: str, context: str) -> str:
             break
         out = stripped
     else:
-        out = out.replace("<", "\uff1c").replace("](", "] (")
+        out = out.replace("<", "\uff1c").replace("![", "! [").replace("](", "] (")
     out = _CSS_URL.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _REF_DEF.sub(ref, out)
     if out != source:

