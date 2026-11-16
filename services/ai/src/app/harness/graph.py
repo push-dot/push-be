@@ -142,10 +142,11 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
 
 def write_needs_approval(mode, tier, quick_start, tool: str | None = None, *,
                          supplied: bool = False, granted: bool = False,
-                         exposure: Exposure = Exposure.NONE) -> bool:
+                         exposure: Exposure = Exposure.NONE, dictated: bool = False) -> bool:
     resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
     return decide(mode, resolved, tool, quick_start=isinstance(quick_start, dict),
-                  supplied=supplied, granted=granted, exposure=exposure) is Decision.ASK
+                  supplied=supplied, granted=granted, exposure=exposure,
+                  dictated=dictated) is Decision.ASK
 
 
 def _exposure(state: dict, tools_by_name: dict) -> Exposure:
@@ -177,13 +178,13 @@ def _exposure(state: dict, tools_by_name: dict) -> Exposure:
     return found
 
 
-def _grant_covers(url: str, exposure: Exposure, seen: str) -> bool:
-    """A model-built address can carry the user's data to a granted host. Right after untrusted
-    text a grant covers only an address the thread holds; with such text earlier in the thread it
-    also covers one without a query string, so a bot still opens other pages of the site."""
+def _dictated(url: str, exposure: Exposure, seen: str) -> bool:
+    """Whether untrusted text could have built this address to carry the user's data out. Right
+    after such text, any address the thread does not hold; with such text only earlier in the
+    thread, one with a query string, so a bot still opens other pages of a granted site."""
     if exposure is Exposure.NONE or url in seen:
-        return True
-    return exposure is Exposure.THREAD and not urlsplit(url).query
+        return False
+    return exposure is Exposure.RUN or bool(urlsplit(url).query)
 
 
 def _seen_text(state: dict) -> str:
@@ -473,18 +474,19 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         # values and may not change shape before push-fe F3. Send EXTERNAL_READ once it knows it.
         tier = (Tier.READ if meta["tier"] is Tier.EXTERNAL_READ else meta["tier"]).value
         exposure = _exposure(state, tools_by_name)
-        page = trusted_page = {}
+        page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:
             thread = state.get("conversation_id")
-            trusted_page = {
+            page = {
                 "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
                 "granted": await site_granted(db, thread, args.url),
             }
-            page = {**trusted_page, "granted": trusted_page["granted"] and _grant_covers(
-                args.url, exposure, _seen_text(state))}
+        dictated = meta["tier"] is Tier.EXTERNAL_READ and _dictated(
+            args.url, exposure, _seen_text(state))
         quick = state.get("quick_start")
-        asks = write_needs_approval(mode, meta["tier"], quick, tool.name, **page, exposure=exposure)
-        if asks and not write_needs_approval(mode, meta["tier"], quick, tool.name, **trusted_page):
+        asks = write_needs_approval(
+            mode, meta["tier"], quick, tool.name, **page, exposure=exposure, dictated=dictated)
+        if asks and not write_needs_approval(mode, meta["tier"], quick, tool.name, **page):
             logging.getLogger(__name__).warning(
                 "tool %s held for the user: untrusted text in the thread (%s)", tool.name, exposure)
         if asks and meta["approval_kind"] != "DOCUMENT_EDIT":
@@ -549,7 +551,9 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 tool.name, args, result, user_id=str(state.get("user_id") or ""), db=db)
         return _tool_command(
             state,
-            [ToolMessage(content=as_data(json.dumps(result), tool.name), tool_call_id=call_id)],
+            [ToolMessage(
+                content=as_data(json.dumps(result, ensure_ascii=False), tool.name),
+                tool_call_id=call_id)],
             {call_id},
             tool_calls_used=used + 1,
         )

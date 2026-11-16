@@ -80,17 +80,22 @@ def _held(tier: Tier, tool: str | None, exposure: Exposure) -> bool:
 def decide(
     mode: AccessMode, tier: Tier, tool: str | None = None, *,
     quick_start: bool = False, supplied: bool = False, granted: bool = False,
-    exposure: Exposure = Exposure.NONE,
+    exposure: Exposure = Exposure.NONE, dictated: bool = False,
 ) -> Decision:
     """supplied: the user gave this URL in the thread. granted: the bot holds a grant for its
-    host."""
+    host. dictated: untrusted text in view could have built this URL, so it may carry the user's
+    data out, and only the user may open it."""
     if tool in ALWAYS_ASK_TOOLS:
         return Decision.ASK
     if not isinstance(tier, Tier):
         tier = tier.metadata["tier"]
     if _held(tier, tool, exposure):
         return Decision.ASK
-    if tier is Tier.EXTERNAL_READ and (supplied or granted):
+    if tier is Tier.EXTERNAL_READ and supplied:
+        return Decision.EXECUTE
+    if tier is Tier.EXTERNAL_READ and dictated:
+        return Decision.ASK
+    if tier is Tier.EXTERNAL_READ and granted:
         return Decision.EXECUTE
     if tool in APPLY_THEN_REVIEW and mode is not AccessMode.ALWAYS_ASK:
         return Decision.EXECUTE

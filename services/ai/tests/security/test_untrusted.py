@@ -44,6 +44,22 @@ def test_images_never_survive_and_unseen_links_lose_their_address():
     assert "[posting](https://jobs.example/p/1)" in out
 
 
+def test_other_fetching_or_linking_forms_lose_unseen_addresses():
+    answer = (
+        "![multi\nline](https://evil.example/a.png) "
+        "<https://evil.example/auto?d=me> "
+        '<a href="https://evil.example/h?d=me">here</a> '
+        '<video src="https://evil.example/v.mp4"> '
+        "<https://jobs.example/p/1>"
+    )
+
+    out = strip_exfil(answer, "https://jobs.example/p/1")
+
+    assert "evil.example" not in out
+    assert "here" in out
+    assert "<https://jobs.example/p/1>" in out
+
+
 def test_an_answer_without_markup_is_unchanged():
     text = "공고를 저장했어요. https://jobs.example/p/1 에서 볼 수 있어요."
 
@@ -80,6 +96,14 @@ def test_own_data_writes_in_a_later_turn_keep_the_mode():
 @pytest.mark.parametrize("tool", ["start_document", "start_posting"])
 def test_starting_a_guided_flow_is_not_held(tool):
     assert decide(AccessMode.AUTO, Tier.SAFE_WRITE, tool, exposure=Exposure.RUN) is Decision.EXECUTE
+
+
+@pytest.mark.parametrize("mode", list(AccessMode))
+def test_an_outside_read_the_text_could_have_built_asks_in_every_mode(mode):
+    held = decide(mode, Tier.EXTERNAL_READ, "read_page", granted=True, dictated=True)
+    assert held is Decision.ASK
+    assert decide(
+        mode, Tier.EXTERNAL_READ, "read_page", supplied=True, dictated=True) is Decision.EXECUTE
 
 
 def test_reads_are_not_held():

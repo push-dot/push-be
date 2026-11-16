@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timezone
 from typing import Any
+from datetime import UTC, datetime, timezone
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -12,31 +12,28 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.domain import entities as ent
+from app.domain.quick_starts import quick_start_seed
 from app.domain.access_mode import resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
-from app.domain.quick_starts import quick_start_seed
 from app.framework.models import _content
 from app.framework.untrusted import strip_exfil
-from app.harness.consent import require_consent
 from app.harness.document_edits import env_core
+from app.harness.consent import require_consent
 from app.harness.graph import (
-    RECURSION_LIMIT,
-    _open_calls,
-    _seen_text,
-    build_harness_graph,
-    quick_start_resume,
+    RECURSION_LIMIT, _open_calls, _seen_text, build_harness_graph, quick_start_resume,
     turn_model,
 )
 from app.harness.model import GateModel, StubModel, settle_turn
+from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
 from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
-from app.harness.personal.tools import bound_services
 from app.harness.router import select_harness
 from app.harness.sources import TurnSources, current_sources, listed
 from app.harness.status import THINKING, Run, current_run, wire_time
 from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
 from app.ingest.web_page import fetch_page_text
 from app.jsonutil import to_jsonable
+
 
 _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 _TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")

@@ -30,9 +30,15 @@ def as_data(text: str, source: str, limit: int | None = DATA_MAX) -> str:
     return f'<data source="{_SOURCE.sub("", source)}">\n{body}\n</data>'
 
 
-_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
-_LINK = re.compile(r"(?<!!)\[([^\]\n]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
-_HTML_IMG = re.compile(r"<img\b[^>]{0,4096}>", re.IGNORECASE)
+_IMAGE = re.compile(r"!\[([^\]]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
+_LINK = re.compile(r"(?<!!)\[([^\]]{0,500})\]\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
+_AUTOLINK = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096})>", re.IGNORECASE)
+_ANCHOR = re.compile(
+    r"<a\b[^>]{0,4096}?href\s*=\s*[\"']?([^\"'\s>]{1,4096})[^>]{0,4096}>(.{0,2000}?)</a\s*>",
+    re.IGNORECASE | re.DOTALL)
+# Tags that fetch on render.
+_HTML_FETCH = re.compile(
+    r"<(?:img|image|source|video|audio|iframe|embed|object)\b[^>]{0,4096}>", re.IGNORECASE)
 _REF_DEF = re.compile(
     r"^[ \t]{0,3}\[[^\]\n]{1,500}\]:[ \t]*<?(\S{1,4096}?)>?(?:[ \t].*)?$", re.MULTILINE)
 
@@ -40,7 +46,8 @@ _REF_DEF = re.compile(
 def strip_exfil(text: str, context: str) -> str:
     """An answer cannot make the app load or offer an address the run never saw: an image is
     fetched on render, and a link built by the model can carry the user's data in its query.
-    Images become their alt text, and a link keeps its label unless its URL is in the context."""
+    Images become their alt text, fetching HTML tags go, a link keeps its label and an autolink
+    goes unless its URL is in the context."""
     def link(match: re.Match) -> str:
         return match.group(0) if match.group(2) in context else match.group(1)
 
@@ -48,8 +55,10 @@ def strip_exfil(text: str, context: str) -> str:
         return match.group(0) if match.group(1) in context else ""
 
     out = _IMAGE.sub(lambda match: match.group(1), text or "")
-    out = _HTML_IMG.sub("", out)
+    out = _HTML_FETCH.sub("", out)
     out = _LINK.sub(link, out)
+    out = _ANCHOR.sub(lambda m: m.group(0) if m.group(1) in context else m.group(2), out)
+    out = _AUTOLINK.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _REF_DEF.sub(ref, out)
     if out != (text or ""):
         _log.warning("answer lost an image or an unseen link before it was stored")

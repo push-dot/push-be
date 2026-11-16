@@ -15,6 +15,7 @@ from tests.security.injection import (
     DOCUMENT,
     DOCUMENT_TEXT,
     EXFIL_HOST,
+    EXFIL_POSTING_TEXT,
     GRANTED_HOST,
     LEAKY_POSTING_TEXT,
     OFFER,
@@ -163,6 +164,26 @@ async def test_a_page_cannot_send_user_data_to_its_granted_host(monkeypatch):
     assert approvals(rows) == ["read_page"]
     assert all(SECRET not in url for url in fetched)
     assert GRANTED_HOST in PAGE_URL
+
+
+@pytest.mark.asyncio
+async def test_a_posting_cannot_make_the_bot_open_a_page_carrying_user_data_in_bypass(monkeypatch):
+    fetched = []
+
+    async def fetch_page(url, allow_hop=None):
+        fetched.append(url)
+        return Page(url=url, text="ok")
+
+    monkeypatch.setattr("app.harness.personal.tools.fetch_page", fetch_page)
+    core = Core({f"/api/v1/postings/{POSTING}": {"id": POSTING, "description": EXFIL_POSTING_TEXT}})
+    rows = GrantedRows()
+    _svc, rt = runtime(core, rows)
+    ObedientLC.script = [call("get_posting", posting_id=POSTING)]
+
+    await run(rt, payload("이 공고 요약해줘", mode="BYPASS"))
+
+    assert fetched == []
+    assert approvals(rows) == ["read_page"]
 
 
 @pytest.mark.asyncio
