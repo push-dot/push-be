@@ -169,6 +169,8 @@ services:
       SERVE_API: "1"
       QUEUE_GROUP: ai
       QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-10}
+      # One pool slot per concurrent job; an explicit DB_POOL_MAX_SIZE below the concurrency would starve jobs.
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-${AI_WORKER_CONCURRENCY:-10}}
     volumes:
       - ai-data:/data
     depends_on:

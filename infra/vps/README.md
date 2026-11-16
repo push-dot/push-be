@@ -82,7 +82,7 @@ CI가 하는 일:
 
 Postgres는 Neon이다. VPS는 compose로 AI를 돌리고 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 접속한다. `push-be-core`는 Cloudflare Workers에서 `DATABASE_URL`로 같은 DB를 쓰되, Workers 런타임 규칙 때문에 `app.pgproto`가 **요청마다 ContextVar로 한 연결**만 연다(프로세스 단위 asyncpg 풀과 분리).
 
-VPS에서는 `ai-worker`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다.
+VPS에서는 `ai-worker`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다. `ai-worker`만 예외로 `DB_POOL_MAX_SIZE` 기본값이 `AI_WORKER_CONCURRENCY`와 같다. 동시 작업 하나가 풀 연결 하나를 쓰므로 풀이 동시성보다 작으면 작업이 연결을 기다린다. `DB_POOL_MAX_SIZE`를 직접 지정할 때는 `AI_WORKER_CONCURRENCY` 이상으로 둔다.
 
 | Neon 엔드포인트 | 용도 |
 | --- | --- |
