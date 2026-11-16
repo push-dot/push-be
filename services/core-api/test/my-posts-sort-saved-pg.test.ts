@@ -106,6 +106,31 @@ test("saved posts page by the save time with a cursor", async (t) => {
   assert.deepEqual(await titles(me, `/me/saved-posts?limit=2&cursor=${encodeURIComponent(page.nextCursor)}`), ["one"]);
 });
 
+test("every Post response carries saved for the reader: detail, list, search, my lists, and false for a guest", async (t) => {
+  if (!db) return t.skip(SKIP);
+  const [me, other, author] = [await db.person("PRO"), await db.person("PRO"), await db.person("PRO")];
+  const [kept, skipped] = [await post(author, "kept-saved-flag"), await post(author, "skipped-saved-flag")];
+  await db.call(me, "POST", `/posts/${kept}/save`);
+  const flags = async (who: Person, path: string): Promise<Record<string, boolean>> => {
+    const res = await db!.call(who, "GET", path);
+    assert.equal(res.status, 200);
+    const rows = (Array.isArray(res.body.data) ? res.body.data : [res.body.data]) as { title: string; saved: boolean }[];
+    return Object.fromEntries(rows.filter((p) => p.title.endsWith("-saved-flag")).map((p) => [p.title, p.saved]));
+  };
+  const expected = { "kept-saved-flag": true, "skipped-saved-flag": false };
+  assert.deepEqual(await flags(me, "/posts?q=saved-flag"), expected);
+  assert.deepEqual(await flags(me, "/search?type=posts&q=saved-flag"), expected);
+  assert.deepEqual(await flags(me, `/posts/${kept}`), { "kept-saved-flag": true });
+  assert.deepEqual(await flags(me, `/posts/${skipped}`), { "skipped-saved-flag": false });
+  assert.deepEqual(await flags(me, "/me/saved-posts"), { "kept-saved-flag": true });
+  assert.deepEqual(await flags(other, "/posts?q=saved-flag"), { "kept-saved-flag": false, "skipped-saved-flag": false });
+  assert.deepEqual(await flags(author, "/me/posts"), { "kept-saved-flag": false, "skipped-saved-flag": false });
+  const guest: Person = { id: "00000000-0000-0000-0000-000000000000", plan: "FREE" };
+  assert.deepEqual(await flags(guest, "/posts?q=saved-flag"), { "kept-saved-flag": false, "skipped-saved-flag": false });
+  await db.call(me, "DELETE", `/posts/${kept}/save`);
+  assert.deepEqual(await flags(me, `/posts/${kept}`), { "kept-saved-flag": false });
+});
+
 test("deleting a post or a user takes their saves with them", async (t) => {
   if (!db) return t.skip(SKIP);
   const [me, author] = [await db.person("PRO"), await db.person("PRO")];
