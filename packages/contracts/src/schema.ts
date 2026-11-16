@@ -6761,6 +6761,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             imageUrls: string[];
+            saved: boolean;
             title: string;
             viewCount: number;
         };

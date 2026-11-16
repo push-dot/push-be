@@ -56,12 +56,15 @@ function postDto(row: Record<string, unknown>): Record<string, unknown> {
     imageUrls: jsonList(row.image_keys).map((key) => imageUrl(key)).filter((url) => url != null),
     commentCount: Number(row.comment_count ?? 0),
     viewCount: Number(row.view_count ?? 0),
+    saved: asBool(row.saved),
     createdAt: ts(row.created_at),
   };
 }
 
-const POST_SQL = `p.id, p.user_id, u.display_name, u.is_employer, co.name AS company_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
-  (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count
+// viewer is the SQL placeholder of the reading user; a guest id matches no post_saves row, so saved is false.
+const postSql = (viewer: string): string => `p.id, p.user_id, u.display_name, u.is_employer, co.name AS company_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
+  (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count,
+  EXISTS (SELECT 1 FROM post_saves ps WHERE ps.post_id = p.id AND ps.user_id = ${viewer}) AS saved
   FROM posts p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
   LEFT JOIN company_members cm ON cm.user_id = u.id
   LEFT JOIN companies co ON co.id = cm.company_id`;
@@ -95,8 +98,8 @@ async function listPosts(ctx: Ctx): Promise<Response> {
   if (period !== "" && period !== "week") throw unprocessable("period", "unsupported period");
   const category = ctx.url.searchParams.get("category");
   if (category && !POST_CATEGORIES.has(category)) throw unprocessable("category", "unsupported category");
-  const params: unknown[] = [];
-  let sql = "SELECT " + POST_SQL + " WHERE 1=1";
+  const params: unknown[] = [ctx.user.id];
+  let sql = "SELECT " + postSql("$1") + " WHERE 1=1";
   if (category) {
     params.push(category);
     sql += ` AND p.category = $${params.length}`;
@@ -126,8 +129,8 @@ export async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
   const page = pageOf(ctx.url);
   assertSearchCursor(ctx.url, sort);
   const forms = queryForms(q);
-  const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
-  let sql = `SELECT ${POST_SQL} WHERE (
+  const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo, ctx.user.id];
+  let sql = `SELECT ${postSql("$6")} WHERE (
       p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'
       OR ($2 <> '' AND p.search_choseong LIKE '%' || $2 || '%')
       OR ($3 <> '' AND p.search_jamo LIKE $3 || '%')
@@ -174,7 +177,7 @@ async function createPost(ctx: Ctx): Promise<Response> {
     [ctx.user.id]);
   return data(201, postDto({
     id, user_id: ctx.user.id, display_name: ctx.user.displayName, category: body.category, title, body: text,
-    image_keys: keys, view_count: 0, comment_count: 0, created_at: now,
+    image_keys: keys, view_count: 0, comment_count: 0, saved: false, created_at: now,
     is_employer: author ? author.is_employer : ctx.user.accountType === "EMPLOYER",
     company_name: author?.company_name ?? null,
   }), ctx.rid);
@@ -186,7 +189,7 @@ async function getPost(ctx: Ctx, idRaw: string): Promise<Response> {
     `UPDATE posts SET view_count = view_count + 1 WHERE id = $1 RETURNING id`,
     [id]);
   if (!row) throw notFound();
-  const full = await onePost(ctx, "SELECT " + POST_SQL + " WHERE p.id = $1", [id]);
+  const full = await onePost(ctx, "SELECT " + postSql("$2") + " WHERE p.id = $1", [id, ctx.user.id]);
   if (!full) throw notFound();
   return data(200, postDto(full), ctx.rid);
 }
@@ -283,7 +286,7 @@ async function listOwnedPosts(ctx: Ctx, list: OwnedList): Promise<Response> {
   const page = pageOf(ctx.url);
   const sort = mySortOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
-  let sql = `SELECT ${list.at} AS cursor_at, ${POST_SQL} ${list.join} WHERE ${list.where}`;
+  let sql = `SELECT ${list.at} AS cursor_at, ${postSql("$1")} ${list.join} WHERE ${list.where}`;
   const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (sort === "latest" && page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);

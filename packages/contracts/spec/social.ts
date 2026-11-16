@@ -566,6 +566,7 @@ export const schemas: Record<string, Schema> = {
     imageUrls: arr(str),
     commentCount: int,
     viewCount: int,
+    saved: bool,
     createdAt: dateTime,
   }),
   Comment: obj({ id: uuid, author: person, body: str, parentId: nullable(uuid), createdAt: dateTime }),

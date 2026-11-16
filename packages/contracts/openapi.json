@@ -9826,6 +9826,9 @@
             },
             "type": "array"
           },
+          "saved": {
+            "type": "boolean"
+          },
           "title": {
             "type": "string"
           },
@@ -9842,6 +9845,7 @@
           "imageUrls",
           "commentCount",
           "viewCount",
+          "saved",
           "createdAt"
         ],
         "type": "object"
