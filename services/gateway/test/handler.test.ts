@@ -1062,6 +1062,33 @@ test("CORS preflight is answered without calling Python", async () => {
   assert.equal(proxied, 0);
 });
 
+test("the web app may send x-csrf and credentials, and the cookie reaches core and comes back", async () => {
+  const origin = "https://push.devcyjoon.tech";
+  const pre = await handle(new Request("https://push-be.example/api/v1/auth/refresh", {
+    method: "OPTIONS",
+    headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type, x-csrf" },
+  }), env({ async fetch() { return new Response(""); } }), deps(async () => []));
+  assert.match(pre.headers.get("access-control-allow-headers") || "", /x-csrf/);
+  assert.equal(pre.headers.get("access-control-allow-credentials"), "true");
+  assert.equal(pre.headers.get("access-control-allow-origin"), origin);
+
+  let seen = "";
+  const core = {
+    async fetch(request: Request) {
+      seen = `${request.headers.get("cookie")}|${request.headers.get("x-csrf")}`;
+      return new Response("{}", { status: 200, headers: { "set-cookie": "push_rt=next; HttpOnly; Path=/api/v1/auth" } });
+    },
+  };
+  const res = await handle(new Request("https://push-be.example/api/v1/auth/refresh", {
+    method: "POST",
+    headers: { origin, cookie: "push_rt=old", "x-csrf": "1" },
+    body: "{}",
+  }), env(core), deps(async () => []));
+  assert.equal(seen, "push_rt=old|1");
+  assert.match(res.headers.get("set-cookie") || "", /^push_rt=next; HttpOnly/);
+  assert.equal(res.headers.get("access-control-allow-origin"), origin);
+});
+
 test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async () => {
   resetLimits();
   const forwarded: string[] = [];

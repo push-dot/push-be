@@ -504,7 +504,7 @@ export interface paths {
         put?: never;
         /**
          * Log out (revoke refresh token)
-         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.
+         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted. With `x-csrf: 1` and no refreshToken in the body, the `push_rt` cookie is the token, and it is cleared.
          */
         post: operations["postAuthLogout"];
         delete?: never;
@@ -584,7 +584,7 @@ export interface paths {
         put?: never;
         /**
          * Rotate refresh token
-         * @description Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED.
+         * @description Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED. Web: a request with the header `x-csrf: 1` keeps the refresh token in the HttpOnly cookie `push_rt` (Path /api/v1/auth, Secure, SameSite=Lax): the sign-in and refresh responses leave refreshToken out of the body and set the cookie, and a body without refreshToken reads it from the cookie (a refused refresh and a logout clear it). Without the header (the mobile app) the token stays in the body.
          */
         post: operations["postAuthRefresh"];
         delete?: never;
@@ -8756,7 +8756,7 @@ export interface operations {
             content: {
                 "application/json": {
                     pushToken?: string;
-                    refreshToken: string;
+                    refreshToken?: string;
                 };
             };
         };
@@ -8892,7 +8892,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    refreshToken: string;
+                    refreshToken?: string;
                 };
             };
         };

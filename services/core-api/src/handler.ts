@@ -36,6 +36,7 @@ import { dispatchBotChat } from "./routes/bot-chat.ts";
 import { dispatchBots } from "./routes/bots.ts";
 import { dispatchMaterials } from "./routes/materials.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
+import { giveRefreshCookie, takeRefreshCookie } from "./web-session.ts";
 
 const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
 
@@ -82,6 +83,11 @@ const guestUser = (): UserRow => ({ ...anonymous(), id: GUEST_ID });
 export type { CoreEnv, Deps };
 
 export async function handle(request: Request, env: CoreEnv, deps: Deps): Promise<Response> {
+  const web = await takeRefreshCookie(request);
+  return giveRefreshCookie(web, await route(web, env, deps));
+}
+
+async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Response> {
   const rid = requestIdOf(request);
   let url: URL;
   try { url = new URL(request.url); } catch {
