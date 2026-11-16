@@ -594,6 +594,7 @@ describe("bot state on a database of its own", () => {
        SELECT gen_random_uuid(), $1::uuid, 'TOOL_ACTION', $2::uuid, 'h', 'APPROVED', $2::uuid, now() - n * interval '1 hour'
        FROM generate_series(1, ${HISTORY}) n`, [user.id, threads[3]]);
     await db.pg.query("ANALYZE users, bots, conversations, messages, approvals, ai_jobs, chat_events, bot_read_markers");
+    await db.call(user, "GET", "/bots");
 
     const sent: { sql: string; params: unknown[] }[] = [];
     const real = db.pg.query;

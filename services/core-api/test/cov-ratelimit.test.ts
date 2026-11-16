@@ -92,7 +92,7 @@ test("ratelimit: an authenticated caller over budget gets 429 RATE_LIMITED befor
   const body = await res.json() as { error: { code: string } };
   assert.equal(body.error.code, "RATE_LIMITED");
   const limit = seen.find((c) => c.sql.includes("rate_limits"))!;
-  assert.deepEqual(limit.params, [`user:${authRow.id}:${WINDOW}`, WINDOW * 60 + 120, 600]);
+  assert.deepEqual(limit.params, [`user:${authRow.id}:${WINDOW}`, WINDOW * 60 + 120, 600, 10]);
   assert.equal(seen.some((c) => c.sql.includes("FROM jobs")), false);
 });
 
