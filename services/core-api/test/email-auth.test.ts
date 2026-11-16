@@ -83,17 +83,6 @@ const createDb = () => {
     if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
     if (sql.startsWith("INSERT INTO email_signups")) {
       const [id, email, passwordHash, isEmployer, displayName, consent, createdAt] = params;
-      const existing = signups.find((row) => row.email === email);
-      if (existing) {
-        Object.assign(existing, {
-          password_hash: passwordHash,
-          is_employer: isEmployer,
-          display_name: displayName,
-          consent_reference: consent,
-          created_at: createdAt,
-        });
-        return { rows: [{ id: existing.id }], rowCount: 1 };
-      }
       signups.push({
         id, email, password_hash: passwordHash, is_employer: isEmployer,
         display_name: displayName, consent_reference: consent, created_at: createdAt,
@@ -114,9 +103,9 @@ const createDb = () => {
       }
     }
     if (sql.startsWith("DELETE FROM email_signups")) {
-      const index = signups.findIndex((row) => row.id === params[0]);
-      if (index >= 0) signups.splice(index, 1);
-      return { rows: [], rowCount: index >= 0 ? 1 : 0 };
+      const gone = signups.filter((row) => String(row.email).toLowerCase() === String(params[0]).toLowerCase());
+      for (const row of gone) signups.splice(signups.indexOf(row), 1);
+      return { rows: [], rowCount: gone.length };
     }
     if (sql.startsWith("INSERT INTO email_tokens") || sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
       tokens.push({
@@ -300,7 +289,6 @@ test("signup accepts an employer account and rejects a personal account", async 
   assert.equal(db.signups.length, 1);
   const insert = db.sqls.find((call) => call.sql.startsWith("INSERT INTO email_signups"));
   assert.ok(insert);
-  assert.match(insert.sql, /ON CONFLICT \(email\)/);
   const stored = String(insert.params[2]);
   const parts = stored.split("$");
   assert.equal(parts[0], "pbkdf2");
@@ -356,24 +344,28 @@ test("signup accepts an employer account and rejects a personal account", async 
   assert.equal((await long.json() as Err).error.details?.field, "password");
 });
 
-test("signup replaces a pending row instead of returning 409", async () => {
+test("a second signup for the same address leaves the first link and its password alone", async () => {
   resetLimits();
   const sent: Mail[] = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const first = await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  const firstHash = db.signups[0].password_hash;
   resetLimits();
   const second = await handle(
-    post("/api/v1/auth/email/signup", signupBody({ password: "another123", displayName: "Ada 2" })),
+    post("/api/v1/auth/email/signup", signupBody({ password: "another-password-2", displayName: "Ada 2" })),
     env(),
     deps(db, mailer),
   );
   assert.equal(first.status, 202);
   assert.equal(second.status, 202);
-  assert.equal(db.signups.length, 1);
-  assert.equal(db.signups[0].display_name, "Ada 2");
+  assert.equal(db.signups.length, 2);
   assert.equal(sent.length, 2);
-  assert.equal(db.users.length, 0);
+  const token = new URL(sent[0].text).searchParams.get("token") ?? "";
+  const verified = await handle(post("/api/v1/auth/email/verify", { token }), env(), deps(db, mailer));
+  assert.equal(verified.status, 200);
+  assert.equal(db.users[0].password_hash, firstHash);
+  assert.equal(db.signups.length, 0);
 });
 
 test("signup reports the existing account type", async () => {
