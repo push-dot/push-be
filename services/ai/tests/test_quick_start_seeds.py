@@ -52,7 +52,8 @@ def test_each_sheet_seeds_inputs_and_asks_only_before_what_leaves_push():
         direct = intent in _APPLIED_DIRECTLY
         assert ("승인" not in seed["instruction"]) is (direct or not seed["write_tools"])
         for name in seed["write_tools"]:
-            assert write_needs_approval(AccessMode.AUTO, "RISKY_WRITE", seed, name) is (not direct) or name != "update_my_profile"
+            tier = "SAFE_WRITE" if name.endswith("_calendar_event") else "RISKY_WRITE"
+            assert write_needs_approval(AccessMode.AUTO, tier, seed, name) is (not direct)
             assert isinstance(name, str) and name
 
 
