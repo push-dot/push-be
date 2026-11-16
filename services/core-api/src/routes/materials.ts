@@ -1,10 +1,11 @@
-import { one, query } from "../db.ts";
+import { one, query, withCalendar } from "../db.ts";
 import { HttpError, asBool, data, fieldError, noContent, requireUuid } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { pageOf, ts } from "../page.ts";
 import { encodeCursor } from "../time.ts";
 import type { Ctx } from "../types.ts";
 import { botRef, resolveBot } from "./bots.ts";
+import { DEADLINE_EVENT_COLS, ON_DEADLINE_EVENT, deadlineEventSelect } from "./calendar.ts";
 import { archiveDoc, unarchiveDoc } from "./documents.ts";
 import { softDeleteLink, undeleteLink } from "./me.ts";
 import { CITING_EVIDENCE, refuseCited } from "./sources.ts";
@@ -92,17 +93,25 @@ const UNBIN_FILE = `WITH back AS (DELETE FROM material_bin WHERE user_id = $1 AN
 const POSTING_LIVE = "k.user_id = $1 AND x.status <> 'DRAFT'";
 
 // A posting bookmarked again after a delete and deleted once more replaces its earlier snapshot.
-const BIN_BOOKMARK = `WITH gone AS (
-    DELETE FROM bookmarks k USING job_postings x WHERE x.id = k.posting_id AND ${POSTING_LIVE} AND k.posting_id = $2 RETURNING k.*)
+const binBookmark = (calendar: boolean): string => `WITH gone AS (
+    DELETE FROM bookmarks k USING job_postings x WHERE x.id = k.posting_id AND ${POSTING_LIVE} AND k.posting_id = $2 RETURNING k.*)${calendar ? `,
+  cal AS (DELETE FROM calendar_events e USING gone WHERE e.user_id = gone.user_id AND e.posting_id = gone.posting_id AND e.application_id IS NULL)` : ""}
   INSERT INTO material_bin (user_id, kind, id, deleted_at, snapshot)
   SELECT gone.user_id, 'posting', gone.posting_id, $3::timestamptz, to_jsonb(gone) FROM gone
   ON CONFLICT (user_id, kind, id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at, snapshot = EXCLUDED.snapshot
   RETURNING id`;
 
-const UNBIN_BOOKMARK = `WITH back AS (DELETE FROM material_bin WHERE user_id = $1 AND kind = 'posting' AND id = $2 RETURNING snapshot)
-  INSERT INTO bookmarks SELECT (jsonb_populate_record(NULL::bookmarks, back.snapshot)).*
+const REBOOKMARK = `INSERT INTO bookmarks SELECT (jsonb_populate_record(NULL::bookmarks, back.snapshot)).*
   FROM back JOIN job_postings x ON x.id = $2
   ON CONFLICT (user_id, posting_id) DO NOTHING`;
+
+const unbinBookmark = (calendar: boolean): string => `WITH back AS (DELETE FROM material_bin WHERE user_id = $1 AND kind = 'posting' AND id = $2 RETURNING snapshot)${calendar ? `,
+  bk AS (${REBOOKMARK} RETURNING user_id, posting_id)
+  INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
+  ${deadlineEventSelect("bk.user_id", "NULL::uuid", "now()")}
+  FROM bk JOIN job_postings p ON p.id = bk.posting_id WHERE p.deadline >= (now() AT TIME ZONE 'Asia/Seoul')::date
+  ${ON_DEADLINE_EVENT} DO NOTHING` : `
+  ${REBOOKMARK}`}`;
 
 const KINDS: Record<Kind, KindRule> = {
   file: {
@@ -161,10 +170,10 @@ const KINDS: Record<Kind, KindRule> = {
       closed: asBool(row.closed), careerMin: numberOrNull(row.career_min), careerMax: numberOrNull(row.career_max),
       employmentType: textOrNull(row.employment_type), location: textOrNull(row.location), bookmarkedAt: ts(row.at),
     }),
-    remove: (ctx, id) => changed(ctx, BIN_BOOKMARK, [ctx.user.id, id, ctx.now.toISOString()]),
+    remove: (ctx, id) => withCalendar((calendar) => changed(ctx, binBookmark(calendar), [ctx.user.id, id, ctx.now.toISOString()])),
     kept: "SELECT 1 FROM material_bin WHERE user_id = $1 AND kind = 'posting' AND id = $2",
     restore: async (ctx, id) => {
-      await query(ctx.deps.query, UNBIN_BOOKMARK, [ctx.user.id, id]);
+      await withCalendar((calendar) => query(ctx.deps.query, unbinBookmark(calendar), [ctx.user.id, id]));
     },
   },
   link: {
