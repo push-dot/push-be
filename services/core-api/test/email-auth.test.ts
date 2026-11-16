@@ -1064,7 +1064,7 @@ test("a password is guessed at most 30 times an hour", async () => {
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   let now = NOW.getTime();
   const query = counted(db);
