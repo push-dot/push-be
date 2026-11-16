@@ -983,6 +983,11 @@ test("an app store chain that only reaches Apple's root is not enough", async ()
     noReceiptMarker: await note({ leaf: [] }),
     noWwdrMarker: await note({ mid: [CA] }),
     expiredLeaf: await note({ leafValidity: ["240101000000Z", "250101000000Z"] }),
+    leafOnly: await (async () => {
+      const chain = await appleChain();
+      const body = await jws({ notificationType: "DID_RENEW", data: {} }, chain.privateKey, { x5c: chain.x5c.slice(0, 1) });
+      return handle(storeHook("/api/v1/billing/webhook/app-store", body), envOf({ APPLE_ROOT_PEM: chain.rootPem }), { query, now: () => NOW });
+    })(),
   };
   for (const [name, res] of Object.entries(forged)) {
     assert.equal(res.status, 400, name);
