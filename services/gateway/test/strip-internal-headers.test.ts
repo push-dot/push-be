@@ -263,3 +263,39 @@ test("a declared body over 20 MiB is refused before it is read or forwarded", as
   assert.equal(seen.length, 1);
   assert.equal(await seen[0].text(), '{"a":1}');
 });
+
+test("a chunked body over 20 MB is not forwarded", async () => {
+  resetLimits();
+  const MB = 1 << 20;
+  let read = 0;
+  const binding = {
+    fetch: async (request: Request) => {
+      for await (const chunk of request.body as unknown as AsyncIterable<Uint8Array>) read += chunk.byteLength;
+      return new Response("{}", { status: 200 });
+    },
+  };
+  const env = { CORE: binding, APP_ENV: "production" } as FrontEnv;
+  const deps = { query: async () => [] } as Deps;
+  const chunked = (megabytes: number) => {
+    let sent = 0;
+    return new Request("https://push-be.example/api/v1/sources", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent === megabytes) return controller.close();
+          sent += 1;
+          controller.enqueue(new Uint8Array(MB));
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+  };
+  const big = await handle(chunked(21), env, deps);
+  assert.equal(big.status, 413);
+  assert.equal((await big.json() as { error: { code: string } }).error.code, "PAYLOAD_TOO_LARGE");
+  assert.ok(read <= 20 * MB, `forwarded ${read} bytes`);
+  read = 0;
+  const fits = await handle(chunked(20), env, deps);
+  assert.equal(fits.status, 200);
+  assert.equal(read, 20 * MB);
+});
