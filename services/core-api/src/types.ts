@@ -64,6 +64,8 @@ export interface CoreEnv {
   GOOGLE_PLAY_KEY?: string;
   GOOGLE_PLAY_PACKAGE?: string;
   GOOGLE_OIDC_AUDIENCE?: string;
+  /** The service account the Play RTDN Pub/Sub push subscription signs as. */
+  GOOGLE_OIDC_EMAIL?: string;
   EMAIL?: {
     send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
   };
