@@ -19,8 +19,9 @@ const LATEST_SENT = "SELECT sent_at FROM phone_codes WHERE phone = $1 ORDER BY s
 const CONSUME_OPEN = "UPDATE phone_codes SET consumed_at = $2 WHERE phone = $1 AND consumed_at IS NULL";
 const INSERT_CODE = "INSERT INTO phone_codes (id, phone, code_hash, expires_at, attempts, sent_at, consumed_at) VALUES ($1,$2,$3,$4,0,$5,NULL)";
 const ACTIVE_CODE = "SELECT id, code_hash, expires_at, attempts FROM phone_codes WHERE phone = $1 AND consumed_at IS NULL ORDER BY sent_at DESC LIMIT 1";
-const BUMP = "UPDATE phone_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts";
-const CONSUME_ONE = "UPDATE phone_codes SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL";
+// The attempt is taken before the code is compared, so concurrent guesses cannot all read the same count.
+const TAKE_ATTEMPT = "UPDATE phone_codes SET attempts = attempts + 1 WHERE id = $1 AND attempts < $2 AND consumed_at IS NULL RETURNING attempts";
+const CONSUME_ONE = "UPDATE phone_codes SET consumed_at = $2 WHERE id = $1 AND consumed_at IS NULL RETURNING id";
 const BY_PHONE = "SELECT id FROM users WHERE phone = $1 AND is_employer = false";
 const INSERT_USER = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,'phone',$2,'user','ko',$3,NULL,NULL,false,NULL,$2)";
 const INSERT_SOCIAL = "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash, phone) VALUES ($1,$2,$3,'user','ko',$4,$5,$6,false,NULL,$7)";
@@ -192,16 +193,17 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
     throw new HttpError(400, "PHONE_CODE_EXPIRED", "code is expired");
   }
-  if (Number(row.attempts) >= max) {
+  const taken = Number(row.attempts) < max ? await one(ctx.deps.query, TAKE_ATTEMPT, [String(row.id), max]) : null;
+  if (!taken) {
     throw new HttpError(429, "RATE_LIMITED", "too many attempts", { reason: "TOO_MANY_ATTEMPTS", maxAttempts: max });
   }
   if (await sha256Hex(`${String(row.id)}:${code}`) !== String(row.code_hash)) {
-    const bumped = await one(ctx.deps.query, BUMP, [String(row.id)]);
-    const used = Number(bumped?.attempts ?? Number(row.attempts) + 1);
-    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid", { attemptsLeft: Math.max(0, max - used) });
+    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid", { attemptsLeft: Math.max(0, max - Number(taken.attempts)) });
   }
   const pending = await pendingOf(ctx, body);
-  await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
+  if (!(await one(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]))) {
+    throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
+  }
   if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (owner) return linkOrBlock(ctx, String(owner.id), pending, phone);

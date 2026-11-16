@@ -80,14 +80,14 @@ const createDb = () => {
       return { rows: open[0] ? [open[0]] : [], rowCount: open[0] ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET attempts")) {
-      const row = codes.find((item) => item.id === params[0]);
+      const row = codes.find((item) => item.id === params[0] && Number(item.attempts) < Number(params[1]) && item.consumed_at == null);
       if (row) row.attempts = Number(row.attempts) + 1;
       return { rows: row ? [{ attempts: row.attempts }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET consumed_at") && sql.includes("WHERE id")) {
       const row = codes.find((item) => item.id === params[0] && item.consumed_at == null);
       if (row) row.consumed_at = params[1];
-      return { rows: [], rowCount: row ? 1 : 0 };
+      return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("SELECT id FROM users WHERE phone") || sql.startsWith("SELECT id, provider FROM users WHERE phone")) {
       const row = users.find((item) => item.phone === params[0] && item.is_employer === false);

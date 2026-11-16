@@ -110,6 +110,9 @@ const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown
   });
 };
 
+// Each attempt is its own row (0065), so a later signup for the same address cannot change an earlier link's password.
+const INSERT_SIGNUP = "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)";
+
 const signup = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
@@ -126,11 +129,14 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const passwordHash = await hashPassword(password);
   const now = ctx.now.toISOString();
   const id = crypto.randomUUID();
-  const row = await one(ctx.deps.query,
-    "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_employer = EXCLUDED.is_employer, display_name = EXCLUDED.display_name, consent_reference = EXCLUDED.consent_reference, created_at = EXCLUDED.created_at RETURNING id",
-    [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now]);
-  const signupId = String(row?.id ?? id);
-  const token = await issueEmailToken(ctx, "VERIFY", null, signupId);
+  const values = [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now];
+  await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (err: unknown) => {
+    // shortcut: a database without 0065 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0065.
+    if (!isUnique(err)) throw err;
+    await query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]);
+    await query(ctx.deps.query, INSERT_SIGNUP, values);
+  });
+  const token = await issueEmailToken(ctx, "VERIFY", null, id);
   await sendLink(ctx, email, "verify", token);
   return data(202, { accepted: true }, ctx.rid);
 };
@@ -166,12 +172,12 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     query(ctx.deps.query,
       "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$5::timestamptz)",
       [userId, asBool(row.consent_reference), now, TERMS_VERSION, row.created_at]),
-    query(ctx.deps.query, "DELETE FROM email_signups WHERE id = $1", [String(row.signup_id)]),
+    query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]),
   ]);
   return data(200, await issue(ctx, userId), ctx.rid);
 };
 
-const VERIFY_SIGNUP = "SELECT id FROM email_signups WHERE lower(email) = lower($1::text)";
+const VERIFY_SIGNUP = "SELECT id FROM email_signups WHERE lower(email) = lower($1::text) ORDER BY created_at DESC LIMIT 1";
 const NEWEST_VERIFY = "SELECT expires_at FROM email_tokens WHERE signup_id = $1::uuid AND kind = 'VERIFY' ORDER BY expires_at DESC LIMIT 1";
 
 // Always 204. The mail limit runs before the lookup, so an unknown address and a real one look the same.
