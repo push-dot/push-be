@@ -1,7 +1,7 @@
 import { isUndefinedColumn, isUnique, one, query } from "../db.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
-  HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid,
+  HttpError, asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, parseUuid, requireUuid,
 } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -280,58 +280,90 @@ function careersOf(value: unknown): unknown[] {
   });
 }
 
+const PROFILE_SELECT = `SELECT u.display_name, p.headline, p.job_category, p.tenure_years, p.career_status, p.open_to_offers, p.intro, p.careers, p.skills, p.avatar_key, p.resume_source_id
+     FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = $1`;
+
+/** What a profile change can move. The Bot's update_my_profile and PATCH both write these; contact is a plain column and stays out. */
+type ProfileValues = {
+  displayName: string; headline: string; jobCategory: string | null; tenureYears: number | null; careerStatus: string | null;
+  openToOffers: boolean; intro: string; careers: unknown[]; skills: string[]; avatarKey: string | null; resumeSourceId: string | null;
+};
+
+const valuesOf = (row: Record<string, unknown>): ProfileValues => ({
+  displayName: String(row.display_name ?? ""),
+  headline: String(row.headline ?? ""),
+  jobCategory: row.job_category == null ? null : String(row.job_category),
+  tenureYears: row.tenure_years == null ? null : Number(row.tenure_years),
+  careerStatus: row.career_status == null ? null : String(row.career_status),
+  openToOffers: asBool(row.open_to_offers),
+  intro: String(row.intro ?? ""),
+  careers: jsonList(row.careers),
+  skills: jsonList(row.skills).map(String),
+  avatarKey: row.avatar_key == null ? null : String(row.avatar_key),
+  resumeSourceId: row.resume_source_id == null ? null : String(row.resume_source_id),
+});
+
+async function writeValues(ctx: Ctx, v: ProfileValues): Promise<void> {
+  const fields = searchFields([v.displayName, v.headline, v.skills.join(" ")].join(" "));
+  await query(ctx.deps.query, "UPDATE users SET display_name = $2 WHERE id = $1", [ctx.user.id, v.displayName]);
+  await query(ctx.deps.query,
+    `UPDATE profiles SET headline = $2, job_category = $3, tenure_years = $4, career_status = $5, open_to_offers = $6, intro = $7, careers = $8::jsonb, skills = $9::jsonb, avatar_key = $10, resume_source_id = $11, search_text = $12, search_choseong = $13, search_jamo = $14, updated_at = $15 WHERE user_id = $1`,
+    [ctx.user.id, v.headline, v.jobCategory, v.tenureYears, v.careerStatus, v.openToOffers, v.intro, JSON.stringify(v.careers), JSON.stringify(v.skills), v.avatarKey, v.resumeSourceId, fields.text, fields.choseong, fields.jamo, ctx.now.toISOString()]);
+}
+
+async function myProfileResponse(ctx: Ctx, extra: Record<string, unknown> = {}): Promise<Response> {
+  const viewer = await viewerCompanyOf(ctx);
+  const row = await loadProfile(ctx, ctx.user.id);
+  if (!row) throw notFound();
+  return data(200, { ...profileDto(row, ctx.user.id, viewer), following: false, offered: false, ...extra }, ctx.rid);
+}
+
 async function patchMyProfile(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "updatedAt", "followerCount", "followingCount", "postCount", "following", "offered"]);
   await ensureProfile(ctx);
-  const current = await one(ctx.deps.query,
-    `SELECT u.display_name, p.headline, p.job_category, p.tenure_years, p.career_status, p.open_to_offers, p.intro, p.careers, p.skills, p.avatar_key, p.resume_source_id
-     FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = $1`,
-    [ctx.user.id]);
+  const current = await one(ctx.deps.query, PROFILE_SELECT, [ctx.user.id]);
   if (!current) throw notFound();
-  let displayName = String(current.display_name ?? "");
-  if ("displayName" in body) displayName = textOf(body.displayName, "displayName", 1, 80);
-  let headline = String(current.headline ?? "");
-  if ("headline" in body) headline = textOf(body.headline ?? "", "headline", 0, 120);
-  let jobCategory = current.job_category == null ? null : String(current.job_category);
+  const was = valuesOf(current);
+  const next: ProfileValues = { ...was };
+  if ("displayName" in body) next.displayName = textOf(body.displayName, "displayName", 1, 80);
+  if ("headline" in body) next.headline = textOf(body.headline ?? "", "headline", 0, 120);
   if ("jobCategory" in body) {
-    if (body.jobCategory == null || body.jobCategory === "") jobCategory = null;
+    if (body.jobCategory == null || body.jobCategory === "") next.jobCategory = null;
     else if (typeof body.jobCategory !== "string" || !JOB_CATEGORIES.has(body.jobCategory)) throw unprocessable("jobCategory", "unsupported jobCategory");
-    else jobCategory = body.jobCategory;
+    else next.jobCategory = body.jobCategory;
   }
-  let tenure = current.tenure_years == null ? null : Number(current.tenure_years);
-  if ("tenureYears" in body) tenure = body.tenureYears == null ? null : intOf(body.tenureYears, "tenureYears", 0, 80);
-  let careerStatus = current.career_status == null ? null : String(current.career_status);
+  if ("tenureYears" in body) next.tenureYears = body.tenureYears == null ? null : intOf(body.tenureYears, "tenureYears", 0, 80);
   if ("careerStatus" in body) {
-    if (body.careerStatus == null || body.careerStatus === "") careerStatus = null;
+    if (body.careerStatus == null || body.careerStatus === "") next.careerStatus = null;
     else if (typeof body.careerStatus !== "string" || !CAREER_STATUS.has(body.careerStatus)) throw unprocessable("careerStatus", "unsupported careerStatus");
-    else careerStatus = body.careerStatus;
+    else next.careerStatus = body.careerStatus;
   }
-  let openToOffers = asBool(current.open_to_offers);
-  if ("openToOffers" in body) openToOffers = boolOf(body.openToOffers, "openToOffers");
-  let intro = String(current.intro ?? "");
-  if ("intro" in body) intro = textOf(body.intro ?? "", "intro", 0, 2000);
-  let careers = jsonList(current.careers);
-  if ("careers" in body) careers = careersOf(body.careers);
-  let skills = jsonList(current.skills).map(String);
-  if ("skills" in body) skills = stringList(body.skills, "skills", 50, 40);
-  let avatarKey = current.avatar_key == null ? null : String(current.avatar_key);
-  if ("avatarKey" in body) avatarKey = imageKeyOf(body.avatarKey, "avatarKey");
-  let resumeSourceId = current.resume_source_id == null ? null : String(current.resume_source_id);
+  if ("openToOffers" in body) next.openToOffers = boolOf(body.openToOffers, "openToOffers");
+  if ("intro" in body) next.intro = textOf(body.intro ?? "", "intro", 0, 2000);
+  if ("careers" in body) next.careers = careersOf(body.careers);
+  if ("skills" in body) next.skills = stringList(body.skills, "skills", 50, 40);
+  if ("avatarKey" in body) next.avatarKey = imageKeyOf(body.avatarKey, "avatarKey");
   if ("resumeSourceId" in body) {
-    if (body.resumeSourceId == null || body.resumeSourceId === "") resumeSourceId = null;
+    if (body.resumeSourceId == null || body.resumeSourceId === "") next.resumeSourceId = null;
     else {
-      resumeSourceId = requireUuid(String(body.resumeSourceId), "resumeSourceId");
-      const source = await one(ctx.deps.query, "SELECT id FROM sources WHERE id = $1 AND user_id = $2", [resumeSourceId, ctx.user.id]);
+      next.resumeSourceId = requireUuid(String(body.resumeSourceId), "resumeSourceId");
+      const source = await one(ctx.deps.query, "SELECT id FROM sources WHERE id = $1 AND user_id = $2", [next.resumeSourceId, ctx.user.id]);
       if (!source) throw notFound();
     }
   }
-  const fields = searchFields([displayName, headline, skills.join(" ")].join(" "));
-  const now = ctx.now.toISOString();
-  await query(ctx.deps.query, "UPDATE users SET display_name = $2 WHERE id = $1", [ctx.user.id, displayName]);
-  await query(ctx.deps.query,
-    `UPDATE profiles SET headline = $2, job_category = $3, tenure_years = $4, career_status = $5, open_to_offers = $6, intro = $7, careers = $8::jsonb, skills = $9::jsonb, avatar_key = $10, resume_source_id = $11, search_text = $12, search_choseong = $13, search_jamo = $14, updated_at = $15 WHERE user_id = $1`,
-    [ctx.user.id, headline, jobCategory, tenure, careerStatus, openToOffers, intro, JSON.stringify(careers), JSON.stringify(skills), avatarKey, resumeSourceId, fields.text, fields.choseong, fields.jamo, now]);
+  // A Bot run sends its Idempotency-Key: the old values are kept under it before the write, so a failed write only leaves a harmless no-op change.
+  const changeId = parseUuid(ctx.request.headers.get("idempotency-key") || "");
+  if (changeId) {
+    const before: Record<string, unknown> = {};
+    for (const key of Object.keys(was) as (keyof ProfileValues)[]) if (JSON.stringify(was[key]) !== JSON.stringify(next[key])) before[key] = was[key];
+    if (Object.keys(before).length) {
+      await query(ctx.deps.query,
+        "INSERT INTO profile_changes (user_id, id, before, created_at) VALUES ($1,$2,$3::jsonb,$4) ON CONFLICT (user_id, id) DO NOTHING",
+        [ctx.user.id, changeId, JSON.stringify(before), ctx.now.toISOString()]);
+    }
+  }
+  await writeValues(ctx, next);
   if ("contact" in body) {
     const contact = textOf(body.contact ?? "", "contact", 0, 200);
     try {
@@ -340,10 +372,45 @@ async function patchMyProfile(ctx: Ctx): Promise<Response> {
       if (!isUndefinedColumn(err)) throw err;
     }
   }
-  const viewer = await viewerCompanyOf(ctx);
-  const row = await loadProfile(ctx, ctx.user.id);
+  const kept = changeId ? await one(ctx.deps.query, "SELECT id FROM profile_changes WHERE user_id = $1 AND id = $2", [ctx.user.id, changeId]) : null;
+  return myProfileResponse(ctx, kept ? { changeId } : {});
+}
+
+async function getProfileChange(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const row = await one(ctx.deps.query, "SELECT id, before, created_at, undone_at FROM profile_changes WHERE user_id = $1 AND id = $2", [ctx.user.id, id]);
   if (!row) throw notFound();
-  return data(200, { ...profileDto(row, ctx.user.id, viewer), following: false, offered: false }, ctx.rid);
+  return data(200, {
+    id,
+    fields: Object.keys(row.before && typeof row.before === "object" ? row.before as object : {}),
+    undone: row.undone_at != null,
+    createdAt: ts(row.created_at),
+  }, ctx.rid);
+}
+
+/** Puts back the values the change replaced, once. A second call is 409, so a later edit is never overwritten by a stale undo. */
+async function undoProfileChange(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const claimed = await one(ctx.deps.query,
+    "UPDATE profile_changes SET undone_at = $3 WHERE user_id = $1 AND id = $2 AND undone_at IS NULL RETURNING before",
+    [ctx.user.id, id, ctx.now.toISOString()]);
+  if (!claimed) {
+    const exists = await one(ctx.deps.query, "SELECT 1 AS found FROM profile_changes WHERE user_id = $1 AND id = $2", [ctx.user.id, id]);
+    if (!exists) throw notFound();
+    throw new HttpError(409, "CONFLICT", "change already undone");
+  }
+  const current = await one(ctx.deps.query, PROFILE_SELECT, [ctx.user.id]);
+  if (!current) throw notFound();
+  const values = { ...valuesOf(current), ...(claimed.before as Partial<ProfileValues>) };
+  if (values.resumeSourceId && !(await one(ctx.deps.query, "SELECT id FROM sources WHERE id = $1 AND user_id = $2", [values.resumeSourceId, ctx.user.id]))) values.resumeSourceId = null;
+  try {
+    await writeValues(ctx, values);
+  } catch (err) {
+    // Nothing was put back, so the person can try again.
+    await query(ctx.deps.query, "UPDATE profile_changes SET undone_at = NULL WHERE user_id = $1 AND id = $2", [ctx.user.id, id]);
+    throw err;
+  }
+  return myProfileResponse(ctx);
 }
 
 async function offerProfile(ctx: Ctx, idRaw: string): Promise<Response> {
@@ -437,6 +504,9 @@ export const dispatchProfiles = async (ctx: Ctx, path: string): Promise<Response
   if (follow && method === "DELETE") return unfollowUser(ctx, follow[1]);
   if (path === "/api/v1/me/profile" && method === "GET") return getMyProfile(ctx);
   if (path === "/api/v1/me/profile" && method === "PATCH") return patchMyProfile(ctx);
+  const change = path.match(/^\/api\/v1\/me\/profile\/changes\/([^/]+)(\/undo)?$/);
+  if (change && !change[2] && method === "GET") return getProfileChange(ctx, change[1]);
+  if (change && change[2] && method === "POST") return undoProfileChange(ctx, change[1]);
   if (path === "/api/v1/me/follows" && method === "GET") return listRelation(ctx, false);
   if (path === "/api/v1/me/followers" && method === "GET") return listRelation(ctx, true);
   return null;

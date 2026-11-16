@@ -101,6 +101,7 @@ export const routes: Route[] = [
   patch("core", "/api/v1/me/profile", {
     tag,
     summary: "Update my profile",
+    description: "A request with an Idempotency-Key keeps the values it replaced under that key (a Bot run sends one). The response then carries changeId; see GET and POST undo under /me/profile/changes/{id}. No change, no changeId.",
     body: body(obj({
       displayName: text(1, 80),
       headline: nullable(text(0, 120)),
@@ -115,6 +116,20 @@ export const routes: Route[] = [
       resumeSourceId: { ...nullable(str), description: "UUID of a source the caller owns. Null or empty clears it. A missing source is 404." },
       contact: nullable(text(0, 200)),
     }, [])),
+    responses: { 200: ok(ref("ProfileUpdated")) },
+  }),
+  get("core", "/api/v1/me/profile/changes/{id}", {
+    tag,
+    summary: "Get a profile change",
+    description: "What a Bot run changed: the field names and whether it was put back. A reopened chat reads this from the changeId on the update_my_profile tool line. 404 for a change that is not the caller's.",
+    params: [id],
+    responses: { 200: ok(ref("ProfileChange")) },
+  }),
+  post("core", "/api/v1/me/profile/changes/{id}/undo", {
+    tag,
+    summary: "Put a profile change back",
+    description: "Writes the replaced values back; fields the change did not move stay as they are. Works once: a second call is 409 CONFLICT, so a later edit is never overwritten. Needs an Idempotency-Key like every POST.",
+    params: [id],
     responses: { 200: ok(ref("ProfileDetail")) },
   }),
   get("core", "/api/v1/me/offers", {
@@ -490,6 +505,13 @@ export const schemas: Record<string, Schema> = {
     following: bool,
     offered: bool,
   }),
+  ProfileUpdated: obj({
+    ...profileProps,
+    following: bool,
+    offered: bool,
+    changeId: { ...uuid, description: "Present only when the request had an Idempotency-Key and moved a field." },
+  }, [...Object.keys(profileProps), "following", "offered"]),
+  ProfileChange: obj({ id: uuid, fields: arr(str), undone: bool, createdAt: dateTime }),
   Offer: obj({
     id: uuid,
     sender: offerParty,
