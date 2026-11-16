@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -10,9 +9,16 @@ from app.graphs.resume_prompt import phase_prompt_for_harness
 from app.harness.graph import quick_start_resume
 from app.harness.personal.resume.drafts import drafts_from_chosen
 from app.harness.runtime import HarnessRuntime
+from tests.fakes import data_json
 from tests.harness_fakes import CONV, Rows, run, service
 from tests.test_harness_resume import (
-    _Approvals, _PhaseModel, _base, _config, _drive, _graph, _run,
+    _Approvals,
+    _base,
+    _config,
+    _drive,
+    _graph,
+    _PhaseModel,
+    _run,
 )
 
 _DOC = "11111111-1111-4111-8111-111111111111"
@@ -243,7 +249,7 @@ class _RecordingModel(_PhaseModel):
         self.payloads = []
 
     async def ainvoke(self, messages, **kwargs):
-        self.payloads.append(json.loads(messages[-1].content))
+        self.payloads.append(data_json(messages[-1].content))
         return await super().ainvoke(messages, **kwargs)
 
 

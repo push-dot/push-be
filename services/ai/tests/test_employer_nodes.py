@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.domain.employer_baseline import baseline_lines, baseline_stats
+from app.framework.untrusted import as_data
 from app.harness.employer import nodes
 from app.harness.employer.schemas import (
     CompanyProfile,
@@ -243,4 +244,5 @@ async def test_structured_generate_validates_dict_output():
     )
     profile = await structured_generate(model)(CompanyProfile, "sys", "user")
     assert isinstance(profile, CompanyProfile) and profile.facts[0].source_url == "https://x"
-    assert model.seen[0].content.startswith("sys\n\n") and model.seen[1].content == "user"
+    assert model.seen[0].content.startswith("sys\n\n")
+    assert model.seen[1].content == as_data("user", "flow_input", None)

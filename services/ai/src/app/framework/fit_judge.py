@@ -7,6 +7,7 @@ from app.domain import entities as ent
 from app.domain.plan_levers import levers_for
 from app.domain.posting_fit import fit_inputs, fit_view, plan_name
 from app.framework.llm import AiUsageCallback, astructured_reply, chat_model_for
+from app.framework.untrusted import DATA_RULE, as_data
 
 _SYSTEM = (
     "채용 공고와 서류를 비교해 다섯 항목을 각각 0점에서 10점으로 매겨요. "
@@ -47,8 +48,8 @@ async def judge_fit(
     model = chat_model_for(levers, streaming=False, config=app_config, cls=cls)
     posting, document = fit_inputs(requirements, keywords, description, content)
     messages = [
-        SystemMessage(content=_SYSTEM),
-        HumanMessage(content=f"공고:\n{posting}\n\n서류:\n{document}"),
+        SystemMessage(content=_SYSTEM + "\n\n" + DATA_RULE),
+        HumanMessage(content=as_data(f"공고:\n{posting}\n\n서류:\n{document}", "fit_input", None)),
     ]
     owned = None
     if usage is None and gate is not None and user_id is not None:

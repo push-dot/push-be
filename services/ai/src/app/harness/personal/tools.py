@@ -285,7 +285,8 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
-    if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
+    if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
+              exposure=ctx.exposure) is Decision.ASK:
         event = _document_event(
             ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
         approval_id = UUID(str(event["id"]))

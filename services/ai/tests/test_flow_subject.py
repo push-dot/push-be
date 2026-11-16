@@ -10,6 +10,7 @@ import pytest
 from app.harness import runtime as runtime_module
 from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
 from app.harness.runtime import HarnessRuntime
+from tests.fakes import data_json
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
 
 A_URL = "https://jobs.a-corp.example/backend"
@@ -53,7 +54,7 @@ def _first_flow_context() -> dict:
     for call in SeeingLC.seen:
         for message in call:
             try:
-                body = json.loads(message.content)
+                body = data_json(message.content)
             except (TypeError, ValueError):
                 continue
             if isinstance(body, dict) and "phase" in body and "inputs" in body:
