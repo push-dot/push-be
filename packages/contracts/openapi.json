@@ -15159,7 +15159,7 @@
     },
     "/api/v1/auth/email/signup": {
       "post": {
-        "description": "Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
+        "description": "Employer accounts only. The password is chosen when the link is opened (POST /auth/email/verify), not here; a password field in the body is ignored. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.",
         "operationId": "postAuthEmailSignup",
         "requestBody": {
           "content": {
@@ -15188,17 +15188,10 @@
                   "email": {
                     "format": "email",
                     "type": "string"
-                  },
-                  "password": {
-                    "description": "8 to 128 code points",
-                    "maxLength": 128,
-                    "minLength": 8,
-                    "type": "string"
                   }
                 },
                 "required": [
                   "email",
-                  "password",
                   "accountType",
                   "displayName",
                   "agreeTerms"
@@ -15251,13 +15244,19 @@
     },
     "/api/v1/auth/email/verify": {
       "post": {
-        "description": "409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
+        "description": "The person who opens the mailed link chooses the password. A password of 8 to 128 characters is required (400 VALIDATION_ERROR, details.field password, and the link stays usable); a signup made before this change may omit it and keeps the password it was made with. 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.",
         "operationId": "postAuthEmailVerify",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
                 "properties": {
+                  "password": {
+                    "description": "8 to 128 code points",
+                    "maxLength": 128,
+                    "minLength": 8,
+                    "type": "string"
+                  },
                   "token": {
                     "type": "string"
                   }
