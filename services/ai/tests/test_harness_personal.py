@@ -379,7 +379,7 @@ async def test_start_document_marks_resume_active():
 
 
 _PHASES = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "present",
+    "mode_select", "intake", "analyze", "strategy", "craft", "review",
 )
 _JOB = "job-1"
 
@@ -532,15 +532,15 @@ async def test_cancel_text_returns_to_agent_same_thread(text):
     assert any(event.get("token") == "다른 걸 도와드릴까요?" for event in events)
 
 
-async def test_done_returns_to_agent_same_thread():
+async def test_the_profile_save_is_not_confirmed_and_returns_to_agent_same_thread():
     saver = MemorySaver()
     graph = _flow_graph(saver, ScriptedChat([{"content": "다음을 도와드릴까요?"}]), None)
     config = _flow_config("conv-done")
-    await _drain(graph, _flow_input("conv-done", "present"), config)
-    events = await _drain(graph, Command(resume={"option_id": "done"}), config)
+    events = await _drain(graph, _flow_input("conv-done", "present"), config)
     done = await graph.aget_state(config)
     assert done.next == ()
     assert done.values["resume"]["status"] == "done"
+    assert not any(event.get("type") == "choice" and not event.get("auto") for event in events)
     assert any(event.get("token") == "다음을 도와드릴까요?" for event in events)
     assert any(
         getattr(message, "content", "") == "서류 작성을 끝냈어요."

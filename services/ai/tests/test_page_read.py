@@ -59,11 +59,16 @@ def test_a_page_the_bot_chose_asks_unless_the_mode_is_run_at_once():
 
 
 @pytest.mark.parametrize("mode", list(AccessMode))
-@pytest.mark.parametrize("tier", [Tier.SAFE_WRITE, Tier.RISKY_WRITE])
-def test_a_write_in_a_quick_start_still_asks_in_every_mode(mode, tier):
-    assert decide(mode, tier, quick_start=True) is Decision.ASK
-    assert write_needs_approval(mode, tier.value, {"intent": "calendar"})
+def test_an_outward_write_in_a_quick_start_still_asks_in_every_mode(mode):
+    assert decide(mode, Tier.RISKY_WRITE, quick_start=True) is Decision.ASK
+    assert write_needs_approval(mode, Tier.RISKY_WRITE.value, {"intent": "calendar"})
     assert not write_needs_approval(mode, Tier.READ, {"intent": "calendar"})
+
+
+@pytest.mark.parametrize("mode", [AccessMode.AUTO, AccessMode.BYPASS])
+def test_a_recommended_fix_in_a_quick_start_runs_without_a_card(mode):
+    assert not write_needs_approval(mode, Tier.SAFE_WRITE.value, {"intent": "calendar"})
+    assert not write_needs_approval(mode, Tier.RISKY_WRITE.value, {"intent": "hub_profile"}, "update_my_profile")
 
 
 def test_the_page_card_has_three_answers_and_no_lifetime():

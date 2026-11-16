@@ -443,9 +443,16 @@ def _next_phase(state: dict, phase: str) -> str | None:
     return nxt
 
 
+# The profile is saved before this card, and its one answer only repeats what the user asked for (rule 39):
+# the server goes on and sends the card with auto set, so the app has nothing to confirm.
+_NEVER_ASKED = frozenset({"present"})
+
+
 def _must_stop(state: dict, phase: str) -> bool:
     if phase in {"mode_select", "validate_cap", "read_failed"}:
         return True
+    if phase in _NEVER_ASKED:
+        return False
     if (state.get("access_mode") or "AUTO") != "BYPASS":
         return True
     inputs = state.get("inputs") or {}
@@ -815,7 +822,8 @@ def _choice(
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
     elif phase == "present":
-        event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
+        if not auto:
+            event["note"] = "PDF는 Push 프로필에서 내보낼 수 있어요."
         if state.get("profile_document_id"):
             event["documentId"] = state["profile_document_id"]
     detail = detail or gate.get("detail")

@@ -224,7 +224,8 @@ async def test_profile_result_is_the_profile_card_without_a_pdf_step():
     assert doc.title == "Push 프로필"
     assert result["documentId"] == str(doc.id)
     choice = _one(events, "choice")
-    assert choice["note"] == "PDF는 Push 프로필에서 내보낼 수 있어요."
+    assert choice["auto"] is True
+    assert "note" not in choice
     assert any(event.get("token") == "Push 프로필에 저장하는 중…" for event in events)
     assert not [event for event in events if event.get("type") == "file"]
 

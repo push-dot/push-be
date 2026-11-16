@@ -162,7 +162,8 @@ async def test_auto_flow_has_no_publish_gate(monkeypatch):
     ]
     assert "디자인을 적용했어요. PDF로 만들까요?" not in titles
     assert "publish" not in gates
-    assert _PRESENT in titles
+    assert "present" not in gates
+    assert _PRESENT not in titles
 
 
 async def test_present_card_points_at_the_profile(monkeypatch):
@@ -217,7 +218,8 @@ async def test_present_card_points_at_the_profile(monkeypatch):
         {"id": "done", "label": "확인했어요"},
         {"id": "cancel", "label": "닫기"},
     ]
-    assert choice["note"] == _NOTE
+    assert choice["auto"] is True
+    assert "note" not in choice
     assert any(event.get("token") == _SAVING for event in events)
     assert choice["documentId"]
     saved = next(iter(store.docs.values()))
