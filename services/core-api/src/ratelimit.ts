@@ -1,7 +1,8 @@
 import { query, type Query } from "./db.ts";
 
 // Runs on Cloudflare Workers (no Redis). Neon ``rate_limits`` is the source of
-// truth: one CONSUME upsert per request while the bucket is not known full.
+// truth: one CONSUME upsert per request while the bucket is not known full;
+// callers that pass a chunk lease that many tokens per upsert instead.
 // ``remoteHits`` only short-circuits repeat denials in this isolate for the
 // current UTC minute; it never grants quota without a successful consume.
 // On Neon failure, ``memory`` is a last-resort per-isolate counter (same as the
