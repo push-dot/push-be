@@ -16,8 +16,8 @@ const PASSWORD_MAX = 128;
 const LOGIN_PER_MINUTE = 10;
 const MAIL_PER_MINUTE = 3;
 
-let decoy: Promise<string> | null = null;
-const decoyHash = (): Promise<string> => (decoy ??= hashPassword(crypto.randomUUID()));
+let decoy: string | null = null;
+const decoyHash = async (): Promise<string> => (decoy ??= await hashPassword(crypto.randomUUID()));
 
 const limitEmail = async (ctx: Ctx, kind: "login" | "mail", email: string, limit: number): Promise<void> => {
   if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime()))) {

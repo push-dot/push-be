@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeEach, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
@@ -66,11 +67,31 @@ test("a limit below the chunk leases only the limit", async () => {
   assert.equal(db.writes[0][3], 3);
 });
 
-test("concurrent requests share one lease write", async () => {
+test("concurrent requests each take their own lease and keep every granted token", async () => {
   const db = counter();
-  const results = await Promise.all(Array.from({ length: 8 }, () => allow(db.query, "user", "u1", 600, T0, 10)));
-  assert.deepEqual(results, Array(8).fill(true));
-  assert.equal(db.writes.length, 1);
+  const burst = await Promise.all(Array.from({ length: 8 }, () => allow(db.query, "user", "u1", 600, T0, 10)));
+  assert.deepEqual(burst, Array(8).fill(true));
+  assert.equal(db.writes.length, 8);
+  for (let i = 0; i < 72; i++) assert.equal(await allow(db.query, "user", "u1", 600, T0, 10), true);
+  assert.equal(db.writes.length, 8, "8 leases of 10 cover 80 requests; none was overwritten");
+});
+
+test("concurrent requests never admit more than the limit", async () => {
+  const db = counter();
+  const results = await Promise.all(Array.from({ length: 40 }, () => allow(db.query, "user", "u1", 25, T0, 10)));
+  assert.equal(results.filter(Boolean).length, 25);
+});
+
+test("a request never awaits a database call another request started", async () => {
+  const requests = new AsyncLocalStorage<string>();
+  const owners: (string | undefined)[] = [];
+  const query: Query = (_sql, params = []) => {
+    owners.push(requests.getStore());
+    const [, , , size] = params as [string, number, number, number];
+    return new Promise((resolve) => setImmediate(() => resolve({ rows: [{ hits: size }], rowCount: 1 })));
+  };
+  await Promise.all(["a", "b", "c"].map((id) => requests.run(id, () => allow(query, "user", "u1", 600, T0, 10))));
+  assert.deepEqual(owners, ["a", "b", "c"]);
 });
 
 test("a failing database falls back to the isolate window and counts the limit", async () => {
