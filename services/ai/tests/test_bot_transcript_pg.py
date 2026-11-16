@@ -61,6 +61,7 @@ async def person(db) -> UUID:
     await db.q().execute(
         "INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'test', $2, 'transcript')",
         user, str(user))
+    await db.q().execute("INSERT INTO user_consents (user_id, reference_data) VALUES ($1, true)", user)
     return user
 
 

@@ -12,11 +12,13 @@ from app.harness.core_client import CoreClient
 from app.harness.approval import CARDS
 from app.harness.graph import bot_prompt
 from app.harness.personal.resume.graph import build_resume_graph
-from app.harness.personal.tools import CARD_LABEL, PROGRESS
+from app.harness.personal.tools import CARD_LABEL
 from app.harness.policy import Tier
 from app.harness.registry import REGISTRY
 from app.harness.runtime import HarnessRuntime
-from app.harness.status import NODE_STATUS, STEPS, Run, current_run
+from app.harness.status import (
+    NODE_STATUS, STEPS, TOOL_STATUS, WORKING, Run, current_run, tool_status,
+)
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
 
 POSTING = "11111111-1111-4111-8111-111111111111"
@@ -216,9 +218,27 @@ async def test_a_document_edit_card_waits_for_a_confirm():
     ]
 
 
-def test_every_personal_tool_says_what_it_does_while_it_runs():
-    assert set(PROGRESS) == {tool.name for tool in REGISTRY["personal"].tools}
-    assert [name for name, text in PROGRESS.items() if not text.endswith("는 중")] == []
+def test_every_tool_of_both_harnesses_says_what_it_does_while_it_runs():
+    names = {tool.name for harness in REGISTRY.values() for tool in harness.tools}
+
+    assert names <= set(TOOL_STATUS)
+    assert set(TOOL_STATUS) <= names
+
+
+def test_every_tool_status_is_a_short_noun_phrase_in_progress():
+    for name, text in TOOL_STATUS.items():
+        assert text.endswith("는 중"), name
+        assert len(text) <= 14, name
+        assert not any(mark in text for mark in ".!?_"), name
+        assert "에이전트" not in text, name
+        assert name not in text, name
+
+
+def test_a_tool_with_no_line_says_the_generic_one_and_never_its_name():
+    assert WORKING == "작업 중"
+    assert tool_status("search_postings") == TOOL_STATUS["search_postings"]
+    assert tool_status("some_new_tool") == WORKING
+    assert tool_status("") == WORKING
 
 
 def test_every_personal_write_names_its_card():
@@ -373,7 +393,7 @@ def test_an_employers_posting_title_stays_on_the_bots_line():
 def test_no_sentence_a_bot_thread_shows_says_the_korean_word_bot():
     """The app writes the English word Bot. 봇 in a prompt, a status line or an approval card leaks into the thread."""
     prompts = [bot_prompt("웹의 첫 줄\n나머지", bot) for bot in (PUSH_BOT, dict(COMPANY_BOT))]
-    shown = [*prompts, *STEPS, *NODE_STATUS.values(), *PROGRESS.values(), *CARD_LABEL.values()]
+    shown = [*prompts, *STEPS, *NODE_STATUS.values(), *TOOL_STATUS.values(), *CARD_LABEL.values()]
     shown.append(json.dumps(CARDS, ensure_ascii=False, default=str))
     assert [text for text in shown if "봇" in str(text)] == []
 

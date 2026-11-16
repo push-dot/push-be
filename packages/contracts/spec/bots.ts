@@ -141,7 +141,7 @@ export const routes: Route[] = [
   post("core", "/api/v1/bots", {
     tag: "bots",
     summary: "Open the company bot of a posting, creating it when the caller has none for that company",
-    description: "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.",
+    description: "One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.",
     body: body(ref("CreateBotBody")),
     responses: { 200: ok(ref("Bot"), "The caller already has a bot for that company"), 201: ok(ref("Bot"), "Created") },
   }),

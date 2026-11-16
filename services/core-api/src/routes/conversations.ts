@@ -50,7 +50,7 @@ const FORM_OVERHEAD_BYTES = 64 * 1024;
 const REJECT_WAITING = "rejected AS (UPDATE approvals SET status = 'REJECTED', updated_at = now(), revision = revision + 1 WHERE conversation_id = (SELECT id FROM conv) AND status = 'PENDING' AND kind NOT IN ('RESUME_GATE', 'EMPLOYER_GATE') AND (kind = 'TOOL_ACTION' OR job_id IS NOT NULL) AND EXISTS (SELECT 1 FROM msg) RETURNING id)";
 const RESUMABLE = new Set(["TOOL_ACTION", "RESUME_GATE", "EMPLOYER_GATE"]);
 const EVIDENCE_REFS = "SELECT (a->>'id')::uuid FROM messages m, jsonb_array_elements(m.attachments) a WHERE m.user_id = $1 AND a->>'type' = 'EVIDENCE' AND a->>'id' IS NOT NULL";
-const AGENT_CONSENT = "SELECT reference_data FROM user_consents WHERE user_id = $1";
+const AGENT_CONSENT = "SELECT COALESCE((SELECT reference_data FROM user_consents WHERE user_id = $1), false) AND COALESCE((SELECT allow_ai_read_my_files FROM user_settings WHERE user_id = $1), true) AS reference_data";
 export const SAVED_ACCESS_MODE = "SELECT to_jsonb(s)->>'ai_access_mode' AS ai_access_mode FROM user_settings s WHERE s.user_id = $1";
 const ARCHIVE_ORPHAN_EVIDENCE = "UPDATE career_evidence e SET archived = true, revision = e.revision + 1, updated_at = $3"
   + " WHERE e.user_id = $1 AND e.archived = false"

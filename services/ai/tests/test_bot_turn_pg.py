@@ -45,6 +45,7 @@ async def queued_turn(db, attachments: list, *, bot: bool = True) -> SimpleNames
         user,
         str(user),
     )
+    await q.execute("INSERT INTO user_consents (user_id, reference_data) VALUES ($1, true)", user)
     if bot:
         await q.execute(
             "INSERT INTO bots (id, user_id, kind, company_name, display_name) "
@@ -151,6 +152,25 @@ async def test_no_event_and_no_operation_of_the_turn_names_its_thread(db):
         )
         stored = [event["payload"] for event in events] + [operation]
         assert not [text for text in stored if str(turn.thread) in text]
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", turn.user)
+
+
+async def test_a_run_without_consent_fails_with_consent_required_before_it_says_anything(db):
+    from app.queue.worker import JobFailed
+
+    turn = await queued_turn(db, [])
+    try:
+        await db.q().execute("UPDATE user_consents SET reference_data = false WHERE user_id = $1", turn.user)
+
+        with pytest.raises(JobFailed):
+            await run_turn(db, turn)
+
+        assert await db.q().fetchval("SELECT count(*) FROM chat_events WHERE job_id = $1 AND type IN ('status', 'token', 'tool')", turn.job) == 0
+        assert await db.q().fetchval(
+            "SELECT payload->'error'->>'code' FROM chat_events WHERE job_id = $1 AND type = 'error'",
+            turn.job,
+        ) == "CONSENT_REQUIRED"
     finally:
         await db.q().execute("DELETE FROM users WHERE id = $1", turn.user)
 
