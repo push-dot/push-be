@@ -28719,8 +28719,16 @@
                 "additionalProperties": false,
                 "properties": {
                   "applicationId": {
-                    "format": "uuid",
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The application (posting) the document belongs to. Leave it out or null for a document that belongs to none, such as a hub profile or a portfolio. A given id must be the caller's application, else 404."
                   },
                   "kind": {
                     "enum": [
@@ -28754,7 +28762,6 @@
                   }
                 },
                 "required": [
-                  "applicationId",
                   "title",
                   "kind",
                   "template",
@@ -39767,6 +39774,7 @@
     },
     "/api/v1/sources/{id}/profile-draft": {
       "get": {
+        "description": "422 VALIDATION_ERROR (details.field sourceId) when the source has no stored file or its PDF cannot be read. 400 when the file is neither a PDF nor text.",
         "operationId": "getSourcesByIdProfileDraft",
         "parameters": [
           {
