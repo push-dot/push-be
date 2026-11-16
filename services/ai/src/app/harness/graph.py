@@ -178,13 +178,14 @@ def _exposure(state: dict, tools_by_name: dict) -> Exposure:
     return found
 
 
-def _dictated(url: str, exposure: Exposure, seen: str) -> bool:
+def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
     """Whether untrusted text could have built this address to carry the user's data out. Right
     after such text, any address the thread does not hold; with such text only earlier in the
-    thread, one with a query string, so a bot still opens other pages of a granted site."""
+    thread, one with a query string or off a granted host, so a bot still opens other pages of a
+    granted site."""
     if exposure is Exposure.NONE or url in seen:
         return False
-    return exposure is Exposure.RUN or bool(urlsplit(url).query)
+    return exposure is Exposure.RUN or not granted or bool(urlsplit(url).query)
 
 
 def _seen_text(state: dict) -> str:
@@ -482,7 +483,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 "granted": await site_granted(db, thread, args.url),
             }
         dictated = meta["tier"] is Tier.EXTERNAL_READ and _dictated(
-            args.url, exposure, _seen_text(state))
+            args.url, exposure, _seen_text(state), page["granted"])
         quick = state.get("quick_start")
         asks = write_needs_approval(
             mode, meta["tier"], quick, tool.name, **page, exposure=exposure, dictated=dictated)
