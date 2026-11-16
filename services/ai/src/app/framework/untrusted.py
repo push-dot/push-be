@@ -103,19 +103,24 @@ def strip_exfil(text: str, context: str) -> str:
     def ref(match: re.Match) -> str:
         return match.group(0) if match.group(1) in context else ""
 
+    def css(match: re.Match) -> str:
+        return match.group(0) if match.group(1) in context else ""
+
+    def once(value: str) -> str:
+        value = _html(_markdown(value, 0, len(value), _pairs(value), context, 0), context)
+        return _REF_DEF.sub(ref, _CSS_URL.sub(css, value))
+
     source = text or ""
     out = source
     for _ in range(_ROUNDS):
-        # Removing a tag can join `!`, `[a]` and `(url)` into an image, and removing a link can join `<` and
-        # `img`, so the two passes repeat until nothing changes.
-        stripped = _html(_markdown(out, 0, len(out), _pairs(out), context, 0), context)
+        # Each pass can join what the others cut apart (`!`, `[a]` and `(url)` into an image, `<` and `img`
+        # into a tag), so they repeat until nothing changes, and the markers are broken last if that takes long.
+        stripped = once(out)
         if stripped == out:
             break
         out = stripped
     else:
-        out = out.replace("<", "\uff1c").replace("![", "! [").replace("](", "] (")
-    out = _CSS_URL.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
-    out = _REF_DEF.sub(ref, out)
+        out = once(out).replace("<", "\uff1c").replace("![", "! [").replace("](", "] (")
     if out != source:
         _log.warning("answer lost an image or an unseen link before it was stored")
     return out

