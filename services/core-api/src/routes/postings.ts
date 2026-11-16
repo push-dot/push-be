@@ -1,4 +1,4 @@
-import { isMissingRelation, isUndefinedColumn, isUnique, one, query, type QueryResult } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, isUnique, namesUndefinedColumn, one, query, withCalendar, type QueryResult } from "../db.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
@@ -447,22 +447,24 @@ async function requireOpenPosting(ctx: Ctx, idRaw: string): Promise<string> {
   return id;
 }
 
-const BOOKMARK_SQL = `WITH bk AS (
-    INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3::timestamptz) ON CONFLICT (user_id, posting_id) DO NOTHING
-  )
+const BOOKMARK_INSERT = "INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3::timestamptz) ON CONFLICT (user_id, posting_id) DO NOTHING";
+
+const bookmarkSql = (calendar: boolean): string => calendar ? `WITH bk AS (${BOOKMARK_INSERT})
   INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
   ${deadlineEventSelect("$1::uuid", "NULL::uuid", "$3::timestamptz")}
   FROM job_postings p WHERE p.id = $2 AND p.deadline >= ($3::timestamptz AT TIME ZONE 'Asia/Seoul')::date
-  ${ON_DEADLINE_EVENT} DO NOTHING`;
+  ${ON_DEADLINE_EVENT} DO NOTHING` : BOOKMARK_INSERT;
 
 // An applied posting keeps its event (application_id is set), whatever happens to the bookmark.
-const UNBOOKMARK_SQL = `WITH bk AS (DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2)
-  DELETE FROM calendar_events WHERE user_id = $1 AND posting_id = $2 AND application_id IS NULL`;
+const unbookmarkSql = (calendar: boolean): string => calendar
+  ? `WITH bk AS (DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2)
+  DELETE FROM calendar_events WHERE user_id = $1 AND posting_id = $2 AND application_id IS NULL`
+  : "DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2";
 
 async function bookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
   // One statement: the bookmark and its deadline event commit together. A deadline already past or absent adds no event.
-  await query(ctx.deps.query, BOOKMARK_SQL, [ctx.user.id, id, ctx.now.toISOString()]);
+  await withCalendar((calendar) => query(ctx.deps.query, bookmarkSql(calendar), [ctx.user.id, id, ctx.now.toISOString()]));
   return noContent(ctx.rid);
 }
 
@@ -470,7 +472,7 @@ async function unbookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [id]);
   if (!row) throw notFound();
-  await query(ctx.deps.query, UNBOOKMARK_SQL, [ctx.user.id, id]);
+  await withCalendar((calendar) => query(ctx.deps.query, unbookmarkSql(calendar), [ctx.user.id, id]));
   return noContent(ctx.rid);
 }
 
@@ -521,7 +523,9 @@ const idList = (value: unknown, field: string): string[] => {
  * when the caller has no application for the posting yet, which closes most of the double-apply window.
  */
 
-const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
+type ApplyTier = { calendar: boolean; stamp: boolean; snapshot: boolean };
+
+const applySql = ({ calendar, stamp, snapshot }: ApplyTier): string => `WITH job AS (
     INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
     SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
     WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
@@ -539,12 +543,12 @@ const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
       ) FROM profiles p WHERE p.user_id = $2
     )` : ""} FROM job
     RETURNING id
-  ), cal AS (
+  )${calendar ? `, cal AS (
     INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
     ${deadlineEventSelect("$2::uuid", "app.id", "$9::timestamptz")}
     FROM app JOIN job_postings p ON p.id = $3 WHERE p.deadline IS NOT NULL
     ${ON_DEADLINE_EVENT} DO UPDATE SET application_id = EXCLUDED.application_id, revision = calendar_events.revision + 1, updated_at = EXCLUDED.updated_at
-  ), ev AS (
+  )` : ""}, ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
     SELECT gen_random_uuid(), $2, app.id, 'APPLIED', $13::jsonb, $9 FROM app
   ), snaps AS (
@@ -558,15 +562,6 @@ const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
     FROM app, jsonb_array_elements_text($15::jsonb) AS r(id) JOIN sources s ON s.id = r.id::uuid AND s.user_id = $2
   )
   SELECT id FROM app`;
-
-const APPLY_SQL = applySql(true, true);
-const APPLY_SQL_STAMP = applySql(true, false);
-const APPLY_SQL_BARE = applySql(false, false);
-
-const namesUndefinedColumn = (err: unknown, column: string): boolean => {
-  const e = err as { message?: string };
-  return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
-};
 
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
@@ -619,18 +614,18 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
       throw err;
     }
   };
-  try {
-    created = await runApply(APPLY_SQL);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
-    // Snapshot is newer than stage_entered_at. A database that lacks only the snapshot
-    // keeps the stamp. One that lacks the stamp (the error names that column) uses the bare insert.
-    const next = namesUndefinedColumn(err, "applicant_snapshot") ? APPLY_SQL_STAMP : APPLY_SQL_BARE;
+  // A database behind on migrations (0063 posting_id, snapshot, stage_entered_at) drops the newest part the error names and retries.
+  let tier: ApplyTier = { calendar: true, stamp: true, snapshot: true };
+  for (;;) {
     try {
-      created = await runApply(next);
-    } catch (err2) {
-      if (!isUndefinedColumn(err2) || next === APPLY_SQL_BARE) throw err2;
-      created = await runApply(APPLY_SQL_BARE);
+      created = await runApply(applySql(tier));
+      break;
+    } catch (err) {
+      if (!isUndefinedColumn(err)) throw err;
+      if (tier.calendar && namesUndefinedColumn(err, "posting_id")) tier = { ...tier, calendar: false };
+      else if (tier.snapshot && namesUndefinedColumn(err, "applicant_snapshot")) tier = { ...tier, snapshot: false };
+      else if (tier.stamp || tier.snapshot) tier = { ...tier, stamp: false, snapshot: false };
+      else throw err;
     }
   }
   if (!created) {
