@@ -47,6 +47,48 @@ def _node_lines(node: dict, out: list[str], prefix: str = "") -> None:
             out.append(prefix + text)
 
 
+_JOB_CATEGORIES = {
+    "dev": "개발", "data": "데이터", "design": "디자인", "plan": "기획",
+    "marketing": "마케팅", "sales": "영업", "hr": "인사", "ops": "경영지원"}
+_CAREER_STATUSES = {
+    "satisfied": "만족", "seeking": "이직/구직중", "feedback": "프로필 피드백"}
+
+
+def _month(value: object) -> str:
+    year, _, rest = str(value or "").partition("-")
+    month = rest[:2]
+    if not year.isdigit() or not month.isdigit():
+        return str(value or "")
+    return f"{year}년 {int(month)}월"
+
+
+def profile_lines(profile: dict) -> list[str]:
+    """The hub profile as the profile screen shows it: header, 소개, 경력, 기술 스택."""
+    lines = [f"# {profile['display_name']}"]
+    if profile.get("headline"):
+        lines.append(profile["headline"])
+    tenure = profile.get("tenure_years")
+    badges = [
+        _JOB_CATEGORIES.get(profile.get("job_category") or ""),
+        None if tenure is None else "신입" if tenure == 0 else f"{tenure}년차",
+        _CAREER_STATUSES.get(profile.get("career_status") or "")]
+    if any(badges):
+        lines.append(" · ".join(b for b in badges if b))
+    if profile.get("intro"):
+        lines += ["", "## 소개", profile["intro"]]
+    careers = profile.get("careers") or []
+    if careers:
+        lines += ["", "## 경력"]
+        for c in careers:
+            period = f"{_month(c.get('startedOn'))} – {_month(c.get('endedOn')) or '현재'}"
+            lines += [f"{c.get('company', '')} · {c.get('role', '')}", period]
+            if c.get("description"):
+                lines.append(c["description"])
+    if profile.get("skills"):
+        lines += ["", "## 기술 스택", ", ".join(profile["skills"])]
+    return lines
+
+
 def render_pdf(md_lines: list[str], template: str | None = None,
                photo_bytes: bytes | None = None) -> bytes:
     from app.domain.entities import stored_document_template

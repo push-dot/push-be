@@ -41,6 +41,10 @@ def validation_field(field: str, msg: str) -> DomainError:
     return DomainError(400, VALIDATION, msg, {"field": field})
 
 
+def unprocessable_field(field: str, msg: str) -> DomainError:
+    return DomainError(422, VALIDATION, msg, {"field": field})
+
+
 def unauthenticated(msg: str) -> DomainError:
     return DomainError(401, UNAUTHENTICATED, msg)
 

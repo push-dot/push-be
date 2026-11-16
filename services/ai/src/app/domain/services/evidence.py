@@ -6,7 +6,8 @@ from uuid import UUID, uuid4
 
 from app.db import DB, NotFoundError
 from app.domain import entities as ent
-from app.domain.errors import internal, validation_field, integration_required
+from app.domain.errors import (
+    integration_required, internal, unprocessable_field, validation_field)
 from app.domain.validators import code_point_len, hash_bytes, validate_https_url
 from app.infrastructure.store_evidence import EvidenceStore, SourceStore
 from app.infrastructure.store_operations import OperationStore
@@ -89,14 +90,19 @@ class EvidenceService:
             raise internal()
         try:
             data = await self.sources.content(user_id, source_id)
-            if src.mime_type == "application/pdf":
-                from app.ingest.pdf_text import extract_pdf_bytes
-                return extract_pdf_bytes(data)
-            if src.mime_type.startswith("text/") or src.file_name.lower().endswith(
-                    (".txt", ".md", ".markdown")):
-                return data.decode("utf-8", errors="replace")
         except Exception:
             raise internal()
+        if not data:
+            raise unprocessable_field("sourceId", "the source has no file to read")
+        if src.mime_type == "application/pdf":
+            from app.ingest.pdf_text import extract_pdf_bytes
+            try:
+                return extract_pdf_bytes(data)
+            except Exception:
+                raise unprocessable_field("sourceId", "the PDF cannot be read")
+        if src.mime_type.startswith("text/") or src.file_name.lower().endswith(
+                (".txt", ".md", ".markdown")):
+            return data.decode("utf-8", errors="replace")
         raise validation_field(
             "sourceId", "cannot extract text from " + src.mime_type)
 

@@ -3101,7 +3101,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List my posts */
+        /**
+         * List my posts
+         * @description sort=views orders by view count and sort=comments by comment count, each then newest first. Those two ignore the cursor and answer the first limit rows with hasMore false and nextCursor null.
+         */
         get: operations["getMePosts"];
         put?: never;
         post?: never;
@@ -3130,6 +3133,46 @@ export interface paths {
         head?: never;
         /** Update my profile */
         patch: operations["patchMeProfile"];
+        trace?: never;
+    };
+    "/api/v1/me/profile/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download my profile as a PDF
+         * @description The profile screen as a file: name, headline, 소개, 경력 and 기술 스택, without any AI call. A section with nothing in it is left out. photo=1 stamps the avatar on the first page; any other value is ignored. Content-Disposition is an attachment named after the display name.
+         */
+        get: operations["getMeProfilePdf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/saved-posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List posts I saved
+         * @description Newest save first. sort=views and sort=comments work as on /me/posts. Posts of an author whose account is being deleted are left out.
+         */
+        get: operations["getMeSavedPosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/me/settings": {
@@ -3554,6 +3597,30 @@ export interface paths {
         /** Comment on a post */
         post: operations["postPostsByIdComments"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/posts/{id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save a post
+         * @description Idempotent. 404 when the post does not exist.
+         */
+        post: operations["postPostsByIdSave"];
+        /**
+         * Remove a saved post
+         * @description Idempotent.
+         */
+        delete: operations["deletePostsByIdSave"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3988,7 +4055,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Parse a profile draft from a source */
+        /**
+         * Parse a profile draft from a source
+         * @description 422 VALIDATION_ERROR (details.field sourceId) when the source has no stored file or its PDF cannot be read. 400 when the file is neither a PDF nor text.
+         */
         get: operations["getSourcesByIdProfileDraft"];
         put?: never;
         post?: never;
@@ -4281,6 +4351,13 @@ export interface components {
             spentMicroCredits: number;
             /** @enum {string} */
             subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
+            /** @description PERSONAL only: this UTC month's settled usage of each Bot, from the jobs that ran in its thread, biggest first. Usage outside a Bot thread and deleted Bots are not listed, so the sum can be below spentMicroCredits. Empty when no Bot used credits. */
+            usageByBot?: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+                usedMicroCredits: number;
+            }[];
         };
         BlockedUser: {
             /** Format: date-time */
@@ -10965,8 +11042,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** Format: uuid */
-                    applicationId: string;
+                    /** @description The application (posting) the document belongs to. Leave it out or null for a document that belongs to none, such as a hub profile or a portfolio. A given id must be the caller's application, else 404. */
+                    applicationId?: string | null;
                     /** @enum {string} */
                     kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
                     language: string;
@@ -13734,6 +13811,7 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
+                sort?: "latest" | "views" | "comments";
             };
             header?: never;
             path?: never;
@@ -13815,6 +13893,60 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["ProfileDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeProfilePdf: {
+        parameters: {
+            query?: {
+                /** @description 1 embeds the avatar */
+                photo?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rendered PDF */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeSavedPosts: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                sort?: "latest" | "views" | "comments";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"][];
+                        page: components["schemas"]["Page"];
                     };
                 };
             };
@@ -14767,6 +14899,51 @@ export interface operations {
                         data: components["schemas"]["Comment"];
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostsByIdSave: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deletePostsByIdSave: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
