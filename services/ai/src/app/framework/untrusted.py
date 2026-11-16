@@ -32,20 +32,16 @@ def as_data(text: str, source: str, limit: int | None = DATA_MAX) -> str:
 
 _DEST = re.compile(r"\(\s*<?([^)\s>]{1,4096}+)>?(?:\s+[^)]{0,500}+)?\)")
 _BRACKET = re.compile(r"\\.|[\[\]]", re.DOTALL)
-_AUTOLINK = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096}+)>", re.IGNORECASE)
+# A <style> block goes with its text; then every `<` a browser could open a tag with (a letter, `/`, `!`,
+# `?`) goes through the next `>` (or to the end), except an autolink to an address the run saw. Quotes are
+# not tracked on purpose: whatever the tag meant, no `<` that starts one is left.
+_STYLE = re.compile(r"<style\b[^>]*+>(?:(?!</style).)*+(?:</style[^>]*+>)?", re.IGNORECASE | re.DOTALL)
+_HTML_TAG = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096}+)>|<[A-Za-z/!?][^>]*+>?", re.IGNORECASE)
 _CSS_URL = re.compile(r"(?:url|image-set)\(\s*[\"']?([^()\"'\s]{1,4096}+)[\"']?\s*\)", re.IGNORECASE)
 _REF_DEF = re.compile(
     r"^[ \t]{0,3}\[[^\]\n]{1,500}\]:[ \t]*<?(\S{1,4096}?)>?(?:[ \t].*)?$", re.MULTILINE)
 _NESTING = 50
-# Tags that fetch on render, or open one that does.
-_FETCH_TAGS = frozenset((
-    "img image source video audio iframe embed object link input meta svg use area base frame frameset "
-    "bgsound track param applet script math mglyph form button").split())
-# A style or background attribute loads what its url() or image-set() names, and entities or CSS escapes
-# can hide the word url, so these attributes take the tag with them.
-_FETCH_ATTRS = frozenset("style background srcset poster formaction ping action".split())
-_BLANK = " \t\r\n\f"
-_ATTR_END = _BLANK + "=>/"
+_ROUNDS = 8
 
 
 def _pairs(text: str) -> dict[int, int]:
@@ -94,92 +90,30 @@ def _markdown(text: str, start: int, end: int, closes: dict[int, int], context: 
         at = after
 
 
-def _tag_end(text: str, at: int) -> tuple[int, list[tuple[str, str]]]:
-    """Reads the attributes of the tag whose name ends at `at`: where the tag ends (len(text) when it
-    never closes) and its (name, value) pairs. One pass, with no limit on how long a tag may be."""
-    attrs: list[tuple[str, str]] = []
-    size = len(text)
-    while at < size:
-        if text[at] in _BLANK or text[at] == "/":
-            at += 1
-            continue
-        if text[at] == ">":
-            return at + 1, attrs
-        begin = at
-        at += 1
-        while at < size and text[at] not in _ATTR_END:
-            at += 1
-        name = text[begin:at].lower()
-        while at < size and text[at] in _BLANK:
-            at += 1
-        value = ""
-        if at < size and text[at] == "=":
-            at += 1
-            while at < size and text[at] in _BLANK:
-                at += 1
-            if at < size and text[at] in "\"'":
-                close = text.find(text[at], at + 1)
-                if close < 0:
-                    return size, attrs
-                value, at = text[at + 1:close], close + 1
-            else:
-                begin = at
-                while at < size and text[at] not in _BLANK and text[at] != ">":
-                    at += 1
-                value = text[begin:at]
-        attrs.append((name, value))
-    return size, attrs
-
-
 def _html(text: str, context: str) -> str:
-    """Drops every tag that fetches on render, a <style> block, an <a> whose href is not in the context
-    and any tag with a style or background attribute; the text between tags stays. A tag that never
-    closes goes to the end, as a browser reads it."""
-    out: list[str] = []
-    at = 0
-    lowered = text.lower()
-    while True:
-        lt = text.find("<", at)
-        if lt < 0:
-            out.append(text[at:])
-            return "".join(out)
-        name_end = lt + 1
-        while name_end < len(text) and (text[name_end].isalnum()):
-            name_end += 1
-        name = text[lt + 1:name_end].lower()
-        if not name or not text[lt + 1].isalpha():
-            out.append(text[at:lt + 1])
-            at = lt + 1
-            continue
-        out.append(text[at:lt])
-        end, attrs = _tag_end(text, name_end)
-        if name == "style":
-            close = lowered.find("</style", end)
-            end = len(text) if close < 0 else text.find(">", close) + 1 or len(text)
-            drop = True
-        elif name in _FETCH_TAGS:
-            drop = True
-        elif name == "a":
-            drop = any(key == "href" and value not in context for key, value in attrs)
-        else:
-            drop = any(key in _FETCH_ATTRS for key, _ in attrs)
-        if not drop:
-            out.append(text[lt:end])
-        at = end
+    text = _STYLE.sub("", text)
+    return _HTML_TAG.sub(lambda tag: tag.group(0) if tag.group(1) and tag.group(1) in context else "", text)
 
 
 def strip_exfil(text: str, context: str) -> str:
     """An answer cannot make the app load or offer an address the run never saw: an image is
     fetched on render, and a link built by the model can carry the user's data in its query.
-    Images become their alt text, fetching HTML tags go, a link keeps its label and an autolink
-    goes unless its URL is in the context."""
+    Images become their alt text, every HTML tag goes (a tag cannot be read the way a browser reads
+    it, so none is kept), a link keeps its label and an autolink goes unless its URL is in the context."""
     def ref(match: re.Match) -> str:
         return match.group(0) if match.group(1) in context else ""
 
     source = text or ""
-    out = _markdown(source, 0, len(source), _pairs(source), context, 0)
-    out = _html(out, context)
-    out = _AUTOLINK.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
+    out = source
+    for _ in range(_ROUNDS):
+        # Removing a tag can join `!`, `[a]` and `(url)` into an image, and removing a link can join `<` and
+        # `img`, so the two passes repeat until nothing changes.
+        stripped = _html(_markdown(out, 0, len(out), _pairs(out), context, 0), context)
+        if stripped == out:
+            break
+        out = stripped
+    else:
+        out = out.replace("<", "\uff1c").replace("](", "] (")
     out = _CSS_URL.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _REF_DEF.sub(ref, out)
     if out != source:

