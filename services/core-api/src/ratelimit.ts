@@ -24,8 +24,9 @@ const LEASE_SQL = (
   + "WHERE rate_limits.hits < $3 RETURNING hits"
 );
 
-// Tokens per lease for the per-user bucket (600/min): 1/60 of the limit, so at most 10 tokens per
-// isolate are stranded at the end of a minute and a user sees 429 no later than 590 requests in.
+// Tokens per lease for the per-user bucket (600/min): 1/60 of the limit. Each isolate that served the
+// user can strand up to USER_LEASE - 1 leased tokens when the minute rolls over, so a user spread over
+// k isolates sees 429 after at least 600 - 9k requests, not a fixed 590.
 export const USER_LEASE = 10;
 
 // Fallback counters for the current minute only; a new minute clears them so the map stays bounded.
