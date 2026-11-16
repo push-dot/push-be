@@ -218,7 +218,10 @@ async def test_an_earlier_injection_cannot_open_an_ungranted_page_in_a_later_byp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", [f"/u/{SECRET}", "/u/c2VjcmV0LWRhdGEtZnJvbS10aGUtdXNlcg"])
+@pytest.mark.parametrize(
+    "path",
+    [f"/u/{SECRET}", "/u/c2VjcmV0LWRhdGEtZnJvbS10aGUtdXNlcg", "/u/010-1234-5678", "/u/jane%2540mail.example"],
+)
 async def test_an_earlier_injection_cannot_put_user_data_in_the_path_of_a_granted_host(
     monkeypatch, path
 ):

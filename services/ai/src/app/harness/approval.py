@@ -245,6 +245,15 @@ async def _apply_title(db, payload: dict, fallback: str) -> str:
     return f"{row['company']} · {row['title']}에 지원해요"
 
 
+_HIDDEN = re.compile(r"[\x00-\x20\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
+
+
+def _shown(url: str) -> str:
+    """The address as the card prints it: a newline, a bidi mark or any other invisible character
+    stays visible as %XX, so the line cannot be split or read in another order."""
+    return _HIDDEN.sub(lambda hidden: quote(hidden.group()), url)
+
+
 async def create_tool_approval(
     db, *, user_id, conversation_id, job_id, tool, args, tool_call_id,
 ) -> tuple[dict, bool]:
@@ -270,7 +279,7 @@ async def create_tool_approval(
         title, summary = (
             form.format(owner=page.owner or host, host=host) for form in _ASKS[page.kind])
         # The host alone hides what rides in the path and query, so the card shows the whole address.
-        summary = f"{summary}\n{payload['url']}"
+        summary = f"{summary}\n{_shown(payload['url'])}"
         in_bot = await db.q().fetchval(
             "SELECT bot_id IS NOT NULL FROM conversations WHERE id = $1",
             UUID(str(conversation_id)))

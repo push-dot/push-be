@@ -179,9 +179,9 @@ def _exposure(state: dict, tools_by_name: dict) -> Exposure:
     return found
 
 
-# shortcut: a hyphenated slug passes as a title, so data hidden in one is not caught; carry the
-# page-read card for any granted-host path the thread did not hold if that matters.
-_CARRIES_DATA = re.compile(r"@|[A-Za-z0-9_]{20,}")
+# shortcut: a hyphenated slug, a Hangul name or short pieces split by `/` pass as titles, so data hidden
+# there is not caught; card every granted-host path the thread did not hold if that matters.
+_CARRIES_DATA = re.compile(r"@|%25|%40|[A-Za-z0-9_]{20,}|\d[\d\s().-]{7,}\d")
 
 
 def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
@@ -194,7 +194,8 @@ def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
     if exposure is Exposure.RUN or not granted:
         return True
     parts = urlsplit(url)
-    return bool(parts.query) or bool(_CARRIES_DATA.search(unquote(parts.path)))
+    return bool(parts.query) or any(
+        _CARRIES_DATA.search(path) for path in (parts.path, unquote(parts.path)))
 
 
 def _seen_text(state: dict) -> str:

