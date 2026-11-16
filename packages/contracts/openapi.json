@@ -956,6 +956,30 @@
               "CANCELED"
             ],
             "type": "string"
+          },
+          "usageByBot": {
+            "description": "PERSONAL only: this UTC month's settled usage of each Bot, from the jobs that ran in its thread, biggest first. Usage outside a Bot thread and deleted Bots are not listed, so the sum can be below spentMicroCredits. Empty when no Bot used credits.",
+            "items": {
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "usedMicroCredits": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "usedMicroCredits"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -34849,6 +34873,7 @@
     },
     "/api/v1/me/posts": {
       "get": {
+        "description": "sort=views orders by view count and sort=comments by comment count, each then newest first. Those two ignore the cursor and answer the first limit rows with hasMore false and nextCursor null.",
         "operationId": "getMePosts",
         "parameters": [
           {
@@ -34869,6 +34894,20 @@
             "name": "cursor",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "views",
+                "comments"
+              ],
               "type": "string"
             }
           }
@@ -35121,6 +35160,122 @@
           }
         },
         "summary": "Update my profile",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/profile/pdf": {
+      "get": {
+        "description": "The profile screen as a file: name, headline, 소개, 경력 and 기술 스택, without any AI call. A section with nothing in it is left out. photo=1 stamps the avatar on the first page; any other value is ignored. Content-Disposition is an attachment named after the display name.",
+        "operationId": "getMeProfilePdf",
+        "parameters": [
+          {
+            "description": "1 embeds the avatar",
+            "in": "query",
+            "name": "photo",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Rendered PDF"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Download my profile as a PDF",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "ai"
+      }
+    },
+    "/api/v1/me/saved-posts": {
+      "get": {
+        "description": "Newest save first. sort=views and sort=comments work as on /me/posts. Posts of an author whose account is being deleted are left out.",
+        "operationId": "getMeSavedPosts",
+        "parameters": [
+          {
+            "description": "1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.nextCursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "views",
+                "comments"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Post"
+                      },
+                      "type": "array"
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List posts I saved",
         "tags": [
           "social"
         ],
@@ -37518,6 +37673,67 @@
           }
         },
         "summary": "Comment on a post",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/posts/{id}/save": {
+      "delete": {
+        "description": "Idempotent.",
+        "operationId": "deletePostsByIdSave",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Remove a saved post",
+        "tags": [
+          "social"
+        ],
+        "x-owner": "core"
+      },
+      "post": {
+        "description": "Idempotent. 404 when the post does not exist.",
+        "operationId": "postPostsByIdSave",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Save a post",
         "tags": [
           "social"
         ],

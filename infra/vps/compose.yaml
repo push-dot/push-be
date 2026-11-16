@@ -168,7 +168,7 @@ services:
       <<: *ai-env
       SERVE_API: "1"
       QUEUE_GROUP: ai
-      QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-3}
+      QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-10}
     volumes:
       - ai-data:/data
     depends_on:

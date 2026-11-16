@@ -1,7 +1,7 @@
 import { isUnique, one, query } from "./db.ts";
 import { actAs, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
-import { allow } from "./ratelimit.ts";
+import { allow, USER_LEASE } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
 import { dispatchAppleAuth } from "./routes/apple-auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
@@ -99,7 +99,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
     const acted = await actAs(request, env, deps.query);
     if (acted) {
       const user = await userForActAs(deps.query, acted);
-      if (!(await allow(deps.query, "user", user.id, 600, now.getTime()))) {
+      if (!(await allow(deps.query, "user", user.id, 600, now.getTime(), USER_LEASE))) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
       const ctx = base(request, env, deps, rid, url, now, user);
@@ -118,7 +118,7 @@ export async function handle(request: Request, env: CoreEnv, deps: Deps): Promis
       return errorResponse(401, "UNAUTHENTICATED", "missing bearer token", rid);
     }
     const user = await resolveUser(base(request, env, deps, rid, url, now, anonymous()), authz.slice(7));
-    if (!(await allow(deps.query, "user", user.id, 600, now.getTime()))) {
+    if (!(await allow(deps.query, "user", user.id, 600, now.getTime(), USER_LEASE))) {
       return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
     }
     const ctx = base(request, env, deps, rid, url, now, user);

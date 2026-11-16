@@ -169,15 +169,19 @@ const ensurePushBot = async (ctx: Ctx): Promise<string> => {
 
 /**
  * `{id}` of a /bots/{id} route to a live bot the caller owns, or 404. `push` is the caller's Push Bot,
- * which is inserted when missing, so every route works before the first GET /bots.
+ * which is inserted when a read finds it missing, so every route works before the first GET /bots.
  */
 export const resolveBot = async (ctx: Ctx, raw: string): Promise<BotRow> => {
   const pushId = await pushBotId(ctx.user.id);
   const id = raw === PUSH_ADDRESS ? pushId : requireUuid(raw, "id");
-  if (id === pushId) await ensurePushBot(ctx);
-  const row = await one(ctx.deps.query,
+  const select = () => one(ctx.deps.query,
     `SELECT ${BOT_COLS} FROM bots b WHERE b.id = $1 AND b.user_id = $2 AND b.deleted_at IS NULL`,
     [id, ctx.user.id]);
+  let row = await select();
+  if (!row && id === pushId) {
+    await ensurePushBot(ctx);
+    row = await select();
+  }
   if (!row) throw notFound();
   return row;
 };
@@ -222,8 +226,12 @@ const listBots = async (ctx: Ctx): Promise<Response> => {
     const found = id ? (await query(q, BOT_SELECT + " AND s.bot_id = $2", [ctx.user.id, id])).rows : [];
     return jsonResponse(200, { data: found.map(botDto) }, ctx.rid);
   }
-  await ensurePushBot(ctx);
-  const rows = (await query(q, BOT_SELECT + BOT_ORDER, [ctx.user.id])).rows;
+  const read = async () => (await query(q, BOT_SELECT + BOT_ORDER, [ctx.user.id])).rows;
+  let rows = await read();
+  if (!rows.some((row) => row.kind === "push")) {
+    await ensurePushBot(ctx);
+    rows = await read();
+  }
   const plan = planOf(ctx.user.plan);
   const limit = { plan, max: COMPANY_LIMIT[plan], used: rows.filter((row) => row.kind === "company").length, table: COMPANY_LIMIT };
   return jsonResponse(200, { data: rows.map(botDto), limit }, ctx.rid);

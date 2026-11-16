@@ -1,7 +1,7 @@
 import type { Route, Schema } from "./shared.ts";
 import {
   get, post, patch, del, ok, okPage, obj, arr, str, int, bool, uuid, dateTime, date, nullable, ref, body, pathParam, pageParams,
-  query, enumOf, noContent,
+  query, enumOf, noContent, binary,
 } from "./shared.ts";
 
 const JOB_CATEGORY = enumOf("dev", "data", "design", "plan", "marketing", "sales", "hr", "ops");
@@ -90,6 +90,13 @@ export const routes: Route[] = [
     summary: "Get my profile",
     description: "Creates an empty profile on first access.",
     responses: { 200: ok(ref("ProfileDetail")) },
+  }),
+  get("ai", "/api/v1/me/profile/pdf", {
+    tag,
+    summary: "Download my profile as a PDF",
+    description: "The profile screen as a file: name, headline, 소개, 경력 and 기술 스택, without any AI call. A section with nothing in it is left out. photo=1 stamps the avatar on the first page; any other value is ignored. Content-Disposition is an attachment named after the display name.",
+    params: [query("photo", str, "1 embeds the avatar")],
+    responses: { 200: binary("application/pdf", "Rendered PDF") },
   }),
   patch("core", "/api/v1/me/profile", {
     tag,
@@ -383,8 +390,30 @@ export const routes: Route[] = [
   get("core", "/api/v1/me/posts", {
     tag,
     summary: "List my posts",
-    params: [...pageParams],
+    description: "sort=views orders by view count and sort=comments by comment count, each then newest first. Those two ignore the cursor and answer the first limit rows with hasMore false and nextCursor null.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
     responses: { 200: okPage(ref("Post")) },
+  }),
+  get("core", "/api/v1/me/saved-posts", {
+    tag,
+    summary: "List posts I saved",
+    description: "Newest save first. sort=views and sort=comments work as on /me/posts. Posts of an author whose account is being deleted are left out.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
+    responses: { 200: okPage(ref("Post")) },
+  }),
+  post("core", "/api/v1/posts/{id}/save", {
+    tag,
+    summary: "Save a post",
+    description: "Idempotent. 404 when the post does not exist.",
+    params: [id],
+    responses: { 204: noContent },
+  }),
+  del("core", "/api/v1/posts/{id}/save", {
+    tag,
+    summary: "Remove a saved post",
+    description: "Idempotent.",
+    params: [id],
+    responses: { 204: noContent },
   }),
   get("core", "/api/v1/me/commented-posts", {
     tag,

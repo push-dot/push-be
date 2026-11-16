@@ -30,6 +30,7 @@ function isPython(method: string, path: string): boolean {
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+\/export$/.test(path)) return true;
+  if (method === "GET" && path === "/api/v1/me/profile/pdf") return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
   if (method === "GET" && /^\/api\/v1\/sources\/[^/]+\/profile-draft$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;

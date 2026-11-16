@@ -65,11 +65,19 @@ const authed = (seen: Call[], plan: string, answer: (sql: string, params: unknow
 type World = {
   consent?: boolean; posting?: Record<string, unknown> | false; existing?: string; count?: number;
   bot?: Record<string, unknown> | null; state?: Record<string, unknown>; insertWins?: boolean; hits?: Rows;
+  pushMissing?: boolean;
 };
 
 const POSTING_ROW = { id: POSTING, company: "Acme", title: "Backend", deadline: "2026-11-20", career_min: 3, career_max: null, location: "Seoul" };
 
-const world = (w: World = {}) => (sql: string): Rows | null => {
+const world = (w: World = {}) => {
+  let pushMade = w.pushMissing !== true;
+  return (sql: string): Rows | null => {
+  if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) {
+    pushMade = true;
+    return [];
+  }
+  if (!pushMade && (sql.includes("bot_state_v") || sql.includes("FROM bots b"))) return [];
   if (sql.includes("user_consents")) return [{ reference_data: w.consent ?? true }];
   if (sql.includes("FROM job_postings")) return w.posting === false ? [] : [{ ...POSTING_ROW, ...w.posting }];
   if (sql.includes("WITH hits")) return w.hits ?? [{ total: 0, id: null }];
@@ -81,6 +89,7 @@ const world = (w: World = {}) => (sql: string): Rows | null => {
   if (sql.includes("DELETE FROM bots")) return w.bot === null ? [] : [{ id: BOT }];
   if (sql.includes("FROM bots b")) return w.bot === null ? [] : [w.bot ?? botRow()];
   return null;
+  };
 };
 
 const request = (method: string, path: string, body?: unknown): Request => new Request("https://core.example" + path, {
@@ -109,11 +118,19 @@ const call = async (method: string, path: string, body: unknown, w: World = {}, 
 const wrote = (seen: Call[], marker: string): boolean => seen.some((c) => c.sql.includes(marker));
 
 test("GET /bots makes the Push Bot on first use and lists it", async () => {
-  const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }) });
+  const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }), pushMissing: true });
   assert.equal(res.status, 200);
   assert.equal(json!.data![0].kind, "push");
   assert.equal(json!.data![0].color, null);
   assert.ok(wrote(seen, "INSERT INTO bots"));
+});
+
+test("GET /bots on an account that already has its Push Bot writes nothing and reads once", async () => {
+  const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }) });
+  assert.equal(res.status, 200);
+  assert.equal(json!.data![0].kind, "push");
+  assert.ok(!wrote(seen, "INSERT INTO bots"));
+  assert.equal(seen.filter((c) => c.sql.includes("bot_state_v")).length, 1);
 });
 
 test("GET /bots says how many company bots the plan allows and how many exist", async () => {
@@ -289,7 +306,10 @@ test("the literal id push addresses the caller's Push Bot on every bot route", a
     ["DELETE", "/api/v1/bots/push/transcript", undefined, 204],
     ["DELETE", "/api/v1/bots/push", undefined, 403],
   ] as const) {
-    const { res, seen } = await call(method, path, body, { bot: push });
+    const existing = await call(method, path, body, { bot: push });
+    assert.equal(existing.res.status, status, `${method} ${path}`);
+    assert.ok(!wrote(existing.seen, "INSERT INTO bots"), `${method} ${path} writes nothing for an existing Push Bot`);
+    const { res, seen } = await call(method, path, body, { bot: push, pushMissing: true });
     assert.equal(res.status, status, `${method} ${path}`);
     const ensured = seen.find((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'push'"));
     assert.equal(ensured?.params[0], pushId, `${method} ${path} makes the Push Bot when it is missing`);

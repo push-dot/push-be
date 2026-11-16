@@ -98,6 +98,8 @@ class Worker:
         settle=None,
         release=None,
         core=None,
+        fair_queue: str | None = None,
+        fair_every: int = 3,
     ):
         self.queue = queue
         self.db = db
@@ -117,6 +119,9 @@ class Worker:
         self.settle = settle or _noop
         self.release = release or _noop
         self.core = core
+        self.fair_queue = fair_queue
+        self.fair_every = fair_every
+        self._passed = 0
         self._stop = asyncio.Event()
 
     async def run_forever(self) -> None:
@@ -153,17 +158,33 @@ class Worker:
     async def next_messages(self) -> list[Message]:
         paused = await self.queue.paused_set(self.queues)
         active = [queue for queue in self.queues if queue not in paused]
-        for queue in active:
+        for queue in self._read_order(active):
             found = await self.queue.read(self.group, self.consumer, [queue], 1, 0)
             if found:
+                self._note(found[0].queue)
                 return found
+            if queue == self.fair_queue:
+                self._passed = 0
         if self.block_ms <= 0:
             return []
         if not active:
             await asyncio.sleep(self.block_ms / 1000)
             return []
         # A multi-stream read can return one message per stream; all are ours now.
-        return await self.queue.read(self.group, self.consumer, active, 1, self.block_ms)
+        found = await self.queue.read(self.group, self.consumer, active, 1, self.block_ms)
+        for msg in found:
+            self._note(msg.queue)
+        return found
+
+    def _read_order(self, active: list[str]) -> list[str]:
+        # Strict priority starves the fair queue under steady chat load (fit waited 20-170s
+        # for a 0.4s job), so after fair_every passes it is read first.
+        if self.fair_queue in active and self._passed >= self.fair_every:
+            return [self.fair_queue] + [queue for queue in active if queue != self.fair_queue]
+        return active
+
+    def _note(self, queue: str) -> None:
+        self._passed = 0 if queue == self.fair_queue else self._passed + 1
 
     async def reclaim(self, min_idle_ms: int | None = None) -> int:
         idle = self.min_idle_ms if min_idle_ms is None else min_idle_ms

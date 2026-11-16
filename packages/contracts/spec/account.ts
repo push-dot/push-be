@@ -504,6 +504,7 @@ export const schemas: Record<string, Schema> = {
     reservedMicroCredits: int,
     monthlyMicroCredits: int,
     spentMicroCredits: { type: "integer", description: "Settled usage this UTC month, less what was written off (WRITE_OFF rows), so what was charged" },
+    usageByBot: { type: "array", description: "PERSONAL only: this UTC month's settled usage of each Bot, from the jobs that ran in its thread, biggest first. Usage outside a Bot thread and deleted Bots are not listed, so the sum can be below spentMicroCredits. Empty when no Bot used credits.", items: obj({ id: uuid, name: str, usedMicroCredits: int }, ["id", "name", "usedMicroCredits"]) },
     audience: accountType,
     source: nullable(enumOf("STRIPE", "APP_STORE", "GOOGLE_PLAY")),
     paymentsEnabled: { type: "boolean", description: "False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it." },
