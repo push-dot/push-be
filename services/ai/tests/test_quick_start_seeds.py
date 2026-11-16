@@ -29,7 +29,10 @@ def test_tool_quick_starts_do_not_enter_the_resume_flow():
         assert quick_start_resume(intent, {}) is None
 
 
-def test_each_sheet_seeds_inputs_and_keeps_writes_behind_approval():
+_APPLIED_DIRECTLY = {"calendar", "hub_profile"}
+
+
+def test_each_sheet_seeds_inputs_and_asks_only_before_what_leaves_push():
     samples = {
         "find_postings": _FIND,
         "deadline_postings": "마감 임박 공고 2개(파도AI, 도토리증권)의 준비할 일을 정리해 주세요",
@@ -46,9 +49,10 @@ def test_each_sheet_seeds_inputs_and_keeps_writes_behind_approval():
         assert seed["intent"] == intent
         assert seed["read_tools"]
         assert seed["inputs"]
-        assert "승인" in seed["instruction"] or not seed["write_tools"]
+        direct = intent in _APPLIED_DIRECTLY
+        assert ("승인" not in seed["instruction"]) is (direct or not seed["write_tools"])
         for name in seed["write_tools"]:
-            assert write_needs_approval(AccessMode.BYPASS, "RISKY_WRITE", seed) is True
+            assert write_needs_approval(AccessMode.AUTO, "RISKY_WRITE", seed, name) is (not direct) or name != "update_my_profile"
             assert isinstance(name, str) and name
 
 

@@ -42,6 +42,10 @@ ALWAYS_ASK_TOOLS = frozenset({"apply_to_posting", "accept_offer", "change_applic
 
 _WRITES = frozenset({Tier.SAFE_WRITE, Tier.RISKY_WRITE})
 
+# Applied at once; the app shows what changed and lets the person 되돌리기 (rule 39). Nothing leaves
+# Push and the change can be put back, so no card asks first.
+APPLY_THEN_REVIEW = frozenset({"update_my_profile"})
+
 
 def decide(
     mode: AccessMode, tier: Tier, tool: str | None = None, *,
@@ -55,6 +59,8 @@ def decide(
         tier = tier.metadata["tier"]
     if tier is Tier.EXTERNAL_READ and (supplied or granted):
         return Decision.EXECUTE
-    if quick_start and tier in _WRITES:
+    if tool in APPLY_THEN_REVIEW and mode is not AccessMode.ALWAYS_ASK:
+        return Decision.EXECUTE
+    if quick_start and tier is Tier.RISKY_WRITE:
         return Decision.ASK
     return _DECISIONS[(mode, tier)]

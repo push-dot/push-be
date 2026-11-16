@@ -193,7 +193,7 @@ _SPECS = {
             "빠른 시작은 캘린더 관리예요. "
             "list_calendar_events로 이번 주 지원, 면접, 마감, 커피챗을 봐요. "
             "일정을 만들거나 고칠 때는 create_calendar_event 또는 update_calendar_event를 써요. "
-            "그 도구는 승인 뒤에만 실행해요. 일정을 지우지 않아요."
+            "그 도구는 묻지 않고 바로 실행해요. 무엇을 바꿨는지 알려 줘요. 일정을 지우지 않아요."
         ),
         "inputs": _calendar_inputs,
     },
@@ -204,7 +204,7 @@ _SPECS = {
             "빠른 시작은 허브 프로필 다듬기예요. "
             "get_my_profile과 get_document로 지금 프로필과 바탕 서류를 읽어요. "
             "고른 부분만 고쳐요. 헤드라인은 한 줄, 소개는 3~4문장이에요. "
-            "초안을 먼저 보여 줘요. update_my_profile은 승인 뒤에만 실행해요."
+            "update_my_profile은 묻지 않고 바로 실행해요. 앱이 되돌리기로 검토해요. 무엇을 바꿨는지 알려 줘요."
         ),
         "inputs": _hub_inputs,
     },

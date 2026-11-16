@@ -187,7 +187,7 @@ async def test_stops_at_every_gate_in_auto():
     assert gates == [
         "mode_select", "output_targets", "tone", "intake",
         "analyze", "strategy", "craft", "boost",
-        "review", "present",
+        "review",
     ]
     assert seen[-1][1].values["status"] == "done"
 
@@ -461,7 +461,6 @@ _GATE_QUESTIONS = {
     "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
     "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 디자인을 골라 주세요.",
-    "present": "결과를 확인할까요?",
 }
 
 
