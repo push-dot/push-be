@@ -96,12 +96,12 @@ function appendPostingFilters(
     const hangul = params.length - 1;
     const hangulJamo = params.length;
     sql += ` AND (
-      p.title ILIKE '%' || $${raw} || '%' OR p.company ILIKE '%' || $${raw} || '%'
-      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%')
-      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%')
+      p.title ILIKE '%' || $${raw} || '%' ESCAPE '\\' OR p.company ILIKE '%' || $${raw} || '%' ESCAPE '\\'
+      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%' ESCAPE '\\')
+      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%' ESCAPE '\\')
       OR ($${hangul} <> '' AND (
-        p.title ILIKE '%' || $${hangul} || '%' OR p.company ILIKE '%' || $${hangul} || '%'
-        OR p.search_jamo LIKE $${hangulJamo} || '%'
+        p.title ILIKE '%' || $${hangul} || '%' ESCAPE '\\' OR p.company ILIKE '%' || $${hangul} || '%' ESCAPE '\\'
+        OR p.search_jamo LIKE $${hangulJamo} || '%' ESCAPE '\\'
       ))
     )`;
   }
@@ -1106,10 +1106,10 @@ export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
     const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")} FROM job_postings p WHERE ${openClause(withStatus)} AND (
-        p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%'
-        OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%')
-        OR ($4 <> '' AND p.search_jamo LIKE $4 || '%')
-        OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' OR p.company ILIKE '%' || $5 || '%' OR p.search_jamo LIKE $6 || '%'))
+        p.title ILIKE '%' || $2 || '%' ESCAPE '\\' OR p.company ILIKE '%' || $2 || '%' ESCAPE '\\'
+        OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%' ESCAPE '\\')
+        OR ($4 <> '' AND p.search_jamo LIKE $4 || '%' ESCAPE '\\')
+        OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' ESCAPE '\\' OR p.company ILIKE '%' || $5 || '%' ESCAPE '\\' OR p.search_jamo LIKE $6 || '%' ESCAPE '\\'))
       )`;
     const total = await countWhere(ctx, sql, " FROM job_postings p", params.slice());
     if (page.cursor) {

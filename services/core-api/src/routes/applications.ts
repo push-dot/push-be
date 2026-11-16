@@ -1,3 +1,4 @@
+import { likeContains } from "../hangul.ts";
 import { parseTimeField, strictBody } from "../body.ts";
 import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
@@ -159,8 +160,8 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
   }
   const q = ctx.url.searchParams.get("query") || "";
   if (q) {
-    params.push("%" + q + "%", "%" + q + "%");
-    where.push(`(company ILIKE $${params.length - 1} OR title ILIKE $${params.length})`);
+    params.push(likeContains(q), likeContains(q));
+    where.push(`(company ILIKE $${params.length - 1} ESCAPE '\\' OR title ILIKE $${params.length} ESCAPE '\\')`);
   }
   const applied = ctx.url.searchParams.get("applied");
   if (applied !== null && applied !== "true" && applied !== "false") throw fieldError("applied", "must be true or false");
