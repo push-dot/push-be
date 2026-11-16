@@ -154,8 +154,54 @@ const signedBy = (cert: X509Certificate, issuer: X509Certificate): boolean => {
   }
 };
 
-const appleVerified = async (token: string, rootPem: string | undefined): Promise<{ payload: Record<string, unknown>; leaf: string }> => {
+const derItem = (der: Uint8Array, at: number): { tag: number; start: number; end: number } => {
+  const first = der[at + 1]!;
+  const size = first < 0x80 ? 0 : first & 0x7f;
+  let length = first < 0x80 ? first : 0;
+  for (let i = 0; i < size; i++) length = length * 256 + der[at + 2 + i]!;
+  const start = at + 2 + size;
+  return { tag: der[at]!, start, end: start + length };
+};
+
+const children = (der: Uint8Array, parent: { start: number; end: number }): { tag: number; start: number; end: number }[] => {
+  const out = [];
+  for (let at = parent.start; at < parent.end;) {
+    const item = derItem(der, at);
+    out.push(item);
+    at = item.end;
+  }
+  return out;
+};
+
+const hex = (bytes: Uint8Array): string => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+// The extension ids of a certificate: Certificate > tbsCertificate > [3] > Extensions > Extension > extnID.
+const extensionIds = (cert: X509Certificate): Set<string> => {
+  const der = new Uint8Array(cert.raw);
+  try {
+    const tbs = children(der, derItem(der, 0))[0]!;
+    const wrapper = children(der, tbs).find((item) => item.tag === 0xa3);
+    if (!wrapper) return new Set();
+    return new Set(children(der, children(der, wrapper)[0]!).map((ext) => {
+      const id = children(der, ext)[0]!;
+      return hex(der.subarray(id.start, id.end));
+    }));
+  } catch {
+    return new Set();
+  }
+};
+
+// 1.2.840.113635.100.6.11.1 marks Apple's receipt-signing leaf, 1.2.840.113635.100.6.2.1 the WWDR intermediate.
+// Apple Root G3 signs other Apple certificates too, so a chain to the root alone does not prove the App Store signed it.
+const APPLE_LEAF_OID = "2a864886f76364060b01";
+const APPLE_INTERMEDIATE_OID = "2a864886f76364060201";
+
+const current = (cert: X509Certificate, now: Date): boolean =>
+  Date.parse(cert.validFrom) <= now.getTime() && now.getTime() <= Date.parse(cert.validTo);
+
+const appleVerified = async (token: string, rootPem: string | undefined, now: Date): Promise<{ payload: Record<string, unknown>; leaf: string }> => {
   const certs = certsOf(x5cList(token));
+  if (certs.length < 2) throw invalidSignature();
   const leaf = spkiMaterial(certs[0]!);
   const payload = await verifyJws(token, leaf, invalidSignature);
   const root = rootCert(rootPem);
@@ -163,6 +209,8 @@ const appleVerified = async (token: string, rootPem: string | undefined): Promis
     if (!signedBy(certs[i]!, certs[i + 1]!)) throw invalidSignature();
   }
   if (!signedBy(certs[certs.length - 1]!, root)) throw invalidSignature();
+  if (certs.slice(1).some((cert) => !cert.ca) || !certs.every((cert) => current(cert, now))) throw invalidSignature();
+  if (!extensionIds(certs[0]!).has(APPLE_LEAF_OID) || !extensionIds(certs[1]!).has(APPLE_INTERMEDIATE_OID)) throw invalidSignature();
   return { payload, leaf };
 };
 
@@ -265,11 +313,14 @@ const googleJwk = async (fetchImpl: typeof fetch, now: Date, kid: string): Promi
 
 const verifyGoogleOidc = async (env: CoreEnv, fetchImpl: typeof fetch, authorization: string | null, now: Date): Promise<void> => {
   const token = bearerToken(authorization);
-  if (!env.GOOGLE_OIDC_AUDIENCE) throw notConfigured("google oidc is not configured");
+  // Any Google service account can mint a token for any audience, so the sender is the check that names Pub/Sub's.
+  const sender = env.GOOGLE_OIDC_EMAIL?.trim();
+  if (!env.GOOGLE_OIDC_AUDIENCE || !sender) throw notConfigured("google oidc is not configured");
   const header = jwsHeader(token);
   if (header.alg !== "RS256" || typeof header.kid !== "string" || !header.kid) throw invalidSignature();
   const claims = await verifyWithKey(token, await importJwk(await googleJwk(fetchImpl, now, header.kid)), "RS256");
   if (claims.iss !== GOOGLE_ISS || claims.aud !== env.GOOGLE_OIDC_AUDIENCE) throw invalidSignature();
+  if (claims.email !== sender || claims.email_verified !== true) throw invalidSignature();
   if (typeof claims.exp !== "number" || claims.exp * 1000 <= now.getTime()) throw invalidSignature();
 };
 
@@ -373,7 +424,7 @@ const confirmApple = async (
   });
   const body = await readStore(res);
   if (typeof body.signedTransactionInfo !== "string" || !body.signedTransactionInfo) throw invalidPurchase();
-  const confirmed = (await appleVerified(body.signedTransactionInfo, appleRootPem(env))).payload;
+  const confirmed = (await appleVerified(body.signedTransactionInfo, appleRootPem(env), now)).payload;
   if (appleSide(confirmed.environment) !== appleSide(payload.environment)) throw invalidPurchase();
   return confirmed;
 };
@@ -450,7 +501,7 @@ export const googlePlayPubsub = (body: unknown): Record<string, unknown> | null 
 export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: Date): StoreReceipts => ({
   verifyApple: async (signedTransaction) => {
     if (!env.APPLE_BUNDLE_ID) throw notConfigured("app store is not configured");
-    const { payload } = await appleVerified(signedTransaction, appleRootPem(env));
+    const { payload } = await appleVerified(signedTransaction, appleRootPem(env), now);
     if (payload.bundleId !== env.APPLE_BUNDLE_ID) throw invalidPurchase();
     if (payload.revocationDate != null) throw invalidPurchase();
     const originalTransactionId = String(payload.originalTransactionId ?? "");
@@ -490,7 +541,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
     };
   },
   decodeAppleNotification: async (body) => {
-    const verified = await appleVerified(appleToken(body), appleRootPem(env));
+    const verified = await appleVerified(appleToken(body), appleRootPem(env), now);
     const payload = verified.payload;
     const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
       ? payload.data as Record<string, unknown> : {};
