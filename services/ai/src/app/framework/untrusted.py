@@ -30,30 +30,22 @@ def as_data(text: str, source: str, limit: int | None = DATA_MAX) -> str:
     return f'<data source="{_SOURCE.sub("", source)}">\n{body}\n</data>'
 
 
-_DEST = re.compile(r"\(\s*<?([^)\s>]{1,4096})>?(?:\s+[^)]{0,500})?\)")
+_DEST = re.compile(r"\(\s*<?([^)\s>]{1,4096}+)>?(?:\s+[^)]{0,500}+)?\)")
 _BRACKET = re.compile(r"\\.|[\[\]]", re.DOTALL)
-_AUTOLINK = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096})>", re.IGNORECASE)
-_A_TAG = re.compile(
-    r"<a\b((?:[^>\"']|\"[^\"]{0,4096}\"|'[^']{0,4096}'){0,4096})>(.{0,2000}?)</a\s*>",
-    re.IGNORECASE | re.DOTALL)
-_ATTR = re.compile(
-    r"([^\s=/>\"']{1,64})(?:\s*=\s*(?:\"([^\"]{0,4096})\"|'([^']{0,4096})'|([^\s\"'>]{1,4096})))?")
-# Tags that fetch on render, or open one that does.
-_HTML_FETCH = re.compile(
-    r"<(?:img|image|source|video|audio|iframe|embed|object|link|style|input|meta|svg|use|area|base"
-    r"|frame|frameset|bgsound|track|param|applet)\b[^>]{0,4096}>",
-    re.IGNORECASE)
-_STYLE_BLOCK = re.compile(r"<style\b[^>]{0,4096}>.{0,20000}?</style\s*>", re.IGNORECASE | re.DOTALL)
-_ANY_TAG = re.compile(r"<[A-Za-z][^<>]{0,4096}>")
-# A style or background attribute loads what its url() or image-set() names, and entities or CSS escapes
-# can hide the word url, so these attributes go whole.
-_FETCH_ATTR = re.compile(
-    r"\s(?:style|background|srcset|poster|formaction|ping)\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>\"']+)",
-    re.IGNORECASE)
-_CSS_URL = re.compile(r"(?:url|image-set)\(\s*[\"']?([^()\"'\s]{1,4096})[\"']?\s*\)", re.IGNORECASE)
+_AUTOLINK = re.compile(r"<((?:https?|ftp)://[^>\s]{1,4096}+)>", re.IGNORECASE)
+_CSS_URL = re.compile(r"(?:url|image-set)\(\s*[\"']?([^()\"'\s]{1,4096}+)[\"']?\s*\)", re.IGNORECASE)
 _REF_DEF = re.compile(
     r"^[ \t]{0,3}\[[^\]\n]{1,500}\]:[ \t]*<?(\S{1,4096}?)>?(?:[ \t].*)?$", re.MULTILINE)
 _NESTING = 50
+# Tags that fetch on render, or open one that does.
+_FETCH_TAGS = frozenset((
+    "img image source video audio iframe embed object link input meta svg use area base frame frameset "
+    "bgsound track param applet script math mglyph form button").split())
+# A style or background attribute loads what its url() or image-set() names, and entities or CSS escapes
+# can hide the word url, so these attributes take the tag with them.
+_FETCH_ATTRS = frozenset("style background srcset poster formaction ping action".split())
+_BLANK = " \t\r\n\f"
+_ATTR_END = _BLANK + "=>/"
 
 
 def _pairs(text: str) -> dict[int, int]:
@@ -69,34 +61,111 @@ def _pairs(text: str) -> dict[int, int]:
 
 
 def _markdown(text: str, start: int, end: int, closes: dict[int, int], context: str, depth: int) -> str:
-    """Images become their alt text and a link keeps its label unless its URL is in the context, at
-    any bracket depth, so `![a [b [c] d] e](url)` and `[![x](url)](ok)` lose the address as well."""
+    """Images become their alt text, also when they name a reference (`![a][r]`, `![a]`), and a link
+    keeps its label unless its URL is in the context, at any bracket depth, so `![a [b [c] d] e](url)`
+    and `[![x](url)](ok)` lose the address as well."""
     out: list[str] = []
     at = start
     while True:
         open_at = text.find("[", at, end)
-        close = closes.get(open_at) if open_at >= 0 else None
-        dest = _DEST.match(text, close + 1) if close is not None and close < end else None
         if open_at < 0:
             out.append(text[at:end])
             return "".join(out)
-        if dest is None or dest.end() > end:
+        close = closes.get(open_at)
+        image = open_at > at and text[open_at - 1] == "!"
+        if close is None or close >= end:
             out.append(text[at:open_at + 1])
             at = open_at + 1
             continue
-        image = open_at > at and text[open_at - 1] == "!"
+        dest = _DEST.match(text, close + 1)
+        ref_close = closes.get(close + 1) if text[close + 1:close + 2] == "[" else None
+        if dest is None or dest.end() > end:
+            if not image:
+                out.append(text[at:open_at + 1])
+                at = open_at + 1
+                continue
+            after = close + 1 if ref_close is None or ref_close >= end else ref_close + 1
+        else:
+            after = dest.end()
         out.append(text[at:open_at - 1 if image else open_at])
         label = _markdown(text, open_at + 1, close, closes, context, depth + 1) if depth < _NESTING else ""
-        out.append(f"[{label}{text[close:dest.end()]}" if not image and dest.group(1) in context else label)
-        at = dest.end()
+        keeps = dest is not None and not image and dest.group(1) in context and dest.end() <= end
+        out.append(f"[{label}{text[close:dest.end()]}" if keeps else label)
+        at = after
 
 
-def _anchor(found: re.Match, context: str) -> str:
-    hrefs = [
-        (a.group(2) or a.group(3) or a.group(4) or "")
-        for a in _ATTR.finditer(found.group(1)) if a.group(1).lower() == "href"
-    ]
-    return found.group(0) if all(url in context for url in hrefs) else found.group(2)
+def _tag_end(text: str, at: int) -> tuple[int, list[tuple[str, str]]]:
+    """Reads the attributes of the tag whose name ends at `at`: where the tag ends (len(text) when it
+    never closes) and its (name, value) pairs. One pass, with no limit on how long a tag may be."""
+    attrs: list[tuple[str, str]] = []
+    size = len(text)
+    while at < size:
+        if text[at] in _BLANK or text[at] == "/":
+            at += 1
+            continue
+        if text[at] == ">":
+            return at + 1, attrs
+        begin = at
+        at += 1
+        while at < size and text[at] not in _ATTR_END:
+            at += 1
+        name = text[begin:at].lower()
+        while at < size and text[at] in _BLANK:
+            at += 1
+        value = ""
+        if at < size and text[at] == "=":
+            at += 1
+            while at < size and text[at] in _BLANK:
+                at += 1
+            if at < size and text[at] in "\"'":
+                close = text.find(text[at], at + 1)
+                if close < 0:
+                    return size, attrs
+                value, at = text[at + 1:close], close + 1
+            else:
+                begin = at
+                while at < size and text[at] not in _BLANK and text[at] != ">":
+                    at += 1
+                value = text[begin:at]
+        attrs.append((name, value))
+    return size, attrs
+
+
+def _html(text: str, context: str) -> str:
+    """Drops every tag that fetches on render, a <style> block, an <a> whose href is not in the context
+    and any tag with a style or background attribute; the text between tags stays. A tag that never
+    closes goes to the end, as a browser reads it."""
+    out: list[str] = []
+    at = 0
+    lowered = text.lower()
+    while True:
+        lt = text.find("<", at)
+        if lt < 0:
+            out.append(text[at:])
+            return "".join(out)
+        name_end = lt + 1
+        while name_end < len(text) and (text[name_end].isalnum()):
+            name_end += 1
+        name = text[lt + 1:name_end].lower()
+        if not name or not text[lt + 1].isalpha():
+            out.append(text[at:lt + 1])
+            at = lt + 1
+            continue
+        out.append(text[at:lt])
+        end, attrs = _tag_end(text, name_end)
+        if name == "style":
+            close = lowered.find("</style", end)
+            end = len(text) if close < 0 else text.find(">", close) + 1 or len(text)
+            drop = True
+        elif name in _FETCH_TAGS:
+            drop = True
+        elif name == "a":
+            drop = any(key == "href" and value not in context for key, value in attrs)
+        else:
+            drop = any(key in _FETCH_ATTRS for key, _ in attrs)
+        if not drop:
+            out.append(text[lt:end])
+        at = end
 
 
 def strip_exfil(text: str, context: str) -> str:
@@ -109,10 +178,7 @@ def strip_exfil(text: str, context: str) -> str:
 
     source = text or ""
     out = _markdown(source, 0, len(source), _pairs(source), context, 0)
-    out = _STYLE_BLOCK.sub("", out)
-    out = _HTML_FETCH.sub("", out)
-    out = _ANY_TAG.sub(lambda tag: _FETCH_ATTR.sub("", tag.group(0)), out)
-    out = _A_TAG.sub(lambda found: _anchor(found, context), out)
+    out = _html(out, context)
     out = _AUTOLINK.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _CSS_URL.sub(lambda m: m.group(0) if m.group(1) in context else "", out)
     out = _REF_DEF.sub(ref, out)

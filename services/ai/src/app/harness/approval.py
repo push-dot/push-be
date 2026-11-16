@@ -245,7 +245,7 @@ async def _apply_title(db, payload: dict, fallback: str) -> str:
     return f"{row['company']} · {row['title']}에 지원해요"
 
 
-_HIDDEN = re.compile(r"[\x00-\x20\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
+_HIDDEN = re.compile(r"[\x00-\x20\x7f-\x9f\xad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\u3164\ufeff]")
 
 
 def _shown(url: str) -> str:

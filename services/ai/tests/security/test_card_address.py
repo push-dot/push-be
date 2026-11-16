@@ -12,3 +12,7 @@ def test_a_plain_address_is_shown_as_it_is():
     url = "https://careers.moapay.example/jobs/1?ref=a1b2&q=한글"
 
     assert _shown(url) == url
+
+
+def test_invisible_fillers_are_shown_too():
+    assert _shown("https://a.example/\u2060x\u3164y\u00adz\u061c") == "https://a.example/%E2%81%A0x%E3%85%A4y%C2%ADz%D8%9C"

