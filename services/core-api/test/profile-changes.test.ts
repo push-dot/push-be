@@ -20,7 +20,7 @@ const current = (): Row => ({
 });
 
 // One fake database: the profile row, the change rows, and whatever the request wrote.
-const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map()) => {
+const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(), failWrite = false) => {
   const seen: Call[] = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
@@ -42,6 +42,12 @@ const world = (changes: Map<string, { before: Row; undone: boolean }> = new Map(
       if (!changes.has(id)) changes.set(id, { before: JSON.parse(String(params[2])), undone: false });
       return { rows: [], rowCount: 1 };
     }
+    if (sql.includes("UPDATE profile_changes SET undone_at = NULL")) {
+      const change = changes.get(String(params[1]));
+      if (change) change.undone = false;
+      return { rows: [], rowCount: 1 };
+    }
+    if (failWrite && sql.startsWith("UPDATE profiles SET headline")) throw new Error("db down");
     if (sql.includes("UPDATE profile_changes")) {
       const change = changes.get(String(params[1]));
       if (!change || change.undone) return empty;
@@ -136,4 +142,12 @@ test("undo of an unknown change is 404 and writes nothing", async () => {
   const res = await handle(send("POST", `/api/v1/me/profile/changes/${CHANGE}/undo`, undefined, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"), env(), w.deps);
   assert.equal(res.status, 404);
   assert.equal(written(w.seen), undefined);
+});
+
+test("an undo whose write fails can be tried again", async () => {
+  resetLimits();
+  const w = world(new Map([[CHANGE, { before: { headline: "옛 소개" }, undone: false }]]), true);
+  const res = await handle(send("POST", `/api/v1/me/profile/changes/${CHANGE}/undo`, undefined, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"), env(), w.deps);
+  assert.equal(res.status, 500);
+  assert.equal(w.changes.get(CHANGE)?.undone, false);
 });

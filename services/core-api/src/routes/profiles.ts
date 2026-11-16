@@ -403,7 +403,13 @@ async function undoProfileChange(ctx: Ctx, idRaw: string): Promise<Response> {
   if (!current) throw notFound();
   const values = { ...valuesOf(current), ...(claimed.before as Partial<ProfileValues>) };
   if (values.resumeSourceId && !(await one(ctx.deps.query, "SELECT id FROM sources WHERE id = $1 AND user_id = $2", [values.resumeSourceId, ctx.user.id]))) values.resumeSourceId = null;
-  await writeValues(ctx, values);
+  try {
+    await writeValues(ctx, values);
+  } catch (err) {
+    // Nothing was put back, so the person can try again.
+    await query(ctx.deps.query, "UPDATE profile_changes SET undone_at = NULL WHERE user_id = $1 AND id = $2", [ctx.user.id, id]);
+    throw err;
+  }
   return myProfileResponse(ctx);
 }
 
