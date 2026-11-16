@@ -39,9 +39,11 @@ async def read_pdf_text(data: bytes) -> str:
     try:
         out, _ = await asyncio.wait_for(child.communicate(data), READ_DEADLINE)
     except TimeoutError:
-        child.kill()
-        await child.wait()
         raise ValueError("the PDF took too long to read") from None
+    finally:
+        if child.returncode is None:
+            child.kill()
+            await child.wait()
     if child.returncode != 0:
         raise ValueError("the PDF cannot be read")
     return out.decode()

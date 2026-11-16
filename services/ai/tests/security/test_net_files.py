@@ -162,3 +162,22 @@ def test_net_document_render_never_fetches_urls_in_the_draft(monkeypatch):
     ]
     assert render_pdf(draft).startswith(b"%PDF")
     assert render_docx(draft)
+
+
+async def test_net_cancelled_pdf_read_kills_the_child(monkeypatch, slow_pdf):
+    spawned = []
+    started = asyncio.Event()
+    spawn = asyncio.create_subprocess_exec
+
+    async def recording_spawn(*args, **kwargs):
+        spawned.append(await spawn(*args, **kwargs))
+        started.set()
+        return spawned[-1]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_spawn)
+    task = asyncio.create_task(pdf_text.read_pdf_text(slow_pdf))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert spawned[0].returncode is not None
