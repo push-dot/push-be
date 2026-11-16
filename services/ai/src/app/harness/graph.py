@@ -28,7 +28,7 @@ from app.harness.memory import memory_update, merge_memory
 from app.harness.policy import Decision, Tier, decide
 from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
-from app.harness.status import thinking, waiting, working
+from app.harness.status import thinking, tool_status, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -349,11 +349,9 @@ def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
-    progress: dict[str, str] = {}
     labels: dict[str, str] = {}
     if spec.id == "personal":
         from app.harness.personal.tools import CARD_LABEL as labels
-        from app.harness.personal.tools import PROGRESS as progress
 
     async def agent(state: dict) -> dict:
         messages = list(state.get("messages") or [])
@@ -422,16 +420,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         page = {}
         if meta["tier"] is Tier.EXTERNAL_READ:
             thread = state.get("conversation_id")
-            from app.harness.material_access import current_access, supplied_closed
-
-            access = current_access.get()
-            closed = access is not None and not access.may_search()
             page = {
-                "supplied": await (
-                    supplied_closed(db, thread, state.get("user_id"), args.url)
-                    if closed
-                    else user_supplied(db, thread, state.get("user_id"), args.url)
-                ),
+                "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
                 "granted": await site_granted(db, thread, args.url),
             }
         if (
@@ -478,8 +468,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             access_mode=mode.value,
             supplied=page.get("supplied"),
         )
-        if tool.name in progress:
-            working(progress[tool.name])
+        working(tool_status(tool.name))
         emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):
@@ -545,14 +534,12 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 return finish({})
             if started["intent"] == "find_postings":
                 from app.domain.services import posting_match as matching
-                from app.harness.material_access import current_access
 
                 result = await matching.run_quick_match(
                     db,
                     state.get("user_id"),
                     started["inputs"],
                     job_id=state.get("job_id"),
-                    access=current_access.get(),
                 ) or {}
                 text_out = result.get("text") or "조건에 맞는 공고가 없어요."
                 payload = {"items": result.get("items") or [], "text": text_out}

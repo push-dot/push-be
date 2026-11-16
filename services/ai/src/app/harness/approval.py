@@ -92,8 +92,8 @@ def _encoded(part: str) -> str:
     return re.sub(r"%[0-9a-fA-F]{2}", lambda m: m.group().upper(), escaped)
 
 
-# A URL the user gave in this thread, in a message or as an attached link, and with 내 자료 읽기
-# 허용 on, a saved link, hub profile links included (they are user_links rows, contract.md 1.4).
+# A URL the user gave in this thread, in a message or as an attached link, or a saved link, hub
+# profile links included (they are user_links rows, contract.md 1.4).
 _SUPPLIED = (
     "SELECT m.text, ARRAY(SELECT l.url FROM jsonb_array_elements(m.attachments) a "
     "JOIN user_links l ON l.id = (a->>'id')::uuid AND l.user_id = m.user_id "
@@ -101,9 +101,7 @@ _SUPPLIED = (
     "FROM messages m WHERE m.conversation_id = $1 AND m.user_id = $2 AND m.role = 'USER' "
     "AND (strpos(lower(m.text), $3) > 0 OR m.attachments @> '[{\"kind\": \"link\"}]') "
     "UNION ALL SELECT '', ARRAY(SELECT l.url FROM user_links l WHERE l.user_id = $2 "
-    "AND l.deleted_at IS NULL AND strpos(lower(l.url), $3) > 0) "
-    "WHERE COALESCE((SELECT s.allow_ai_read_my_files FROM user_settings s "
-    "WHERE s.user_id = $2), true)"
+    "AND l.deleted_at IS NULL AND strpos(lower(l.url), $3) > 0)"
 )
 
 

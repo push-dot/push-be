@@ -20,7 +20,6 @@ from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
-from app.harness.material_access import blocked_id, blocked_search, current_access
 from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
@@ -231,9 +230,6 @@ async def _library_sources(ctx: ToolContext) -> list:
 
 
 async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
-    denied = blocked_search()
-    if denied is not None:
-        return denied
     items = []
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
@@ -245,9 +241,6 @@ async def _list_documents(ctx: ToolContext, _args: EmptyArgs) -> dict:
 
 
 async def _get_document(ctx: ToolContext, args: DocumentId) -> dict:
-    denied = blocked_id("document", args.document_id)
-    if denied is not None:
-        return denied
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
     if document_svc is None:
@@ -292,9 +285,6 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
-    denied = blocked_id("document", args.document_id)
-    if denied is not None:
-        return denied
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
         event = _document_event(
             ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
@@ -410,9 +400,6 @@ def _user_id(ctx: ToolContext):
 
 
 async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
-    denied = blocked_search()
-    if denied is not None:
-        return denied
     return await ctx.core.call(
         "GET", "/api/v1/me/bookmarks", user_id=ctx.user_id, company_id=ctx.company_id,
     )
@@ -421,18 +408,7 @@ async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
     gate = current_ai_gate()
     job_id = ctx.job_id or None
-    access = current_access.get()
     if args.posting_id is not None and ctx.db is not None:
-        allowed = (
-            access is None
-            or access.may_search()
-            or (
-                args.document_id is not None
-                and access.allows("document", str(args.document_id))
-            )
-        )
-        if not allowed:
-            return blocked_search()
         view = await load_fit(
             ctx.db.q(), UUID(ctx.user_id), args.posting_id,
             args.document_id or UUID(int=0), gate=gate, job_id=job_id)
@@ -471,9 +447,6 @@ async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
 
 
 async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
-    denied = blocked_search()
-    if denied is not None:
-        return denied
     svc = _svc()
     if svc is None or getattr(svc, "ai", None) is None:
         return {"text": ""}
@@ -486,65 +459,12 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     return {"text": text or ""}
 
 
-async def _message_has_url(ctx: ToolContext, url: str) -> bool:
-    from app.harness.approval import normalize_url
-    from app.ingest.web_page import find_urls
-
-    wanted = normalize_url(url)
-    if wanted is None or ctx.db is None:
-        return False
-    try:
-        rows = await ctx.db.q().fetch(
-            "SELECT text FROM messages WHERE conversation_id = $1 "
-            "AND user_id = $2 AND role = 'USER'",
-            UUID(str(ctx.conversation_id)),
-            UUID(ctx.user_id),
-        )
-    except Exception:
-        return False
-    return any(
-        normalize_url(found) == wanted
-        for row in rows or []
-        for found in find_urls(row["text"] or "")
-    )
-
-
-async def _attached_link(ctx: ToolContext, url: str) -> bool:
-    from app.harness.approval import normalize_url
-
-    access = current_access.get()
-    if access is None or ctx.db is None:
-        return False
-    ids = []
-    for kind, raw in access.attached:
-        if kind != "link":
-            continue
-        try:
-            ids.append(UUID(str(raw)))
-        except ValueError:
-            continue
-    if not ids:
-        return False
-    wanted = normalize_url(url)
-    rows = await ctx.db.q().fetch(
-        "SELECT url FROM user_links WHERE user_id = $1 "
-        "AND id = ANY($2::uuid[]) AND deleted_at IS NULL",
-        UUID(ctx.user_id),
-        ids,
-    )
-    return any(normalize_url(row["url"]) == wanted for row in rows or [])
-
-
 async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
     """A URL the user gave is followed wherever it leads, a short link included. A page read on
     an approval or a site grant stays on that host: a redirect elsewhere is a new decision for the
     model."""
     host = site_host(args.url)
-    access = current_access.get()
-    gated = access is not None and not access.may_search()
-    if gated:
-        supplied = await _message_has_url(ctx, args.url) or await _attached_link(ctx, args.url)
-    elif ctx.supplied is not None:
+    if ctx.supplied is not None:
         supplied = ctx.supplied
     else:
         supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
@@ -554,11 +474,9 @@ async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
     except LeftSite as left:
         return {"error": "REDIRECTED", "to": left.to}
     except Exception:
-        if not gated:
-            await _mark_link_check(ctx, args.url, False)
+        await _mark_link_check(ctx, args.url, False)
         raise
-    if not gated:
-        await _mark_link_check(ctx, args.url, True)
+    await _mark_link_check(ctx, args.url, True)
     return {"url": page.url, "text": page.text}
 
 
@@ -577,43 +495,6 @@ def _page_summary(args: PageArgs | None) -> str:
 def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
     return ToolSpec(name, tier, model, run, lambda _args: summary, approval_kind)
 
-
-# The status line while a tool runs (event `status`, phase working). Each line ends in "는 중".
-PROGRESS = {
-    "search_postings": "공고를 찾는 중",
-    "find_matching_postings": "맞는 공고를 찾는 중",
-    "get_posting": "공고 요건을 읽는 중",
-    "list_bookmarks": "저장한 공고를 보는 중",
-    "list_applications": "지원 현황을 보는 중",
-    "list_documents": "서류 목록을 보는 중",
-    "get_document": "서류를 읽는 중",
-    "list_offers": "받은 제안을 보는 중",
-    "get_offer": "제안 내용을 읽는 중",
-    "list_calendar_events": "일정을 보는 중",
-    "get_my_profile": "프로필을 보는 중",
-    "search_profiles": "허브 프로필을 찾는 중",
-    "list_posts": "글을 보는 중",
-    "get_fit_score": "적합도를 계산하는 중",
-    "search_career_context": "경력 자료를 찾는 중",
-    "read_page": "페이지를 읽는 중",
-    "bookmark_posting": "공고를 저장하는 중",
-    "unbookmark_posting": "저장한 공고에서 빼는 중",
-    "create_calendar_event": "일정을 추가하는 중",
-    "update_calendar_event": "일정을 고치는 중",
-    "edit_document": "서류를 고치는 중",
-    "start_document": "서류 작성을 준비하는 중",
-    "prepare_interview": "면접 준비를 시작하는 중",
-    "apply_to_posting": "공고에 지원하는 중",
-    "accept_offer": "제안을 수락하는 중",
-    "decline_offer": "제안을 거절하는 중",
-    "send_offer_message": "제안에 답장을 보내는 중",
-    "send_offer": "커피챗 제안을 보내는 중",
-    "create_post": "글을 올리는 중",
-    "create_comment": "댓글을 남기는 중",
-    "follow_user": "팔로우하는 중",
-    "update_my_profile": "프로필을 고치는 중",
-    "delete_calendar_event": "일정을 지우는 중",
-}
 
 # What a write's card is called on the status line while it waits, "{label} · 확인을 기다리는 중".
 # 지원하기 and 이력서 수정 are drawn on boards ChatPh6Apply and ChatApprove.

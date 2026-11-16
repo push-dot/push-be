@@ -84,6 +84,7 @@ async def chat(db, people, bot: str | None = "company", site: str | None = None)
         user,
         str(user),
     )
+    await q.execute("INSERT INTO user_consents (user_id, reference_data) VALUES ($1, true)", user)
     if bot is not None:
         bot_id = uuid4()
         company = bot == "company"
@@ -246,17 +247,9 @@ async def test_a_link_typed_in_a_korean_sentence_is_read_without_a_card(
     assert fetched == [url]
 
 
-@pytest.mark.parametrize(("read_mine", "asked"), [(True, 0), (False, 1)])
-async def test_a_saved_link_counts_as_given_only_while_my_materials_may_be_read(
-    db, people, monkeypatch, read_mine, asked
-):
+async def test_a_saved_link_counts_as_given(db, people, monkeypatch):
     fetched = fake_web(monkeypatch, {POSTING: "공고 본문"})
     c = await chat(db, people, bot="push")
-    await db.q().execute(
-        "INSERT INTO user_settings (user_id, allow_ai_read_my_files) VALUES ($1, $2)",
-        c.user,
-        read_mine,
-    )
     await db.q().execute(
         "INSERT INTO user_links (id, user_id, kind, url, title) "
         "VALUES ($1, $2, 'job', $3, '허브 프로필 링크')",
@@ -268,8 +261,8 @@ async def test_a_saved_link_counts_as_given_only_while_my_materials_may_be_read(
 
     events = await turn(c, "내 링크에 있는 공고 읽어 줘", mode="AUTO")
 
-    assert len(cards(events)) == asked
-    assert fetched == ([] if asked else [POSTING])
+    assert cards(events) == []
+    assert fetched == [POSTING]
 
 
 async def test_a_link_attached_to_a_message_is_read_without_a_card_and_marks_the_link_checked(
