@@ -3,9 +3,10 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 from functools import partial
 from typing import Annotated, Any, Final
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
@@ -178,14 +179,23 @@ def _exposure(state: dict, tools_by_name: dict) -> Exposure:
     return found
 
 
+# shortcut: a hyphenated slug, a Hangul name or short pieces split by `/` pass as titles, so data hidden
+# there is not caught; card every granted-host path the thread did not hold if that matters.
+_CARRIES_DATA = re.compile(r"@|%25|%40|[A-Za-z0-9_]{20,}|\d[\d\s().-]{7,}\d")
+
+
 def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
     """Whether untrusted text could have built this address to carry the user's data out. Right
     after such text, any address the thread does not hold; with such text only earlier in the
-    thread, one with a query string or off a granted host, so a bot still opens other pages of a
-    granted site."""
+    thread, one with a query string, an `@` or a long opaque token in its path, or off a granted
+    host, so a bot still opens other pages of a granted site."""
     if exposure is Exposure.NONE or url in seen:
         return False
-    return exposure is Exposure.RUN or not granted or bool(urlsplit(url).query)
+    if exposure is Exposure.RUN or not granted:
+        return True
+    parts = urlsplit(url)
+    return bool(parts.query) or any(
+        _CARRIES_DATA.search(path) for path in (parts.path, unquote(parts.path)))
 
 
 def _seen_text(state: dict) -> str:

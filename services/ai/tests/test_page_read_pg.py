@@ -366,7 +366,7 @@ async def test_a_grant_for_one_host_never_reads_another_through_a_redirect(db, p
     (card,) = cards(events)
     assert (card["title"], card["summary"]) == (
         "페이지 열기",
-        "other-site.example 페이지를 열어도 될까요?",
+        f"other-site.example 페이지를 열어도 될까요?\n{other}",
     ), "the new question names the site the redirect led to, not the bot's company"
     assert {"type": "done", "awaiting": "approval"} in events
 
@@ -404,7 +404,9 @@ async def test_the_page_card_lives_ten_minutes_and_always_allow_stops_asking_for
     (card,) = cards(await turn(c, "모아페이 공고 읽어 줘"))
 
     assert card["title"] == "채용 페이지 열기"
-    assert card["summary"] == "모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?"
+    assert card["summary"] == (
+        f"모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?\n{POSTING}"
+    )
     assert "foot" not in card and "expiresAt" not in card
     assert [o["id"] for o in card["options"]] == ["approve", "approve_always", "reject"]
     row = await db.q().fetchrow(
@@ -473,10 +475,21 @@ async def test_the_card_and_the_grant_say_what_the_page_is(
     (card,) = cards(await turn(c, "읽어 줘"))
     await turn(c, resume={"approvalId": card["id"], "optionId": "approve_always"})
 
-    assert (card["title"], card["summary"]) == (title, summary)
+    assert (card["title"], card["summary"]) == (title, f"{summary}\n{url}")
     grants = await db.q().fetch("SELECT kind FROM bot_site_grants WHERE bot_id = $1", c.bot)
     assert [g["kind"] for g in grants] == [kind]
     assert fetched == [url]
+
+
+async def test_the_page_card_shows_the_whole_address_with_its_query(db, people, monkeypatch):
+    full = "https://careers.moapay.example/jobs/1?ref=" + "a1b2c3d4" * 4
+    fake_web(monkeypatch, {full: "공고 본문"})
+    c = await chat(db, people, bot="company", site="https://moapay.notion.example")
+    reads(full)
+
+    (card,) = cards(await turn(c, "읽어 줘"))
+
+    assert card["summary"].endswith(f"\n{full}")
 
 
 async def test_a_conversation_without_a_bot_offers_no_always_allow_and_never_says_bot(
@@ -493,7 +506,7 @@ async def test_a_conversation_without_a_bot_offers_no_always_allow_and_never_say
         ("reject", "거절"),
     ]
     assert card["title"] == "페이지 열기"
-    assert card["summary"] == "careers.moapay.example 페이지를 열어도 될까요?"
+    assert card["summary"] == f"careers.moapay.example 페이지를 열어도 될까요?\n{POSTING}"
     assert "봇" not in json.dumps(card, ensure_ascii=False)
     assert "Bot" not in json.dumps(card, ensure_ascii=False)
 
