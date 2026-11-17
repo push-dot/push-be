@@ -285,7 +285,6 @@ class ResumeGraphState(TypedDict, total=False):
     bottleneck_level: str | None
     prevention_categories: list
     chosen_project: str | None
-    revalidate: bool
     blueprints: dict
     validation_failures: int
     scores: list
@@ -1302,11 +1301,10 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
         capped_at_approach = merged.get("phase") == "approach"
         return {
             **update,
-            "revalidate": capped_at_approach,
             "validation_failures": 0,
             "status": "active",
             "phase": "approach" if capped_at_approach else "blueprints",
-            "goto": "end",
+            "goto": "p2x_validate" if capped_at_approach else "end",
         }
     if gate_id == "projects":
         return {**update, "status": "done", "phase": "blueprints", "goto": "end"}
@@ -1510,7 +1508,6 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             if gate_id == "validate_cap" and answer.get("option_id") == "change":
                 return {
                     "validation_failures": 0,
-                    "revalidate": False,
                     "status": "active",
                     "phase": "approach",
                     "goto": "end",
@@ -1943,7 +1940,6 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             "phase": "blueprints",
             "status": "active",
             "retry": False,
-            "revalidate": False,
             "validation_failures": 0,
         }
 
@@ -2015,8 +2011,6 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return "p3c_boost"
         if phase == "craft" and _scenario_letter(state) == "E":
             return "p3c_boost"
-        if phase == "approach" and state.get("revalidate"):
-            return "p2x_validate"
         if phase == "intake" and int(state.get("intake_asks") or 0) > 0:
             return "g_intake"
         if phase == "review" and _scenario_letter(state) == "C":
