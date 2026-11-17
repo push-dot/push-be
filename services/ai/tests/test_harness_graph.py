@@ -382,3 +382,16 @@ async def test_apply_card_title_stays_generic_for_an_unknown_posting():
 def test_resume_flow_follows_the_job_of_the_current_turn():
     state = {"job_id": "new", "conversation_id": "c", "user_id": "u", "resume": {"job_id": "old", "status": "active"}}
     assert _child_resume(state)["job_id"] == "new"
+
+
+def test_usage_is_billed_to_the_running_job_not_the_one_that_opened_the_gate():
+    from types import SimpleNamespace
+
+    from app.harness.status import current_run, job_of
+
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        assert job_of({"job_id": "old"}) == "new"
+    finally:
+        current_run.reset(token)
+    assert job_of({"job_id": "old"}) == "old"

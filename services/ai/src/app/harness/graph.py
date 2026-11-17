@@ -32,7 +32,7 @@ from app.harness.memory import memory_update, merge_memory
 from app.harness.policy import TRUSTED_READS, Decision, Exposure, Tier, decide
 from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
-from app.harness.status import thinking, tool_status, waiting, working
+from app.harness.status import job_of, thinking, tool_status, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -617,7 +617,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                     db,
                     state.get("user_id"),
                     started["inputs"],
-                    job_id=state.get("job_id"),
+                    job_id=job_of(state),
                 ) or {}
                 text_out = result.get("text") or "조건에 맞는 공고가 없어요."
                 payload = {"items": result.get("items") or [], "text": text_out}
@@ -689,7 +689,7 @@ def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=N
         if gate is None:
             return ""
         return await gate.company_research(
-            name, user_id=state.get("user_id"), job_id=state.get("job_id"))
+            name, user_id=state.get("user_id"), job_id=job_of(state))
 
     def generate_for(_state):
         return gate_generate(turn_model.get())

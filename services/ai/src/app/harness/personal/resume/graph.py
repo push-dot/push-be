@@ -67,6 +67,7 @@ from app.harness.status import (
     SAVE_DOCUMENT,
     SCORE_FIT,
     notice,
+    job_of,
     running_job,
     waiting,
     with_status,
@@ -885,7 +886,7 @@ def _context(db, state: dict) -> ToolContext:
         user_id=str(state.get("user_id") or ""),
         company_id=None,
         conversation_id=str(state.get("conversation_id") or ""),
-        job_id=str(state.get("job_id") or ""),
+        job_id=job_of(state),
         tool_call_id="",
         db=db,
         core=bound_core.get(),
@@ -1565,7 +1566,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             text,
             plan,
             gate=current_ai_gate(),
-            job_id=state.get("job_id") or None,
+            job_id=job_of(state) or None,
             user_id=user_id,
         )
 

@@ -205,6 +205,11 @@ def running_job() -> str:
     return run.job_id if run is not None else ""
 
 
+def job_of(state) -> str:
+    """The job to bill: the running one, since a gate answer resumes a state that keeps the job that opened the gate."""
+    return running_job() or str(state.get("job_id") or "")
+
+
 def _send(phase: str, text: str) -> None:
     run = current_run.get()
     event = run.status(phase, text) if run is not None else None
