@@ -290,9 +290,11 @@ def _public_resume(result: dict) -> dict:
 
 def _child_resume(state: dict) -> dict:
     child = dict(_resume_dict(state))
-    for key in ("conversation_id", "user_id", "job_id", "access_mode"):
+    for key in ("conversation_id", "user_id", "access_mode"):
         if not child.get(key):
             child[key] = state.get(key) or ""
+    # Every turn is a new job; the stored id would point usage and gate ids at a finished one.
+    child["job_id"] = state.get("job_id") or child.get("job_id") or ""
     child.setdefault("status", "active")
     child.setdefault("phase", "mode_select")
     return child
