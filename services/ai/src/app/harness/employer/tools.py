@@ -194,7 +194,7 @@ async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
     return await judge_fit(
         row["requirements"], row["skills"], row["description"], args.content,
         current_employer_plan(), audience="EMPLOYER",
-        gate=current_ai_gate(), job_id=ctx.job_id or None, user_id=user_id)
+        gate=current_ai_gate(), job_id=ctx.usage_job_id or None, user_id=user_id)
 
 
 EMPLOYER_TOOLS = [
