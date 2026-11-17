@@ -31,7 +31,7 @@ const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> =
   return {
     bot_id: id, user_id: USER, ...own, thread_id: null,
     last_message_at: null, last_message_preview: null, last_message_from_bot: null,
-    card_id: null, card_title: null, card_for: null, card_at: null, card_expires_at: null,
+    card_id: null, card_title: null, card_kind: null, card_tool: null, card_for: null, card_at: null, card_expires_at: null,
     job_id: null, job_at: null, job_phase: null, job_text: null, job_recent_text: null, job_ahead: null,
     last_activity_at: bot.created_at, unread: false, outcome_kind: null, outcome_at: null,
     ...state,
@@ -159,9 +159,9 @@ test("GET /bots?postingId= answers the caller's bot for that posting's company, 
 
 test("a bot's activity is its open card, else what its run is doing, else nothing", async () => {
   const at = "2026-10-18T00:01:00Z";
-  const card = { card_id: POSTING, card_title: "이 변경을 이력서에 반영할까요?", card_for: "confirm", card_at: at, card_expires_at: null };
+  const card = { card_id: POSTING, card_title: "수정 적용", card_kind: "DOCUMENT_EDIT", card_for: "confirm", card_at: at, card_expires_at: null };
   const run = (phase: string, more: Record<string, unknown> = {}) => ({ job_id: POSTING, job_at: at, job_phase: phase, ...more });
-  const waiting = { phase: "waiting", since: at, for: "confirm", cardId: POSTING, cardTitle: card.card_title, expiresAt: null };
+  const waiting = { phase: "waiting", since: at, for: "confirm", cardId: POSTING, cardTitle: "이 변경을 이력서에 반영할까요?", expiresAt: null };
   for (const [name, state, activity, status] of [
     ["idle", {}, null, "DONE"],
     ["queued", run("queued", { job_ahead: 2 }), { phase: "queued", since: at, ahead: 2 }, "RUNNING"],
@@ -170,6 +170,9 @@ test("a bot's activity is its open card, else what its run is doing, else nothin
     ["working", run("working", { job_text: "경력 섹션 고치는 중", job_recent_text: "경력 섹션 고치는 중" }), { phase: "working", since: at, label: "경력 섹션 고치는 중" }, "RUNNING"],
     ["card", card, waiting, "NEEDS_APPROVAL"],
     ["card and a run", { ...card, ...run("working", { job_text: "x" }) }, waiting, "NEEDS_APPROVAL"],
+    ["edit card", { ...card, card_title: "수정 적용", card_kind: "DOCUMENT_EDIT" }, waiting, "NEEDS_APPROVAL"],
+    ["page card", { ...card, card_title: "채용 페이지 열기", card_kind: "TOOL_ACTION", card_tool: "read_page" }, { ...waiting, cardTitle: "이 사이트를 열어도 될까요?" }, "NEEDS_APPROVAL"],
+    ["other tool card keeps its title", { ...card, card_title: "이 공고에 지원해요", card_kind: "TOOL_ACTION", card_tool: "apply_to_posting" }, { ...waiting, cardTitle: "이 공고에 지원해요" }, "NEEDS_APPROVAL"],
     ["answer card", { ...card, card_for: "answer", card_expires_at: "2026-10-18T00:11:00Z" }, { ...waiting, for: "answer", expiresAt: "2026-10-18T00:11:00Z" }, "NEEDS_APPROVAL"],
   ] as const) {
     const { json } = await call("GET", `/api/v1/bots/${BOT}`, undefined, { state });

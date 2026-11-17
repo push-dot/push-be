@@ -113,12 +113,21 @@ export const botRef = (row: BotRow): Record<string, unknown> => ({
   color: String(row.kind) === "push" ? null : String(row.color),
 });
 
+/** What a waiting row says the card asks (boards AgentHome, AgentHomeRowExpiredFailed). Another card keeps its title. */
+const ASK_EDIT = "이 변경을 이력서에 반영할까요?";
+const ASK_PAGE = "이 사이트를 열어도 될까요?";
+const askOf = (row: BotRow): string => {
+  if (row.card_kind === "DOCUMENT_EDIT") return ASK_EDIT;
+  if (row.card_kind === "TOOL_ACTION" && row.card_tool === "read_page") return ASK_PAGE;
+  return String(row.card_title ?? "");
+};
+
 // An open card comes before a run: the run that asked it has ended, and the next one starts with the answer.
 const activityOf = (row: BotRow): Record<string, unknown> | null => {
   if (row.card_id != null) {
     return {
       phase: "waiting", since: ts(row.card_at), for: String(row.card_for), cardId: String(row.card_id),
-      cardTitle: String(row.card_title ?? ""), expiresAt: ts(row.card_expires_at),
+      cardTitle: askOf(row), expiresAt: ts(row.card_expires_at),
     };
   }
   const since = ts(row.job_at);
