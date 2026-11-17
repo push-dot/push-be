@@ -30,7 +30,6 @@ from app.harness.personal.resume.profile_document import (
     save_profile_document,
 )
 from app.harness.personal.resume.progress import (
-    MATERIAL_IDS,
     added_keywords,
     analyze_steps,
     apply_recommendations_line,
@@ -1045,8 +1044,14 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
         if tone_ids:
             update["tone"] = str(tone_ids[0])
         if "materials" in buckets:
+            offered = [
+                option["id"]
+                for section in intake_panel(state.get("inputs") or {}, state.get("analysis"))
+                if section["id"] == "materials"
+                for option in section["options"]
+            ]
             update["inputs"] = without_materials(
-                state.get("inputs") or {}, [m for m in MATERIAL_IDS if m not in buckets["materials"]]
+                state.get("inputs") or {}, [m for m in offered if m not in buckets["materials"]]
             )
     if phase == "tone" and option_id and option_id != "submit":
         update["tone"] = str(option_id)
@@ -1505,6 +1510,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             if gate_id == "validate_cap" and answer.get("option_id") == "change":
                 return {
                     "validation_failures": 0,
+                    "revalidate": False,
                     "status": "active",
                     "phase": "approach",
                     "goto": "end",

@@ -688,6 +688,36 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
     assert model.calls.count("validate") == 4
 
 
+async def test_change_direction_after_a_retry_reopens_the_approach_gate():
+    model = _PhaseModel({"validate": {"valid": False}})
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    answers = {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}}
+    await _blueprint(
+        graph, config, _base(phase="analyze", work_mode="experience_blueprint"), _on_cap, answers,
+    )
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
+        pass
+    for _ in range(4):
+        async for _mode, _chunk in graph.astream({}, config, stream_mode=["values"]):
+            pass
+        if _on_cap(await graph.aget_state(config)):
+            break
+    assert _on_cap(await graph.aget_state(config))
+    async for _mode, _chunk in graph.astream(
+        Command(resume={"option_id": "change"}), config, stream_mode=["values"]):
+        pass
+    changed = await graph.aget_state(config)
+    assert changed.values["revalidate"] is False
+    assert changed.values["phase"] == "approach"
+    calls = model.calls.count("validate")
+    async for _mode, _chunk in graph.astream({}, config, stream_mode=["values"]):
+        pass
+    assert model.calls.count("validate") == calls
+    assert "g_approach" in ((await graph.aget_state(config)).next or ())
+
+
 async def test_failed_blueprint_validation_returns_to_blueprints_until_the_cap():
     model = _PromptModel({
         "validate": {"valid": True},
@@ -752,3 +782,19 @@ def test_unchecked_materials_are_dropped_from_the_inputs():
     assert materials["selected"] == ["m_file", "m_posting", "m_github"]
     kept = without_materials(inputs, ["m_github", "m_file"])
     assert set(kept) == {"postingId", "posting"}
+
+
+async def test_only_the_materials_the_card_offered_can_be_dropped():
+    graph = _graph(_Approvals())
+    config = _config()
+    inputs = {"fileName": "a.pdf", "posting": {"description": "본문"}, "postingId": "p1"}
+    async for _mode, _chunk in graph.astream(
+        _base(phase="intake", inputs=inputs), config, stream_mode=["values"]):
+        pass
+    assert "g_output_targets" in ((await graph.aget_state(config)).next or ())
+    resume = {"option_id": "submit", "option_ids": ["submit", "resume", "m_file", "preserve"]}
+    async for _mode, _chunk in graph.astream(Command(resume=resume), config, stream_mode=["values"]):
+        pass
+    saved = (await graph.aget_state(config)).values["inputs"]
+    assert saved["posting"] == {"description": "본문"}
+    assert saved["postingId"] == "p1"

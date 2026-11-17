@@ -543,7 +543,6 @@ def _material_rows(inputs: dict, analysis: dict) -> list[dict]:
     return rows
 
 
-MATERIAL_IDS = ("m_file", "m_posting", "m_github")
 _MATERIAL_KEYS = {
     "m_file": ("fileName", "file_name", "attachments", "documentId"),
     "m_posting": ("posting", "postingId"),
