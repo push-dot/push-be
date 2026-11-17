@@ -3,7 +3,7 @@ import contextlib
 import hmac
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from uuid import UUID
 
@@ -51,15 +51,21 @@ class PgJobs(AdminJobs):
             "SELECT id, type, heartbeat_at FROM ai_jobs WHERE status = 'RUNNING'")
         return [_row(row, "id", "type", "heartbeat_at") for row in rows]
 
-    async def mark_retry(self, ids, now) -> list[dict]:
+    async def mark_retry(self, ids, now, beats=None) -> list[dict]:
         """Requeue jobs whose worker died; a lost heartbeat costs an attempt, so a job
-        that keeps killing its worker ends DEAD (reservation released) instead of looping."""
+        that keeps killing its worker ends DEAD (reservation released) instead of looping.
+        `beats` maps each id to the heartbeat the caller read: a job that beat since is alive and stays."""
+        ids = list(ids)
+        seen = [(beats or {}).get(job_id) for job_id in ids]
         rows = await self.conn.fetch(
             "UPDATE ai_jobs SET attempts = attempts + 1, run_after = $1, updated_at = $1, "
             "status = CASE WHEN attempts + 1 >= max_attempts THEN 'DEAD' ELSE 'RETRY' END "
-            "WHERE status = 'RUNNING' AND id = ANY($2::uuid[]) "
-            "RETURNING id, id AS job_id, user_id, company_id, queue, status",
-            now, list(ids))
+            "FROM unnest($2::uuid[], $3::timestamptz[]) AS seen(id, beat) "
+            "WHERE ai_jobs.id = seen.id AND ai_jobs.status = 'RUNNING' "
+            "AND (seen.beat IS NULL OR ai_jobs.heartbeat_at IS NOT DISTINCT FROM seen.beat) "
+            "RETURNING ai_jobs.id, ai_jobs.id AS job_id, ai_jobs.user_id, ai_jobs.company_id, "
+            "ai_jobs.queue, ai_jobs.status",
+            now, ids, seen)
         await close_each(self.conn, [row for row in rows if row["status"] == "DEAD"], now)
         return [_row(row, "id", "queue", "status") for row in rows]
 
@@ -95,6 +101,8 @@ class Dispatcher:
         self.now = now
         self.alerts = alerts
         self.db_conditions: dict = {}
+        # Requeues since the last maintenance pass: the light pass does most of them, and the alert reads the sum.
+        self._requeued = 0
         # The kick endpoint and the periodic sweep must not dispatch concurrently.
         self._pass = asyncio.Lock()
 
@@ -106,6 +114,7 @@ class Dispatcher:
         db = await self.open_db()
         try:
             requeued = await self._requeue_stale(db, now)
+            self._requeued += requeued
             promoted = await self.queue.promote_due(now)
             dispatched = await self._dispatch_outbox(db, now)
             rehydrated = await self._rehydrate(db, now)
@@ -119,8 +128,10 @@ class Dispatcher:
                 storage = os.environ.get("STORAGE_DIR") or None
                 await sweep(pool)
                 await purge_deleted(pool, storage)
+                since_sweep = replace(stats, requeued=self._requeued)
+                self._requeued = 0
                 self.db_conditions = db_conditions(
-                    stats, await db.neon_stats(), await db.open_billing_alerts())
+                    since_sweep, await db.neon_stats(), await db.open_billing_alerts())
                 # Last: it raises when LangGraph renamed a table, and the steps above still run.
                 await db.sweep_orphan_checkpoints()
             return stats
@@ -163,11 +174,12 @@ class Dispatcher:
         return [
             asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
             asyncio.create_task(every(ALERT_S, self.check_alerts)),
-            asyncio.create_task(every(PROMOTE_S, self.queue.promote_due)),
+            asyncio.create_task(every(PROMOTE_S, self.run_once)),
         ]
 
     async def _requeue_stale(self, db, now) -> int:
         ids = []
+        beats = {}
         limits = heartbeat_limits()
         for row in await db.running_jobs():
             beat = row["heartbeat_at"]
@@ -176,11 +188,12 @@ class Dispatcher:
             limit = limits.get(row["type"], limits["chat"])
             if (now - beat).total_seconds() >= limit:
                 ids.append(row["id"])
+                beats[row["id"]] = beat
         if not ids:
             return 0
         # The dead worker's message may already be acked by a reclaimer that saw
         # RUNNING, so re-add explicitly instead of waiting for a rehydrate.
-        for row in await db.mark_retry(ids, now):
+        for row in await db.mark_retry(ids, now, beats):
             if row["status"] == "DEAD":
                 await self.queue.dead(row["id"], "heartbeat lost")
             else:

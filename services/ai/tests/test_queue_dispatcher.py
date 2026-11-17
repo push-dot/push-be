@@ -38,10 +38,10 @@ class MemoryDB:
     async def running_jobs(self):
         return [job for job in self.jobs if job["status"] == "RUNNING"]
 
-    async def mark_retry(self, ids, now):
+    async def mark_retry(self, ids, now, beats=None):
         out = []
         for job in self.jobs:
-            if job["id"] in set(ids) and job["status"] == "RUNNING":
+            if job["id"] in set(ids) and job["status"] == "RUNNING" and (beats or {}).get(job["id"], job["heartbeat_at"]) == job["heartbeat_at"]:
                 job["attempts"] += 1
                 job["status"] = "DEAD" if job["attempts"] >= job["max_attempts"] else "RETRY"
                 job["run_after"] = now
@@ -415,3 +415,56 @@ async def test_dispatcher_purges_accounts_and_companies_every_maintenance_pass()
     await box.run_once(NOW, maintain=True)
     await box.run_once(NOW, maintain=True)
     assert pool.fetched == [PURGE_SQL, COMPANY_PURGE_SQL] * 2
+
+
+@pytest.mark.asyncio
+async def test_the_dispatcher_requeues_a_dead_workers_job_between_sweeps(monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.queue.dispatcher.PROMOTE_S", 0.01)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    stop = asyncio.Event()
+    tasks = box.start_periodic(stop)
+    try:
+        for _ in range(100):
+            if jobs[0]["status"] == "RETRY":
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+    assert jobs[0]["status"] == "RETRY"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lost_alert_counts_requeues_of_the_light_passes():
+    redis = FakeRedis(decode_responses=True)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    await box.run_once(NOW, maintain=True)
+    assert box.db_conditions["heartbeat_lost"][0] is True
+    await box.run_once(NOW, maintain=True)
+    assert box.db_conditions["heartbeat_lost"][0] is False
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_beat_after_it_was_read_is_not_requeued():
+    redis = FakeRedis(decode_responses=True)
+    stale = NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", stale)]
+    state = {"live": 0, "opened": 0}
+
+    class BeatsAfterTheRead(MemoryDB):
+        async def running_jobs(self):
+            rows = [dict(row) for row in await super().running_jobs()]
+            for row in self.jobs:
+                row["heartbeat_at"] = NOW
+            return rows
+
+    box = Dispatcher(StreamQueue(redis), lambda: asyncio.sleep(0, BeatsAfterTheRead(state, jobs, [])), SECRET)
+    state["live"] = 0
+    await box.run_once(NOW)
+    assert jobs[0]["status"] == "RUNNING"
+    assert jobs[0]["attempts"] == 0
