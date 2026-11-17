@@ -1380,6 +1380,9 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     emit(plan)
             if phase == "craft":
                 await _emit_papers(db, current, stored)
+                doc_id = await save_profile_document({**current, **stored})
+                if doc_id:
+                    stored["profile_document_id"] = doc_id
             if phase == "present":
                 view = {**current, **stored}
                 working(SAVE_DOCUMENT)
@@ -1406,6 +1409,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 reply = craft_text(
                     int(current.get("draft_version") or 1),
                     [str(item) for item in changes] if isinstance(changes, list) else [],
+                    str(stored.get("profile_document_id") or current.get("profile_document_id") or ""),
                 ) or reply
             if phase == "blueprints":
                 reply = blueprints_text(output) or reply

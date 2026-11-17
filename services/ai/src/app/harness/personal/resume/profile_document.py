@@ -234,6 +234,14 @@ async def save_edited_file(db, state: dict, file_name: str) -> dict:
     }
 
 
+async def _draft_document(document_svc, user_id: UUID, known):
+    """The document the draft was already saved into (craft), so present adds a version, not a second document."""
+    try:
+        return await document_svc.get(user_id, UUID(str(known)))
+    except Exception:
+        return None
+
+
 async def save_profile_document(state: dict, title: str | None = None) -> str:
     from app.harness.personal.tools import bound_services
     from app.infrastructure.resume_workspace import md_to_doc
@@ -251,11 +259,13 @@ async def save_profile_document(state: dict, title: str | None = None) -> str:
     content, blocks = md_to_doc(text)
     template = state.get("template") or "CLASSIC"
     try:
-        doc = await document_svc.create(
-            user_id, None, label, "HUB_PROFILE", template, "ko")
+        doc = await _draft_document(document_svc, user_id, state.get("profile_document_id"))
+        if doc is None:
+            doc = await document_svc.create(
+                user_id, None, label, "HUB_PROFILE", template, "ko")
+            await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
         await document_svc.create_version(
             user_id, doc.id, doc.revision, content, blocks, "resume flow")
-        await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
     except Exception:
         return ""
     return str(doc.id)

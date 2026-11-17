@@ -286,6 +286,31 @@ async def test_saved_file_carries_the_bot_and_a_new_document_is_stamped_once():
     assert "created_by_bot_id IS NULL" in stamp[0][0]
 
 
+async def test_present_adds_a_version_to_the_draft_document():
+    from app.harness.personal.tools import bound_services
+
+    seen = []
+
+    class _Known:
+        async def get(self, user_id, id_):
+            return SimpleNamespace(id=id_, revision=3)
+
+        async def create(self, *args):
+            raise AssertionError("a second document")
+
+        async def create_version(self, user_id, doc_id, expected, *rest):
+            seen.append((doc_id, expected))
+
+    token = bound_services.set(SimpleNamespace(document_svc=_Known(), db=_Exec()))
+    try:
+        made = await docs.save_profile_document(
+            {"user_id": str(USER), "profile_document_id": str(DOCUMENT), "drafts": {"markdown": "# 프로필"}})
+    finally:
+        bound_services.reset(token)
+    assert made == str(DOCUMENT)
+    assert seen == [(DOCUMENT, 3)]
+
+
 class _Files:
     def __init__(self):
         self.files: dict = {}
