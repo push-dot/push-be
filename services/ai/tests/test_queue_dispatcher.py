@@ -6,7 +6,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 
 from app.queue.backoff import backoff_seconds
-from app.queue.config import heartbeat_limits, visibility_limits
+from app.queue.config import PROMOTE_S, heartbeat_limits, visibility_limits
 from app.queue.dispatcher import Dispatcher, kick_app
 from app.queue.streams import StreamQueue
 
@@ -107,6 +107,10 @@ def job(id_, type_, queue, status, heartbeat_at=None, run_after=None, updated_at
 async def stream_job_ids(redis, queue):
     rows = await redis.xrange(queue)
     return [fields["jobId"] for _, fields in rows]
+
+
+def test_a_retry_is_promoted_before_its_first_backoff_ends():
+    assert PROMOTE_S < backoff_seconds(1)
 
 
 def test_backoff_sequence():

@@ -16,7 +16,7 @@ from app.queue.admin import AdminJobs
 from app.queue.credits import close_each
 from app.ratelimit import sweep
 from app.queue.alerts import db_conditions, redis_conditions
-from app.queue.config import ALERT_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
+from app.queue.config import ALERT_S, PROMOTE_S, QUEUE_GROUPS, SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.streams import StreamQueue
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,7 @@ class Dispatcher:
         tasks = [
             asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
             asyncio.create_task(every(ALERT_S, self.check_alerts)),
+            asyncio.create_task(every(PROMOTE_S, self.queue.promote_due)),
         ]
         try:
             await server.serve()
