@@ -36,12 +36,12 @@ const scene = (db: BotsPg, user: Person, botId: string) => {
         [id, user.id, await thread(), role, text, when]);
       return id;
     },
-    ask: async (card: { when: string; expires?: string; kind?: string; status?: string; title?: string }): Promise<string> => {
+    ask: async (card: { when: string; expires?: string; kind?: string; status?: string; title?: string; tool?: string }): Promise<string> => {
       const id = crypto.randomUUID();
       await run(
-        `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, created_at, expires_at)
-         VALUES ($1::uuid, $2::uuid, $3, $1::uuid, 'h', $4, $5::uuid, $6, $7::timestamptz, $8::timestamptz)`,
-        [id, user.id, card.kind ?? "TOOL_ACTION", card.status ?? "PENDING", await thread(), card.title ?? "확인", card.when, card.expires ?? null]);
+        `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, created_at, expires_at, tool_name)
+         VALUES ($1::uuid, $2::uuid, $3, $1::uuid, 'h', $4, $5::uuid, $6, $7::timestamptz, $8::timestamptz, $9)`,
+        [id, user.id, card.kind ?? "TOOL_ACTION", card.status ?? "PENDING", await thread(), card.title ?? "확인", card.when, card.expires ?? null, card.tool ?? null]);
       return id;
     },
     job: async (status: string, when: string, statuses: Row[] = [], type = "chat"): Promise<void> => {
@@ -123,6 +123,20 @@ const CASES: Record<string, { unread: boolean; seed: (s: Scene, other: Scene) =>
       return { phase: "waiting", since: ago(6), for: "confirm", cardId, cardTitle: "이 변경을 이력서에 반영할까요?", expiresAt: ago(-4) };
     },
   },
+  "card-edit": {
+    unread: true,
+    seed: async (s) => {
+      const cardId = await s.ask({ when: ago(6), kind: "DOCUMENT_EDIT", title: "수정 적용" });
+      return { phase: "waiting", since: ago(6), for: "confirm", cardId, cardTitle: "이 변경을 이력서에 반영할까요?", expiresAt: null };
+    },
+  },
+  "card-page": {
+    unread: true,
+    seed: async (s) => {
+      const cardId = await s.ask({ when: ago(6), title: "채용 페이지 열기", tool: "read_page" });
+      return { phase: "waiting", since: ago(6), for: "confirm", cardId, cardTitle: "이 사이트를 열어도 될까요?", expiresAt: null };
+    },
+  },
   "card-read": {
     unread: false,
     seed: async (s) => {
@@ -168,7 +182,7 @@ describe("bot state on the shared database", () => {
 
   test("a bot reads as its named case", async (t) => {
     if (!db) return t.skip(SKIP);
-    assert.equal(Object.keys(CASES).length, 15);
+    assert.equal(Object.keys(CASES).length, 17);
     for (const [name, c] of Object.entries(CASES)) {
       const user = await db.person("PRO");
       const [bot, other] = [await made(user, "Acme"), await made(user, "Beta")];
