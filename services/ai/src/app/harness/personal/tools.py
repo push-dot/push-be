@@ -271,14 +271,11 @@ def _changed_lines(hunks: list) -> int:
 
 
 def _common(a: list, b: list) -> int:
-    """How many leading items the two lists share."""
     return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
 
 
 async def _page_hunks(ctx: ToolContext, args: EditDocumentArgs, hunks: list) -> list:
-    """The edit as the approval card draws it (board ChatApprove): every line of the document, the
-    edited ones marked. The changed block alone when the document cannot be read or `before` is
-    not in it."""
+    """Every line of the document with the edited ones marked; the changed block alone when the document cannot be read or `before` is not in it."""
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
     if document_svc is None or not args.before:
@@ -382,8 +379,6 @@ def _resume_saved(row) -> dict:
 
 
 def _draft_offer(saved: dict) -> list[str]:
-    """What the offer says above its card (board ChatResume): the draft in progress, then its top
-    lines as the draft's own markdown. The link opens the draft's document (saved when craft ran)."""
     from app.harness.personal.resume.drafts import draft_text
     from app.harness.personal.resume.progress import draft_link, paper_event
 
