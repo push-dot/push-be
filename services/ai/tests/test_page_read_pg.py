@@ -444,7 +444,7 @@ NURI = "https://nuricloud.career.greetinghr.example/o/1"
             "company",
             "https://moapay.notion.example/about",
             "회사 소개 열기",
-            "모아페이 회사 소개(moapay.notion.example)를 열어도 될까요?",
+            "moapay.notion.example를 열어도 될까요?",
             "company",
         ),
         (
@@ -458,7 +458,7 @@ NURI = "https://nuricloud.career.greetinghr.example/o/1"
             "push",
             NURI,
             "채용 페이지 열기",
-            "누리클라우드 채용 페이지(nuricloud.career.greetinghr.example)를 열어도 될까요?",
+            "nuricloud.career.greetinghr.example를 열어도 될까요?",
             "posting",
         ),
     ],
