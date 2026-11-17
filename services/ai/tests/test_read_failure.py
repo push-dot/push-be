@@ -77,7 +77,7 @@ async def test_missing_requirements_routes_to_read_failed_gate_and_skips_fit():
     choice = next(item for item in marks if item[0] == "choice")
     assert marks.index(tool) < marks.index(token) < marks.index(choice)
     assert tool[1] == "err"
-    assert "로그인이 필요한 영역이에요" in tool[2]
+    assert tool[2] == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
     assert choice[1] == "read_failed"
     assert [event["text"] for event in events if event.get("type") == "notice"] == [tool[2]]
 

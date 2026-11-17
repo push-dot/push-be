@@ -381,12 +381,22 @@ def _resume_saved(row) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _draft_detail(saved: dict) -> str:
+def _draft_offer(saved: dict) -> list[str]:
+    """What the offer says above its card (board ChatResume): the draft in progress, then its top
+    lines as the draft's own markdown. No link to the whole draft: a draft is not a document yet."""
     from app.harness.personal.resume.drafts import draft_text
+    from app.harness.personal.resume.progress import paper_event
 
-    if not draft_text(saved.get("drafts")):
-        return ""
-    return f"작성 중인 이력서 초안(v{int(saved.get('draft_version') or 1)})이 있어요."
+    text = draft_text(saved.get("drafts"))
+    if not text:
+        return []
+    version = int(saved.get("draft_version") or 1)
+    said = [f"작성 중인 이력서 초안(v{version})이 있어요."]
+    paper = paper_event("resume", version, text)
+    if paper and (paper["heading"] or paper["lines"]):
+        head = [f"# {paper['heading']}"] if paper["heading"] else []
+        said.append("\n" + "\n".join([*head, *paper["lines"]]))
+    return said
 
 
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
@@ -403,8 +413,8 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
                 {"id": "cancel", "label": "새로 시작하기"},
             ],
         }
-        if detail := _draft_detail(saved):
-            choice["detail"] = detail
+        for line in _draft_offer(saved):
+            emit({"token": line})
         await insert_chat_approval(ctx.db, ctx.user_id, ctx.conversation_id, choice, None)
         await ctx.db.q().execute(
             "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",

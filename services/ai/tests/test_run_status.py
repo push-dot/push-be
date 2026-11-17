@@ -253,9 +253,9 @@ def test_the_document_flow_says_the_thirteen_steps_of_its_board_word_for_word():
     assert STEPS == (
         "서류를 읽는 중",
         "공고 요건을 읽는 중",
-        "스택을 뽑는 중",
-        "스택을 비교하는 중",
-        "경력을 비교하는 중",
+        "필수·우대 스택을 뽑는 중",
+        "기술 스택을 비교하는 중",
+        "경력 수준을 비교하는 중",
         "적합도를 계산하는 중",
         "고칠 곳을 고르는 중",
         "경력 섹션을 쓰는 중",
@@ -399,4 +399,4 @@ def test_no_sentence_a_bot_thread_shows_says_the_korean_word_bot():
 
 
 def test_every_status_step_is_a_short_phrase():
-    assert all(len(step) <= 12 for step in STEPS), [step for step in STEPS if len(step) > 12]
+    assert all(len(step) <= 14 for step in STEPS), [step for step in STEPS if len(step) > 14]

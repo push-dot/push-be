@@ -33,6 +33,8 @@ from app.harness.personal.resume.progress import (
     added_keywords,
     analyze_steps,
     apply_recommendations_line,
+    blueprints_plan,
+    blueprints_text,
     boost_fit,
     boost_line,
     craft_text,
@@ -53,6 +55,7 @@ from app.harness.personal.resume.progress import (
     strategy_line,
     strategy_plan,
     think_event,
+    titled_projects,
     todo_event,
     without_materials,
 )
@@ -1179,7 +1182,7 @@ def _reply(phase: str, output: dict) -> str:
 _IMPROVEMENTS_NOTE = (
     "공고에 맞추려면 고칠 점을 짧은 문장 3개로 improvements 배열에 넣는다. "
     "같은 내용을 feedback 배열({tag: 키워드|도메인|성과|기술|경력, problem, fix})로도 넣는다. "
-    "페이지를 읽지 못하면 jobs.read_error에 짧은 한국어 이유를 넣는다."
+    "페이지를 읽지 못하면 jobs.read_error에 이유를 '로그인이 필요한 영역'처럼 짧은 명사구로 넣는다."
 )
 _STRATEGY_NOTE = (
     "섹션별 전략을 sections 배열에 넣는다. 각 항목은 "
@@ -1189,6 +1192,15 @@ _REVIEW_NOTE = (
     "바로 고친 것을 auto_fixes 배열({line, before, after})에, 추천 수정을 "
     "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다. "
     "추천 수정은 묻지 않고 모두 반영한다."
+)
+_BLUEPRINTS_NOTE = (
+    "기획서 요약을 projects 배열에 넣는다. 각 항목은 {id, title, category, stack}이다. "
+    "id는 p1, p2처럼 짧게, category는 안정성처럼 한 단어, stack은 기술 이름 배열이다. "
+    "기획서 본문은 message에 쓰지 않는다."
+)
+_VALIDATE_BP_NOTE = (
+    "projects 배열에 기획서마다 {id, verdict}를 넣는다. verdict는 pass, conditional, fail 중 하나다. "
+    "다른 기준은 통과하지만 한 가지가 약하면 conditional로 둔다."
 )
 _BOTTLENECK_STEPS = (
     "이번에는 content-strategy Step 1–3만 수행한다"
@@ -1216,6 +1228,8 @@ def phase_instructions(phase: str, state: dict) -> str:
             text = f"{text}\n{extra}"
     if phase == "analyze":
         text = f"{text}\n{_IMPROVEMENTS_NOTE}"
+    if phase == "blueprints":
+        text = f"{text}\n{_BLUEPRINTS_NOTE}"
     if phase == "review":
         text = f"{text}\n{_REVIEW_NOTE}"
     return text
@@ -1393,6 +1407,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     int(current.get("draft_version") or 1),
                     [str(item) for item in changes] if isinstance(changes, list) else [],
                 ) or reply
+            if phase == "blueprints":
+                reply = blueprints_text(output) or reply
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": running_job(), "retry": False}
             if stamped.get("inputs"):
@@ -1922,7 +1938,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             ]
             output = _parsed(await chat.ainvoke(messages))
         if _invalid(output):
-            return _failed_check(state, "approach", "방향 검증을 통과하지 못했어요")
+            return _failed_check(state, "approach", "방향 검증을 통과하지 못했어요.")
         return {
             "phase": "blueprints",
             "status": "active",
@@ -1940,6 +1956,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 SystemMessage(
                     content=phase_prompt_for_harness("validate_bp")
                     + ("\n\n탈락이면 valid를 false로 둔다. 결과는 JSON 객체 하나로만 답한다.")
+                    + f"\n{_VALIDATE_BP_NOTE}"
                 ),
                 HumanMessage(
                     content=json.dumps(
@@ -1960,11 +1977,18 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         artifacts["04_validation_report.json"] = await save_named(
             state, "04_validation_report.json", output
         )
-        if _invalid(output):
-            failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요")
+        blueprints = dict(current.get("blueprints") or {})
+        kept, plan = blueprints_plan(blueprints.get("projects"), output)
+        # Every plan dropped by the check is the same as a failed check.
+        if _invalid(output) or (titled_projects(blueprints.get("projects")) and not kept):
+            failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요.")
             return {**failed, "artifacts": artifacts}
+        if plan is not None:
+            emit(plan)
+            blueprints["projects"] = kept
         return {
             "artifacts": artifacts,
+            "blueprints": blueprints,
             "phase": "blueprints",
             "status": "active",
             "retry": False,

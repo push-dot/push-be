@@ -499,7 +499,7 @@ async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
 async def test_queue_turn_stores_status_and_notice_frames_whole():
     since = "2026-11-13T00:00:00.000000Z"
     status = {"type": "status", "text": "공고 요건을 읽는 중", "phase": "working", "since": since}
-    notice = {"type": "notice", "text": "“자격 요건”을 읽지 못했어요 · 로그인이 필요한 영역이에요"}
+    notice = {"type": "notice", "text": "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."}
 
     class Graph:
         async def astream(self, *args, **kwargs):

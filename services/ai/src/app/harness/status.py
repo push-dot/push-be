@@ -25,13 +25,13 @@ WAITING: dict[CardFor, str] = {
 }
 
 # The status line of a document flow, word for word and in the order of board ChatBotStatusSteps
-# (design version 395). The coordinator's ruling of 2026-11-13: the server says exactly these.
+# (design version 480). The coordinator's ruling of 2026-11-13: the server says exactly these.
 STEPS = (
     "서류를 읽는 중",
     "공고 요건을 읽는 중",
-    "스택을 뽑는 중",
-    "스택을 비교하는 중",
-    "경력을 비교하는 중",
+    "필수·우대 스택을 뽑는 중",
+    "기술 스택을 비교하는 중",
+    "경력 수준을 비교하는 중",
     "적합도를 계산하는 중",
     "고칠 곳을 고르는 중",
     "경력 섹션을 쓰는 중",

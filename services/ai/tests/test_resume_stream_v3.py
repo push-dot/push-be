@@ -142,3 +142,82 @@ async def test_invalid_strategy_does_not_emit_a_plan():
     events = await _events(graph, _base(phase="strategy"), _config())
     assert any(event.get("type") == "think" for event in events)
     assert not any(event.get("type") == "plan" for event in events)
+
+
+async def test_blueprints_say_how_many_then_list_the_ones_that_passed():
+    outputs = {
+        "blueprints": {
+            "message": "기획서 본문은 채팅에 쓰지 않아요.",
+            "projects": [
+                {"id": "p1", "title": "결제 승인 재시도 큐", "category": "안정성", "stack": ["Kotlin", "Kafka"]},
+                {"id": "p2", "title": "결제 이벤트 아웃박스", "category": "무결성", "stack": ["Kafka", "JPA"]},
+                {"id": "p3", "title": "가맹점 API 레이트 리미터", "category": "안정성", "stack": ["Redis"]},
+            ],
+        },
+        "validate_bp": {
+            "valid": True,
+            "projects": [
+                {"id": "p1", "verdict": "pass"},
+                {"id": "p2", "verdict": "conditional"},
+                {"id": "p3", "verdict": "fail"},
+            ],
+        },
+    }
+    graph = build_resume_graph(MemorySaver(), model=_PhaseModel(outputs), db=_Approvals())
+    events = await _events(
+        graph,
+        _base(phase="blueprints", work_mode="experience_blueprint", approach="prevention"),
+        _config(),
+    )
+    kinds = [
+        "plan" if event.get("type") == "plan" else "token" if "token" in event else event.get("gate")
+        for event in events
+        if event.get("type") in {"plan", "choice"} or "token" in event
+    ]
+    assert kinds == ["token", "plan", "projects"]
+    assert next(event["token"] for event in events if "token" in event) == "프로젝트 기획서 3개를 만들었어요."
+    plan = next(event for event in events if event.get("type") == "plan")
+    assert plan["id"] == "blueprints"
+    assert plan["title"] == "프로젝트 기획서"
+    assert plan["meta"] == "2개"
+    assert plan["rows"] == [
+        {"tag": "통과", "label": "결제 승인 재시도 큐", "note": "안정성 · Kotlin, Kafka"},
+        {"tag": "조건부", "label": "결제 이벤트 아웃박스", "note": "무결성 · Kafka, JPA"},
+    ]
+    gate = next(event for event in events if event.get("type") == "choice")
+    assert [option["label"] for option in gate["options"]] == [
+        "결제 승인 재시도 큐",
+        "결제 이벤트 아웃박스",
+        "닫기",
+    ]
+    assert gate["submit"] == {"label": "구현하기"}
+
+
+async def test_blueprints_all_dropped_by_the_check_count_as_a_failed_check():
+    outputs = {
+        "blueprints": {"projects": [{"id": "p1", "title": "재시도 큐"}, {"id": "p2", "title": "아웃박스"}]},
+        "validate_bp": {
+            "valid": True,
+            "projects": [{"id": "p1", "verdict": "fail"}, {"id": "p2", "verdict": "fail"}],
+        },
+    }
+    graph = build_resume_graph(MemorySaver(), model=_PhaseModel(outputs), db=_Approvals())
+    events = await _events(
+        graph,
+        _base(phase="blueprints", work_mode="experience_blueprint", approach="prevention"),
+        _config(),
+    )
+    assert not any(event.get("type") in {"plan", "choice"} for event in events)
+    snap = await graph.aget_state(_config())
+    assert snap.values["validation_failures"] == 1
+
+
+async def test_a_verdict_never_lands_on_a_project_without_an_id():
+    from app.harness.personal.resume.progress import blueprints_plan
+
+    kept, plan = blueprints_plan(
+        [{"title": "재시도 큐"}, {"title": "아웃박스"}],
+        {"projects": [{"id": "", "verdict": "fail"}]},
+    )
+    assert len(kept) == 2
+    assert [row["tag"] for row in plan["rows"]] == ["통과", "통과"]
