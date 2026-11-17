@@ -788,3 +788,26 @@ async def test_only_the_materials_the_card_offered_can_be_dropped():
     saved = (await graph.aget_state(config)).values["inputs"]
     assert saved["posting"] == {"description": "본문"}
     assert saved["postingId"] == "p1"
+
+
+async def _craft_run(monkeypatch, changes):
+    async def saved(state, title=None):
+        return "doc-1"
+
+    monkeypatch.setattr("app.harness.personal.resume.graph.save_profile_document", saved)
+    outputs = {"analyze": {"scenario": "D"}, "craft": {"markdown": "# 김서준\n- 결제 API", "changes": changes}}
+    graph = _graph(_Approvals(), model=_PhaseModel(outputs))
+    seen = await _drive(graph, _config(), _base(phase="analyze"))
+    tokens = [e["token"] for events, _snap in seen for e in events if "token" in e]
+    return tokens, seen[-1][1]
+
+
+async def test_craft_saves_the_draft_and_links_it(monkeypatch):
+    tokens, snap = await _craft_run(monkeypatch, ["승인 API 성과를 강조했어요"])
+    assert snap.values["profile_document_id"] == "doc-1"
+    assert any("[이력서 초안 v1](/docs/push/doc-1) · 미리보기" in t for t in tokens)
+
+
+async def test_craft_without_changes_has_no_link(monkeypatch):
+    tokens, _snap = await _craft_run(monkeypatch, [])
+    assert not any("/docs/push/" in t for t in tokens)

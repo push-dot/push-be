@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
@@ -284,6 +284,90 @@ async def test_saved_file_carries_the_bot_and_a_new_document_is_stamped_once():
     assert len(stamp) == 1
     assert stamp[0][1] == (DOCUMENT, UUID(CONV_ID))
     assert "created_by_bot_id IS NULL" in stamp[0][0]
+
+
+async def test_present_adds_a_version_to_the_draft_document():
+    from app.harness.personal.resume import profile_document as docs
+    from app.harness.personal.tools import bound_services
+
+    seen = []
+
+    class _Known:
+        async def get(self, user_id, id_):
+            return SimpleNamespace(id=id_, revision=3, kind="HUB_PROFILE", status="DRAFT")
+
+        async def create(self, *args):
+            raise AssertionError("a second document")
+
+        async def create_version(self, user_id, doc_id, expected, *rest):
+            seen.append((doc_id, expected))
+
+    token = bound_services.set(SimpleNamespace(document_svc=_Known(), db=_Exec()))
+    try:
+        made = await docs.save_profile_document(
+            {"user_id": str(USER), "profile_document_id": str(DOCUMENT), "drafts": {"markdown": "# 프로필"}})
+    finally:
+        bound_services.reset(token)
+    assert made == str(DOCUMENT)
+    assert seen == [(DOCUMENT, 3)]
+
+
+def _svc_with(found, created):
+    class _Svc:
+        async def get(self, user_id, id_):
+            if found is None:
+                raise LookupError
+            return found
+
+        async def create(self, user_id, application_id, title, *rest):
+            created.append(title)
+            return SimpleNamespace(id=DOCUMENT, revision=1, title=title)
+
+        async def create_version(self, *args):
+            return None
+
+    return _Svc()
+
+
+async def _save(svc, title=None):
+    from app.harness.personal.resume import profile_document as docs
+    from app.harness.personal.tools import bound_services
+
+    token = bound_services.set(SimpleNamespace(document_svc=svc, db=_Exec()))
+    try:
+        return await docs.save_profile_document(
+            {"user_id": str(USER), "profile_document_id": str(uuid4()), "drafts": {"markdown": "# 프로필"}}, title)
+    finally:
+        bound_services.reset(token)
+
+
+async def test_the_draft_document_is_reused_only_when_live_and_a_profile():
+    other = uuid4()
+    for found in (
+        None,
+        SimpleNamespace(id=other, revision=1, kind="HUB_PROFILE", status="ARCHIVED"),
+        SimpleNamespace(id=other, revision=1, kind="APPLICATION", status="DRAFT"),
+    ):
+        created = []
+        assert await _save(_svc_with(found, created)) == str(DOCUMENT)
+        assert len(created) == 1
+
+
+async def test_a_titled_file_save_gets_its_own_document():
+    live = SimpleNamespace(id=uuid4(), revision=1, kind="HUB_PROFILE", status="DRAFT")
+    created = []
+    assert await _save(_svc_with(live, created), "이력서") == str(DOCUMENT)
+    assert created == ["이력서"]
+
+
+async def test_a_created_document_survives_a_failed_version():
+    svc = _svc_with(None, [])
+
+    async def boom(*args):
+        raise RuntimeError("down")
+
+    svc.create_version = boom
+    assert await _save(svc) == str(DOCUMENT)
 
 
 class _Files:

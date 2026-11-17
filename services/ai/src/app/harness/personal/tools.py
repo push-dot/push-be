@@ -383,11 +383,12 @@ def _resume_saved(row) -> dict:
 
 def _draft_offer(saved: dict) -> list[str]:
     """What the offer says above its card (board ChatResume): the draft in progress, then its top
-    lines as the draft's own markdown. No link to the whole draft: a draft is not a document yet."""
+    lines as the draft's own markdown. The link opens the draft's document (saved when craft ran)."""
     from app.harness.personal.resume.drafts import draft_text
-    from app.harness.personal.resume.progress import paper_event
+    from app.harness.personal.resume.progress import draft_link, paper_event
 
     text = draft_text(saved.get("drafts"))
+    doc_id = str(saved.get("profile_document_id") or "")
     if not text:
         return []
     version = int(saved.get("draft_version") or 1)
@@ -395,7 +396,8 @@ def _draft_offer(saved: dict) -> list[str]:
     paper = paper_event("resume", version, text)
     if paper and (paper["heading"] or paper["lines"]):
         head = [f"# {paper['heading']}"] if paper["heading"] else []
-        said.append("\n" + "\n".join([*head, *paper["lines"]]))
+        link = [f"> {draft_link(doc_id, '초안 전체 보기')} ›"] if doc_id else []
+        said.append("\n" + "\n".join([*head, *paper["lines"], *link]))
     return said
 
 

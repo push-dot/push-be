@@ -383,3 +383,14 @@ async def test_edit_approval_keeps_the_changed_block_when_the_document_cannot_be
         assert await tools._page_hunks(_ctx(), args, changed) == changed
     finally:
         tools.bound_services.reset(token)
+
+
+async def test_resume_offer_links_the_whole_draft(emitted):
+    saved = {"status": "active", "phase": "craft", "profile_document_id": "d9",
+             "drafts": {"markdown": "# 김서준\n- 결제 API"}}
+    await _run("start_document", {}, ctx=_ctx(db=_ResumeDB({"resume_state": json.dumps(saved)})))
+    assert "> [초안 전체 보기](/docs/push/d9) ›" in emitted[0]["token"] + emitted[1]["token"]
+    saved.pop("profile_document_id")
+    emitted.clear()
+    await _run("start_document", {}, ctx=_ctx(db=_ResumeDB({"resume_state": json.dumps(saved)})))
+    assert not any("/docs/push/" in str(e) for e in emitted)

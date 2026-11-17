@@ -58,6 +58,11 @@ def test_flow_texts_are_a_sentence_then_marked_lines():
     assert craft_text(2, []) is None
 
 
+def test_craft_text_links_the_saved_draft():
+    assert craft_text(1, ["a"], "d1") == (
+        "첫 번째 초안(v1)을 만들었어요.\n• a\n[이력서 초안 v1](/docs/push/d1) · 미리보기")
+
+
 def test_design_gate_title_follows_the_board():
     assert _GATES["review"]["title"] == "어떤 디자인으로 만들까요?"
 

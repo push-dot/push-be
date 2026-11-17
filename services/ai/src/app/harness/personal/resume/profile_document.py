@@ -234,6 +234,18 @@ async def save_edited_file(db, state: dict, file_name: str) -> dict:
     }
 
 
+async def _draft_document(document_svc, user_id: UUID, known):
+    """The document the draft was already saved into (craft), so present adds a version, not a second document.
+    Only a live HUB_PROFILE document of this user counts; anything else gets a new one."""
+    try:
+        doc = await document_svc.get(user_id, UUID(str(known)))
+    except Exception:
+        return None
+    if doc.kind != "HUB_PROFILE" or doc.status == "ARCHIVED":
+        return None
+    return doc
+
+
 async def save_profile_document(state: dict, title: str | None = None) -> str:
     from app.harness.personal.tools import bound_services
     from app.infrastructure.resume_workspace import md_to_doc
@@ -250,12 +262,17 @@ async def save_profile_document(state: dict, title: str | None = None) -> str:
     text = draft_text(state.get("drafts")) or label
     content, blocks = md_to_doc(text)
     template = state.get("template") or "CLASSIC"
+    # A titled save (the external file) is its own document: the service cannot rename the craft one.
+    known = None if title else state.get("profile_document_id")
+    doc = await _draft_document(document_svc, user_id, known)
     try:
-        doc = await document_svc.create(
-            user_id, None, label, "HUB_PROFILE", template, "ko")
+        if doc is None:
+            doc = await document_svc.create(
+                user_id, None, label, "HUB_PROFILE", template, "ko")
+            await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
         await document_svc.create_version(
             user_id, doc.id, doc.revision, content, blocks, "resume flow")
-        await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
     except Exception:
-        return ""
+        # A created document is kept: the id lands in state, so a retry adds a version, not a second document.
+        return str(doc.id) if doc is not None else ""
     return str(doc.id)

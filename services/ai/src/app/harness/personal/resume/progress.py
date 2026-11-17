@@ -354,13 +354,21 @@ def quality_text(labels: list[str]) -> str:
     return marked_text("품질 검사를 마치고 추천 수정까지 반영했어요.", labels) + "\n"
 
 
-def craft_text(version: int, changes: list[str]) -> str | None:
+def draft_link(document_id: str, label: str) -> str:
+    """The route the app opens for a saved draft (board ChatPh3Review, ChatResume)."""
+    return f"[{label}](/docs/push/{document_id})"
+
+
+def craft_text(version: int, changes: list[str], document_id: str = "") -> str | None:
     if not changes:
         return None
     head = f"초안(v{version})을 다시 만들었어요."
     if version == 1:
         head = "첫 번째 초안(v1)을 만들었어요."
-    return marked_text(head, changes[:4])
+    text = marked_text(head, changes[:4])
+    if document_id:
+        text += "\n" + draft_link(document_id, f"이력서 초안 v{version}") + " · 미리보기"
+    return text
 
 
 def think_event(phase: str, seconds: float) -> dict:
