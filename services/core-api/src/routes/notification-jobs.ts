@@ -2,6 +2,7 @@ import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError, requireUuid, sha256Hex } from "../http.ts";
 import { sendNotification } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
+import { plainLine } from "./bots.ts";
 import { readObject } from "./recruiting-shared.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -79,7 +80,7 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
     userId,
     type: "AI_DONE",
     title,
-    body: botId ? String(row.last_message_preview ?? "") : "",
+    body: botId ? plainLine(String(row.last_message_preview ?? "")) : "",
     target: botId ? { kind: "bot", id: botId } : { kind: "conversation", id: conversationId },
     conversationId,
     ...(botId ? { pushBody: pushSentence(row.display_name) } : {}),
