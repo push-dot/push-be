@@ -139,8 +139,7 @@ _REASON_END = re.compile(r"(이에요|예요|입니다|이다|이라서|라서)\
 
 
 def read_failed_text(reason) -> str:
-    """The failed read as one sentence, word for word as board ChatErrors says it:
-    “자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요. The reason is a noun phrase."""
+    """`reason` is a noun phrase ("로그인이 필요한 영역"); a sentence ending is stripped so it joins cleanly."""
     text = _REASON_END.sub("", reason.strip()).strip(" .") if isinstance(reason, str) else ""
     if not text:
         return "“자격 요건”을 읽지 못했어요."
@@ -355,7 +354,6 @@ def quality_text(labels: list[str]) -> str:
 
 
 def draft_link(document_id: str, label: str) -> str:
-    """The route the app opens for a saved draft (board ChatPh3Review, ChatResume)."""
     return f"[{label}](/docs/push/{document_id})"
 
 
@@ -445,7 +443,6 @@ def titled_projects(projects) -> list[dict]:
 
 
 def blueprints_text(output: dict) -> str | None:
-    """The line above the project card (board ChatPh2XBlueprints): how many plans were made."""
     count = len(titled_projects(output.get("projects") if isinstance(output, dict) else None))
     return f"프로젝트 기획서 {count}개를 만들었어요." if count else None
 
@@ -459,9 +456,7 @@ def _verdict_of(project: dict, verdicts: dict) -> str:
 
 
 def blueprints_plan(projects, checked: dict) -> tuple[list[dict], dict | None]:
-    """The plans that passed the check and the card that lists them: 통과 or 조건부 per row, the
-    category and stack as its note (board ChatPh2XBlueprints). A plan the check dropped is not
-    offered. `checked.projects` is [{id, verdict}]."""
+    """Plans that passed the check, plus the card listing them. `checked.projects` is [{id, verdict}]."""
     found = checked.get("projects") if isinstance(checked, dict) else None
     verdicts = {
         str(item.get("id") or ""): item.get("verdict")

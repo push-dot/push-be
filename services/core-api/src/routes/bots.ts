@@ -88,10 +88,6 @@ export const snippetOf = (text: string, q: string): string => {
   return (start > 0 ? "…" : "") + chars.slice(start, end).join("");
 };
 
-/**
- * A row's line is one plain sentence (boards AgentHome, AgentHomeSearch), not the markdown the bot wrote:
- * headings, quotes, list marks, bold, code marks and link syntax go, and the lines run together.
- */
 // An ordered-list marker is one or two digits; a longer number or a month-day pair ("2024. 11.", "11. 5.") is a date, not a list.
 export const plainLine = (text: string): string =>
   text
@@ -114,7 +110,6 @@ export const botRef = (row: BotRow): Record<string, unknown> => ({
   color: String(row.kind) === "push" ? null : String(row.color),
 });
 
-/** What a waiting row says the card asks (boards AgentHome, AgentHomeRowExpiredFailed). Another card keeps its title. */
 const ASK_EDIT = "이 변경을 이력서에 반영할까요?";
 const ASK_PAGE = "이 사이트를 열어도 될까요?";
 const askOf = (row: BotRow): string => {

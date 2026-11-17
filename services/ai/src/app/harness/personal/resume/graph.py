@@ -1983,7 +1983,6 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         )
         blueprints = dict(current.get("blueprints") or {})
         kept, plan = blueprints_plan(blueprints.get("projects"), output)
-        # Every plan dropped by the check is the same as a failed check.
         if _invalid(output) or (titled_projects(blueprints.get("projects")) and not kept):
             failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요.")
             return {**failed, "artifacts": artifacts}
