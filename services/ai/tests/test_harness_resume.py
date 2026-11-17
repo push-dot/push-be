@@ -679,13 +679,10 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
         Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
         pass
     retried = await graph.aget_state(config)
-    assert retried.values["validation_failures"] == 0
+    assert retried.values["validation_failures"] == 1
     assert retried.values["phase"] == "approach"
-    assert retried.values["revalidate"] is True
-    assert model.calls.count("validate") == 3
-    async for _mode, _chunk in graph.astream({}, config, stream_mode=["values"]):
-        pass
     assert model.calls.count("validate") == 4
+    assert "g_approach" in (retried.next or ())
 
 
 async def test_change_direction_after_a_retry_reopens_the_approach_gate():
@@ -696,22 +693,15 @@ async def test_change_direction_after_a_retry_reopens_the_approach_gate():
     await _blueprint(
         graph, config, _base(phase="analyze", work_mode="experience_blueprint"), _on_cap, answers,
     )
-    async for _mode, _chunk in graph.astream(
-        Command(resume={"option_id": "retry"}), config, stream_mode=["values"]):
-        pass
-    for _ in range(4):
-        async for _mode, _chunk in graph.astream({}, config, stream_mode=["values"]):
-            pass
-        if _on_cap(await graph.aget_state(config)):
-            break
+    await _blueprint(graph, config, Command(resume={"option_id": "retry"}), _on_cap, answers)
     assert _on_cap(await graph.aget_state(config))
+    calls = model.calls.count("validate")
     async for _mode, _chunk in graph.astream(
         Command(resume={"option_id": "change"}), config, stream_mode=["values"]):
         pass
     changed = await graph.aget_state(config)
-    assert changed.values["revalidate"] is False
     assert changed.values["phase"] == "approach"
-    calls = model.calls.count("validate")
+    assert model.calls.count("validate") == calls
     async for _mode, _chunk in graph.astream({}, config, stream_mode=["values"]):
         pass
     assert model.calls.count("validate") == calls
