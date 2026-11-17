@@ -320,6 +320,8 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
+    if not args.before and not args.after:
+        return {"error": "NOTHING_TO_CHANGE"}
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
               exposure=ctx.exposure) is Decision.ASK:
         event = _document_event(

@@ -234,14 +234,14 @@ class _Approvals:
         return "INSERT 1"
 
 
-def _edit_graph(mode: str, db, core=None):
+def _edit_graph(mode: str, db, core=None, args=None):
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "edit_document")
     model = ScriptedChat([{
         "tool_calls": [{
             "name": "edit_document",
             "id": "c1",
             "type": "tool_call",
-            "args": {"document_id": DOC_ID, "before": "이전", "after": "이후"},
+            "args": args or {"document_id": DOC_ID, "before": "이전", "after": "이후"},
         }],
     }, {"content": "done"}])
     return build_harness_graph(
@@ -285,6 +285,13 @@ async def test_edit_document_always_ask_is_document_edit():
     ]
     assert not any(event.get("kind") == "TOOL_ACTION" for event in events)
     assert events[-1] == {"type": "done", "awaiting": "approval"}
+
+
+async def test_edit_document_without_a_change_shows_no_card():
+    db = _Approvals()
+    events = await _events(_edit_graph("ALWAYS_ASK", db, args={"document_id": DOC_ID}), "ALWAYS_ASK")
+    assert not any(event.get("type") == "approval" for event in events)
+    assert not any(event.get("awaiting") for event in events)
 
 
 EDIT_USER = "99999999-9999-4999-8999-999999999999"
