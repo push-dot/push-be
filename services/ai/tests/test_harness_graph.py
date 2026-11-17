@@ -6,7 +6,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.harness.core_client import CoreError
-from app.harness.graph import astream_harness, build_harness_graph
+from app.harness.graph import _child_resume, astream_harness, build_harness_graph
 from app.harness.policy import Tier
 from app.harness.tools import HarnessSpec, ToolContext, ToolSpec
 from tests.fakes import ScriptedChat, data_json
@@ -377,3 +377,8 @@ async def test_apply_card_title_stays_generic_for_an_unknown_posting():
 
     event = await _apply_card(_PostingDb(None), uuid4())
     assert event["title"] == "이 공고에 지원해요"
+
+
+def test_resume_flow_follows_the_job_of_the_current_turn():
+    state = {"job_id": "new", "conversation_id": "c", "user_id": "u", "resume": {"job_id": "old", "status": "active"}}
+    assert _child_resume(state)["job_id"] == "new"
