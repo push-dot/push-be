@@ -544,14 +544,24 @@ def test_posting_line_err_with_reason():
     assert line["state"] == "err"
     assert line["name"] == "analyze_posting"
     assert line["target"] == "모아페이 · 백엔드"
-    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요 · 로그인이 필요한 영역이에요"
+    assert line["resultLine"] == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
 
 
 def test_posting_line_err_without_reason():
     line = posting_line({"jobs": {}}, failed=True)
     assert line["target"] == "회사 채용 페이지"
-    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요"
+    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요."
     assert "·" not in line["resultLine"]
+
+
+def test_read_failed_text_takes_a_noun_phrase_for_the_reason():
+    from app.harness.personal.resume.progress import read_failed_text
+
+    assert read_failed_text("로그인이 필요한 영역") == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
+    assert read_failed_text("접근이 막힌 페이지이에요.") == "“자격 요건”은 접근이 막힌 페이지라 읽지 못했어요."
+    assert read_failed_text("차단") == "“자격 요건”은 차단이라 읽지 못했어요."
+    assert read_failed_text("404") == "“자격 요건”은 404라 읽지 못했어요."
+    assert read_failed_text(None) == read_failed_text("  ") == "“자격 요건”을 읽지 못했어요."
 
 
 def test_quality_line_counts():

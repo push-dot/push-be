@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.domain.posting_fit import FIT_DIMENSIONS, fit_view
 
 _RESUME = ("resume", "이력서 읽기")
@@ -133,6 +135,18 @@ def _posting(analysis: dict) -> dict:
     return _dict(jobs)
 
 
+_REASON_END = re.compile(r"(이에요|예요|입니다|이다|이라서|라서)\.?$")
+
+
+def read_failed_text(reason) -> str:
+    """The failed read as one sentence, word for word as board ChatErrors says it:
+    “자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요. The reason is a noun phrase."""
+    text = _REASON_END.sub("", reason.strip()).strip(" .") if isinstance(reason, str) else ""
+    if not text:
+        return "“자격 요건”을 읽지 못했어요."
+    return f"“자격 요건”은 {_josa(text, '이라', '라')} 읽지 못했어요."
+
+
 def posting_line(analysis: dict, *, failed: bool = False) -> dict:
     job = _posting(analysis)
     required = (
@@ -142,16 +156,12 @@ def posting_line(analysis: dict, *, failed: bool = False) -> dict:
     title = job.get("title") or job.get("position") or job.get("role")
     target = " · ".join(str(part).strip() for part in (job.get("company"), title) if part)
     if failed:
-        reason = job.get("read_error")
-        result = "“자격 요건”을 읽지 못했어요"
-        if isinstance(reason, str) and reason.strip():
-            result = f"{result} · {reason.strip()}"
         return _line(
             "analyze_posting",
             "공고 읽기",
             "err",
             target=target or "회사 채용 페이지",
-            resultLine=result,
+            resultLine=read_failed_text(job.get("read_error")),
         )
     counts = (_count(required), _count(preferred))
     result = f"필수 {counts[0]}개 · 우대 {counts[1] or 0}개" if counts[0] else ""
@@ -414,6 +424,66 @@ def strategy_plan(output: dict) -> dict | None:
     if keywords:
         plan["keywords"] = keywords
     return plan
+
+
+_BLUEPRINT_CAP = 6
+_CONDITIONAL = ("conditional", "조건부", "⚠")
+_FAILED = ("fail", "failed", "탈락", "❌")
+
+
+def _titled(projects) -> list[dict]:
+    items = projects if isinstance(projects, list) else []
+    return [p for p in items if isinstance(p, dict) and str(p.get("title") or p.get("name") or "").strip()]
+
+
+def blueprints_text(output: dict) -> str | None:
+    """The line above the project card (board ChatPh2XBlueprints): how many plans were made."""
+    count = len(_titled(output.get("projects") if isinstance(output, dict) else None))
+    return f"프로젝트 기획서 {count}개를 만들었어요." if count else None
+
+
+def _verdict_of(project: dict, verdicts: dict) -> str:
+    raw = str(verdicts.get(str(project.get("id") or "")) or "").strip().lower()
+    if any(word in raw for word in _FAILED):
+        return "fail"
+    return "conditional" if any(word in raw for word in _CONDITIONAL) else "pass"
+
+
+def blueprints_plan(projects, checked: dict) -> tuple[list[dict], dict | None]:
+    """The plans that passed the check and the card that lists them: 통과 or 조건부 per row, the
+    category and stack as its note (board ChatPh2XBlueprints). A plan the check dropped is not
+    offered. `checked.projects` is [{id, verdict}]."""
+    found = checked.get("projects") if isinstance(checked, dict) else None
+    verdicts = {
+        str(item.get("id") or ""): item.get("verdict")
+        for item in (found if isinstance(found, list) else [])
+        if isinstance(item, dict)
+    }
+    kept: list[dict] = []
+    rows: list[dict] = []
+    for project in _titled(projects):
+        verdict = _verdict_of(project, verdicts)
+        if verdict == "fail":
+            continue
+        kept.append(project)
+        stack = project.get("stack")
+        stack = ", ".join(str(item).strip() for item in stack if str(item).strip()) if isinstance(stack, list) else str(stack or "").strip()
+        note = " · ".join(part for part in (str(project.get("category") or "").strip(), stack) if part)
+        rows.append({
+            "tag": "조건부" if verdict == "conditional" else "통과",
+            "label": str(project.get("title") or project.get("name")).strip(),
+            "note": note[:60],
+        })
+    if not rows:
+        return kept, None
+    rows = rows[:_BLUEPRINT_CAP]
+    return kept, {
+        "type": "plan",
+        "id": "blueprints",
+        "title": "프로젝트 기획서",
+        "meta": f"{len(rows)}개",
+        "rows": rows,
+    }
 
 
 def strategy_line(plan: dict) -> dict:

@@ -77,7 +77,17 @@ async def _start(resume_state) -> dict:
     return (await tool.run(ctx, tool.args_model.model_validate({})))["choice"]
 
 
-async def test_continue_choice_names_the_draft_in_progress():
-    choice = await _start({"status": "active", "phase": "craft", "drafts": {"markdown": "# v1"}})
-    assert choice["detail"] == "작성 중인 이력서 초안(v1)이 있어요."
+async def test_the_offer_shows_the_draft_in_progress_above_its_card(monkeypatch):
+    said: list[dict] = []
+    monkeypatch.setattr("app.harness.personal.tools.emit", said.append)
+    draft = "# 김서준 · 백엔드 개발자\n- 결제 승인 API 재설계\n- Kafka 이벤트 파이프라인"
+    choice = await _start({"status": "active", "phase": "craft", "drafts": {"markdown": draft}})
+    assert [event["token"] for event in said if "token" in event] == [
+        "작성 중인 이력서 초안(v1)이 있어요.",
+        "\n# 김서준 · 백엔드 개발자\n• 결제 승인 API 재설계\n• Kafka 이벤트 파이프라인",
+    ]
+    assert "detail" not in choice
+    assert [option["label"] for option in choice["options"]] == ["이어서 작성하기", "새로 시작하기"]
+    said.clear()
     assert "detail" not in await _start({"status": "active", "phase": "intake"})
+    assert not any("token" in event for event in said)
