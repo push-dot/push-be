@@ -1197,6 +1197,10 @@ _STRATEGY_NOTE = (
     "섹션별 전략을 sections 배열에 넣는다. 각 항목은 "
     "{section, action(keep|modify|expand|add|condense|remove), reason, suggested_keywords}다."
 )
+_BODY_NOTE = (
+    "서류 본문 전체를 마크다운으로 markdown 키에 넣는다. message에는 본문을 넣지 않고 한두 문장만 쓴다. "
+    "바꾼 점은 changes 배열에 짧은 문장으로 넣는다."
+)
 _REVIEW_NOTE = (
     "바로 고친 것을 auto_fixes 배열({line, before, after})에, 추천 수정을 "
     "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다. "
@@ -1241,6 +1245,8 @@ def phase_instructions(phase: str, state: dict) -> str:
         text = f"{text}\n{_BLUEPRINTS_NOTE}"
     if phase == "review":
         text = f"{text}\n{_REVIEW_NOTE}"
+    if phase in {"craft", "publish"}:
+        text = f"{text}\n{_BODY_NOTE}"
     return text
 
 

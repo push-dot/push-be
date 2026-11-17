@@ -543,3 +543,11 @@ async def test_every_billing_tool_bills_the_running_job(case, monkeypatch):
     finally:
         current_run.reset(token)
     assert seen["job_id"] == "new"
+
+
+def test_craft_and_publish_prompts_name_the_key_that_holds_the_document_body():
+    from app.harness.personal.resume.graph import phase_instructions
+
+    for phase in ("craft", "publish"):
+        assert "markdown 키" in phase_instructions(phase, {})
+    assert "markdown 키" not in phase_instructions("review", {})
