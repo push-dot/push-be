@@ -1,5 +1,6 @@
 from app.harness.approval import _ASKS
 from app.harness.personal.resume.graph import _GATES
+from app.harness.personal.resume.progress import _TONE_OPTIONS
 from app.harness.personal.resume.progress import (
     boost_line,
     craft_text,
@@ -59,3 +60,7 @@ def test_flow_texts_are_a_sentence_then_marked_lines():
 
 def test_design_gate_title_follows_the_board():
     assert _GATES["review"]["title"] == "어떤 디자인으로 만들까요?"
+
+
+def test_tone_gate_lists_the_options_in_the_order_of_the_intake_card():
+    assert _GATES["tone"]["options"] == list(_TONE_OPTIONS)
