@@ -474,5 +474,7 @@ test("a row's line is plain text: markdown marks and line breaks go", () => {
   assert.equal(plainLine("[이력서 초안 v1](/docs/push/d1) · 미리보기"), "이력서 초안 v1 · 미리보기");
   assert.equal(plainLine("`kotlin`  코드\n\n\n끝"), "kotlin 코드 끝");
   assert.equal(plainLine("1. 하나\n2. 둘"), "하나 둘");
+  assert.equal(plainLine("2024. 11. 입사 후 결제 팀에서 일했어요."), "2024. 11. 입사 후 결제 팀에서 일했어요.");
+  assert.equal(plainLine("11. 5. 마감이에요.\n2. 둘째"), "11. 5. 마감이에요. 둘째");
   assert.equal(plainLine("그대로인 문장이에요."), "그대로인 문장이에요.");
 });

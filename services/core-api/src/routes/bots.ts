@@ -92,10 +92,11 @@ export const snippetOf = (text: string, q: string): string => {
  * A row's line is one plain sentence (boards AgentHome, AgentHomeSearch), not the markdown the bot wrote:
  * headings, quotes, list marks, bold, code marks and link syntax go, and the lines run together.
  */
+// An ordered-list marker is one or two digits; a longer number or a month-day pair ("2024. 11.", "11. 5.") is a date, not a list.
 export const plainLine = (text: string): string =>
   text
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*•]\s+|\d+\.\s+)/gm, "")
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*•]\s+|\d{1,2}\.\s+(?!\d{1,2}\.(?:\s|$)))/gm, "")
     .replace(/(\*\*|__|~~|`)/g, "")
     .replace(/\s*\n+\s*/g, " ")
     .replace(/\s{2,}/g, " ")
