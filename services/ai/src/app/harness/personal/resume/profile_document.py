@@ -46,7 +46,10 @@ async def load_document_markdown(db, state: dict) -> str:
         return ""
     if not isinstance(content, dict):
         return ""
-    return "\n".join(line for line in tiptap_to_lines(content) if line).strip()
+    try:
+        return "\n".join(line for line in tiptap_to_lines(content) if line).strip()
+    except (AttributeError, TypeError):
+        return ""
 
 
 def _clean(value) -> str:
@@ -258,7 +261,10 @@ async def save_profile_document(state: dict, title: str | None = None) -> str:
     except (TypeError, ValueError):
         return ""
     label = title or _TITLE
-    text = draft_text(state.get("drafts")) or label
+    text = draft_text(state.get("drafts"))
+    if not text and not title:
+        return ""
+    text = text or label
     content, blocks = md_to_doc(text)
     template = state.get("template") or "CLASSIC"
     # The service cannot rename the craft document, so a titled save always gets its own.

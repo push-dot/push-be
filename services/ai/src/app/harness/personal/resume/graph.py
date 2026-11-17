@@ -1147,7 +1147,8 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     }
     resume_text = await load_document_markdown(ctx.db, state)
     if resume_text:
-        context["resume_text"] = resume_text[:_RESUME_TEXT_LIMIT]
+        cut = len(resume_text) > _RESUME_TEXT_LIMIT
+        context["resume_text"] = resume_text[:_RESUME_TEXT_LIMIT] + ("\n…(이하 생략)" if cut else "")
     prompt = phase_instructions(phase, state)
     messages = [
         SystemMessage(
@@ -1407,10 +1408,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     doc_id = await save_profile_document(view)
                     if doc_id:
                         stored["profile_document_id"] = doc_id
-                    name, headline = await profile_card_names(db, view)
-                    emit(_todo(_PROFILE_STEPS))
-                    card = _profile_result(doc_id, name, headline, view)
-                    emit({**card, **_done(view, "profile")})
+                    if draft_text(view.get("drafts")):
+                        name, headline = await profile_card_names(db, view)
+                        emit(_todo(_PROFILE_STEPS))
+                        card = _profile_result(doc_id, name, headline, view)
+                        emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
             if phase == "craft":
                 changes = (stored.get("drafts") or {}).get("changes")

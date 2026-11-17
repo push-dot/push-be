@@ -563,3 +563,15 @@ def test_edited_pdf_name_sanitizes_and_skips_empty_parts():
     assert len(capped[:-4]) == 80
     unsafe = {"inputs": {"fileName": "김:테스트/이력서?.pdf"}}
     assert edited_pdf_name(unsafe, "") == "김테스트이력서_수정본.pdf"
+
+
+async def test_present_without_a_draft_claims_no_success():
+    events, _kept = await _present(
+        _DB(), None,
+        document_svc=_NoDocs(),
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    assert not [event for event in events if event.get("type") == "result"]
