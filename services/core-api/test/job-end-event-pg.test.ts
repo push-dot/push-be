@@ -84,7 +84,7 @@ const ENDINGS: Ending[] = [
   },
   {
     name: "dispatcher mark_retry after a lost heartbeat on the last attempt",
-    sql: () => statementOf("queue/dispatcher.py", "mark_retry"), params: (job) => [NOW, [job.id]],
+    sql: () => statementOf("queue/dispatcher.py", "mark_retry"), params: (job) => [NOW, [job.id], [null]],
     attempts: 2, status: "DEAD", terminal: [["error", JOB_FAILED]],
   },
   {
