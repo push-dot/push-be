@@ -13,7 +13,7 @@ def test_page_permission_title_is_short_and_the_sentence_is_the_summary():
     posting = {"owner": "모아페이", "host": "careers.moapay.co.kr"}
     title, summary = (form.format(**posting) for form in _ASKS["posting"])
     assert title == "채용 페이지 열기"
-    assert summary == "모아페이 채용 페이지(careers.moapay.co.kr)를 열어도 될까요?"
+    assert summary == "careers.moapay.co.kr를 열어도 될까요?"
     for kind in ("company", "other"):
         short, sentence = (form.format(**posting) for form in _ASKS[kind])
         assert len(short) <= 10 and sentence.endswith("열어도 될까요?")
@@ -58,4 +58,4 @@ def test_flow_texts_are_a_sentence_then_marked_lines():
 
 
 def test_design_gate_title_follows_the_board():
-    assert _GATES["review"]["title"] == "검증을 마쳤어요. 디자인을 골라 주세요."
+    assert _GATES["review"]["title"] == "어떤 디자인으로 만들까요?"

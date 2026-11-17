@@ -175,7 +175,7 @@ _GATES = {
         "options": [{"id": "continue", "label": "검토할게요"}],
     },
     "review": {
-        "title": "검증을 마쳤어요. 디자인을 골라 주세요.",
+        "title": "어떤 디자인으로 만들까요?",
         "detail": "템플릿을 골라 주세요. 처음이라면 클래식을 추천해요.",
         "recommended": "CLASSIC",
         "options": [
@@ -1880,7 +1880,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         return {"status": "active", "phase": "analyze", "goto": "g1"}
 
     async def design_node(state: ResumeGraphState) -> dict:
-        reply = "이제 디자인을 고를게요."
+        reply = "검증을 마쳤어요. 디자인을 골라 주세요."
         emit({"token": reply})
         return {"reply": reply, "reply_job": running_job(), "phase": "review"}
 

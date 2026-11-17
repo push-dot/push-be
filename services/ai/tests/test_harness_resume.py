@@ -460,7 +460,7 @@ _GATE_QUESTIONS = {
     "analyze": "이 공고에 맞춰 이력서를 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",
     "boost": "점수를 한 번 더 올릴까요?",
-    "review": "검증을 마쳤어요. 디자인을 골라 주세요.",
+    "review": "어떤 디자인으로 만들까요?",
 }
 
 
@@ -525,7 +525,7 @@ async def test_scenario_c_goes_to_design():
     gates, titles, snap = await _until_done(graph, config, _base(phase="analyze", scenario="C"))
     assert "strategy" not in gates
     assert "craft" not in gates
-    assert titles["review"] == "검증을 마쳤어요. 디자인을 골라 주세요."
+    assert titles["review"] == "어떤 디자인으로 만들까요?"
     assert "review" not in model.calls
     assert "p4b_design" in graph.nodes
     assert snap.values["status"] == "done"
