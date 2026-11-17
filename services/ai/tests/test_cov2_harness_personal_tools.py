@@ -181,7 +181,7 @@ async def test_edit_document_always_ask_skip_leaves_the_document(monkeypatch):
 
 async def test_edit_document_always_ask_without_an_answer_is_skipped(monkeypatch):
     monkeypatch.setattr(tools, "interrupt", lambda payload: None)
-    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1"},
+    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1", "after": "새 문장"},
                      ctx=_ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK"))
     assert out == {"skipped": True}
 
@@ -292,7 +292,7 @@ async def test_each_edit_in_a_job_gets_its_own_approval(monkeypatch):
     for call_id in ("call-1", "call-2"):
         ctx = _ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK")
         ctx.tool_call_id = call_id
-        await _run("edit_document", {"document_id": str(uuid4())}, ctx=ctx)
+        await _run("edit_document", {"document_id": str(uuid4()), "after": "새 문장"}, ctx=ctx)
     assert asked[0]["approval_id"] != asked[1]["approval_id"]
 
 
