@@ -144,7 +144,7 @@ export const chatEvents: Record<string, Schema> = {
     state: { ...enumOf("run", "ok", "err", "wait"), description: "run is sent just before the tool executes, then ok or err. wait is the approval pause." },
     summary: str,
     tier: enumOf("READ", "EXTERNAL_READ", "SAFE_WRITE", "RISKY_WRITE"),
-    result: any,
+    result: { type: "object", additionalProperties: true, description: "What the tool returned: an object, with error when it failed" },
     target: { type: "string", description: "What the tool worked on, e.g. a file name or 회사 · 직무" },
     resultLine: { type: "string", description: "One-line outcome shown under the tool line" },
     extra: { ...arr(str), description: "Detail lines the client folds as +N줄" },

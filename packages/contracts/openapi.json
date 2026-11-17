@@ -5507,7 +5507,11 @@
                     "name": {
                       "type": "string"
                     },
-                    "result": {},
+                    "result": {
+                      "additionalProperties": true,
+                      "description": "What the tool returned: an object, with error when it failed",
+                      "type": "object"
+                    },
                     "resultLine": {
                       "description": "One-line outcome shown under the tool line",
                       "type": "string"
@@ -11661,7 +11665,11 @@
               "name": {
                 "type": "string"
               },
-              "result": {},
+              "result": {
+                "additionalProperties": true,
+                "description": "What the tool returned: an object, with error when it failed",
+                "type": "object"
+              },
               "resultLine": {
                 "description": "One-line outcome shown under the tool line",
                 "type": "string"
@@ -18708,7 +18716,11 @@
                   "name": {
                     "type": "string"
                   },
-                  "result": {},
+                  "result": {
+                    "additionalProperties": true,
+                    "description": "What the tool returned: an object, with error when it failed",
+                    "type": "object"
+                  },
                   "resultLine": {
                     "description": "One-line outcome shown under the tool line",
                     "type": "string"
@@ -20780,7 +20792,11 @@
                   "name": {
                     "type": "string"
                   },
-                  "result": {},
+                  "result": {
+                    "additionalProperties": true,
+                    "description": "What the tool returned: an object, with error when it failed",
+                    "type": "object"
+                  },
                   "resultLine": {
                     "description": "One-line outcome shown under the tool line",
                     "type": "string"
@@ -26161,7 +26177,11 @@
                   "name": {
                     "type": "string"
                   },
-                  "result": {},
+                  "result": {
+                    "additionalProperties": true,
+                    "description": "What the tool returned: an object, with error when it failed",
+                    "type": "object"
+                  },
                   "resultLine": {
                     "description": "One-line outcome shown under the tool line",
                     "type": "string"
@@ -28523,7 +28543,11 @@
                   "name": {
                     "type": "string"
                   },
-                  "result": {},
+                  "result": {
+                    "additionalProperties": true,
+                    "description": "What the tool returned: an object, with error when it failed",
+                    "type": "object"
+                  },
                   "resultLine": {
                     "description": "One-line outcome shown under the tool line",
                     "type": "string"
