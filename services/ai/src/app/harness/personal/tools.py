@@ -263,7 +263,45 @@ def _diff(args: EditDocumentArgs) -> dict:
 
 
 def _changed_lines(hunks: list) -> int:
-    return max((len(str(h.get("text") or "").splitlines()) for h in hunks), default=0)
+    count = {"-": 0, "+": 0}
+    for h in hunks:
+        if h.get("sign") in count:
+            count[h["sign"]] += len(str(h.get("text") or "").splitlines())
+    return max(count.values())
+
+
+def _common(a: list, b: list) -> int:
+    """How many leading items the two lists share."""
+    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+
+
+async def _page_hunks(ctx: ToolContext, args: EditDocumentArgs, hunks: list) -> list:
+    """The edit as the approval card draws it (board ChatApprove): every line of the document, the
+    edited ones marked. The changed block alone when the document cannot be read or `before` is
+    not in it."""
+    svc = _svc()
+    document_svc = getattr(svc, "document_svc", None) if svc else None
+    if document_svc is None or not args.before:
+        return hunks
+    user_id = UUID(ctx.user_id)
+    try:
+        version_id = args.version_id or (await document_svc.get(user_id, args.document_id)).latest_version_id
+        version = await document_svc.get_version(user_id, args.document_id, version_id)
+    except DomainError:
+        return hunks
+    lines = [line for block in version.blocks for line in block.text.splitlines()]
+    text = "\n".join(lines)
+    if args.before not in text:
+        return hunks
+    new = text.replace(args.before, args.after, 1).splitlines()
+    head = _common(lines, new)
+    tail = _common(lines[head:][::-1], new[head:][::-1])
+    return [
+        *({"line": None, "sign": "", "text": line} for line in lines[:head]),
+        *({"line": None, "sign": "-", "text": line} for line in lines[head:len(lines) - tail]),
+        *({"line": None, "sign": "+", "text": line} for line in new[head:len(new) - tail]),
+        *({"line": None, "sign": "", "text": line} for line in lines[len(lines) - tail:]),
+    ]
 
 
 def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: list) -> dict:
@@ -288,7 +326,8 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
               exposure=ctx.exposure) is Decision.ASK:
         event = _document_event(
-            ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
+            ctx.job_id, ctx.tool_call_id, str(args.document_id),
+            await _page_hunks(ctx, args, _diff(args)["hunks"]))
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
