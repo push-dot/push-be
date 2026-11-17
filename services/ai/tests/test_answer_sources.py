@@ -287,6 +287,7 @@ async def test_saved_file_carries_the_bot_and_a_new_document_is_stamped_once():
 
 
 async def test_present_adds_a_version_to_the_draft_document():
+    from app.harness.personal.resume import profile_document as docs
     from app.harness.personal.tools import bound_services
 
     seen = []
