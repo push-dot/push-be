@@ -5,6 +5,8 @@ DELAYED_KEY = "q:delayed"
 DEAD_QUEUE = "q:dead"
 SWEEP_S = 15 * 60
 ALERT_S = 60
+# A retry waits in q:delayed until promoted; the full sweep is too slow to be its clock.
+PROMOTE_S = 5
 PAUSE_PREFIX = "pause:"
 
 QUEUE_GROUPS = {
