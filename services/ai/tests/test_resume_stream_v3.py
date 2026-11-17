@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.domain.services.conversation import _live_event
+from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import build_resume_graph
 from tests.test_harness_resume import _Approvals, _base, _config, _PhaseModel
 from tests.test_resume_flow_decisions import _events
@@ -71,19 +74,27 @@ async def test_strategy_phase_emits_plan_before_gate():
     assert plan["keywords"] == ["결제 승인"]
 
 
-async def test_craft_emits_paper_per_target():
+async def test_craft_emits_paper_per_target(monkeypatch):
+    async def fake_fit(*args, **kwargs):
+        return {"fitScore": 5.0, "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake_fit)
+    token = bound_services.set(SimpleNamespace(ai=SimpleNamespace(_reserve=object())))
     markdown = "# 김서준\n백엔드\n- 결제 승인"
     graph = build_resume_graph(
         MemorySaver(),
         model=_PhaseModel({"craft": {"markdown": markdown, "message": "초안이에요"}}),
         db=_Approvals(),
     )
-    events = await _events(
-        graph,
-        _base(phase="craft", output_targets=["resume", "cover_letter"]),
-        _config(),
-    )
-    papers = [event for event in events if event.get("type") == "paper"]
+    try:
+        events = await _events(
+            graph,
+            _base(phase="craft", output_targets=["resume", "cover_letter"]),
+            _config(),
+        )
+    finally:
+        bound_services.reset(token)
+    papers = [event for event in events if event.get("type") == "paper" and event["id"].endswith("-v1")]
     assert [event["label"] for event in papers] == ["이력서 초안 v1", "자기소개서 초안 v1"]
     assert papers[0]["id"] == "draft-resume-v1"
     assert papers[1]["id"] == "draft-cover_letter-v1"
@@ -91,7 +102,7 @@ async def test_craft_emits_paper_per_target():
     assert "• 결제 승인" in papers[0]["lines"]
     token_at = next(index for index, event in enumerate(events) if "token" in event)
     assert all(
-        index < token_at for index, event in enumerate(events) if event.get("type") == "paper"
+        index < token_at for index, event in enumerate(events) if event in papers
     )
 
 

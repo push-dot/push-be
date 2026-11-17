@@ -55,9 +55,8 @@ def test_review_gate_explains_the_pick_and_badges_the_recommended_template():
     assert all("badge" not in option for option in choice["options"][1:])
 
 
-def test_applying_warns_that_it_cannot_be_undone():
-    event = tool_action_event("a", "이 공고에 지원해요", "apply_to_posting", {})
-    assert event["foot"] == "지원하면 취소할 수 없어요"
+def test_applying_has_no_foot_line():
+    assert "foot" not in tool_action_event("a", "이 공고에 지원해요", "apply_to_posting", {})
     assert "foot" not in tool_action_event("b", "일정을 삭제해요", "delete_calendar_event", {})
 
 

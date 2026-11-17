@@ -34,11 +34,10 @@ def test_card_options_union_includes_sections_and_submit():
     section_ids = {
         option["id"]
         for section in event["sections"]
-        if section["kind"] != "rows"
         for option in section["options"]
     }
     assert set(ids) == top | section_ids | {"submit"}
-    assert "m_file" not in ids
+    assert "m_file" in ids
     assert "cancel" in ids
     assert all(item["id"] != "submit" for item in event["options"])
     assert all(item.get("id") for item in card_options(event))

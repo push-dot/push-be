@@ -77,8 +77,8 @@ async def test_intake_options_are_the_three_sentences():
     _graph_obj, _config_obj, choice, mode = await _reach_intake()
     assert choice["title"] == "이대로 분석을 시작할까요?"
     assert choice["options"] == [
-        {"id": "ready", "label": "네, 시작해 주세요"},
-        {"id": "change", "label": "자료를 바꿀래요"},
+        {"id": "ready", "label": "시작하기"},
+        {"id": "change", "label": "자료 바꾸기"},
         {"id": "cancel", "label": "닫기"},
     ]
     assert choice["recommended"] == "ready"
@@ -98,7 +98,7 @@ async def test_intake_change_reopens_intake():
     choice = _choice(await _events(graph, {}, config))
     snap = await graph.aget_state(config)
     assert choice["gate"] == "intake"
-    assert choice["options"][1]["label"] == "자료를 바꿀래요"
+    assert choice["options"][1]["label"] == "자료 바꾸기"
     assert snap.values["status"] == "active"
     assert snap.values.get("scenario") != "C"
     assert snap.next
@@ -237,10 +237,10 @@ async def test_present_card_points_at_the_profile(monkeypatch):
 
 _ANALYZE_TITLE = "이 공고에 맞춰 이력서를 고칠까요?"
 _FEEDBACK_TITLE = "피드백을 반영해서 수정할까요?"
-_FIX_LABEL = "네, 맞춰서 고쳐 주세요"
-_FEEDBACK_ONLY = "피드백만 받을게요"
-_SCORE_ONLY = "점수만 보고 끝낼게요"
-_APPLY_FEEDBACK = "반영해서 수정할게요"
+_FIX_LABEL = "고치기"
+_FEEDBACK_ONLY = "피드백만 받기"
+_SCORE_ONLY = "점수만 보기"
+_APPLY_FEEDBACK = "수정하기"
 
 
 class _RecordingModel(_PhaseModel):
@@ -303,6 +303,7 @@ async def test_analyze_feedback_shows_fixes_then_the_feedback_card():
     assert choice["title"] == _FEEDBACK_TITLE
     assert choice["options"] == [
         {"id": "continue", "label": _APPLY_FEEDBACK},
+        {"id": "keep", "label": "그대로 둘게요"},
         {"id": "cancel", "label": "닫기"},
     ]
     assert "craft" not in model.calls
@@ -315,9 +316,21 @@ async def test_feedback_continue_rewrites_with_the_feedback():
     assert card["gate"] == "feedback"
     assert card["title"] == _FEEDBACK_TITLE
     await _events(graph, Command(resume={"option_id": "continue"}), config)
-    await _events(graph, {}, config)
-    craft = next(item for item in model.payloads if item.get("phase") == "craft")
-    assert craft["analysis"]["message"] == "키워드가 부족해요"
+    snap = await graph.aget_state(config)
+    assert (snap.values["phase"], snap.values["status"]) == ("craft", "active")
+    assert "strategy" not in model.calls
+
+
+async def test_feedback_keep_ends_without_a_rewrite():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "feedback"}), config)
+    card = _choice(await _events(graph, {}, config))
+    assert card["gate"] == "feedback"
+    await _events(graph, Command(resume={"option_id": "keep"}), config)
+    snap = await graph.aget_state(config)
+    assert snap.values["status"] == "done"
+    assert snap.next == ()
+    assert "craft" not in model.calls
     assert "strategy" not in model.calls
 
 

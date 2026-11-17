@@ -46,7 +46,7 @@ DEFAULT_CARD = CardSpec()
 
 # The only list of card variants.
 CARDS: dict[str, CardSpec] = {
-    "apply_to_posting": CardSpec(foot="지원하면 취소할 수 없어요", posting=True),
+    "apply_to_posting": CardSpec(posting=True),
     "read_page": CardSpec(
         options=(
             {"id": "approve", "label": "한 번 허용"},

@@ -379,7 +379,7 @@ async def test_start_document_marks_resume_active():
 
 
 _PHASES = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review",
+    "mode_select", "intake", "analyze", "strategy", "review",
 )
 _JOB = "job-1"
 
@@ -524,7 +524,7 @@ async def test_cancel_text_returns_to_agent_same_thread(text):
     saver = MemorySaver()
     graph = _flow_graph(saver, ScriptedChat([{"content": "다른 걸 도와드릴까요?"}]), None)
     config = _flow_config("conv-text")
-    await _drain(graph, _flow_input("conv-text", "craft"), config)
+    await _drain(graph, _flow_input("conv-text", "strategy"), config)
     events = await _drain(graph, Command(resume={"text": text}), config)
     done = await graph.aget_state(config)
     assert done.next == ()

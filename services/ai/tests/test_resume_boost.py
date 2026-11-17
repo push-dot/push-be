@@ -64,8 +64,7 @@ async def _to_first_cycle(graph, config, **extra):
         inputs={"requirements": "Python"},
     )
     state.update(extra)
-    _snap, _events = await _pull(graph, state, config)
-    return await _pull(graph, Command(resume={"option_id": "continue"}), config)
+    return await _pull(graph, state, config)
 
 
 async def test_next_score_is_computed_between_cycles(monkeypatch):
@@ -191,12 +190,6 @@ async def test_cancel_at_the_cycle_gate_returns_to_the_agent(monkeypatch):
                 "inputs": {"requirements": "Python"},
             },
         }, config):
-            pass
-        paused = await graph.aget_state(config)
-        assert paused.next == ("resume_flow",)
-        async for _event in astream_harness(
-            graph, Command(resume={"option_id": "continue"}), config,
-        ):
             pass
         at_cycle = await graph.aget_state(config)
         assert at_cycle.next == ("resume_flow",)
