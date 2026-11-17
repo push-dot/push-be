@@ -167,6 +167,17 @@ async def test_a_failed_promotion_keeps_the_job_delayed():
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_delayed_member_does_not_block_later_due_jobs():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await redis.zadd("q:delayed", {"q:chat|not-a-uuid": NOW.timestamp() - 10})
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    assert await queue.promote_due(NOW) == 1
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert await redis.zcard("q:delayed") == 0
+
+
+@pytest.mark.asyncio
 async def test_the_dispatcher_promotes_delayed_jobs_between_sweeps(monkeypatch):
     redis = FakeRedis(decode_responses=True)
     monkeypatch.setattr("app.queue.dispatcher.PROMOTE_S", 0.01)

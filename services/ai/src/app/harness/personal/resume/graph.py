@@ -1406,9 +1406,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     emit(_todo(_file_steps(view)))
                     emit({**_file_result(saved, view), **_done(view, "external")})
                 elif resume_source(view) != "external" and (drafted or known):
-                    working(SAVE_DOCUMENT)
-                    emit({"token": "Push 프로필에 저장하는 중…"})
-                    doc_id = await save_profile_document(view) or known
+                    doc_id = known
+                    if drafted:
+                        working(SAVE_DOCUMENT)
+                        emit({"token": "Push 프로필에 저장하는 중…"})
+                        doc_id = await save_profile_document(view) or known
                     if doc_id:
                         stored["profile_document_id"] = doc_id
                     name, headline = await profile_card_names(db, view)

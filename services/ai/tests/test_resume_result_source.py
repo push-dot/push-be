@@ -634,3 +634,32 @@ async def test_an_uploaded_file_without_a_draft_saves_nothing_and_shows_no_card(
     assert not [event for event in events if event.get("type") == "result"]
     assert not kept.docs
     assert not any("INSERT INTO sources" in sql for sql, _args in db.calls)
+
+
+async def test_save_edited_file_without_a_draft_saves_neither_pdf_nor_document():
+    from app.harness.personal.resume.profile_document import save_edited_file
+
+    db = _DB()
+    docs, kept = _services(None)
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        saved = await save_edited_file(db, {"user_id": str(uuid4()), "drafts": {}}, _FILE)
+    finally:
+        bound_services.reset(token)
+    assert saved == {"documentId": "", "fileName": _FILE, "pageLine": "", "stored": False}
+    assert not kept.docs
+    assert not db.calls
+
+
+async def test_present_with_only_a_craft_document_streams_no_save_status():
+    events, _kept = await _present_announced(
+        _DB(), None,
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        profile_document_id=str(uuid4()),
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    assert not _saves(events)
+    assert not [event for event in events if event.get("type") == "status" and "저장" in event.get("text", "")]
+    assert _one(events, "result")["source"] == "profile"
