@@ -5695,7 +5695,10 @@ export interface components {
                 /** @description Detail lines the client folds as +N줄 */
                 extra?: string[];
                 name: string;
-                result?: unknown;
+                /** @description What the tool returned: an object, with error when it failed */
+                result?: {
+                    [key: string]: unknown;
+                };
                 /** @description One-line outcome shown under the tool line */
                 resultLine?: string;
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -7229,7 +7232,10 @@ export interface components {
             /** @description Detail lines the client folds as +N줄 */
             extra?: string[];
             name: string;
-            result?: unknown;
+            /** @description What the tool returned: an object, with error when it failed */
+            result?: {
+                [key: string]: unknown;
+            };
             /** @description One-line outcome shown under the tool line */
             resultLine?: string;
             /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
