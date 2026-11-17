@@ -163,7 +163,7 @@ class Dispatcher:
         return [
             asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
             asyncio.create_task(every(ALERT_S, self.check_alerts)),
-            asyncio.create_task(every(PROMOTE_S, self.queue.promote_due)),
+            asyncio.create_task(every(PROMOTE_S, self.run_once)),
         ]
 
     async def _requeue_stale(self, db, now) -> int:

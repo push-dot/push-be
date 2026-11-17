@@ -415,3 +415,23 @@ async def test_dispatcher_purges_accounts_and_companies_every_maintenance_pass()
     await box.run_once(NOW, maintain=True)
     await box.run_once(NOW, maintain=True)
     assert pool.fetched == [PURGE_SQL, COMPANY_PURGE_SQL] * 2
+
+
+@pytest.mark.asyncio
+async def test_the_dispatcher_requeues_a_dead_workers_job_between_sweeps(monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.queue.dispatcher.PROMOTE_S", 0.01)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    stop = asyncio.Event()
+    tasks = box.start_periodic(stop)
+    try:
+        for _ in range(100):
+            if jobs[0]["status"] == "RETRY":
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+    assert jobs[0]["status"] == "RETRY"
