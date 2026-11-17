@@ -405,7 +405,7 @@ async def test_the_page_card_lives_ten_minutes_and_always_allow_stops_asking_for
 
     assert card["title"] == "채용 페이지 열기"
     assert card["summary"] == (
-        f"모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?\n{POSTING}"
+        f"careers.moapay.example를 열어도 될까요?\n{POSTING}"
     )
     assert "foot" not in card and "expiresAt" not in card
     assert [o["id"] for o in card["options"]] == ["approve", "approve_always", "reject"]
@@ -437,7 +437,7 @@ NURI = "https://nuricloud.career.greetinghr.example/o/1"
             "company",
             POSTING,
             "채용 페이지 열기",
-            "모아페이 채용 페이지(careers.moapay.example)를 열어도 될까요?",
+            "careers.moapay.example를 열어도 될까요?",
             "posting",
         ),
         (
