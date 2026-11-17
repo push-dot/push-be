@@ -7,8 +7,9 @@ from app.harness.registry import REGISTRY
 from app.harness.tools import ToolContext
 
 
-def test_review_choice_has_template_and_photo_sections():
+def test_review_choice_has_only_the_template_section():
     choice = _choice({"conversation_id": "c", "job_id": "j"}, "review", auto=False)
+    assert len(choice["sections"]) == 1
     assert choice["sections"][0]["kind"] == "thumbnails"
     assert [item["id"] for item in choice["sections"][0]["options"]] == [
         "CLASSIC",
@@ -16,23 +17,6 @@ def test_review_choice_has_template_and_photo_sections():
         "COMPACT",
         "ATS",
     ]
-    assert choice["sections"][1] == {
-        "id": "photo",
-        "kind": "toggle",
-        "options": [
-            {
-                "id": "photo",
-                "label": "프로필 사진 넣기",
-                "desc": "마이 › 프로필 사진을 써요 · 모든 템플릿",  # noqa: RUF001
-            }
-        ],
-        "selected": ["photo"],
-    }
-    assert choice["submit"]["optionLabels"]["ATS"] == "ATS로 만들기"
-    assert choice["submit"]["label"] == "만들기"
-    assert choice["options"][0]["id"] == "CLASSIC"
-    assert choice["options"][-1]["id"] == "cancel"
-
 
 def test_read_failed_copy():
     from app.harness.personal.resume.graph import _GATES

@@ -666,7 +666,7 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
         {"approach": {"option_id": "bottleneck"}, "level": {"option_id": "L2"}},
         notices,
     )
-    assert notices == ["방향 검증에서 문제가 생겼어요"], "only the failure that stops the flow"
+    assert notices == ["방향 검증을 통과하지 못했어요"], "only the failure that stops the flow"
     assert "validate_cap" in gates
     assert titles["validate_cap"] == "어떻게 할까요?"
     assert [item["label"] for item in choices["validate_cap"]["options"]] == [
@@ -722,7 +722,7 @@ async def test_failed_blueprint_validation_returns_to_blueprints_until_the_cap()
         _on_cap,
         notices=notices,
     )
-    assert notices == ["설계안 검증에서 문제가 생겼어요"]
+    assert notices == ["설계안 검증을 통과하지 못했어요"]
     assert "validate_cap" in gates
     assert "projects" not in gates
     assert titles["validate_cap"] == "어떻게 할까요?"

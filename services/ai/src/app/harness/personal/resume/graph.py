@@ -796,18 +796,6 @@ def _review_sections() -> list[dict]:
             ],
             "selected": ["CLASSIC"],
         },
-        {
-            "id": "photo",
-            "kind": "toggle",
-            "options": [
-                {
-                    "id": "photo",
-                    "label": "프로필 사진 넣기",
-                    "desc": "마이 › 프로필 사진을 써요 · 모든 템플릿",  # noqa: RUF001
-                }
-            ],
-            "selected": ["photo"],
-        },
     ]
 
 
@@ -839,7 +827,7 @@ def _choice(
     }
     if phase == "output_targets":
         event["sections"] = intake_panel(state.get("inputs") or {}, state.get("analysis"))
-        event["submit"] = {"label": "다음"}
+        event["submit"] = {"label": "이 말투로 쓰기"}
     elif phase == "projects":
         event["submit"] = {"label": "구현하기"}
     elif phase == "review":
@@ -1025,8 +1013,7 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
             update["template"] = template_ids[0]
         elif option_id in _TEMPLATES:
             update["template"] = option_id
-        if "photo" in buckets:
-            update["profile_photo"] = "photo" in buckets["photo"]
+        update["profile_photo"] = True
     if phase == "output_targets":
         buckets = _section_answer(
             intake_panel(state.get("inputs") or {}, state.get("analysis")),
@@ -1279,7 +1266,7 @@ def _auto_answer(gate_id: str, state: dict | None = None) -> dict:
             ids.extend(section.get("selected") or [])
         return {"option_id": "submit", "option_ids": ids}
     if gate_id == "review":
-        return {"option_id": "submit", "option_ids": ["submit", "CLASSIC", "photo"]}
+        return {"option_id": "submit", "option_ids": ["submit", "CLASSIC"]}
     recommended = _GATES[gate_id]["recommended"] or (_gate_options(state, gate_id) or [{"id": ""}])[0]["id"]
     if _GATES[gate_id].get("multiple"):
         return {"option_id": recommended, "option_ids": [recommended]}
@@ -1935,7 +1922,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             ]
             output = _parsed(await chat.ainvoke(messages))
         if _invalid(output):
-            return _failed_check(state, "approach", "방향 검증에서 문제가 생겼어요")
+            return _failed_check(state, "approach", "방향 검증을 통과하지 못했어요")
         return {
             "phase": "blueprints",
             "status": "active",
@@ -1974,7 +1961,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             state, "04_validation_report.json", output
         )
         if _invalid(output):
-            failed = _failed_check(state, "blueprints", "설계안 검증에서 문제가 생겼어요")
+            failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요")
             return {**failed, "artifacts": artifacts}
         return {
             "artifacts": artifacts,
