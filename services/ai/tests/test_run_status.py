@@ -199,7 +199,8 @@ async def test_a_document_edit_card_waits_for_a_confirm():
             {
                 "document_id": POSTING,
                 "revision_id": POSTING,
-                "hunks": [{"before": "a", "after": "b"}],
+                "before": "a",
+                "after": "b",
             },
         )
     ]
