@@ -17,6 +17,11 @@ def test_review_choice_has_only_the_template_section():
         "COMPACT",
         "ATS",
     ]
+    assert choice["submit"]["optionLabels"]["ATS"] == "ATS로 만들기"
+    assert choice["submit"]["label"] == "만들기"
+    assert choice["options"][0]["id"] == "CLASSIC"
+    assert choice["options"][-1]["id"] == "cancel"
+
 
 def test_read_failed_copy():
     from app.harness.personal.resume.graph import _GATES
