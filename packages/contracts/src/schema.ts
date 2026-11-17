@@ -4955,7 +4955,7 @@ export interface components {
                 rows: {
                     label: string;
                     note: string;
-                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. */
+                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
                     tag: string;
                 }[];
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -5659,8 +5659,11 @@ export interface components {
                 /** @enum {string} */
                 type: "think";
             } | {
-                /** @description strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card. */
-                id: string;
+                /**
+                 * @description strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.
+                 * @enum {string}
+                 */
+                id: "strategy" | "feedback" | "blueprints";
                 /** @description Strategy card only. Up to 6, without a leading + */
                 keywords?: string[];
                 /** @description 섹션 4개 or 3개 */
@@ -5668,7 +5671,7 @@ export interface components {
                 rows: {
                     label: string;
                     note: string;
-                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. */
+                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
                     tag: string;
                 }[];
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -5705,7 +5708,8 @@ export interface components {
                 summary: string;
                 /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
                 target?: string;
-                tier?: string;
+                /** @enum {string} */
+                tier?: "READ" | "EXTERNAL_READ" | "SAFE_WRITE" | "RISKY_WRITE";
                 /** @enum {string} */
                 type: "tool";
                 /** @description Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry) */
@@ -5716,7 +5720,7 @@ export interface components {
                 items: {
                     /** @description True for a step added after the list was first shown */
                     added?: boolean;
-                    id: unknown;
+                    id: string;
                     /** @enum {string} */
                     state: "todo" | "now" | "done";
                     text: string;
@@ -7175,8 +7179,11 @@ export interface components {
              * @description When the event was stored
              */
             at: string;
-            /** @description strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card. */
-            id: string;
+            /**
+             * @description strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.
+             * @enum {string}
+             */
+            id: "strategy" | "feedback" | "blueprints";
             /** @description Strategy card only. Up to 6, without a leading + */
             keywords?: string[];
             /** @description 섹션 4개 or 3개 */
@@ -7184,7 +7191,7 @@ export interface components {
             rows: {
                 label: string;
                 note: string;
-                /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. */
+                /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
                 tag: string;
             }[];
             /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -7235,7 +7242,8 @@ export interface components {
             summary: string;
             /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
             target?: string;
-            tier?: string;
+            /** @enum {string} */
+            tier?: "READ" | "EXTERNAL_READ" | "SAFE_WRITE" | "RISKY_WRITE";
             /** @description Opaque. Every frame of one run has the same value. */
             turn: string;
             /** @enum {string} */
@@ -7253,7 +7261,7 @@ export interface components {
             items: {
                 /** @description True for a step added after the list was first shown */
                 added?: boolean;
-                id: unknown;
+                id: string;
                 /** @enum {string} */
                 state: "todo" | "now" | "done";
                 text: string;
