@@ -424,8 +424,11 @@ class HarnessRuntime:
             resume["optionId"] = "cancel"
         if resume.get("approvalId"):
             if waiting is None:
-                return
-            state = Command(resume=_gate_answer(resume))
+                if not snapshot.next:
+                    return
+                state = None
+            else:
+                state = Command(resume=_gate_answer(resume))
         elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await self._inputs(payload)})

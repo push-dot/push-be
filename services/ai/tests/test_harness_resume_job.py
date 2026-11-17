@@ -5,6 +5,7 @@ import json
 import httpx
 from langchain_core.messages import ToolMessage
 
+from app.domain.errors import DomainError
 from app.harness.core_client import CoreClient, idempotency_key
 from app.harness.runtime import HarnessRuntime
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
@@ -90,3 +91,31 @@ async def test_resume_gate_answer_resumes_personal_thread():
 def runtime_spec():
     from app.harness.registry import REGISTRY
     return REGISTRY["personal"]
+
+
+class _FailsOnce(ScriptedLC):
+    failures = 1
+
+    async def ainvoke(self, messages, **kwargs):
+        if _FailsOnce.failures and any(isinstance(m, ToolMessage) for m in messages):
+            _FailsOnce.failures -= 1
+            raise RuntimeError("provider failed")
+        return await super().ainvoke(messages, **kwargs)
+
+
+async def test_a_retried_gate_answer_finishes_the_run_the_failed_attempt_left():
+    _FailsOnce.failures = 1
+    ScriptedLC.replies = [{"tool_calls": [_apply_call()]}, {"content": "지원했어요"}]
+    rows = Rows()
+    seen: list = []
+    runtime, svc = _runtime(rows, seen)
+    runtime._model_cls = _FailsOnce
+    first = await run(runtime, _payload(JOB_A, "이 공고에 지원해줘"))
+    approval_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "approval")
+    resume = {"resume": {"approvalId": approval_id, "optionId": "approve"}}
+    try:
+        await run(runtime, _payload(JOB_B, **resume))
+    except DomainError:
+        pass
+    await run(runtime, _payload(JOB_B, **resume))
+    assert svc.messages[-1].text == "지원했어요"
