@@ -5,7 +5,7 @@ import type { Transaction } from "../src/db.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { uuid5Url } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
-import { snippetOf } from "../src/routes/bots.ts";
+import { plainLine, snippetOf } from "../src/routes/bots.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const POSTING = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -464,4 +464,12 @@ test("the removed bot routes answer 404", async () => {
     assert.equal(res.status, 404, `${method} ${path}`);
     assert.ok(!wrote(seen, "INSERT INTO conversations"));
   }
+});
+
+test("a row's line is plain text: markdown marks and line breaks go", () => {
+  assert.equal(plainLine("# 초안 v2\n**자기소개서**를 만들었어요.\n- 첫째\n- 둘째"), "초안 v2 자기소개서를 만들었어요. 첫째 둘째");
+  assert.equal(plainLine("[이력서 초안 v1](/docs/push/d1) · 미리보기"), "이력서 초안 v1 · 미리보기");
+  assert.equal(plainLine("`kotlin`  코드\n\n\n끝"), "kotlin 코드 끝");
+  assert.equal(plainLine("1. 하나\n2. 둘"), "하나 둘");
+  assert.equal(plainLine("그대로인 문장이에요."), "그대로인 문장이에요.");
 });

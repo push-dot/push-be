@@ -88,6 +88,19 @@ export const snippetOf = (text: string, q: string): string => {
   return (start > 0 ? "…" : "") + chars.slice(start, end).join("");
 };
 
+/**
+ * A row's line is one plain sentence (boards AgentHome, AgentHomeSearch), not the markdown the bot wrote:
+ * headings, quotes, list marks, bold, code marks and link syntax go, and the lines run together.
+ */
+export const plainLine = (text: string): string =>
+  text
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*•]\s+|\d+\.\s+)/gm, "")
+    .replace(/(\*\*|__|~~|`)/g, "")
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
 type BotRow = Record<string, unknown>;
 
 const textOrNull = (value: unknown): string | null => (value == null ? null : String(value));
@@ -120,7 +133,7 @@ const activityOf = (row: BotRow): Record<string, unknown> | null => {
 const botDto = (row: BotRow): Record<string, unknown> => {
   const activity = activityOf(row);
   const lastMessage = row.last_message_at == null ? null : {
-    preview: String(row.last_message_preview ?? ""), at: ts(row.last_message_at), fromBot: asBool(row.last_message_from_bot),
+    preview: plainLine(String(row.last_message_preview ?? "")), at: ts(row.last_message_at), fromBot: asBool(row.last_message_from_bot),
   };
   return {
     ...botRef(row),
