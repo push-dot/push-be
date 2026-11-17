@@ -543,6 +543,25 @@ def _material_rows(inputs: dict, analysis: dict) -> list[dict]:
     return rows
 
 
+_MATERIAL_KEYS = {
+    "m_file": ("fileName", "file_name", "attachments", "documentId"),
+    "m_posting": ("posting", "postingId"),
+    "m_github": ("github",),
+}
+
+
+def without_materials(inputs: dict, skipped: list[str]) -> dict:
+    kept = dict(inputs)
+    for material in skipped:
+        for key in _MATERIAL_KEYS.get(material, ()):
+            kept.pop(key, None)
+    if "m_github" in skipped and "pages" in kept:
+        kept["pages"] = {
+            url: page for url, page in (kept.get("pages") or {}).items() if not _github_page(str(url))
+        }
+    return kept
+
+
 def intake_panel(inputs: dict | None, analysis: dict | None = None) -> list[dict]:
     bag = inputs if isinstance(inputs, dict) else {}
     found = analysis if isinstance(analysis, dict) else {}
@@ -565,9 +584,10 @@ def intake_panel(inputs: dict | None, analysis: dict | None = None) -> list[dict
         sections.append(
             {
                 "id": "materials",
-                "kind": "rows",
-                "title": "가져올 자료",
-                "options": rows,
+                "kind": "toggle",
+                "title": "가져올 자료를 골라 주세요",
+                "options": [{key: row[key] for key in ("id", "label", "sub", "badge") if key in row} for row in rows],
+                "selected": [row["id"] for row in rows],
             }
         )
     sections.append(

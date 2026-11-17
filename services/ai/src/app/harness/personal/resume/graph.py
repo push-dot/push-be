@@ -54,6 +54,7 @@ from app.harness.personal.resume.progress import (
     strategy_plan,
     think_event,
     todo_event,
+    without_materials,
 )
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
 from app.harness.personal.resume.state import ResumeState
@@ -109,8 +110,8 @@ _GATES = {
         "title": "어떤 방식으로 진행할까요?",
         "recommended": "resume_based",
         "options": [
-            {"id": "resume_based", "label": "이력서부터 쓸게요"},
-            {"id": "experience_blueprint", "label": "경험부터 정리할게요"},
+            {"id": "resume_based", "label": "이력서부터 쓰기"},
+            {"id": "experience_blueprint", "label": "경험부터 정리하기"},
         ],
     },
     "output_targets": {
@@ -139,30 +140,33 @@ _GATES = {
         "title": "이대로 분석을 시작할까요?",
         "recommended": "ready",
         "options": [
-            {"id": "ready", "label": "네, 시작해 주세요"},
-            {"id": "change", "label": "자료를 바꿀래요"},
+            {"id": "ready", "label": "시작하기"},
+            {"id": "change", "label": "자료 바꾸기"},
         ],
     },
     "analyze": {
         "title": "이 공고에 맞춰 이력서를 고칠까요?",
         "recommended": "continue",
         "options": [
-            {"id": "continue", "label": "네, 맞춰서 고쳐 주세요"},
-            {"id": "feedback", "label": "피드백만 받을게요"},
-            {"id": "score", "label": "점수만 보고 끝낼게요"},
+            {"id": "continue", "label": "고치기"},
+            {"id": "feedback", "label": "피드백만 받기"},
+            {"id": "score", "label": "점수만 보기"},
         ],
     },
     "feedback": {
         "title": "피드백을 반영해서 수정할까요?",
         "recommended": "continue",
-        "options": [{"id": "continue", "label": "반영해서 수정할게요"}],
+        "options": [
+            {"id": "continue", "label": "수정하기"},
+            {"id": "keep", "label": "그대로 둘게요"},
+        ],
     },
     "strategy": {
         "title": "이 전략대로 초안을 쓸까요?",
         "recommended": "continue",
         "options": [
-            {"id": "continue", "label": "초안 쓸게요"},
-            {"id": "2-B", "label": "피드백만 볼게요"},
+            {"id": "continue", "label": "초안 쓰기"},
+            {"id": "2-B", "label": "피드백만 보기"},
         ],
     },
     "craft": {
@@ -187,20 +191,20 @@ _GATES = {
         "options": [{"id": "done", "label": "확인했어요"}],
     },
     "approach": {
-        "title": "어떤 접근 방식으로 진행할까요?",
+        "title": "어떤 방식으로 경험을 만들까요?",
         "recommended": "prevention",
         "options": [
-            {"id": "bottleneck", "label": "병목을 만들게요"},
-            {"id": "prevention", "label": "문제를 예방할게요"},
+            {"id": "bottleneck", "label": "병목 만들기"},
+            {"id": "prevention", "label": "문제 예방하기"},
         ],
     },
     "level": {
         "title": "병목 강도를 어느 정도로 할까요?",
         "recommended": "L2",
         "options": [
-            {"id": "L1", "label": "가벼운 제약으로"},
-            {"id": "L2", "label": "중간 제약으로"},
-            {"id": "L3", "label": "강한 제약으로"},
+            {"id": "L1", "label": "가벼운 제약"},
+            {"id": "L2", "label": "중간 제약"},
+            {"id": "L3", "label": "강한 제약"},
         ],
     },
     "prevention": {
@@ -218,8 +222,8 @@ _GATES = {
     },
     "projects": {
         "title": "어떤 프로젝트를 구현할까요?",
-        "recommended": "skip",
-        "options": [{"id": "skip", "label": "기획만 볼게요"}],
+        "recommended": "",
+        "options": [],
     },
     "read_failed": {
         "title": "어떻게 할까요?",
@@ -231,9 +235,12 @@ _GATES = {
         ],
     },
     "validate_cap": {
-        "title": "검증을 통과하지 못했어요. 다른 방향으로 다시 고를까요?",
+        "title": "어떻게 할까요?",
         "recommended": "retry",
-        "options": [{"id": "retry", "label": "다시 고르기"}],
+        "options": [
+            {"id": "retry", "label": "다시 시도"},
+            {"id": "change", "label": "방향 바꾸기"},
+        ],
     },
     "boost": {
         "title": "점수를 한 번 더 올릴까요?",
@@ -277,6 +284,8 @@ class ResumeGraphState(TypedDict, total=False):
     approach: str | None
     bottleneck_level: str | None
     prevention_categories: list
+    chosen_project: str | None
+    revalidate: bool
     blueprints: dict
     validation_failures: int
     scores: list
@@ -449,7 +458,24 @@ def _next_phase(state: dict, phase: str) -> str | None:
 _NEVER_ASKED = frozenset({"present"})
 
 
+def _gate_options(state: dict, phase: str) -> list[dict]:
+    if phase != "projects":
+        return list(_GATES[phase]["options"])
+    projects = (state.get("blueprints") or {}).get("projects")
+    items = projects if isinstance(projects, list) else []
+    return [
+        {
+            "id": str(item.get("id") or index) if isinstance(item, dict) else str(index),
+            "label": str((item.get("title") or item.get("name") or "") if isinstance(item, dict) else "")
+            or f"프로젝트 {index}",
+        }
+        for index, item in enumerate(items, 1)
+    ]
+
+
 def _must_stop(state: dict, phase: str) -> bool:
+    if len(_gate_options(state, phase)) < 2:
+        return False
     if phase in {"mode_select", "validate_cap", "read_failed"}:
         return True
     if phase in _NEVER_ASKED:
@@ -795,7 +821,7 @@ def _choice(
     detail: str | None = None,
 ) -> dict:
     gate = _GATES[phase]
-    options = [*gate["options"]]
+    options = _gate_options(state, phase)
     if phase != "analyze":
         options.append(
             {
@@ -809,12 +835,14 @@ def _choice(
         "kind": "RESUME_GATE",
         "title": gate["title"],
         "gate": phase,
-        "recommended": gate["recommended"],
+        "recommended": gate["recommended"] or (options[0]["id"] if options else ""),
         "options": options,
     }
     if phase == "output_targets":
         event["sections"] = intake_panel(state.get("inputs") or {}, state.get("analysis"))
         event["submit"] = {"label": "다음"}
+    elif phase == "projects":
+        event["submit"] = {"label": "구현하기"}
     elif phase == "review":
         event["sections"] = _review_sections()
         event["submit"] = {"label": "만들기", "optionLabels": dict(_TEMPLATE_MAKE)}
@@ -1015,8 +1043,20 @@ def _apply_answer(state: dict, phase: str, answer: dict) -> dict:
         tone_ids = buckets.get("tone") or []
         if tone_ids:
             update["tone"] = str(tone_ids[0])
+        if "materials" in buckets:
+            offered = [
+                option["id"]
+                for section in intake_panel(state.get("inputs") or {}, state.get("analysis"))
+                if section["id"] == "materials"
+                for option in section["options"]
+            ]
+            update["inputs"] = without_materials(
+                state.get("inputs") or {}, [m for m in offered if m not in buckets["materials"]]
+            )
     if phase == "tone" and option_id and option_id != "submit":
         update["tone"] = str(option_id)
+    if phase == "projects" and option_id:
+        update["chosen_project"] = str(option_id)
     if phase == "approach" and option_id in _APPROACH_IDS:
         update["approach"] = str(option_id)
     if phase == "level" and option_id in _LEVEL_IDS:
@@ -1241,7 +1281,7 @@ def _auto_answer(gate_id: str, state: dict | None = None) -> dict:
         return {"option_id": "submit", "option_ids": ids}
     if gate_id == "review":
         return {"option_id": "submit", "option_ids": ["submit", "CLASSIC", "photo"]}
-    recommended = _GATES[gate_id]["recommended"]
+    recommended = _GATES[gate_id]["recommended"] or (_gate_options(state, gate_id) or [{"id": ""}])[0]["id"]
     if _GATES[gate_id].get("multiple"):
         return {"option_id": recommended, "option_ids": [recommended]}
     return {"option_id": recommended}
@@ -1259,14 +1299,13 @@ def _advance(merged: dict, gate_id: str, update: dict) -> dict:
     if gate_id in {"level", "prevention"}:
         return {**update, "status": "active", "phase": "approach", "goto": "p2x_validate"}
     if gate_id == "validate_cap":
-        phase = merged.get("phase")
-        if phase not in {"approach", "blueprints"}:
-            phase = "approach"
+        capped_at_approach = merged.get("phase") == "approach"
         return {
             **update,
+            "revalidate": capped_at_approach,
             "validation_failures": 0,
             "status": "active",
-            "phase": phase,
+            "phase": "approach" if capped_at_approach else "blueprints",
             "goto": "end",
         }
     if gate_id == "projects":
@@ -1444,7 +1483,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             if gate_id == "analyze" and _scenario_letter(current) == "E":
                 return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
-                if gate_id not in _INTAKE_NEXT:
+                if gate_id not in _INTAKE_NEXT and (gate_id in _NEVER_ASKED or len(_gate_options(current, gate_id)) > 1):
                     emit(_choice(current, gate_id, auto=True))
                 return await accepted(current, gate_id, _auto_answer(gate_id, current))
             asks = int(current.get("intake_asks") or 0)
@@ -1468,6 +1507,16 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             )
             if _cancelled(answer):
                 return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if gate_id == "validate_cap" and answer.get("option_id") == "change":
+                return {
+                    "validation_failures": 0,
+                    "revalidate": False,
+                    "status": "active",
+                    "phase": "approach",
+                    "goto": "end",
+                }
+            if gate_id == "feedback" and answer.get("option_id") == "keep":
+                return {"status": "done", "phase": "feedback", "goto": "end"}
             if gate_id == "analyze" and answer.get("option_id") == "score":
                 return {"status": "done", "phase": "analyze", "goto": "end"}
             if gate_id == "analyze" and answer.get("option_id") == "feedback":
@@ -1894,6 +1943,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             "phase": "blueprints",
             "status": "active",
             "retry": False,
+            "revalidate": False,
             "validation_failures": 0,
         }
 
@@ -1965,6 +2015,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return "p3c_boost"
         if phase == "craft" and _scenario_letter(state) == "E":
             return "p3c_boost"
+        if phase == "approach" and state.get("revalidate"):
+            return "p2x_validate"
         if phase == "intake" and int(state.get("intake_asks") or 0) > 0:
             return "g_intake"
         if phase == "review" and _scenario_letter(state) == "C":
@@ -2060,6 +2112,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 "p6_present",
                 "p3c_boost",
                 "p2x_approach",
+                "p2x_validate",
                 "p2x_blueprints",
             )
         },

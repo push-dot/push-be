@@ -113,7 +113,7 @@ async def test_auto_runs_safe_and_asks_risky():
     approval = next(event for event in events if event.get("type") == "approval")
     assert approval["kind"] == "TOOL_ACTION"
     assert approval["options"] == [
-        {"id": "approve", "label": "실행"},
+        {"id": "approve", "label": "지원하기"},
         {"id": "reject", "label": "닫기"},
     ]
     assert approval["toolName"] == "apply_to_posting"
