@@ -1478,7 +1478,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             if gate_id == "analyze" and _scenario_letter(current) == "E":
                 return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
-                if gate_id not in _INTAKE_NEXT:
+                if gate_id not in _INTAKE_NEXT and (gate_id in _NEVER_ASKED or len(_gate_options(current, gate_id)) > 1):
                     emit(_choice(current, gate_id, auto=True))
                 return await accepted(current, gate_id, _auto_answer(gate_id, current))
             asks = int(current.get("intake_asks") or 0)

@@ -171,7 +171,7 @@ async def test_output_targets_gate_keeps_option_ids():
     assert snap.values["output_targets"] == ["portfolio", "resume"]
 
 
-async def test_stops_at_every_gate_in_auto():
+async def test_stops_at_every_gate_with_a_choice_in_auto():
     posted = []
 
     async def poster(payload):
@@ -187,7 +187,7 @@ async def test_stops_at_every_gate_in_auto():
     ]
     assert gates == [
         "mode_select", "output_targets", "tone", "intake",
-        "analyze", "strategy", "craft", "boost",
+        "analyze", "strategy", "boost",
         "review",
     ]
     assert seen[-1][1].values["status"] == "done"
@@ -459,7 +459,6 @@ _GATE_QUESTIONS = {
     "intake": "이대로 분석을 시작할까요?",
     "analyze": "이 공고에 맞춰 이력서를 고칠까요?",
     "strategy": "이 전략대로 초안을 쓸까요?",
-    "craft": "첫 번째 초안(v1)이에요. 이대로 검토할까요?",
     "boost": "점수를 한 번 더 올릴까요?",
     "review": "검증을 마쳤어요. 디자인을 골라 주세요.",
 }
