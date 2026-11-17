@@ -682,7 +682,7 @@ async def test_third_failed_approach_validation_stops_without_a_fourth_call():
     assert retried.values["validation_failures"] == 1
     assert retried.values["phase"] == "approach"
     assert model.calls.count("validate") == 4
-    assert "g_approach" in (retried.next or ())
+    assert retried.next == ()
 
 
 async def test_change_direction_after_a_retry_reopens_the_approach_gate():
