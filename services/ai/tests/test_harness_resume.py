@@ -9,6 +9,7 @@ from langgraph.types import Command
 
 from app.graphs.resume_prompt import phase_prompt_for_harness
 from app.harness.core_client import CoreClient
+from app.harness.personal.resume.drafts import draft_text
 from app.harness.personal.resume.graph import _choice, _must_stop, build_resume_graph
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
@@ -811,3 +812,19 @@ async def test_craft_saves_the_draft_and_links_it(monkeypatch):
 async def test_craft_without_changes_has_no_link(monkeypatch):
     tokens, _snap = await _craft_run(monkeypatch, [])
     assert not any("/docs/push/" in t for t in tokens)
+
+
+async def test_craft_body_is_what_gets_saved_and_linked(monkeypatch):
+    kept = {}
+
+    async def saved(state, title=None):
+        kept["body"] = draft_text(state.get("drafts"))
+        return "doc-1"
+
+    monkeypatch.setattr("app.harness.personal.resume.graph.save_profile_document", saved)
+    body = "# 김서준\n- 결제 API"
+    outputs = {"analyze": {"scenario": "D"}, "craft": {"markdown": body, "message": "초안을 썼어요.", "changes": ["성과를 앞에 뒀어요"]}}
+    seen = await _drive(_graph(_Approvals(), model=_PhaseModel(outputs)), _config(), _base(phase="analyze"))
+    tokens = [e["token"] for events, _snap in seen for e in events if "token" in e]
+    assert kept["body"] == body
+    assert any("/docs/push/doc-1" in t for t in tokens)
