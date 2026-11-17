@@ -119,11 +119,11 @@ export const chatEvents: Record<string, Schema> = {
   }, ["type", "seconds", "phase", "seq"]),
   plan: obj({
     type: enumOf("plan"),
-    id: { type: "string", description: "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card." },
+    id: { ...enumOf("strategy", "feedback", "blueprints"), description: "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card." },
     title: str,
     meta: { type: "string", description: "섹션 4개 or 3개" },
     rows: arr(obj({
-      tag: { type: "string", description: "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력." },
+      tag: { type: "string", description: "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부." },
       label: str,
       note: str,
     }, ["tag", "label", "note"])),
@@ -143,7 +143,7 @@ export const chatEvents: Record<string, Schema> = {
     name: str,
     state: { ...enumOf("run", "ok", "err", "wait"), description: "run is sent just before the tool executes, then ok or err. wait is the approval pause." },
     summary: str,
-    tier: str,
+    tier: enumOf("READ", "EXTERNAL_READ", "SAFE_WRITE", "RISKY_WRITE"),
     result: any,
     target: { type: "string", description: "What the tool worked on, e.g. a file name or 회사 · 직무" },
     resultLine: { type: "string", description: "One-line outcome shown under the tool line" },
@@ -155,7 +155,7 @@ export const chatEvents: Record<string, Schema> = {
     type: enumOf("todo"),
     id: { type: "string", description: "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze." },
     items: arr(obj({
-      id: any,
+      id: str,
       text: str,
       state: enumOf("todo", "now", "done"),
       added: { type: "boolean", description: "True for a step added after the list was first shown" },

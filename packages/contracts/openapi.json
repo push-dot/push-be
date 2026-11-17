@@ -2870,7 +2870,7 @@
                             "type": "string"
                           },
                           "tag": {
-                            "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                            "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                             "type": "string"
                           }
                         },
@@ -5388,7 +5388,12 @@
                 {
                   "properties": {
                     "id": {
-                      "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                      "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                      "enum": [
+                        "strategy",
+                        "feedback",
+                        "blueprints"
+                      ],
                       "type": "string"
                     },
                     "keywords": {
@@ -5412,7 +5417,7 @@
                             "type": "string"
                           },
                           "tag": {
-                            "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                            "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                             "type": "string"
                           }
                         },
@@ -5529,6 +5534,12 @@
                       "type": "string"
                     },
                     "tier": {
+                      "enum": [
+                        "READ",
+                        "EXTERNAL_READ",
+                        "SAFE_WRITE",
+                        "RISKY_WRITE"
+                      ],
                       "type": "string"
                     },
                     "type": {
@@ -5564,7 +5575,9 @@
                             "description": "True for a step added after the list was first shown",
                             "type": "boolean"
                           },
-                          "id": {},
+                          "id": {
+                            "type": "string"
+                          },
                           "state": {
                             "enum": [
                               "todo",
@@ -11507,7 +11520,12 @@
                 "type": "string"
               },
               "id": {
-                "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                "enum": [
+                  "strategy",
+                  "feedback",
+                  "blueprints"
+                ],
                 "type": "string"
               },
               "keywords": {
@@ -11531,7 +11549,7 @@
                       "type": "string"
                     },
                     "tag": {
-                      "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                      "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                       "type": "string"
                     }
                   },
@@ -11670,6 +11688,12 @@
                 "type": "string"
               },
               "tier": {
+                "enum": [
+                  "READ",
+                  "EXTERNAL_READ",
+                  "SAFE_WRITE",
+                  "RISKY_WRITE"
+                ],
                 "type": "string"
               },
               "turn": {
@@ -11716,7 +11740,9 @@
                       "description": "True for a step added after the list was first shown",
                       "type": "boolean"
                     },
-                    "id": {},
+                    "id": {
+                      "type": "string"
+                    },
                     "state": {
                       "enum": [
                         "todo",
@@ -18044,7 +18070,12 @@
                     "type": "string"
                   },
                   "id": {
-                    "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                    "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                    "enum": [
+                      "strategy",
+                      "feedback",
+                      "blueprints"
+                    ],
                     "type": "string"
                   },
                   "keywords": {
@@ -18068,7 +18099,7 @@
                           "type": "string"
                         },
                         "tag": {
-                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                           "type": "string"
                         }
                       },
@@ -18578,7 +18609,9 @@
                           "description": "True for a step added after the list was first shown",
                           "type": "boolean"
                         },
-                        "id": {},
+                        "id": {
+                          "type": "string"
+                        },
                         "state": {
                           "enum": [
                             "todo",
@@ -18702,6 +18735,12 @@
                     "type": "string"
                   },
                   "tier": {
+                    "enum": [
+                      "READ",
+                      "EXTERNAL_READ",
+                      "SAFE_WRITE",
+                      "RISKY_WRITE"
+                    ],
                     "type": "string"
                   },
                   "turn": {
@@ -20103,7 +20142,12 @@
                     "type": "string"
                   },
                   "id": {
-                    "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                    "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                    "enum": [
+                      "strategy",
+                      "feedback",
+                      "blueprints"
+                    ],
                     "type": "string"
                   },
                   "keywords": {
@@ -20127,7 +20171,7 @@
                           "type": "string"
                         },
                         "tag": {
-                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                           "type": "string"
                         }
                       },
@@ -20637,7 +20681,9 @@
                           "description": "True for a step added after the list was first shown",
                           "type": "boolean"
                         },
-                        "id": {},
+                        "id": {
+                          "type": "string"
+                        },
                         "state": {
                           "enum": [
                             "todo",
@@ -20761,6 +20807,12 @@
                     "type": "string"
                   },
                   "tier": {
+                    "enum": [
+                      "READ",
+                      "EXTERNAL_READ",
+                      "SAFE_WRITE",
+                      "RISKY_WRITE"
+                    ],
                     "type": "string"
                   },
                   "turn": {
@@ -25191,7 +25243,12 @@
                     "type": "string"
                   },
                   "id": {
-                    "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                    "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                    "enum": [
+                      "strategy",
+                      "feedback",
+                      "blueprints"
+                    ],
                     "type": "string"
                   },
                   "keywords": {
@@ -25215,7 +25272,7 @@
                           "type": "string"
                         },
                         "tag": {
-                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                           "type": "string"
                         }
                       },
@@ -26005,7 +26062,9 @@
                           "description": "True for a step added after the list was first shown",
                           "type": "boolean"
                         },
-                        "id": {},
+                        "id": {
+                          "type": "string"
+                        },
                         "state": {
                           "enum": [
                             "todo",
@@ -26129,6 +26188,12 @@
                     "type": "string"
                   },
                   "tier": {
+                    "enum": [
+                      "READ",
+                      "EXTERNAL_READ",
+                      "SAFE_WRITE",
+                      "RISKY_WRITE"
+                    ],
                     "type": "string"
                   },
                   "turn": {
@@ -27540,7 +27605,12 @@
                     "type": "string"
                   },
                   "id": {
-                    "description": "strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card.",
+                    "description": "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.",
+                    "enum": [
+                      "strategy",
+                      "feedback",
+                      "blueprints"
+                    ],
                     "type": "string"
                   },
                   "keywords": {
@@ -27564,7 +27634,7 @@
                           "type": "string"
                         },
                         "tag": {
-                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력.",
+                          "description": "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부.",
                           "type": "string"
                         }
                       },
@@ -28354,7 +28424,9 @@
                           "description": "True for a step added after the list was first shown",
                           "type": "boolean"
                         },
-                        "id": {},
+                        "id": {
+                          "type": "string"
+                        },
                         "state": {
                           "enum": [
                             "todo",
@@ -28478,6 +28550,12 @@
                     "type": "string"
                   },
                   "tier": {
+                    "enum": [
+                      "READ",
+                      "EXTERNAL_READ",
+                      "SAFE_WRITE",
+                      "RISKY_WRITE"
+                    ],
                     "type": "string"
                   },
                   "turn": {
