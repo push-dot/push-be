@@ -291,3 +291,28 @@ async def test_judge_fit_receives_a_posting_built_from_analysis(monkeypatch):
         assert content == "경력 요약"
     finally:
         bound_services.reset(token)
+
+
+async def test_scores_bill_the_running_job_not_the_one_that_opened_the_gate(monkeypatch):
+    from app.harness.status import Run, current_run
+
+    seen, token = _script(monkeypatch, [1.0, 2.0, 9.0], SimpleNamespace(_reserve=object()))
+    run = current_run.set(Run("running", "", False))
+    try:
+        await _to_first_cycle(_graph(_Approvals(), model=_PhaseModel()), _config())
+    finally:
+        current_run.reset(run)
+        bound_services.reset(token)
+    assert seen
+    assert {call["job_id"] for call in seen} == {"running"}
+
+
+def test_the_resume_tool_context_carries_the_running_job():
+    from app.harness.personal.resume.graph import _context
+    from app.harness.status import current_run
+
+    run = current_run.set(SimpleNamespace(job_id="running"))
+    try:
+        assert _context(None, {"job_id": "old"}).job_id == "running"
+    finally:
+        current_run.reset(run)

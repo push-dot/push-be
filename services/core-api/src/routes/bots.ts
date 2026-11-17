@@ -112,6 +112,7 @@ export const botRef = (row: BotRow): Record<string, unknown> => ({
 
 const ASK_EDIT = "이 변경을 이력서에 반영할까요?";
 const ASK_PAGE = "이 사이트를 열어도 될까요?";
+// Another card keeps its own title; only edit and page cards get a fixed question.
 const askOf = (row: BotRow): string => {
   if (row.card_kind === "DOCUMENT_EDIT") return ASK_EDIT;
   if (row.card_kind === "TOOL_ACTION" && row.card_tool === "read_page") return ASK_PAGE;

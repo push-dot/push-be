@@ -73,7 +73,12 @@ class StreamQueue:
             if not await self.redis.zrem(DELAYED_KEY, member):
                 continue
             queue, job_id = str(member).split("|", 1)
-            await self.add(queue, UUID(job_id))
+            try:
+                await self.add(queue, UUID(job_id))
+            except Exception:
+                # The claim already removed it from the delayed set; put it back or the job is lost.
+                await self.redis.zadd(DELAYED_KEY, {member: now.timestamp()})
+                raise
             moved += 1
         return moved
 
