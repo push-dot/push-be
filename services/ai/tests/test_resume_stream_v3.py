@@ -191,3 +191,33 @@ async def test_blueprints_say_how_many_then_list_the_ones_that_passed():
         "닫기",
     ]
     assert gate["submit"] == {"label": "구현하기"}
+
+
+async def test_blueprints_all_dropped_by_the_check_count_as_a_failed_check():
+    outputs = {
+        "blueprints": {"projects": [{"id": "p1", "title": "재시도 큐"}, {"id": "p2", "title": "아웃박스"}]},
+        "validate_bp": {
+            "valid": True,
+            "projects": [{"id": "p1", "verdict": "fail"}, {"id": "p2", "verdict": "fail"}],
+        },
+    }
+    graph = build_resume_graph(MemorySaver(), model=_PhaseModel(outputs), db=_Approvals())
+    events = await _events(
+        graph,
+        _base(phase="blueprints", work_mode="experience_blueprint", approach="prevention"),
+        _config(),
+    )
+    assert not any(event.get("type") in {"plan", "choice"} for event in events)
+    snap = await graph.aget_state(_config())
+    assert snap.values["validation_failures"] == 1
+
+
+async def test_a_verdict_never_lands_on_a_project_without_an_id():
+    from app.harness.personal.resume.progress import blueprints_plan
+
+    kept, plan = blueprints_plan(
+        [{"title": "재시도 큐"}, {"title": "아웃박스"}],
+        {"projects": [{"id": "", "verdict": "fail"}]},
+    )
+    assert len(kept) == 2
+    assert [row["tag"] for row in plan["rows"]] == ["통과", "통과"]

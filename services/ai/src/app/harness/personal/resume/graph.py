@@ -33,9 +33,9 @@ from app.harness.personal.resume.progress import (
     added_keywords,
     analyze_steps,
     apply_recommendations_line,
-    boost_fit,
     blueprints_plan,
     blueprints_text,
+    boost_fit,
     boost_line,
     craft_text,
     done_summary,
@@ -55,6 +55,7 @@ from app.harness.personal.resume.progress import (
     strategy_line,
     strategy_plan,
     think_event,
+    titled_projects,
     todo_event,
     without_materials,
 )
@@ -1195,7 +1196,7 @@ _REVIEW_NOTE = (
 _BLUEPRINTS_NOTE = (
     "기획서 요약을 projects 배열에 넣는다. 각 항목은 {id, title, category, stack}이다. "
     "id는 p1, p2처럼 짧게, category는 안정성처럼 한 단어, stack은 기술 이름 배열이다. "
-    "기획서 본문은 message가 아니라 채팅 본문에 쓰지 않는다."
+    "기획서 본문은 message에 쓰지 않는다."
 )
 _VALIDATE_BP_NOTE = (
     "projects 배열에 기획서마다 {id, verdict}를 넣는다. verdict는 pass, conditional, fail 중 하나다. "
@@ -1976,11 +1977,12 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         artifacts["04_validation_report.json"] = await save_named(
             state, "04_validation_report.json", output
         )
-        if _invalid(output):
-            failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요.")
-            return {**failed, "artifacts": artifacts}
         blueprints = dict(current.get("blueprints") or {})
         kept, plan = blueprints_plan(blueprints.get("projects"), output)
+        # Every plan dropped by the check is the same as a failed check.
+        if _invalid(output) or (titled_projects(blueprints.get("projects")) and not kept):
+            failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요.")
+            return {**failed, "artifacts": artifacts}
         if plan is not None:
             emit(plan)
             blueprints["projects"] = kept

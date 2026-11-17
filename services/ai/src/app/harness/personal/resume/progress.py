@@ -431,19 +431,20 @@ _CONDITIONAL = ("conditional", "조건부", "⚠")
 _FAILED = ("fail", "failed", "탈락", "❌")
 
 
-def _titled(projects) -> list[dict]:
+def titled_projects(projects) -> list[dict]:
     items = projects if isinstance(projects, list) else []
     return [p for p in items if isinstance(p, dict) and str(p.get("title") or p.get("name") or "").strip()]
 
 
 def blueprints_text(output: dict) -> str | None:
     """The line above the project card (board ChatPh2XBlueprints): how many plans were made."""
-    count = len(_titled(output.get("projects") if isinstance(output, dict) else None))
+    count = len(titled_projects(output.get("projects") if isinstance(output, dict) else None))
     return f"프로젝트 기획서 {count}개를 만들었어요." if count else None
 
 
 def _verdict_of(project: dict, verdicts: dict) -> str:
-    raw = str(verdicts.get(str(project.get("id") or "")) or "").strip().lower()
+    key = str(project.get("id") or "")
+    raw = str(verdicts.get(key) or "").strip().lower() if key else ""
     if any(word in raw for word in _FAILED):
         return "fail"
     return "conditional" if any(word in raw for word in _CONDITIONAL) else "pass"
@@ -461,7 +462,7 @@ def blueprints_plan(projects, checked: dict) -> tuple[list[dict], dict | None]:
     }
     kept: list[dict] = []
     rows: list[dict] = []
-    for project in _titled(projects):
+    for project in titled_projects(projects):
         verdict = _verdict_of(project, verdicts)
         if verdict == "fail":
             continue
