@@ -395,3 +395,40 @@ def test_usage_is_billed_to_the_running_job_not_the_one_that_opened_the_gate():
     finally:
         current_run.reset(token)
     assert job_of({"job_id": "old"}) == "old"
+
+
+def test_billing_tools_read_the_running_job_while_keys_keep_the_gate_job():
+    from types import SimpleNamespace
+
+    from app.harness.status import current_run
+    from app.harness.tools import ToolContext
+
+    ctx = ToolContext("u", None, "c", "old", "call", None, None)
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        assert (ctx.usage_job_id, ctx.job_id) == ("new", "old")
+    finally:
+        current_run.reset(token)
+
+
+async def test_resume_fit_tool_bills_the_running_job(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.harness.personal.resume import tools as resume_tools
+    from app.harness.status import current_run
+    from app.harness.tools import ToolContext
+
+    seen = {}
+
+    async def judge(*_args, **kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(resume_tools, "judge_fit", judge)
+    ctx = ToolContext("00000000-0000-4000-8000-000000000001", None, "c", "old", "call", None, None)
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        await resume_tools._fit(ctx, resume_tools.FitArgs())
+    finally:
+        current_run.reset(token)
+    assert seen["job_id"] == "new"

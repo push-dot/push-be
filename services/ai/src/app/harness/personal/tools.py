@@ -456,7 +456,7 @@ async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
 
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
     gate = current_ai_gate()
-    job_id = ctx.job_id or None
+    job_id = ctx.usage_job_id or None
     if args.posting_id is not None and ctx.db is not None:
         view = await load_fit(
             ctx.db.q(), UUID(ctx.user_id), args.posting_id,
@@ -487,7 +487,7 @@ async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
     conditions["minFit"] = args.min_fit
     if args.document_id is not None:
         conditions["documentId"] = str(args.document_id)
-    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
+    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.usage_job_id) or {}
     return {"items": result.get("items") or [], "text": result.get("text") or ""}
 
 
@@ -498,7 +498,7 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     from app.framework.rag import search_career_context
     text = await search_career_context(
         svc,
-        {"text": args.query, "user_id": ctx.user_id, "job_id": ctx.job_id},
+        {"text": args.query, "user_id": ctx.user_id, "job_id": ctx.usage_job_id},
         set(),
     )
     return {"text": text or ""}

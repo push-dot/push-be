@@ -38,6 +38,13 @@ class ToolContext:
     supplied: bool | None = None
     exposure: Exposure = Exposure.NONE
 
+    @property
+    def usage_job_id(self) -> str:
+        """The job to bill. `job_id` stays the one that opened the gate, which keys the approval and the idempotency of a call."""
+        from app.harness.status import job_of
+
+        return job_of({"job_id": self.job_id})
+
 
 @dataclass(frozen=True)
 class HarnessSpec:

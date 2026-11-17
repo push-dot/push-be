@@ -111,7 +111,7 @@ async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
     from app.harness.personal.tools import current_ai_gate
     return await judge_fit(
         args.requirements, args.keywords, args.description, args.content, plan,
-        gate=current_ai_gate(), job_id=ctx.job_id or None, user_id=user_id)
+        gate=current_ai_gate(), job_id=ctx.usage_job_id or None, user_id=user_id)
 
 
 def _artifact_id(ctx: ToolContext, name: str) -> str:
