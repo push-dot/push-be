@@ -432,3 +432,22 @@ async def test_resume_fit_tool_bills_the_running_job(monkeypatch):
     finally:
         current_run.reset(token)
     assert seen["job_id"] == "new"
+
+async def test_resume_phase_prompt_carries_the_text_of_the_attached_document(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.harness.personal.resume import graph as resume_graph
+
+    async def stored_text(_db, _state):
+        return "페이플로우 프로덕트 매니저"
+
+    seen = []
+
+    class Model:
+        async def ainvoke(self, messages):
+            seen.extend(message.content for message in messages)
+            return {"text": "ok"}
+
+    monkeypatch.setattr(resume_graph, "load_document_markdown", stored_text)
+    await resume_graph._output(Model(), "craft", {"inputs": {"documentId": "d"}}, SimpleNamespace(db=None))
+    assert any("페이플로우 프로덕트 매니저" in content for content in seen)

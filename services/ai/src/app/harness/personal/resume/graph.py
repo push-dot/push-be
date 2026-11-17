@@ -1122,6 +1122,10 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
     return result
 
 
+# A stored 서류 has no tool that reads it, so its text rides in the state the phase prompt gets.
+_RESUME_TEXT_LIMIT = 20_000
+
+
 async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
     if model is None:
         return {"summary": phase}
@@ -1141,6 +1145,9 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
             "prevention_categories",
         )
     }
+    resume_text = await load_document_markdown(ctx.db, state)
+    if resume_text:
+        context["resume_text"] = resume_text[:_RESUME_TEXT_LIMIT]
     prompt = phase_instructions(phase, state)
     messages = [
         SystemMessage(
