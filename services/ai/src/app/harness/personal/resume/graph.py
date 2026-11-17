@@ -66,8 +66,8 @@ from app.harness.policy import Tier
 from app.harness.status import (
     SAVE_DOCUMENT,
     SCORE_FIT,
-    notice,
     job_of,
+    notice,
     running_job,
     waiting,
     with_status,
@@ -1394,8 +1394,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     stored["profile_document_id"] = doc_id
             if phase == "present":
                 view = {**current, **stored}
-                working(SAVE_DOCUMENT)
-                if resume_source(view) == "external":
+                drafted = bool(draft_text(view.get("drafts")))
+                known = str(view.get("profile_document_id") or "")
+                if resume_source(view) == "external" and drafted:
+                    working(SAVE_DOCUMENT)
                     display_name, _headline = await profile_card_names(db, view)
                     saved = await save_edited_file(db, view, edited_pdf_name(view, display_name))
                     if saved.get("documentId"):
@@ -1403,16 +1405,18 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     stored["source_saved"] = bool(saved.get("stored"))
                     emit(_todo(_file_steps(view)))
                     emit({**_file_result(saved, view), **_done(view, "external")})
-                else:
-                    emit({"token": "Push 프로필에 저장하는 중…"})
-                    doc_id = await save_profile_document(view)
+                elif resume_source(view) != "external" and (drafted or known):
+                    doc_id = known
+                    if drafted:
+                        working(SAVE_DOCUMENT)
+                        emit({"token": "Push 프로필에 저장하는 중…"})
+                        doc_id = await save_profile_document(view) or known
                     if doc_id:
                         stored["profile_document_id"] = doc_id
-                    if draft_text(view.get("drafts")):
-                        name, headline = await profile_card_names(db, view)
-                        emit(_todo(_PROFILE_STEPS))
-                        card = _profile_result(doc_id, name, headline, view)
-                        emit({**card, **_done(view, "profile")})
+                    name, headline = await profile_card_names(db, view)
+                    emit(_todo(_PROFILE_STEPS))
+                    card = _profile_result(doc_id, name, headline, view)
+                    emit({**card, **_done(view, "profile")})
             reply = _reply(phase, output)
             if phase == "craft":
                 changes = (stored.get("drafts") or {}).get("changes")
@@ -1993,6 +1997,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         )
         blueprints = dict(current.get("blueprints") or {})
         kept, plan = blueprints_plan(blueprints.get("projects"), output)
+        # Every plan the check dropped counts as a failed check.
         if _invalid(output) or (titled_projects(blueprints.get("projects")) and not kept):
             failed = _failed_check(state, "blueprints", "설계안 검증을 통과하지 못했어요.")
             return {**failed, "artifacts": artifacts}

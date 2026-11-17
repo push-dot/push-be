@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -433,13 +434,14 @@ async def test_resume_fit_tool_bills_the_running_job(monkeypatch):
         current_run.reset(token)
     assert seen["job_id"] == "new"
 
-async def test_resume_phase_prompt_carries_the_text_of_the_attached_document(monkeypatch):
+
+async def _phase_prompt(monkeypatch, text):
     from types import SimpleNamespace
 
     from app.harness.personal.resume import graph as resume_graph
 
     async def stored_text(_db, _state):
-        return "페이플로우 프로덕트 매니저"
+        return text
 
     seen = []
 
@@ -450,4 +452,94 @@ async def test_resume_phase_prompt_carries_the_text_of_the_attached_document(mon
 
     monkeypatch.setattr(resume_graph, "load_document_markdown", stored_text)
     await resume_graph._output(Model(), "craft", {"inputs": {"documentId": "d"}}, SimpleNamespace(db=None))
-    assert any("페이플로우 프로덕트 매니저" in content for content in seen)
+    return "\n".join(seen)
+
+
+async def test_resume_phase_prompt_carries_the_text_of_the_attached_document(monkeypatch):
+    assert "페이플로우 프로덕트 매니저" in await _phase_prompt(monkeypatch, "페이플로우 프로덕트 매니저")
+
+
+async def test_resume_phase_prompt_marks_where_a_long_document_was_cut(monkeypatch):
+    from app.harness.personal.resume.graph import _RESUME_TEXT_LIMIT
+
+    prompt = await _phase_prompt(monkeypatch, "가" * _RESUME_TEXT_LIMIT + "끝")
+    assert "가" * _RESUME_TEXT_LIMIT in prompt
+    assert "끝" not in prompt
+    assert "이하 생략" in prompt
+
+
+async def test_resume_phase_prompt_keeps_a_document_at_the_limit_whole(monkeypatch):
+    from app.harness.personal.resume.graph import _RESUME_TEXT_LIMIT
+
+    prompt = await _phase_prompt(monkeypatch, "가" * _RESUME_TEXT_LIMIT)
+    assert "이하 생략" not in prompt
+
+
+async def test_resume_phase_prompt_has_no_document_text_when_the_document_is_empty(monkeypatch):
+    prompt = await _phase_prompt(monkeypatch, "")
+    assert "resume_text" not in prompt
+
+
+async def test_a_malformed_document_tree_reads_as_empty():
+    from app.harness.personal.resume.profile_document import load_document_markdown
+
+    class Db:
+        def q(self):
+            return self
+
+        async def fetchrow(self, *_args):
+            return {"content": {"type": "doc", "content": [None]}}
+
+    state = {
+        "inputs": {"documentId": "11111111-1111-4111-8111-111111111111"},
+        "user_id": "00000000-0000-4000-8000-000000000001",
+    }
+    assert await load_document_markdown(Db(), state) == ""
+
+
+def _billing_call(case, monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.harness.employer import tools as employer
+    from app.harness.personal import tools as personal
+
+    seen = {}
+
+    async def spy(*args, **kwargs):
+        seen["job_id"] = kwargs["job_id"] if "job_id" in kwargs else args[1]["job_id"]
+        return {}
+
+    user = "00000000-0000-4000-8000-000000000001"
+    if case == "employer_fit":
+        async def posting(*_args):
+            return {"requirements": [], "skills": [], "description": ""}
+
+        monkeypatch.setattr(employer, "judge_fit", spy)
+        monkeypatch.setattr("app.infrastructure.posting_fit_cache.company_posting", posting)
+        db = SimpleNamespace(q=lambda: object())
+        ctx = ToolContext(user, user, "c", "old", "call", db, None)
+        return seen, employer._fit(ctx, employer.FitArgs(posting_id=uuid4()))
+    ctx = ToolContext(user, None, "c", "old", "call", None, None)
+    if case == "personal_fit":
+        monkeypatch.setattr(personal, "judge_fit", spy)
+        return seen, personal._get_fit_score(ctx, personal.FitArgs())
+    if case == "find_postings":
+        monkeypatch.setattr("app.domain.services.posting_match.run_quick_match", spy)
+        return seen, personal._find_matching_postings(ctx, personal.MatchArgs())
+    monkeypatch.setattr("app.framework.rag.search_career_context", spy)
+    monkeypatch.setattr(personal, "_svc", lambda: SimpleNamespace(ai=object()))
+    return seen, personal._search_career(ctx, personal.CareerQuery(query="k8s"))
+
+
+@pytest.mark.parametrize("case", ["employer_fit", "personal_fit", "find_postings", "career"])
+async def test_every_billing_tool_bills_the_running_job(case, monkeypatch):
+    from app.harness.status import Run, current_run
+
+    seen, call = _billing_call(case, monkeypatch)
+    token = current_run.set(Run("new", "", False))
+    try:
+        await call
+    finally:
+        current_run.reset(token)
+    assert seen["job_id"] == "new"

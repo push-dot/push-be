@@ -139,7 +139,18 @@ class Dispatcher:
         server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info"))
         stop = asyncio.Event()
 
-        async def every(seconds: int, fn) -> None:
+        tasks = self.start_periodic(stop)
+        try:
+            await server.serve()
+        finally:
+            stop.set()
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    def start_periodic(self, stop: asyncio.Event) -> list[asyncio.Task]:
+        async def every(seconds: float, fn) -> None:
             while not stop.is_set():
                 try:
                     await asyncio.wait_for(stop.wait(), seconds)
@@ -149,19 +160,11 @@ class Dispatcher:
                     except Exception:
                         logger.exception("dispatcher periodic task failed")
 
-        tasks = [
+        return [
             asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
             asyncio.create_task(every(ALERT_S, self.check_alerts)),
             asyncio.create_task(every(PROMOTE_S, self.queue.promote_due)),
         ]
-        try:
-            await server.serve()
-        finally:
-            stop.set()
-            for task in tasks:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
 
     async def _requeue_stale(self, db, now) -> int:
         ids = []

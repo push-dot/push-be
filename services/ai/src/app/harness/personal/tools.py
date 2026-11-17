@@ -275,7 +275,10 @@ def _common(a: list, b: list) -> int:
 
 
 async def _page_hunks(ctx: ToolContext, args: EditDocumentArgs, hunks: list) -> list:
-    """Every line of the document with the edited ones marked; the changed block alone when the document cannot be read or `before` is not in it."""
+    """Every line of the document with the edited ones marked.
+
+    The changed block alone when the document cannot be read or `before` is not in it.
+    """
     svc = _svc()
     document_svc = getattr(svc, "document_svc", None) if svc else None
     if document_svc is None or not args.before:
@@ -320,7 +323,7 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
-    if not args.before and not args.after:
+    if args.before == args.after:
         return {"error": "NOTHING_TO_CHANGE"}
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
               exposure=ctx.exposure) is Decision.ASK:
@@ -381,6 +384,7 @@ def _resume_saved(row) -> dict:
 
 
 def _draft_offer(saved: dict) -> list[str]:
+    """The link opens the draft's document, saved when craft ran."""
     from app.harness.personal.resume.drafts import draft_text
     from app.harness.personal.resume.progress import draft_link, paper_event
 

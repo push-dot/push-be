@@ -224,7 +224,9 @@ def _document_title(file_name: str) -> str:
 
 
 async def save_edited_file(db, state: dict, file_name: str) -> dict:
-    text = draft_text(state.get("drafts")) or file_name
+    text = draft_text(state.get("drafts"))
+    if not text:
+        return {"documentId": "", "fileName": file_name, "pageLine": "", "stored": False}
     pdf = _pdf_bytes(text, state.get("template"))
     pages = _page_count(pdf)
     document_id = await save_profile_document(state, _document_title(file_name))

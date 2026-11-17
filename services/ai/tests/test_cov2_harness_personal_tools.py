@@ -394,3 +394,10 @@ async def test_resume_offer_links_the_whole_draft(emitted):
     emitted.clear()
     await _run("start_document", {}, ctx=_ctx(db=_ResumeDB({"resume_state": json.dumps(saved)})))
     assert not any("/docs/push/" in str(e) for e in emitted)
+
+
+@pytest.mark.parametrize("change", [{}, {"before": "같은 줄", "after": "같은 줄"}])
+async def test_edit_document_without_a_change_tells_the_model_and_opens_no_card(change):
+    db = SimpleNamespace(q=lambda: pytest.fail("no approval row for an edit that changes nothing"))
+    out = await _run("edit_document", {"document_id": str(uuid4()), **change}, _ctx(db, "ALWAYS_ASK"))
+    assert out == {"error": "NOTHING_TO_CHANGE"}
