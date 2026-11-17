@@ -483,12 +483,12 @@ def paper_event(
 
 
 _TONE_OPTIONS = (
+    {"id": "preserve", "label": "원래 말투로"},
     {"id": "professional", "label": "전문적으로"},
     {"id": "confident", "label": "자신 있게"},
     {"id": "concise", "label": "짧게"},
     {"id": "technical", "label": "기술 중심으로"},
     {"id": "collaborative", "label": "협업 중심으로"},
-    {"id": "preserve", "label": "원래 말투로"},
 )
 
 
