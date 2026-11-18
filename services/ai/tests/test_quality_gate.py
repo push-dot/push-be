@@ -25,36 +25,18 @@ def _graph(output):
     return build_resume_graph(MemorySaver(), model=_PhaseModel({"review": output}), db=_Approvals())
 
 
-async def test_quality_submit_with_zero_picks_goes_to_template_gate():
+async def test_quality_applies_every_recommendation_without_asking():
     graph = _graph(_REVIEW)
     config = _config()
-    opened = await _events(graph, _base(phase="review"), config)
-    quality = next(event for event in opened if event.get("gate") == "quality")
-    assert quality["sections"][0]["selected"] == ["rec1", "rec3"]
-    assert any(event.get("type") == "diff" for event in opened)
-    events = await _events(
-        graph,
-        Command(
-            resume={
-                "option_id": "submit",
-                "option_ids": ["submit"],
-            }
-        ),
-        config,
-    )
+    events = await _events(graph, _base(phase="review"), config)
+    assert not any(event.get("gate") == "quality" for event in events)
+    assert any(event.get("type") == "diff" for event in events)
+    applied = next(event for event in events if event.get("name") == "apply_recommendations")
+    assert applied["target"] == "3개"
+    assert applied["resultLine"] == "숫자로 · 키워드 · 도메인"
     assert any(event.get("type") == "choice" and event.get("gate") == "review" for event in events)
-    assert not any(event.get("name") == "apply_recommendations" for event in events)
     snap = await graph.aget_state(config)
-    assert snap.values["review"]["apply"] == []
-
-
-async def test_quality_old_answer_applies_the_sent_rec():
-    graph = _graph(_REVIEW)
-    config = _config()
-    await _events(graph, _base(phase="review"), config)
-    await _events(graph, Command(resume={"option_id": "rec2"}), config)
-    snap = await graph.aget_state(config)
-    assert snap.values["review"]["apply"] == ["키워드"]
+    assert snap.values["review"]["apply"] == ["숫자로", "키워드", "도메인"]
 
 
 async def test_quality_skipped_when_no_recommendations():

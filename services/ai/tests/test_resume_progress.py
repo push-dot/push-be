@@ -117,7 +117,7 @@ def test_fit_card_has_band_summary_and_keyword_chips():
         "parts": _PARTS,
         "topGap": "키워드",
         "plan": "PRO",
-        "band": "보통 · 개선 여지 있어요",
+        "band": "보통이고, 고칠 여지가 있어요.",
         "summary": "경력 수준은 잘 맞아요. 키워드와 도메인이 약해요.",
         "keywords": [{"label": "Kotlin", "ok": True}, {"label": "Kafka", "ok": False}],
     }
@@ -272,6 +272,7 @@ async def test_a_failed_fit_marks_the_line_and_still_finishes_the_list(monkeypat
         bound_services.reset(token)
     failed = next(event for event in events if event.get("name") == "fit_score")
     assert failed["state"] == "err"
+    assert {"type": "notice", "text": "적합도를 계산하지 못했어요"} in events
     assert "resultLine" not in failed
     assert _kinds(events)[-2:] == ["todo:done,done,done,done", "choice"]
     assert snap.values.get("fit_from") is None
@@ -289,19 +290,24 @@ def test_boost_line_and_card_show_the_change_from_the_first_score():
 
     assert boost_line(2, 7.8, 8.3) == {
         "type": "tool",
-        "name": "boost",
+        "name": "boost2",
         "state": "ok",
         "summary": "점수 올리기 2회",
         "tier": "READ",
         "resultLine": "7.8 → 8.3",
     }
+    before, after = {"keyword": 5.0, "domain": 7.0}, {"keyword": 7.5, "domain": 7.1}
+    raised = boost_line(1, 6.9, 7.8, before, after)
+    assert raised["name"] == "boost1"
+    assert raised["target"] == "키워드"
+    assert raised["resultLine"] == "6.9 → 7.8 · 키워드를 경력 문장에 넣었어요"
     assert boost_fit(6.9, 8.3) == {
         "type": "fit",
         "score": 8.3,
         "from": 6.9,
         "delta": "+1.4",
         "note": "적합도 6.9 → 8.3 (+1.4)",
-        "band": "높음 · 잘 맞아요",
+        "band": "높고, 잘 맞아요.",
     }
 
 
@@ -318,7 +324,7 @@ async def test_each_boost_cycle_reports_its_score_and_stopping_keeps_fit_to(monk
         snap, _ = await _pull(graph, Command(resume={"option_id": "stop"}), config)
     finally:
         bound_services.reset(token)
-    line = next(event for event in events if event.get("name") == "boost")
+    line = next(event for event in events if event.get("name") == "boost1")
     card = next(event for event in events if event.get("type") == "fit")
     assert (line["summary"], line["resultLine"]) == ("점수 올리기 1회", "1.0 → 2.0")
     assert (card["score"], card["from"], card["delta"]) == (2.0, 1.0, "+1.0")
@@ -538,14 +544,24 @@ def test_posting_line_err_with_reason():
     assert line["state"] == "err"
     assert line["name"] == "analyze_posting"
     assert line["target"] == "모아페이 · 백엔드"
-    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요 · 로그인이 필요한 영역이에요"
+    assert line["resultLine"] == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
 
 
 def test_posting_line_err_without_reason():
     line = posting_line({"jobs": {}}, failed=True)
     assert line["target"] == "회사 채용 페이지"
-    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요"
+    assert line["resultLine"] == "“자격 요건”을 읽지 못했어요."
     assert "·" not in line["resultLine"]
+
+
+def test_read_failed_text_takes_a_noun_phrase_for_the_reason():
+    from app.harness.personal.resume.progress import read_failed_text
+
+    assert read_failed_text("로그인이 필요한 영역") == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
+    assert read_failed_text("접근이 막힌 페이지이에요.") == "“자격 요건”은 접근이 막힌 페이지라 읽지 못했어요."
+    assert read_failed_text("차단") == "“자격 요건”은 차단이라 읽지 못했어요."
+    assert read_failed_text("404") == "“자격 요건”은 404라 읽지 못했어요."
+    assert read_failed_text(None) == read_failed_text("  ") == "“자격 요건”을 읽지 못했어요."
 
 
 def test_quality_line_counts():
@@ -570,19 +586,3 @@ def test_quality_diff_pairs_before_after():
             {"line": 4, "sign": "+", "text": "new"},
         ],
     }
-
-
-def test_quality_choice_preselects_p1():
-    from app.harness.personal.resume.progress import quality_choice
-
-    event = quality_choice(
-        [
-            {"label": "숫자로", "priority": "P1"},
-            {"label": "키워드", "desc": "공고 단어", "priority": "P2"},
-            {"label": "도메인", "priority": "P1"},
-        ]
-    )
-    assert event["sections"][0]["selected"] == ["rec1", "rec3"]
-    assert event["options"][1]["desc"] == "공고 단어"
-    assert "cancel" not in {item["id"] for item in event["options"]}
-    assert event["submit"]["zeroLabel"] == "그대로 디자인으로"

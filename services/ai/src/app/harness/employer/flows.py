@@ -58,7 +58,6 @@ class RoleOption(BaseModel):
 
 
 class RoleOptions(BaseModel):
-    note: str = ""
     options: list[RoleOption]
 
 
@@ -152,7 +151,7 @@ def build_flows(
         the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
     store = store or (EmployerStore(db) if db is not None else None)
     if read_pdf is None:
-        from app.ingest.pdf_text import extract_pdf_bytes as read_pdf
+        from app.ingest.pdf_text import read_pdf_text as read_pdf
     from app.harness.graph import HarnessState
 
     class EmployerState(HarnessState, total=False):
@@ -208,8 +207,6 @@ def build_flows(
         reference = flow.get("reference") or "없음"
         user = f"[회사 프로필]\n{profile.model_dump_json()}\n\n[참고 공고]\n{reference}"
         choices = await generate_for(state)(RoleOptions, node_prompt("pf_role"), user)
-        if choices.note:
-            emit({"type": "status", "text": choices.note})
         options = [
             {"id": o.id or f"r{i}", "label": o.label} for i, o in enumerate(choices.options[:3])
         ]
@@ -353,15 +350,7 @@ def build_flows(
             return _done(state, "cancelled", reply=reply)
         docs = await store.snapshots(app_id, state.get("company_id"))
         documents = "\n\n".join(f"# {d['title']}\n{d['content']}" for d in docs)
-        submitted = docs[0]["created_at"].date().isoformat() if docs else ""
-        emit(
-            {
-                "type": "status",
-                "text": (
-                    f"제출 서류 {len(docs)}개를 읽었어요. 지원할 때 제출한 그대로예요 ({submitted})"
-                ),
-            }
-        )
+        emit({"type": "status", "text": "제출 서류를 읽는 중"})
         ctx = await store.applicant_context(row["user_id"])
         return flow_update(
             state,
@@ -393,8 +382,8 @@ def build_flows(
             reply = "어떤 공고 기준으로 볼지 알려 주세요. 공고 관리에서 공고를 골라 주세요."
             emit({"token": reply})
             return _done(state, "cancelled", reply=reply)
-        text = read_pdf(bytes(found["content"]))
-        emit({"type": "status", "text": f"{found['file_name']}을 읽었어요. 이 대화에만 보관해요."})
+        text = await read_pdf(bytes(found["content"]))
+        emit({"type": "status", "text": "첨부 서류를 읽는 중"})
         return flow_update(
             state,
             step="match",
@@ -535,10 +524,7 @@ def build_flows(
         report = json.loads(report) if isinstance(report, str) else report
         row = await store.application(app_id, state.get("company_id"))
         docs = await store.snapshots(app_id, state.get("company_id"))
-        checks = [f for f in report.get("flags") or [] if f.get("level") == "CHECK"]
-        emit(
-            {"type": "status", "text": f"서류 검토 결과를 이어받았어요 · 확인 필요 {len(checks)}곳"}
-        )
+        emit({"type": "status", "text": "검토 결과를 이어받는 중"})
         from app.harness.employer.schemas import Flag
 
         kit = await nodes.design_interview(

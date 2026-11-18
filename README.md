@@ -36,6 +36,8 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 
 `/internal`과 소유가 애매한 경로는 게이트웨이가 404로 막는다. 공개 계약은 `packages/contracts/openapi.json`이다. 경로마다 `x-owner`가 `gateway`, `core`, `ai` 중 하나다. 스펙 소스는 `packages/contracts/spec/*.ts`이고, `npm run contracts`가 `openapi.json`과 `src/schema.ts`를 다시 만든다. gateway·core·ai 테스트가 실제 라우트와 스펙이 어긋나면 실패한다.
 
+봇의 대화는 서버 안에서만 대화 행으로 저장한다. 그 행의 id로 `/api/v1/conversations/:id` 아래 경로를 부르면 게이트웨이가 404로 답하고, UUID가 아닌 id는 400으로 답한다. 대화 목록에도 나오지 않는다.
+
 게이트웨이가 직접 답하는 경로 (`services/gateway/src/handler.ts`):
 
 | 메서드와 경로 | 내용 |
@@ -47,6 +49,9 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `GET /api/v1/conversations/:id/messages/stream/active` | `chat_events`를 SSE로 재생 |
 | `POST /api/v1/conversations/:id/messages/stream` | 코어에 202를 받은 뒤 게이트웨이가 SSE를 연다 |
 | `POST /api/v1/conversations/:id/stream/cancel` | 스트림 취소 |
+| `POST /api/v1/bots/:id/messages/stream` | 봇에게 보낸다. 코어에 202를 받은 뒤 게이트웨이가 SSE를 연다. `:id`는 봇 id 또는 `push` |
+| `GET /api/v1/bots/:id/stream` | 봇의 실행 중인 작업을 `after` 뒤부터 SSE로 재생. 실행 중인 작업이 없으면 204 |
+| `POST /api/v1/bots/:id/stream/cancel` | 봇의 실행 취소. `resumable`을 돌려준다 |
 | `GET /api/v1/ai/models` | 모델 카탈로그 |
 | `GET /api/v1/integrations/job-sites` | 채용 사이트 체크리스트 |
 | `OPTIONS` | CORS |
@@ -58,6 +63,15 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 | `POST /api/v1/documents/:id/restore` | 보관된 서류를 되돌린다. `finalizedVersionId`가 있으면 `FINALIZED`, 없으면 `DRAFT`. `revision`은 1 증가하고 검색 색인을 다시 넣는다. 없거나 이미 지워졌거나 내 서류가 아니면 404. `expectedRevision`이 다르면 409. 보관 중이 아니면 200으로 그대로 둔다 |
 | `GET /api/v1/documents?archived=1` | 내가 최근 30일 안에 보관한 서류. `updatedAt`이 최근인 순. 각 항목에 `archivedAt`과 `purgeAt`(보관 시각 + 30일)이 붙는다 |
 | `DELETE /api/v1/sources/:id` | 경력 근거가 가리키면 409 `INVALID_TRANSITION`. `details.reason`은 `REFERENCED_BY_EVIDENCE`이고 `details.evidenceCount`는 그 근거 수다 |
+
+앱의 자료 (`services/core-api/src/routes/materials.ts`). 종류마다 목록, 검색, 만든 봇, 삭제 규칙이 표 한 곳(`KINDS`)에 있다:
+
+| 메서드와 경로 | 내용 |
+| --- | --- |
+| `GET /api/v1/materials` | 서류(파일과 Push 서류), 북마크, 링크. 섹션마다 개수를 함께 준다. `tab=all`은 4, 3, 3개 미리보기이고 다른 탭은 커서로 넘긴다. `q`는 이름을 대소문자 없이 찾는다. `bot`(봇 id 또는 `push`)은 그 봇이 만들었거나 그 봇 채팅에 첨부된 자료만 남기고, `GET /api/v1/bots/:id`의 `materialCount`와 같은 수를 센다 |
+| `GET /api/v1/materials/:kind/:id` | 자료 하나. `usedBy`는 만든 봇, 그다음 그 자료를 첨부한 채팅의 봇을 최근 순으로 |
+| `DELETE /api/v1/materials/:kind/:id` | 삭제한 자료는 30일 보관한 뒤 지운다. 서류는 보관, 링크는 `deleted_at`, 파일과 북마크는 `material_bin`으로 간다. 경력 근거가 가리키는 파일은 409 `INVALID_TRANSITION` |
+| `POST /api/v1/materials/:kind/:id/restore` | 삭제를 되돌린다. 파일과 서류는 검색 색인을 다시 넣는다. 이미 지워졌으면 404 |
 
 그 밖의 분기는 `services/gateway/src/routes/owner.ts`의 `ownerOf`다. Python으로 가는 예는 근거 가져오기, 공고·문서·면접·프로젝트의 AI 실행, `operations`, 승인 결정, 대화 공유와 아티팩트다. 인증, 대화 쓰기, 결제, 공고·지원·회사·소셜·프로필, 문서 enqueue, `GET /api/v1/ai/jobs/:id`는 코어다.
 
@@ -101,7 +115,7 @@ services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
-db/migrations/          0001_init.sql … 0052_bots.sql
+db/migrations/          0001_init.sql … 0056_materials.sql
 db/tests/               schema_checks.sql
 infra/docker-compose.yml
 infra/vps/              운영 compose, Traefik, env.example, 배포 스크립트
@@ -148,7 +162,7 @@ cd services/core-api && npx wrangler dev
 
 ### core (`CoreEnv`)
 
-`AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_IAP_KEY_ID`, `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_RETURN_ORIGINS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
+`AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_IAP_KEY_ID`, `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_EMAIL`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_RETURN_ORIGINS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
 
 `EMAIL`은 문자 환경 변수가 아니라 선택 Cloudflare Email 바인딩이다. `QUEUE_BACKEND`와 `DISPATCH_ORIGIN`의 운영 기본은 `services/core-api/wrangler.jsonc`의 vars다.
 
@@ -160,7 +174,7 @@ cd services/core-api && npx wrangler dev
 
 큐 시간 한도: `HEARTBEAT_LIMIT_CHAT_S`, `HEARTBEAT_LIMIT_EMPLOYER_AI_S`, `HEARTBEAT_LIMIT_DOCUMENT_S`, `HEARTBEAT_LIMIT_FIT_S`, `HEARTBEAT_LIMIT_INGEST_S`, `HEARTBEAT_LIMIT_NOTIFY_S`, `JOB_DEADLINE_CHAT_S`, `JOB_DEADLINE_EMPLOYER_AI_S`, `JOB_DEADLINE_DOCUMENT_S`, `JOB_DEADLINE_FIT_S`, `JOB_DEADLINE_INGEST_S`, `JOB_DEADLINE_NOTIFY_S`, `VISIBILITY_Q_CHAT_PRIORITY_S`, `VISIBILITY_Q_CHAT_S`, `VISIBILITY_Q_DOCUMENT_S`, `VISIBILITY_Q_INGEST_S`, `VISIBILITY_Q_NOTIFY_S`
 
-VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어간다), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
+VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어가고 ai-worker의 `DB_POOL_MAX_SIZE` 기본값도 된다), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
 
 운영 compose는 Hostinger VPS에서 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 Neon에 TCP 접속하고, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB는 Neon이고 VPS `DATABASE_URL`은 **풀러 호스트(`-pooler`)** 를 쓰는 것이 좋다. ai-worker·ingest-worker·dispatcher 등 여러 컨테이너가 각각 asyncpg 풀(기본 상한 `DB_POOL_MAX_SIZE=10`)과 checkpointer 풀(기본 `CHECKPOINTER_POOL_MAX_SIZE=4`)을 연다. 풀러 없이 direct 엔드포인트만 쓰면 compute `max_connections` 한도를 금방 쓴다. `DB_POOL_MAX_SIZE`를 올릴 때는 반드시 풀러 URL을 확인한다. `push-be-core`는 Cloudflare Workers에서 Neon `pgproto` **요청당 한 연결**(ContextVar)이라 이 풀 env와 무관하다. 절차와 한도는 `infra/vps/README.md`에 있다.
 

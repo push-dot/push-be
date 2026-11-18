@@ -30,6 +30,7 @@ function isPython(method: string, path: string): boolean {
   if (method === "POST" && /^\/api\/v1\/interviews\/[^/]+\/prepare$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/documents\/[^/]+\/revisions$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/documents\/[^/]+\/versions\/[^/]+\/export$/.test(path)) return true;
+  if (method === "GET" && path === "/api/v1/me/profile/pdf") return true;
   if (method === "POST" && path === "/api/v1/career-evidence/import") return true;
   if (method === "GET" && /^\/api\/v1\/sources\/[^/]+\/profile-draft$/.test(path)) return true;
   if (method === "POST" && path === "/api/v1/projects/blueprints") return true;
@@ -43,6 +44,7 @@ function isPython(method: string, path: string): boolean {
   if (method === "GET" && /^\/api\/v1\/conversations\/shared\/[^/]+$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/artifacts$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/turns$/.test(path)) return true;
+  if (method === "GET" && /^\/api\/v1\/bots\/[^/]+\/transcript$/.test(path)) return true;
   return false;
 }
 
@@ -145,6 +147,7 @@ function isRecruiting(path: string): boolean {
   if (/^\/api\/v1\/users\/[^/]+\/follow$/.test(path)) return true;
   if (path === "/api/v1/me" || path.startsWith("/api/v1/me/")) return true;
   if (path === "/api/v1/bots" || path.startsWith("/api/v1/bots/")) return true;
+  if (path === "/api/v1/materials" || path.startsWith("/api/v1/materials/")) return true;
   if (path === "/api/v1/posts" || path.startsWith("/api/v1/posts/")) return true;
   return false;
 }

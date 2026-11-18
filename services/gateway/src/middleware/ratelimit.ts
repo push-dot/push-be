@@ -235,7 +235,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + LAST_MSG_LATERAL
   + CONVERSATION_ENRICHMENT_JOINS
   + "WHERE EXISTS (SELECT 1 FROM bumped) AND c.archived = false "
-  + "AND c.company_id IS NULL "
+  + "AND c.company_id IS NULL AND c.bot_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
   + "AND ($9::timestamptz IS NULL OR (c.updated_at, c.id) < ($9::timestamptz, $10::uuid)) "
   + "AND ($12::text IS NULL OR c.title ILIKE $12 ESCAPE '\\' OR COALESCE(last_msg.text, '') ILIKE $12 ESCAPE '\\') "

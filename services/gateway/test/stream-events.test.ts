@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { complete, STORED } from "./fakes.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const JOB = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const NOW = new Date("2026-10-18T00:00:00Z");
+const STAMP = { at: STORED, turn: JOB };
 
 const env = (): FrontEnv => ({
   DATABASE_URL: "postgres://example",
@@ -16,7 +18,7 @@ const env = (): FrontEnv => ({
 });
 
 const deps = (query: Query): Deps => ({
-  query,
+  query: complete(query),
   sleep: async () => {},
   now: () => NOW,
 });
@@ -93,29 +95,29 @@ test("structured rows keep their fields and an unknown type does not end the str
     ];
   }));
   const frames = framesOf(text);
-  assert.deepEqual(frames[0], { type: "token", text: "hi", seq: 10 });
-  assert.deepEqual(frames[1], { type: "tool", name: "read", state: "run", summary: "file", seq: 11 });
+  assert.deepEqual(frames[0], { type: "token", text: "hi", seq: 10, ...STAMP });
+  assert.deepEqual(frames[1], { type: "tool", name: "read", state: "run", summary: "file", seq: 11, ...STAMP });
   assert.deepEqual(frames[2], {
-    type: "todo", seq: 12, items: [{ id: "t1", text: "draft", state: "now" }],
+    type: "todo", seq: 12, items: [{ id: "t1", text: "draft", state: "now" }], ...STAMP,
   });
   assert.deepEqual(frames[3], {
     type: "diff", seq: 13, documentId: "doc-1", revisionId: "rev-1",
-    hunks: [{ line: 4, sign: "+", text: "line" }],
+    hunks: [{ line: 4, sign: "+", text: "line" }], ...STAMP,
   });
   assert.deepEqual(frames[4], {
     type: "approval", seq: 14, id: "ap-1", kind: "DOCUMENT_EDIT", title: "Apply?",
-    options: [{ id: "apply", label: "Apply" }],
+    options: [{ id: "apply", label: "Apply" }], ...STAMP,
   });
   assert.deepEqual(frames[5], {
-    type: "choice", seq: 15, id: "ch-1", options: [{ id: "a", label: "A" }],
+    type: "choice", seq: 15, id: "ch-1", options: [{ id: "a", label: "A" }], ...STAMP,
   });
   assert.deepEqual(frames[6], {
     type: "fit", seq: 16, score: 7.4, topGap: "tests",
-    parts: { techStack: 8, experienceLink: 5.5, careerLevel: 6, keyword: 4, domain: 3 },
+    parts: { techStack: 8, experienceLink: 5.5, careerLevel: 6, keyword: 4, domain: 3 }, ...STAMP,
   });
-  assert.deepEqual(frames[7], { type: "future", note: "later", seq: 17 });
-  assert.deepEqual(frames[8], { type: "status", text: "still going", seq: 18 });
-  assert.deepEqual(frames[9], { type: "done", operation: { status: "SUCCEEDED" }, seq: 19 });
+  assert.deepEqual(frames[7], { type: "future", note: "later", seq: 17, ...STAMP });
+  assert.deepEqual(frames[8], { type: "status", text: "still going", seq: 18, ...STAMP });
+  assert.deepEqual(frames[9], { type: "done", operation: { status: "SUCCEEDED" }, seq: 19, ...STAMP });
   assert.equal(frames.length, 10);
   assert.equal(reads, 1);
   assert.equal(text.includes("after-done"), false);
@@ -133,7 +135,7 @@ test("cancelled ends the poll and does not forward later rows", async () => {
       { id: 5, type: "token", payload: { text: "after-cancel" } },
     ];
   }));
-  assert.deepEqual(framesOf(text), [{ type: "cancelled", seq: 4 }]);
+  assert.deepEqual(framesOf(text), [{ type: "cancelled", resumable: false, seq: 4, ...STAMP }]);
   assert.equal(reads, 1);
   assert.equal(text.includes("after-cancel"), false);
   assert.equal(text.includes("second-poll"), false);
@@ -146,7 +148,7 @@ test("a done row that waits for the user keeps awaiting", async () => {
     { id: 21, type: "done", payload: { awaiting: "approval" } },
   ]));
   const done = framesOf(text).find((frame) => frame.type === "done");
-  assert.deepEqual(done, { type: "done", operation: null, awaiting: "approval", seq: 21 });
+  assert.deepEqual(done, { type: "done", operation: null, awaiting: "approval", seq: 21, ...STAMP });
 });
 
 test("replay skips markdown file cards and keeps other file cards", async () => {
@@ -161,6 +163,6 @@ test("replay skips markdown file cards and keeps other file cards", async () => 
   assert.equal(frames.some((frame) => String(frame.name ?? "").endsWith(".md")), false);
   assert.deepEqual(
     frames.find((frame) => frame.type === "file"),
-    { type: "file", name: "김서준_모아페이_백엔드.pdf", mime: "application/pdf", seq: 3 },
+    { type: "file", name: "김서준_모아페이_백엔드.pdf", mime: "application/pdf", seq: 3, ...STAMP },
   );
 });

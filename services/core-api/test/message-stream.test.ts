@@ -152,7 +152,7 @@ test("redis idempotent stream retry does not re-run approval rejection or status
   assert.equal((await run()).status, 202);
   assert.equal(sqls.length, 2);
   assert.match(sqls[1], /EXISTS \(SELECT 1 FROM msg\)/);
-  assert.match(sqls[1], /INSERT INTO chat_events \(job_id, type, payload\) SELECT \$3, 'status', \$6::jsonb FROM msg/);
+  assert.match(sqls[1], /INSERT INTO chat_events \(job_id, type, payload\) SELECT j\.id, 'status', [\s\S]* FROM ai_jobs j WHERE j\.id = \$3 AND EXISTS \(SELECT 1 FROM msg\)/);
 });
 
 test("a personal stream without reference consent is 403 before queueing", async () => {

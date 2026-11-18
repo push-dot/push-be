@@ -40,8 +40,10 @@ async def test_turn_uses_gate_model_and_persists_reply():
     items = await run(HarnessRuntime(svc, model_cls=ScriptedLC), _payload())
     assert ("custom", {"token": "안녕하세요"}) in items
     operation = items[-1][1]["operation"]
-    assert operation.result.value["assistantMessage"]["text"] == "안녕하세요"
-    assert [m.role for m in svc.messages] == ["USER", "ASSISTANT"]
+    user, assistant = svc.messages
+    assert (user.role, assistant.role, assistant.text) == ("USER", "ASSISTANT", "안녕하세요")
+    assert operation.result.value == {
+        "assistantMessageId": str(assistant.id), "userMessageId": str(user.id), "approvalIds": []}
     assert svc.ai.settled == [("anthropic/claude-sonnet-5-5", 10, 5)]
     tools = {tool.name: tool for tool in ScriptedLC.bound[0]}
     assert "posting_id" in tools["bookmark_posting"].args_schema.model_fields
@@ -145,7 +147,7 @@ async def test_resume_turn_saves_the_assistant_message():
     done = [chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == "done"]
     assert len(done) == 1
     assert done[0]["awaiting"] == "choice"
-    assert done[0]["operation"]["result"]["value"]["assistantMessage"]["text"] == "어떤 방식으로 쓸지 골라 주세요"
+    assert done[0]["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
     assert ("custom", {"token": "어떤 방식으로 쓸지 골라 주세요"}) in items
 
 
@@ -285,17 +287,35 @@ async def test_start_document_continue_choice_keeps_the_flow():
     assert select_harness(rows.conversation).id == "personal"
 
 
-async def test_answering_a_gate_without_new_work_saves_nothing():
+async def test_a_flow_reply_made_in_a_job_that_resumed_from_a_card_is_stored():
     from tests.harness_fakes import Rows
+    ScriptedLC.replies = [
+        {"content": json.dumps({"message": "어떤 방식으로 쓸지 골라 주세요"})},
+        {"content": json.dumps({"message": "자료를 받았어요. 이력서 1개와 공고 1개예요."})},
+    ]
     rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
     svc = service(rows)
-    runtime = HarnessRuntime(svc)
-    first = await run(runtime, _payload("서류", ai=None))
+    runtime = HarnessRuntime(svc, model_cls=ScriptedLC)
+    first = await run(runtime, _payload("서류 만들어줘"))
     gate_id = next(chunk["id"] for mode, chunk in first if mode == "custom" and chunk.get("type") == "choice")
     before = len(svc.messages)
-    await run(runtime, _payload("", ai=None, job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-                                resume={"approvalId": gate_id, "optionId": "resume_based"}))
-    assert len(svc.messages) == before
+
+    resumed = await run(runtime, _payload(
+        "", job_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        resume={"approvalId": gate_id, "optionId": "resume_based"}))
+
+    streamed = [chunk["token"] for mode, chunk in resumed if mode == "custom" and "token" in chunk]
+    assert streamed == ["자료를 받았어요. 이력서 1개와 공고 1개예요."]
+    assert [(m.role, m.text) for m in svc.messages[before:]] == [("ASSISTANT", streamed[0])]
+    done = next(c for mode, c in resumed if mode == "custom" and c.get("type") == "done")
+    assert done["operation"]["result"]["value"]["assistantMessageId"] == str(svc.messages[-1].id)
+
+    targets = next(c for mode, c in resumed if mode == "custom" and c.get("type") == "choice")
+    quiet = await run(runtime, _payload("", job_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                                        resume={"approvalId": targets["id"], "optionId": "submit",
+                                                "optionIds": ["submit", "resume"]}))
+    assert not [chunk for mode, chunk in quiet if mode == "custom" and "token" in chunk]
+    assert len(svc.messages) == before + 1, "a job going from card to card stores no old reply"
 
 
 def _fit_call(call_id: str) -> dict:
@@ -425,9 +445,11 @@ async def test_queue_turn_closes_the_graph_stream_when_cancelled(monkeypatch):
     async def cancelled(job_id):
         return True
 
+    ctx = _JobCtx()
     with pytest.raises(JobCancelled):
-        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), _JobCtx(), cancelled)
+        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
     assert closed == [True]
+    assert ctx.events == [], "the cancel's own status change writes the one cancelled event (0055)"
 
 
 async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(monkeypatch):
@@ -472,3 +494,25 @@ async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
     ctx = _JobCtx()
     await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
     assert ctx.events == [("result", {key: value for key, value in card.items() if key != "type"})]
+
+
+async def test_queue_turn_stores_status_and_notice_frames_whole():
+    since = "2026-11-13T00:00:00.000000Z"
+    status = {"type": "status", "text": "공고 요건을 읽는 중", "phase": "working", "since": since}
+    notice = {"type": "notice", "text": "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."}
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", status
+            yield "custom", notice
+            yield "values", {}
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [
+        ("status", {key: value for key, value in status.items() if key != "type"}),
+        ("notice", {"text": notice["text"]}),
+    ]

@@ -40,8 +40,8 @@ from app.api.errors import (
 from app.api.gateway_secret import SharedSecretMiddleware
 from app.api.middleware import ApiMiddleware
 from app.api.routers import (
-    ai, applications, approvals, conversations, documents, evidence,
-    internal, interviews, jobs, operations, projects,
+    ai, applications, approvals, bots, conversations, documents, evidence,
+    internal, interviews, jobs, me, operations, projects,
 )
 from app.api.routers.evidence import MAX_SOURCE_BYTES
 
@@ -203,8 +203,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     for r in (evidence.router, jobs.router, applications.router,
               documents.router, projects.router, interviews.router,
-              conversations.router, approvals.router,
-              operations.router, ai.router):
+              conversations.router, bots.router, approvals.router,
+              operations.router, ai.router, me.router):
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

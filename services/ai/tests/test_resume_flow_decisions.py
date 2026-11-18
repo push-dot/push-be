@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -10,15 +9,22 @@ from app.graphs.resume_prompt import phase_prompt_for_harness
 from app.harness.graph import quick_start_resume
 from app.harness.personal.resume.drafts import drafts_from_chosen
 from app.harness.runtime import HarnessRuntime
+from tests.fakes import data_json
 from tests.harness_fakes import CONV, Rows, run, service
 from tests.test_harness_resume import (
-    _Approvals, _PhaseModel, _base, _config, _drive, _graph, _run,
+    _Approvals,
+    _base,
+    _config,
+    _drive,
+    _graph,
+    _PhaseModel,
+    _run,
 )
 
 _DOC = "11111111-1111-4111-8111-111111111111"
 _SAVING = "Push 프로필에 저장하는 중…"
 _NOTE = "PDF는 Push 프로필에서 내보낼 수 있어요."
-_PRESENT = "Push 프로필에 저장했어요. 결과를 확인할까요?"
+_PRESENT = "결과를 확인할까요?"
 
 
 def _flat(monkeypatch):
@@ -71,12 +77,12 @@ async def test_intake_options_are_the_three_sentences():
     _graph_obj, _config_obj, choice, mode = await _reach_intake()
     assert choice["title"] == "이대로 분석을 시작할까요?"
     assert choice["options"] == [
-        {"id": "ready", "label": "네, 시작해 주세요"},
-        {"id": "change", "label": "자료를 바꿀래요"},
-        {"id": "cancel", "label": "그만할게요"},
+        {"id": "ready", "label": "시작하기"},
+        {"id": "change", "label": "자료 바꾸기"},
+        {"id": "cancel", "label": "닫기"},
     ]
     assert choice["recommended"] == "ready"
-    assert mode["options"][-1] == {"id": "cancel", "label": "그만하기"}
+    assert mode["options"][-1] == {"id": "cancel", "label": "닫기"}
 
 
 async def test_intake_ready_starts_analyze():
@@ -92,7 +98,7 @@ async def test_intake_change_reopens_intake():
     choice = _choice(await _events(graph, {}, config))
     snap = await graph.aget_state(config)
     assert choice["gate"] == "intake"
-    assert choice["options"][1]["label"] == "자료를 바꿀래요"
+    assert choice["options"][1]["label"] == "자료 바꾸기"
     assert snap.values["status"] == "active"
     assert snap.values.get("scenario") != "C"
     assert snap.next
@@ -162,7 +168,8 @@ async def test_auto_flow_has_no_publish_gate(monkeypatch):
     ]
     assert "디자인을 적용했어요. PDF로 만들까요?" not in titles
     assert "publish" not in gates
-    assert _PRESENT in titles
+    assert "present" not in gates
+    assert _PRESENT not in titles
 
 
 async def test_present_card_points_at_the_profile(monkeypatch):
@@ -215,9 +222,10 @@ async def test_present_card_points_at_the_profile(monkeypatch):
     assert choice["title"] == _PRESENT
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
-    assert choice["note"] == _NOTE
+    assert choice["auto"] is True
+    assert "note" not in choice
     assert any(event.get("token") == _SAVING for event in events)
     assert choice["documentId"]
     saved = next(iter(store.docs.values()))
@@ -229,10 +237,10 @@ async def test_present_card_points_at_the_profile(monkeypatch):
 
 _ANALYZE_TITLE = "이 공고에 맞춰 이력서를 고칠까요?"
 _FEEDBACK_TITLE = "피드백을 반영해서 수정할까요?"
-_FIX_LABEL = "네, 맞춰서 고쳐 주세요"
-_FEEDBACK_ONLY = "피드백만 받을게요"
-_SCORE_ONLY = "점수만 보고 끝낼게요"
-_APPLY_FEEDBACK = "반영해서 수정할게요"
+_FIX_LABEL = "고치기"
+_FEEDBACK_ONLY = "피드백만 받기"
+_SCORE_ONLY = "점수만 보기"
+_APPLY_FEEDBACK = "수정하기"
 
 
 class _RecordingModel(_PhaseModel):
@@ -241,7 +249,7 @@ class _RecordingModel(_PhaseModel):
         self.payloads = []
 
     async def ainvoke(self, messages, **kwargs):
-        self.payloads.append(json.loads(messages[-1].content))
+        self.payloads.append(data_json(messages[-1].content))
         return await super().ainvoke(messages, **kwargs)
 
 
@@ -295,7 +303,8 @@ async def test_analyze_feedback_shows_fixes_then_the_feedback_card():
     assert choice["title"] == _FEEDBACK_TITLE
     assert choice["options"] == [
         {"id": "continue", "label": _APPLY_FEEDBACK},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "keep", "label": "그대로 둘게요"},
+        {"id": "cancel", "label": "닫기"},
     ]
     assert "craft" not in model.calls
 
@@ -307,9 +316,21 @@ async def test_feedback_continue_rewrites_with_the_feedback():
     assert card["gate"] == "feedback"
     assert card["title"] == _FEEDBACK_TITLE
     await _events(graph, Command(resume={"option_id": "continue"}), config)
-    await _events(graph, {}, config)
-    craft = next(item for item in model.payloads if item.get("phase") == "craft")
-    assert craft["analysis"]["message"] == "키워드가 부족해요"
+    snap = await graph.aget_state(config)
+    assert (snap.values["phase"], snap.values["status"]) == ("craft", "active")
+    assert "strategy" not in model.calls
+
+
+async def test_feedback_keep_ends_without_a_rewrite():
+    graph, config, model, _opened = await _open_analyze()
+    await _events(graph, Command(resume={"option_id": "feedback"}), config)
+    card = _choice(await _events(graph, {}, config))
+    assert card["gate"] == "feedback"
+    await _events(graph, Command(resume={"option_id": "keep"}), config)
+    snap = await graph.aget_state(config)
+    assert snap.values["status"] == "done"
+    assert snap.next == ()
+    assert "craft" not in model.calls
     assert "strategy" not in model.calls
 
 

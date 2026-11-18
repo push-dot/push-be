@@ -27,6 +27,12 @@ class FakeAdminDb:
     async def reconcile_credits(self, now):
         return 0
 
+    async def compact_finished(self, now):
+        return 0
+
+    async def sweep_orphan_checkpoints(self):
+        return 0
+
     async def dead_jobs(self, status, limit):
         return [{"id": "j1", "type": "chat", "status": status, "error": {"message": "boom"},
                  "attempts": 4, "updatedAt": "2026-10-22T11:00:00Z"}]

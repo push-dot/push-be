@@ -25,11 +25,11 @@ RETENTION = {
     "email_signup": "1 day",     # unverified email signups with no live verify mail left
     "payment": "5 years",        # billing_ledger rows whose owner was purged (전자상거래법)
     "report": "3 years",         # offer_reports (전자상거래법 불만·분쟁 기록)
-    "document": "30 days",      # documents the user archived (status ARCHIVED)
+    "document": "30 days",      # deleted materials: archived documents, links, material_bin rows
 }
 
-# Foreign keys cascade from users (migration 0018). workspace_files has no
-# foreign key, so it is cleared through the user's conversations first.
+# Foreign keys cascade from users (migration 0018); workspace_files cascades from
+# conversations (migration 0053).
 # Returns the image keys (post images, avatar) the deleted users owned.
 PURGE_SQL = (
     "WITH gone AS (SELECT id FROM users "
@@ -38,8 +38,6 @@ PURGE_SQL = (
     "WHERE user_id IN (SELECT id FROM gone) AND jsonb_typeof(image_keys) = 'array' "
     "UNION SELECT avatar_key FROM profiles "
     "WHERE user_id IN (SELECT id FROM gone) AND avatar_key IS NOT NULL), "
-    "files AS (DELETE FROM workspace_files WHERE conversation_id IN "
-    "(SELECT id FROM conversations WHERE user_id IN (SELECT id FROM gone))), "
     "users_deleted AS (DELETE FROM users WHERE id IN (SELECT id FROM gone)) "
     "SELECT key FROM images"
 )
@@ -56,8 +54,6 @@ PURGE_SQL = (
 COMPANY_PURGE_SQL = (
     "WITH gone AS (SELECT id, logo_key FROM companies "
     "WHERE deletion_requested_at < now() - $1::text::interval LIMIT 50), "
-    "files AS (DELETE FROM workspace_files WHERE conversation_id IN "
-    "(SELECT id FROM conversations WHERE company_id IN (SELECT id FROM gone))), "
     "fits AS (DELETE FROM posting_fit_cache WHERE posting_id IN "
     "(SELECT id FROM job_postings WHERE company_id IN (SELECT id FROM gone))), "
     "logos AS (DELETE FROM upload_images WHERE key IN (SELECT logo_key FROM gone)), "
@@ -139,6 +135,16 @@ DOCUMENTS_SQL = (
     "DELETE FROM documents WHERE ctid IN (SELECT ctid FROM documents "
     "WHERE status = 'ARCHIVED' AND updated_at < now() - $1::text::interval LIMIT $2)"
 )
+# A deleted link keeps its row with deleted_at set (core-api me.ts, materials.ts), and a
+# deleted file or bookmark waits in material_bin (materials.ts): 되돌리기 works until then.
+LINKS_SQL = (
+    "DELETE FROM user_links WHERE ctid IN (SELECT ctid FROM user_links "
+    "WHERE deleted_at < now() - $1::text::interval LIMIT $2)"
+)
+MATERIAL_BIN_SQL = (
+    "DELETE FROM material_bin WHERE ctid IN (SELECT ctid FROM material_bin "
+    "WHERE deleted_at < now() - $1::text::interval LIMIT $2)"
+)
 
 
 def remove_images(storage_dir: str, keys) -> None:
@@ -195,6 +201,8 @@ async def purge_deleted(pool, storage_dir: str | None) -> None:
     await _sweep(pool, PAYMENTS_SQL, "payment")
     await _sweep(pool, REPORTS_SQL, "report")
     await _sweep(pool, DOCUMENTS_SQL, "document")
+    await _sweep(pool, LINKS_SQL, "document")
+    await _sweep(pool, MATERIAL_BIN_SQL, "document")
     if storage_dir and keys:
         # Up to 50 users' files: keep the unlinks off the event loop.
         await asyncio.to_thread(remove_images, storage_dir, keys)

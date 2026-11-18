@@ -14,14 +14,15 @@ const RESEND_AFTER_MS = 60 * 1000;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 const LOGIN_PER_MINUTE = 10;
+const LOGIN_PER_HOUR = 30;
 const MAIL_PER_MINUTE = 3;
 
-let decoy: Promise<string> | null = null;
-const decoyHash = (): Promise<string> => (decoy ??= hashPassword(crypto.randomUUID()));
+let decoy: string | null = null;
+const decoyHash = async (): Promise<string> => (decoy ??= await hashPassword(crypto.randomUUID()));
 
-const limitEmail = async (ctx: Ctx, kind: "login" | "mail", email: string, limit: number): Promise<void> => {
-  if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime()))) {
-    throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 60 });
+const limitEmail = async (ctx: Ctx, kind: "login" | "login-h" | "mail", email: string, limit: number, windowMinutes = 1): Promise<void> => {
+  if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime(), 1, windowMinutes))) {
+    throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: windowMinutes * 60 });
   }
 };
 
@@ -110,10 +111,12 @@ const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown
   });
 };
 
+// The password is chosen at verify (0067), by whoever holds the mailbox link. Each attempt is its own row (0066).
+const INSERT_SIGNUP = "INSERT INTO email_signups (id, email, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6)";
+
 const signup = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
-  const password = requirePassword(body.password);
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
   // The agreement record (약관·처리방침) needs the client to say yes; a missing box is not a yes.
@@ -123,14 +126,16 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (existing) throw emailTaken(existing);
-  const passwordHash = await hashPassword(password);
   const now = ctx.now.toISOString();
   const id = crypto.randomUUID();
-  const row = await one(ctx.deps.query,
-    "INSERT INTO email_signups (id, email, password_hash, is_employer, display_name, consent_reference, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_employer = EXCLUDED.is_employer, display_name = EXCLUDED.display_name, consent_reference = EXCLUDED.consent_reference, created_at = EXCLUDED.created_at RETURNING id",
-    [id, email, passwordHash, accountType === "EMPLOYER", displayName, consent, now]);
-  const signupId = String(row?.id ?? id);
-  const token = await issueEmailToken(ctx, "VERIFY", null, signupId);
+  const values = [id, email, accountType === "EMPLOYER", displayName, consent, now];
+  await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (err: unknown) => {
+    // shortcut: a database without 0066 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0066.
+    if (!isUnique(err)) throw err;
+    await query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]);
+    await query(ctx.deps.query, INSERT_SIGNUP, values);
+  });
+  const token = await issueEmailToken(ctx, "VERIFY", null, id);
   await sendLink(ctx, email, "verify", token);
   return data(202, { accepted: true }, ctx.rid);
 };
@@ -138,11 +143,16 @@ const signup = async (ctx: Ctx): Promise<Response> => {
 const verify = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const token = requireString(body, "token");
+  // A wrong password is refused before the link is spent, so the person can type it again.
+  // shortcut: a signup row made before 0067 still holds its own hash and verifies without a password; drop that branch 24 hours after 0067 runs in production.
+  const chosen = body.password === undefined ? null : requirePassword(body.password);
   const hash = await sha256Hex(token);
   const found = await one(ctx.deps.query,
     "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference, s.created_at FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
     [hash]);
   const row = await requireFresh(found, ctx.now, async (r) => String(r.email).toLowerCase());
+  if (chosen === null && row.password_hash == null) throw fieldError("password", "must be 8 to 128 characters");
+  const passwordHash = chosen === null ? String(row.password_hash) : await hashPassword(chosen);
   if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
   const email = String(row.email).toLowerCase();
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
@@ -153,7 +163,7 @@ const verify = async (ctx: Ctx): Promise<Response> => {
   try {
     await query(ctx.deps.query,
       "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-      [userId, "email", email, String(row.display_name), "ko", now, email, now, employer, String(row.password_hash)]);
+      [userId, "email", email, String(row.display_name), "ko", now, email, now, employer, passwordHash]);
   } catch (err) {
     if (!isUnique(err)) throw err;
     const taken = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
@@ -166,12 +176,12 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     query(ctx.deps.query,
       "INSERT INTO user_consents (user_id, reference_data, updated_at, terms_version, age14_at, service_terms_at, privacy_at) VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$5::timestamptz)",
       [userId, asBool(row.consent_reference), now, TERMS_VERSION, row.created_at]),
-    query(ctx.deps.query, "DELETE FROM email_signups WHERE id = $1", [String(row.signup_id)]),
+    query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]),
   ]);
   return data(200, await issue(ctx, userId), ctx.rid);
 };
 
-const VERIFY_SIGNUP = "SELECT id FROM email_signups WHERE lower(email) = lower($1::text)";
+const VERIFY_SIGNUP = "SELECT id FROM email_signups WHERE lower(email) = lower($1::text) ORDER BY created_at DESC LIMIT 1";
 const NEWEST_VERIFY = "SELECT expires_at FROM email_tokens WHERE signup_id = $1::uuid AND kind = 'VERIFY' ORDER BY expires_at DESC LIMIT 1";
 
 // Always 204. The mail limit runs before the lookup, so an unknown address and a real one look the same.
@@ -196,6 +206,7 @@ const login = async (ctx: Ctx): Promise<Response> => {
   const email = requireEmail(body.email);
   const password = typeof body.password === "string" ? body.password : "";
   await limitEmail(ctx, "login", email, LOGIN_PER_MINUTE);
+  await limitEmail(ctx, "login-h", email, LOGIN_PER_HOUR, 60);
   const user = await one(ctx.deps.query,
     "SELECT id, password_hash, email_verified_at, is_employer FROM users WHERE lower(email) = lower($1)",
     [email]);

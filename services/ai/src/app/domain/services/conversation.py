@@ -38,6 +38,8 @@ _LIVE_EVENT_TYPES = frozenset(
         "think",
         "plan",
         "paper",
+        "status",
+        "notice",
     }
 )
 
@@ -45,6 +47,10 @@ _LIVE_EVENT_TYPES = frozenset(
 def _live_event(chunk: dict):
     kind = chunk.get("type")
     if kind not in _LIVE_EVENT_TYPES:
+        return None
+    # The employer flows' status lines have no phase and never reached a client. A status a client
+    # reads always has one (harness/status.py).
+    if kind == "status" and "phase" not in chunk:
         return None
     return kind, {key: value for key, value in chunk.items() if key != "type"}
 
@@ -215,11 +221,16 @@ class ConversationService:
         finally:
             self._sem.release()
 
-    async def _notify_ai_done(self, user_id, conversation_id) -> None:
+    async def _notify_ai_done(self, job, result) -> None:
         try:
-            from app.domain.chat_settings import insert_ai_done
+            from app.queue.worker import core_from_env, notify_turn_done
 
-            await insert_ai_done(self.db.q(), user_id, conversation_id)
+            core = getattr(self, "core", None)
+            if core is None:
+                core = core_from_env()
+            if isinstance(job, dict) and "type" not in job:
+                job = {**job, "type": "chat"}
+            await notify_turn_done(core, job, result)
         except Exception:
             logging.getLogger(__name__).exception("AI_DONE insert failed")
 
@@ -228,6 +239,7 @@ class ConversationService:
         job_id = job["id"]
         p = job["payload"]
         terminal = False
+        operation_seen = False
         try:
             async for mode, chunk in self.graph.astream(
                 {
@@ -252,13 +264,12 @@ class ConversationService:
                         break
                     if "token" in chunk:
                         await self.jobs.emit(job_id, "token", {"text": chunk["token"]})
-                    elif "status" in chunk:
-                        await self.jobs.emit(job_id, "status", {"text": chunk["status"]})
                     else:
                         live = _live_event(chunk)
                         if live is not None:
                             await self.jobs.emit(job_id, live[0], live[1])
                 elif mode == "values" and chunk.get("operation"):
+                    operation_seen = True
                     if await self.jobs.status(job_id) == "CANCELLED":
                         terminal = True
                         break
@@ -272,7 +283,7 @@ class ConversationService:
                     terminal = True
                 else:
                     await self.jobs.finish(job_id, "DONE")
-                    await self._notify_ai_done(job["user_id"], job["conversation_id"])
+                    await self._notify_ai_done(job, {"operationId": ""} if operation_seen else {})
                     terminal = True
         except DomainError as e:
             await self._drop_enqueued_user_message(job_id)

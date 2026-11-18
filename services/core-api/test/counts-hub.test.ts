@@ -37,7 +37,7 @@ const get = (path: string): Request => new Request("https://core.example" + path
   headers: { authorization: "Bearer secret-token" },
 });
 
-test("search counts return tab totals and store the term", async () => {
+test("guest search counts keep people and posts at 0 and do not store the term", async () => {
   resetLimits();
   const seen: Call[] = [];
   const res = await handle(new Request("https://core.example/api/v1/search/counts?q=kotlin"), env(), deps(async (sql, params = []) => {
@@ -51,8 +51,8 @@ test("search counts return tab totals and store the term", async () => {
   }));
   assert.equal(res.status, 200);
   const body = await res.json() as { data: { postings: number; people: number; posts: number } };
-  assert.deepEqual(body.data, { postings: 2, people: 3, posts: 4 });
-  assert.equal(seen.some((call) => call.sql.includes("INSERT INTO search_queries") && call.params.includes("kotlin")), true);
+  assert.deepEqual(body.data, { postings: 2, people: 0, posts: 0 });
+  assert.equal(seen.some((call) => call.sql.includes("INSERT INTO search_queries")), false);
 });
 
 test("trending returns recent terms and open-posting skills", async () => {

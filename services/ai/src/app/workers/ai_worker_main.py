@@ -75,6 +75,7 @@ async def main() -> None:
         AI_WORKER_QUEUES,
         ai_handlers(app.state.deps, app.state.db.q),
         int(os.environ.get("QUEUE_CONCURRENCY", "4")),
+        fair_queue="q:document",
         settle=settle,
         release=release,
     )

@@ -29,13 +29,13 @@ test("employer email signup verifies and records age14, terms and privacy togeth
   const deps = { query: pg.query, now: () => new Date(), mailer: { send: async (mail: { text: string }) => { sent.push(mail.text); } } };
 
   const signup = await handle(post("/api/v1/auth/email/signup", {
-    email, password: "correct-horse-battery-9", accountType: "EMPLOYER", displayName: "Ada", agreeTerms: true,
+    email, accountType: "EMPLOYER", displayName: "Ada", agreeTerms: true,
   }), env, deps);
   assert.equal(signup.status, 202);
   const token = new URL(sent[0].match(/https?:\/\/\S+/)?.[0] ?? "").searchParams.get("token");
   assert.ok(token);
 
-  const verify = await handle(post("/api/v1/auth/email/verify", { token }), env, deps);
+  const verify = await handle(post("/api/v1/auth/email/verify", { token, password: "correct-horse-battery-9" }), env, deps);
   assert.equal(verify.status, 200, await verify.clone().text());
 
   const { rows } = await pg.query(

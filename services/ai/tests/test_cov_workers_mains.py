@@ -359,6 +359,7 @@ async def test_ai_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
     assert calls[:2] == [("ready", ai_env["app"]), ("build_chat", ai_env["svc"])]
     assert (w.group, w.consumer, w.concurrency) == ("ai", "ai-worker", 4)
     assert w.queues == ["q:chat:priority", "q:chat", "q:document"] == ai_worker_main.AI_WORKER_QUEUES
+    assert w.kwargs["fair_queue"] == "q:document"
     assert set(w.handlers) == {"chat", "employer_ai", "document", "fit"}
     assert w.handlers["chat"] is w.handlers["employer_ai"] is chat_mod.chat
     assert isinstance(w.db, QueueJobs) and w.db.store is ai_env["svc"].jobs

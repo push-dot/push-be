@@ -19,6 +19,20 @@ export function isUndefinedColumn(err: unknown): boolean {
   return e?.code === "42703" || /42703|column .* does not exist/i.test(`${e?.message || ""} ${String(err)}`);
 }
 
+export const namesUndefinedColumn = (err: unknown, column: string): boolean => {
+  const e = err as { message?: string };
+  return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
+};
+
+export async function withCalendar<T>(run: (calendar: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await run(true);
+  } catch (err) {
+    if (!namesUndefinedColumn(err, "posting_id")) throw err;
+    return run(false);
+  }
+}
+
 /** 55P03: lock_timeout ran out while waiting for a row lock. */
 export const isLockTimeout = (err: unknown): boolean => {
   const e = err as { code?: string; message?: string };

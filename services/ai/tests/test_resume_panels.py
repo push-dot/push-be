@@ -34,11 +34,10 @@ def test_card_options_union_includes_sections_and_submit():
     section_ids = {
         option["id"]
         for section in event["sections"]
-        if section["kind"] != "rows"
         for option in section["options"]
     }
     assert set(ids) == top | section_ids | {"submit"}
-    assert "m_file" not in ids
+    assert "m_file" in ids
     assert "cancel" in ids
     assert all(item["id"] != "submit" for item in event["options"])
     assert all(item.get("id") for item in card_options(event))
@@ -54,19 +53,6 @@ def test_single_section_keeps_first_pick():
         },
     )
     assert picked["tone"] == ["professional"]
-
-
-def test_review_toggle_off_when_submit_without_photo():
-    update = _apply_answer(
-        {},
-        "review",
-        {
-            "option_id": "submit",
-            "option_ids": ["submit", "MODERN"],
-        },
-    )
-    assert update["template"] == "MODERN"
-    assert update["profile_photo"] is False
 
 
 def test_review_old_answer_defaults_photo_on():
@@ -147,7 +133,7 @@ async def test_auto_mode_uses_section_defaults(monkeypatch):
     assert snap.values["profile_photo"] is True
 
 
-async def test_review_answer_stores_profile_photo_on_the_scenario():
+async def test_review_answer_keeps_the_profile_photo_on_in_the_scenario():
     db = _Approvals()
     graph = build_resume_graph(MemorySaver(), model=_PhaseModel(), db=db)
     config = _config()
@@ -164,10 +150,10 @@ async def test_review_answer_stores_profile_photo_on_the_scenario():
     )
     snap = await graph.aget_state(config)
     assert snap.values["template"] == "MODERN"
-    assert snap.values["profile_photo"] is False
+    assert snap.values["profile_photo"] is True
     saved = json.loads(db.files["01_scenario.json"])
     assert saved["template"] == "MODERN"
-    assert saved["profile_photo"] is False
+    assert saved["profile_photo"] is True
 
 
 def test_publish_prompt_includes_apply_list():

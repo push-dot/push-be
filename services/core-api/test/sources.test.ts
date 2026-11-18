@@ -274,3 +274,16 @@ test("renaming rejects a missing, blank, non-string or over-200-character name a
   }
 });
 }
+
+test("source content is served with nosniff so the browser keeps the stored type", async () => {
+  resetLimits();
+  const base = deps([]);
+  const query: Deps["query"] = async (sql, params) => sql.includes("FROM sources WHERE id")
+    ? { rows: [{ mime_type: "text/html", content: btoa("<script>1</script>") }], rowCount: 1 }
+    : base.query(sql, params);
+  const res = await handle(new Request("https://core.example/api/v1/sources/f1000000-0000-4000-8000-000000000001/content", {
+    headers: { authorization: "Bearer t" },
+  }), env, { ...base, query });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+});

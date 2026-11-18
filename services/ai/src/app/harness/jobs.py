@@ -43,14 +43,12 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
                 # One cancelled() query per second instead of per token, and always before done.
                 if ending or monotonic() - checked_at >= _CANCEL_CHECK_SECONDS:
                     checked_at = monotonic()
+                    # The cancel itself wrote the cancelled event: the trigger on the status (0055).
                     if await cancelled(job["id"]):
-                        await ctx.emit("cancelled", {})
                         raise JobCancelled()
                 if mode == "custom" and isinstance(chunk, dict):
                     if "token" in chunk:
                         await ctx.emit("token", {"text": chunk["token"]})
-                    elif "status" in chunk:
-                        await ctx.emit("status", {"text": chunk["status"]})
                     elif (live := _live_event(chunk)) is not None:
                         await ctx.emit(*live)
                 elif final:

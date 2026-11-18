@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -6,7 +7,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 
 from app.queue.backoff import backoff_seconds
-from app.queue.config import heartbeat_limits, visibility_limits
+from app.queue.config import PROMOTE_S, heartbeat_limits, visibility_limits
 from app.queue.dispatcher import Dispatcher, kick_app
 from app.queue.streams import StreamQueue
 
@@ -37,10 +38,10 @@ class MemoryDB:
     async def running_jobs(self):
         return [job for job in self.jobs if job["status"] == "RUNNING"]
 
-    async def mark_retry(self, ids, now):
+    async def mark_retry(self, ids, now, beats=None):
         out = []
         for job in self.jobs:
-            if job["id"] in set(ids) and job["status"] == "RUNNING":
+            if job["id"] in set(ids) and job["status"] == "RUNNING" and (beats or {}).get(job["id"], job["heartbeat_at"]) == job["heartbeat_at"]:
                 job["attempts"] += 1
                 job["status"] = "DEAD" if job["attempts"] >= job["max_attempts"] else "RETRY"
                 job["run_after"] = now
@@ -58,6 +59,12 @@ class MemoryDB:
         return 0
 
     async def purge_finished(self, now):
+        return 0
+
+    async def compact_finished(self, now):
+        return 0
+
+    async def sweep_orphan_checkpoints(self):
         return 0
 
     async def expire_approvals(self, now):
@@ -103,6 +110,10 @@ async def stream_job_ids(redis, queue):
     return [fields["jobId"] for _, fields in rows]
 
 
+def test_a_retry_is_promoted_before_its_first_backoff_ends():
+    assert PROMOTE_S < backoff_seconds(1)
+
+
 def test_backoff_sequence():
     assert backoff_seconds(1) == 30
     assert backoff_seconds(2) == 120
@@ -132,6 +143,59 @@ async def test_promote_due_moves_delayed_jobs():
     assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
     assert await stream_job_ids(redis, "q:document") == []
     assert await redis.zcard("q:delayed") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_promotion_keeps_the_job_delayed():
+    redis = FakeRedis(decode_responses=True)
+
+    class FlakyQueue(StreamQueue):
+        fail = True
+
+        async def add(self, queue, job_id):
+            if self.fail:
+                self.fail = False
+                raise ConnectionError("redis dropped")
+            await super().add(queue, job_id)
+
+    queue = FlakyQueue(redis)
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    with pytest.raises(ConnectionError):
+        await queue.promote_due(NOW)
+    assert await queue.promote_due(NOW) == 1
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_delayed_member_does_not_block_later_due_jobs():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    await redis.zadd("q:delayed", {"q:chat|not-a-uuid": NOW.timestamp() - 10})
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    assert await queue.promote_due(NOW) == 1
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert await redis.zcard("q:delayed") == 0
+
+
+@pytest.mark.asyncio
+async def test_the_dispatcher_promotes_delayed_jobs_between_sweeps(monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.queue.dispatcher.PROMOTE_S", 0.01)
+    queue = StreamQueue(redis)
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    box = Dispatcher(queue, opener({"live": 0, "opened": 0}, [], []), SECRET, now=lambda: NOW)
+    stop = asyncio.Event()
+    tasks = box.start_periodic(stop)
+    try:
+        for _ in range(100):
+            if await stream_job_ids(redis, "q:chat"):
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
 
 
 @pytest.mark.asyncio
@@ -351,3 +415,56 @@ async def test_dispatcher_purges_accounts_and_companies_every_maintenance_pass()
     await box.run_once(NOW, maintain=True)
     await box.run_once(NOW, maintain=True)
     assert pool.fetched == [PURGE_SQL, COMPANY_PURGE_SQL] * 2
+
+
+@pytest.mark.asyncio
+async def test_the_dispatcher_requeues_a_dead_workers_job_between_sweeps(monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.queue.dispatcher.PROMOTE_S", 0.01)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    stop = asyncio.Event()
+    tasks = box.start_periodic(stop)
+    try:
+        for _ in range(100):
+            if jobs[0]["status"] == "RETRY":
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+    assert jobs[0]["status"] == "RETRY"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lost_alert_counts_requeues_of_the_light_passes():
+    redis = FakeRedis(decode_responses=True)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1))]
+    box, _ = dispatcher(redis, jobs=jobs)
+    await box.run_once(NOW)
+    await box.run_once(NOW, maintain=True)
+    assert box.db_conditions["heartbeat_lost"][0] is True
+    await box.run_once(NOW, maintain=True)
+    assert box.db_conditions["heartbeat_lost"][0] is False
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_beat_after_it_was_read_is_not_requeued():
+    redis = FakeRedis(decode_responses=True)
+    stale = NOW - timedelta(seconds=heartbeat_limits()["chat"] + 1)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", stale)]
+    state = {"live": 0, "opened": 0}
+
+    class BeatsAfterTheRead(MemoryDB):
+        async def running_jobs(self):
+            rows = [dict(row) for row in await super().running_jobs()]
+            for row in self.jobs:
+                row["heartbeat_at"] = NOW
+            return rows
+
+    box = Dispatcher(StreamQueue(redis), lambda: asyncio.sleep(0, BeatsAfterTheRead(state, jobs, [])), SECRET)
+    state["live"] = 0
+    await box.run_once(NOW)
+    assert jobs[0]["status"] == "RUNNING"
+    assert jobs[0]["attempts"] == 0

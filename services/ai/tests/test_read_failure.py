@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.harness.personal.resume.graph import build_resume_graph
+from tests.fakes import data_json
 from tests.test_harness_resume import _Approvals, _base, _config, _PhaseModel
 from tests.test_resume_flow_decisions import _events
 
@@ -19,7 +20,7 @@ class _Reread(_PhaseModel):
         self.payloads = []
 
     async def ainvoke(self, messages, **kwargs):
-        payload = json.loads(messages[-1].content)
+        payload = data_json(messages[-1].content)
         self.payloads.append(payload)
         phase = payload.get("phase")
         analyze_calls = [item for item in self.payloads if item.get("phase") == "analyze"]
@@ -76,8 +77,9 @@ async def test_missing_requirements_routes_to_read_failed_gate_and_skips_fit():
     choice = next(item for item in marks if item[0] == "choice")
     assert marks.index(tool) < marks.index(token) < marks.index(choice)
     assert tool[1] == "err"
-    assert "로그인이 필요한 영역이에요" in tool[2]
+    assert tool[2] == "“자격 요건”은 로그인이 필요한 영역이라 읽지 못했어요."
     assert choice[1] == "read_failed"
+    assert [event["text"] for event in events if event.get("type") == "notice"] == [tool[2]]
 
 
 async def test_proceed_continues_to_analyze_gate():

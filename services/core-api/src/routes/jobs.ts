@@ -1,3 +1,4 @@
+import { likeContains } from "../hangul.ts";
 import { one, query } from "../db.ts";
 import { HttpError, data, jsonList, pageBody, requireUuid } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
@@ -68,8 +69,8 @@ export async function listJobs(ctx: Ctx): Promise<Response> {
   }
   const q = ctx.url.searchParams.get("query") || "";
   if (q) {
-    params.push("%" + q + "%", "%" + q + "%");
-    sql += ` AND (company ILIKE $${params.length - 1} OR title ILIKE $${params.length})`;
+    params.push(likeContains(q), likeContains(q));
+    sql += ` AND (company ILIKE $${params.length - 1} ESCAPE '\\' OR title ILIKE $${params.length} ESCAPE '\\')`;
   }
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);

@@ -1,8 +1,7 @@
-import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
-import { queryForms } from "../hangul.ts";
+import { isMissingRelation, isUndefinedColumn, query } from "../db.ts";
 import { HttpError, codePoints, data, fieldError } from "../http.ts";
 import type { Ctx } from "../types.ts";
-import { GUEST_ID, unprocessable, openClause, withPublicStatus, NOT_DELETING, searchSortMode } from "./recruiting-shared.ts";
+import { GUEST_ID, unprocessable, searchSortMode } from "./recruiting-shared.ts";
 import { skillRows, searchPostings } from "./postings.ts";
 import { searchPeople } from "./profiles.ts";
 import { searchPosts } from "./posts.ts";
@@ -34,31 +33,26 @@ async function search(ctx: Ctx): Promise<Response> {
   return searchPostings(ctx, q);
 }
 
+// A tab count is the `page.total` of the list behind that tab, so a count and its list can never disagree.
+const listTotal = async (ctx: Ctx, list: (ctx: Ctx, q: string) => Promise<Response>, q: string): Promise<number> => {
+  const url = new URL("/api/v1/search", ctx.url);
+  url.searchParams.set("q", q);
+  url.searchParams.set("limit", "1");
+  const body = await (await list({ ...ctx, url }, q)).json() as { page: { total?: number } };
+  return Number(body.page.total ?? 0);
+};
+
 const searchCounts = async (ctx: Ctx): Promise<Response> => {
   const q = ctx.url.searchParams.get("q") || "";
   if (!q.trim()) throw fieldError("q", "required");
   if (codePoints(q) > 200) throw fieldError("q", "must be at most 200 characters");
-  const forms = queryForms(q);
-  const [, postings, peopleRow, postsRow] = await Promise.all([
-    recordSearch(ctx, q),
-    withPublicStatus(async (withStatus) => {
-      const row = await one(ctx.deps.query,
-        `SELECT count(*)::int AS total FROM job_postings p WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL AND (p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%')`,
-        [ctx.user.id, forms.raw]);
-      return Number(row?.total ?? 0);
-    }),
-    one(ctx.deps.query,
-      `SELECT count(*)::int AS total FROM profiles p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING} WHERE u.display_name ILIKE '%' || $1 || '%' OR p.headline ILIKE '%' || $1 || '%'`,
-      [forms.raw]),
-    one(ctx.deps.query,
-      "SELECT count(*)::int AS total FROM posts p WHERE p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'",
-      [forms.raw]),
+  const guest = ctx.user.id === GUEST_ID;
+  const [postings, people, posts] = await Promise.all([
+    listTotal(ctx, searchPostings, q),
+    guest ? 0 : listTotal(ctx, searchPeople, q),
+    guest ? 0 : listTotal(ctx, searchPosts, q),
   ]);
-  return data(200, {
-    postings,
-    people: Number(peopleRow?.total ?? 0),
-    posts: Number(postsRow?.total ?? 0),
-  }, ctx.rid);
+  return data(200, { postings, people, posts }, ctx.rid);
 };
 
 const searchTrending = async (ctx: Ctx): Promise<Response> => {

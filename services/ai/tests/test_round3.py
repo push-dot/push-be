@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -103,9 +104,19 @@ async def test_finalize_with_application_records_event():
     assert apps.events[0].application_id == app_id
 
 
+class _ConsentingDB(FakeDB):
+    def q(self):
+        async def fetchrow(sql, *_args):
+            if "reference_data" not in sql:
+                raise NotImplementedError
+            return {"given": True}
+
+        return SimpleNamespace(fetchrow=fetchrow)
+
+
 class _JobRunner:
     def __init__(self, convs):
-        self.svc = ConversationService(FakeDB(), None, MemorySaver())
+        self.svc = ConversationService(_ConsentingDB(), None, MemorySaver())
         self.svc.conversations = convs
         self.svc.ops = StubOperationStore()
         self.jobs = StubChatJobStore()

@@ -80,14 +80,14 @@ const createDb = () => {
       return { rows: open[0] ? [open[0]] : [], rowCount: open[0] ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET attempts")) {
-      const row = codes.find((item) => item.id === params[0]);
+      const row = codes.find((item) => item.id === params[0] && Number(item.attempts) < Number(params[1]) && item.consumed_at == null);
       if (row) row.attempts = Number(row.attempts) + 1;
       return { rows: row ? [{ attempts: row.attempts }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET consumed_at") && sql.includes("WHERE id")) {
       const row = codes.find((item) => item.id === params[0] && item.consumed_at == null);
       if (row) row.consumed_at = params[1];
-      return { rows: [], rowCount: row ? 1 : 0 };
+      return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("SELECT id FROM users WHERE phone") || sql.startsWith("SELECT id, provider FROM users WHERE phone")) {
       const row = users.find((item) => item.phone === params[0] && item.is_employer === false);
@@ -421,26 +421,27 @@ test("a phone-only account links one new social identity", async () => {
   assert.equal(db.users.length, 1);
 });
 
-test("a phone that already has a social identity rejects another", async () => {
+test("a phone that already has a social identity signs in to that account and attaches nothing", async () => {
   const db = createDb();
   const sent: Sent[] = [];
   db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
   db.identities.push({ user_id: OWNER, provider: "google", provider_subject: "gsub" });
   db.identities.push({ user_id: OWNER, provider: "phone", provider_subject: PHONE });
   await send(db, sent);
-  const blocked = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("apple", "asub", null) });
-  assert.equal(blocked.status, 409);
-  const body = await blocked.json() as Err;
-  assert.equal(body.error.code, "PHONE_ALREADY_REGISTERED");
-  assert.deepEqual(body.error.details?.existingProviders, ["google"]);
+  const other = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("apple", "asub", null) });
+  assert.equal(other.status, 200);
+  const first = await other.json() as Session;
+  assert.equal(first.data.user.id, OWNER);
+  assert.equal(first.data.created, false);
+  assert.equal(first.data.linked, undefined);
   assert.equal(db.users.length, 1);
   assert.equal(db.identities.length, 2);
 
   db.now = new Date(NOW.getTime() + 169_000);
   await send(db, sent);
   const again = await verify(db, sent, sent[1].code, PHONE, { pendingToken: await pending("google", "other-sub") });
-  assert.equal(again.status, 409);
-  assert.deepEqual((await again.json() as Err).error.details?.existingProviders, ["google"]);
+  assert.equal(again.status, 200);
+  assert.equal((await again.json() as Session).data.user.id, OWNER);
   assert.equal(db.identities.some((row) => row.provider_subject === "other-sub"), false);
   assert.equal(db.users.length, 1);
 });
@@ -622,14 +623,15 @@ test("phone signup then a new social login stays on that account", async () => {
   const appleBody = await apple.json() as Session;
   assert.equal(typeof appleBody.data.pendingToken, "string");
   assert.equal(db.users.length, 1);
-  const blocked = await verify(db, sent, sent[2].code, PHONE, { pendingToken: appleBody.data.pendingToken });
-  assert.equal(blocked.status, 409);
-  const blockedBody = await blocked.json() as Err;
-  assert.equal(blockedBody.error.code, "PHONE_ALREADY_REGISTERED");
-  assert.deepEqual(blockedBody.error.details?.existingProviders, ["google"]);
+  const viaPhone = await verify(db, sent, sent[2].code, PHONE, { pendingToken: appleBody.data.pendingToken });
+  assert.equal(viaPhone.status, 200);
+  const viaPhoneBody = await viaPhone.json() as Session;
+  assert.equal(viaPhoneBody.data.user.id, id);
+  assert.equal(viaPhoneBody.data.created, false);
+  assert.equal(viaPhoneBody.data.linked, undefined);
   assert.equal(db.users.length, 1);
   assert.equal(db.identities.some((row) => row.provider === "apple"), false);
-  assert.equal(db.sessions.length, 2);
+  assert.equal(db.sessions.length, 3);
 
   const again = await socialExchange(db, "ex-google-2", "google", "gsub");
   assert.equal(again.status, 200);

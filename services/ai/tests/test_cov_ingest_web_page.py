@@ -230,10 +230,12 @@ def test_pinned_backend_delegates_other_attributes():
 
 async def test_proxy_returns_502_when_no_validated_ip_accepts(monkeypatch):
     monkeypatch.setattr(web_page, "_resolve_public", lambda host: ["127.0.0.1"])
+    closed = _closed_port()
+    monkeypatch.setattr(web_page, "_PORTS", frozenset({closed}))
     server, port = await web_page._start_egress_proxy()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(f"CONNECT pub.example:{_closed_port()} HTTP/1.1\r\n"
+        writer.write(f"CONNECT pub.example:{closed} HTTP/1.1\r\n"
                      "Host: x\r\n\r\n".encode())
         await writer.drain()
         assert b"502" in await reader.readline()

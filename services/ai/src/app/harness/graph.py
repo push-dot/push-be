@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
+import re
+from functools import partial
 from typing import Annotated, Any, Final
+from urllib.parse import unquote, urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
@@ -15,8 +19,20 @@ from typing_extensions import TypedDict
 
 from app.domain.access_mode import AccessMode
 from app.framework.models import _content
-from app.harness.approval import create_tool_approval
-from app.harness.policy import Tier, decide
+from app.framework.untrusted import as_data
+from app.harness.approval import (
+    APPROVE_ALWAYS,
+    APPROVING,
+    create_tool_approval,
+    remember_site,
+    site_granted,
+    user_supplied,
+)
+from app.harness.memory import memory_update, merge_memory
+from app.harness.policy import TRUSTED_READS, Decision, Exposure, Tier, decide
+from app.harness.sources import note_tool
+from app.harness.state import ThreadMemory
+from app.harness.status import job_of, thinking, tool_status, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -42,9 +58,12 @@ class HarnessState(TypedDict, total=False):
     job_id: str
     access_mode: str
     tool_calls_used: int
+    bot: dict[str, Any] | None
+    # The system prompt of the last model call held other users' text (reference templates).
+    others_in_prompt: bool
 
 
-class PersonalState(HarnessState, total=False):
+class PersonalState(HarnessState, ThreadMemory, total=False):
     resume: dict | None
     intent: str | None
     context: dict | None
@@ -122,19 +141,68 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
     return {**_carried(current), **seed}
 
 
-def _tier_name(tier) -> str:
-    if isinstance(tier, Tier):
-        return tier.value
-    if hasattr(tier, "metadata"):
-        return tier.metadata["tier"].value
-    return str(tier)
-
-
-def write_needs_approval(mode, tier, quick_start, tool: str | None = None) -> bool:
-    if isinstance(quick_start, dict) and _tier_name(tier) != Tier.READ:
-        return True
+def write_needs_approval(mode, tier, quick_start, tool: str | None = None, *,
+                         supplied: bool = False, granted: bool = False,
+                         exposure: Exposure = Exposure.NONE, dictated: bool = False) -> bool:
     resolved = tier if isinstance(tier, Tier) or hasattr(tier, "metadata") else Tier(str(tier))
-    return decide(mode, resolved, tool).value == "ASK"
+    return decide(mode, resolved, tool, quick_start=isinstance(quick_start, dict),
+                  supplied=supplied, granted=granted, exposure=exposure,
+                  dictated=dictated) is Decision.ASK
+
+
+def _exposure(state: dict, tools_by_name: dict) -> Exposure:
+    """Where untrusted text sits in what the model sees: a result of a read that is not in
+    TRUSTED_READS, the thread summary, which folds such results, or other users' templates in the
+    system prompt."""
+    messages = state.get("messages") or []
+    names = {
+        _parts(call)[2]: _parts(call)[0]
+        for message in messages if isinstance(message, AIMessage)
+        for call in message.tool_calls or []
+    }
+    last_human = max(
+        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+        default=-1)
+    folded = (state.get("summary") or "").strip() or state.get("others_in_prompt")
+    found = Exposure.THREAD if folded else Exposure.NONE
+    for index, message in enumerate(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        tool = tools_by_name.get(names.get(message.tool_call_id))
+        if tool is None or tool.name in TRUSTED_READS:
+            continue
+        if tool.tier not in (Tier.READ, Tier.EXTERNAL_READ):
+            continue
+        if index > last_human:
+            return Exposure.RUN
+        found = Exposure.THREAD
+    return found
+
+
+# shortcut: a hyphenated slug, a Hangul name or short pieces split by `/` pass as titles, so data hidden
+# there is not caught; card every granted-host path the thread did not hold if that matters.
+_CARRIES_DATA = re.compile(r"@|%25|%40|[A-Za-z0-9_]{20,}|\d[\d\s().-]{7,}\d")
+
+
+def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
+    """Whether untrusted text could have built this address to carry the user's data out. Right
+    after such text, any address the thread does not hold; with such text only earlier in the
+    thread, one with a query string, an `@` or a long opaque token in its path, or off a granted
+    host, so a bot still opens other pages of a granted site."""
+    if exposure is Exposure.NONE or url in seen:
+        return False
+    if exposure is Exposure.RUN or not granted:
+        return True
+    parts = urlsplit(url)
+    return bool(parts.query) or any(
+        _CARRIES_DATA.search(path) for path in (parts.path, unquote(parts.path)))
+
+
+def _seen_text(state: dict) -> str:
+    """What the user and the tools put in the thread. A URL the model built is not in it."""
+    return "\n".join(
+        _content(message) for message in state.get("messages") or []
+        if not isinstance(message, AIMessage))
 
 
 def leave_flow(summary: str, **update) -> Command:
@@ -222,9 +290,11 @@ def _public_resume(result: dict) -> dict:
 
 def _child_resume(state: dict) -> dict:
     child = dict(_resume_dict(state))
-    for key in ("conversation_id", "user_id", "job_id", "access_mode"):
+    for key in ("conversation_id", "user_id", "access_mode"):
         if not child.get(key):
             child[key] = state.get(key) or ""
+    # Every turn is a new job; the stored id would point usage and gate ids at a finished one.
+    child["job_id"] = state.get("job_id") or child.get("job_id") or ""
     child.setdefault("status", "active")
     child.setdefault("phase", "mode_select")
     return child
@@ -320,33 +390,67 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
+def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
+    """The system prompt of a thread. A bot thread exists only in the app, where the model is a
+    Bot and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
+    also says 플랜 where the web says 요금제."""
+    if not bot:
+        return prompt
+    # Names and titles are written by users and employers. Quoted, they stay data.
+    quote = partial(json.dumps, ensure_ascii=False)
+    if bot.get("kind") == "push":
+        name, helps = "Push Bot", "구직자의 커리어를"
+    else:
+        name = f"{bot.get('name') or bot.get('company')} Bot"
+        helps = f"{quote(bot.get('company') or '')} 회사에 지원하는 구직자를"
+    line = f"당신은 Push에서 {helps} 돕는 {quote(name)}이에요."
+    if bot.get("postingId"):
+        title = quote(bot.get("postingTitle") or "제목 없음")
+        line += f" 기준 공고: {title} (posting_id {bot['postingId']})."
+    line += f" 자신을 말할 때는 {quote(name)}이나 Bot이라고 하고, 에이전트라고 하지 않아요."
+    return line + "\n" + prompt.partition("\n")[2].replace("요금제", "플랜")
+
+
 def build_harness_graph(spec, checkpointer, *, model, db, core):
     tools_by_name = {tool.name: tool for tool in spec.tools}
     structured = {tool.name: to_structured_tool(tool) for tool in spec.tools}
+    labels: dict[str, str] = {}
+    if spec.id == "personal":
+        from app.harness.personal.tools import CARD_LABEL as labels
 
-    async def agent(state: HarnessState) -> dict:
+    async def agent(state: dict) -> dict:
         messages = list(state.get("messages") or [])
         content = spec.prompt
+        lines = []
         if spec.id == "personal":
             from app.harness.personal.reference import reference_lines
+            content = bot_prompt(content, state.get("bot"))
             try:
                 lines = await reference_lines(
                     db, state.get("user_id"), state.get("conversation_id"))
             except Exception:
                 lines = []
             if lines:
-                content = spec.prompt.rstrip() + "\n\n" + "\n".join(lines)
+                # Sentence templates come from other users' documents.
+                content = content.rstrip() + "\n\n" + as_data("\n".join(lines), "reference_samples")
             quick = state.get("quick_start")
             if isinstance(quick, dict) and quick.get("instruction"):
                 sheet = json.dumps(quick.get("inputs") or {}, ensure_ascii=False)
                 content = content.rstrip() + "\n\n" + quick["instruction"] + "\n시트 입력: " + sheet
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=content), *messages]
+        if spec.id == "personal":
+            remembered = (state.get("summary") or "").strip()
+            if remembered:
+                folded = SystemMessage(content=as_data(remembered, "summary", None))
+                messages = [messages[0], folded, *messages[1:]]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))
+        thinking()
         reply = await _complete(target, messages, text_only=over)
-        return {"messages": [reply]} if reply is not None else {}
+        update = {"others_in_prompt": bool(lines)} if spec.id == "personal" else {}
+        return {"messages": [reply], **update} if reply is not None else update
 
     async def tools(state: HarnessState) -> Command:
         pending = _open_calls(state)
@@ -379,11 +483,26 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
         meta = bound.metadata
         summary = meta["summary"](args)
-        tier = meta["tier"].value
-        if (
-            write_needs_approval(mode, meta["tier"], state.get("quick_start"), tool.name)
-            and meta["approval_kind"] != "DOCUMENT_EDIT"
-        ):
+        # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three
+        # values and may not change shape before push-fe F3. Send EXTERNAL_READ once it knows it.
+        tier = (Tier.READ if meta["tier"] is Tier.EXTERNAL_READ else meta["tier"]).value
+        exposure = _exposure(state, tools_by_name)
+        page = {}
+        if meta["tier"] is Tier.EXTERNAL_READ:
+            thread = state.get("conversation_id")
+            page = {
+                "supplied": await user_supplied(db, thread, state.get("user_id"), args.url),
+                "granted": await site_granted(db, thread, args.url),
+            }
+        dictated = meta["tier"] is Tier.EXTERNAL_READ and _dictated(
+            args.url, exposure, _seen_text(state), page["granted"])
+        quick = state.get("quick_start")
+        asks = write_needs_approval(
+            mode, meta["tier"], quick, tool.name, **page, exposure=exposure, dictated=dictated)
+        if asks and not write_needs_approval(mode, meta["tier"], quick, tool.name, **page):
+            logging.getLogger(__name__).warning(
+                "tool %s held for the user: untrusted text in the thread (%s)", tool.name, exposure)
+        if asks and meta["approval_kind"] != "DOCUMENT_EDIT":
             event, created = await create_tool_approval(
                 db,
                 user_id=state.get("user_id"),
@@ -395,13 +514,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             )
             if created:
                 emit(_tool_event(tool.name, "wait", summary, tier))
+                waiting(event["id"], "confirm", labels.get(tool.name))
                 emit(event)
             answer = interrupt({
                 "approval_id": event["id"],
                 "awaiting": "approval",
                 "kind": "TOOL_ACTION",
             }) or {}
-            if answer.get("option_id") != "approve":
+            if answer.get("option_id") not in APPROVING:
                 rejected = {"rejected": True}
                 emit(_tool_event(tool.name, "err", summary, tier, rejected))
                 return _tool_command(
@@ -410,6 +530,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                     {call_id},
                     tool_calls_used=used + 1,
                 )
+            if answer.get("option_id") == APPROVE_ALWAYS:
+                await remember_site(db, state.get("conversation_id"), args.url)
         ctx = ToolContext(
             user_id=str(state.get("user_id") or ""),
             company_id=state.get("company_id"),
@@ -419,7 +541,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             db=db,
             core=core,
             access_mode=mode.value,
+            supplied=page.get("supplied"),
+            exposure=exposure,
         )
+        working(tool_status(tool.name))
         emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
         if isinstance(result, Command):
@@ -434,9 +559,14 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             return Command(update=update, goto=result.goto)
         tool_state = "ok" if ok else "err"
         emit(_tool_event(tool.name, tool_state, summary, tier, result, retried))
+        if ok:
+            await note_tool(
+                tool.name, args, result, user_id=str(state.get("user_id") or ""), db=db)
         return _tool_command(
             state,
-            [ToolMessage(content=json.dumps(result), tool_call_id=call_id)],
+            [ToolMessage(
+                content=as_data(json.dumps(result, ensure_ascii=False), tool.name),
+                tool_call_id=call_id)],
             {call_id},
             tool_calls_used=used + 1,
         )
@@ -455,22 +585,31 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         subgraph = build_resume_graph(None, model=None, db=db)
 
         async def route(state: PersonalState) -> dict | Command:
+            memory = await memory_update(
+                list(state.get("messages") or []),
+                state.get("summary") or "",
+                turn_model.get() or model,
+            )
+
+            def finish(result):
+                return merge_memory(memory, result)
+
             if _resume_dict(state).get("status") == "active":
-                return {}
+                return finish({})
             if state.get("quick_start_done"):
-                return {}
+                return finish({})
             seed = quick_start_resume(state.get("intent"), _resume_dict(state))
             if seed is not None:
-                return enter_flow("resume_flow", resume=seed)
+                return finish(enter_flow("resume_flow", resume=seed))
             attached = await _resume_from_attachment(db, state)
             if attached is not None:
-                return enter_flow("resume_flow", resume=attached)
+                return finish(enter_flow("resume_flow", resume=attached))
             from app.domain.quick_starts import quick_start_seed
 
             started = quick_start_seed(
                 state.get("intent"), _human_text(state), state.get("context") or {})
             if started is None:
-                return {}
+                return finish({})
             if started["intent"] == "find_postings":
                 from app.domain.services import posting_match as matching
 
@@ -478,21 +617,21 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                     db,
                     state.get("user_id"),
                     started["inputs"],
-                    job_id=state.get("job_id"),
+                    job_id=job_of(state),
                 ) or {}
                 text_out = result.get("text") or "조건에 맞는 공고가 없어요."
                 payload = {"items": result.get("items") or [], "text": text_out}
                 emit(_tool_event(
                     "find_matching_postings", "ok", "공고를 찾아요", Tier.READ.value, payload))
                 emit({"token": text_out})
-                return Command(
+                return finish(Command(
                     update={
                         "messages": [AIMessage(content=text_out)],
                         "quick_start_done": True,
                     },
                     goto=END,
-                )
-            return {"quick_start": started}
+                ))
+            return finish({"quick_start": started})
 
         async def resume_flow(state: PersonalState, config) -> dict | Command:
             parent_config = get_config()
@@ -550,7 +689,7 @@ def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=N
         if gate is None:
             return ""
         return await gate.company_research(
-            name, user_id=state.get("user_id"), job_id=state.get("job_id"))
+            name, user_id=state.get("user_id"), job_id=job_of(state))
 
     def generate_for(_state):
         return gate_generate(turn_model.get())

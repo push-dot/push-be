@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import json
-
+import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.harness.core_client import CoreError
-from app.harness.graph import astream_harness, build_harness_graph
+from app.harness.graph import _child_resume, astream_harness, build_harness_graph
 from app.harness.policy import Tier
 from app.harness.tools import HarnessSpec, ToolContext, ToolSpec
-from tests.fakes import ScriptedChat
+from tests.fakes import ScriptedChat, data_json
 
 
 class IdArgs(BaseModel):
@@ -114,7 +113,10 @@ async def test_auto_runs_safe_and_asks_risky():
     assert any(event.get("type") == "done" and event.get("awaiting") == "approval" for event in events)
     approval = next(event for event in events if event.get("type") == "approval")
     assert approval["kind"] == "TOOL_ACTION"
-    assert approval["options"] == [{"id": "approve", "label": "실행"}, {"id": "reject", "label": "취소"}]
+    assert approval["options"] == [
+        {"id": "approve", "label": "지원하기"},
+        {"id": "reject", "label": "닫기"},
+    ]
     assert approval["toolName"] == "apply_to_posting"
 
 
@@ -147,7 +149,7 @@ async def test_resume_reject_skips():
         message for message in model.seen[-1]
         if isinstance(message, ToolMessage)
     ]
-    assert json.loads(tool_messages[-1].content) == {"rejected": True}
+    assert data_json(tool_messages[-1].content) == {"rejected": True}
 
 
 async def test_bypass_runs_writes_but_asks_before_applying():
@@ -300,7 +302,7 @@ async def test_unexpected_tool_exception_becomes_tool_failed_result():
                for event in events)
     answer = model.seen[-1][-1]
     assert isinstance(answer, ToolMessage) and answer.tool_call_id == "c1"
-    assert json.loads(answer.content) == {"error": "TOOL_FAILED"}
+    assert data_json(answer.content) == {"error": "TOOL_FAILED"}
 
 
 async def test_domain_error_from_a_tool_becomes_its_code():
@@ -314,7 +316,7 @@ async def test_domain_error_from_a_tool_becomes_its_code():
     graph, _db = _graph(model, runs, DomainError(404, "NOT_FOUND", "gone"))
     events = await _events(graph, _input("BYPASS"))
     assert any(event.get("result") == {"error": "NOT_FOUND"} for event in events)
-    assert json.loads(model.seen[-1][-1].content) == {"error": "NOT_FOUND"}
+    assert data_json(model.seen[-1][-1].content) == {"error": "NOT_FOUND"}
 
 
 async def test_unknown_tool_calls_count_toward_the_cap_and_finish_within_the_step_limit():
@@ -329,3 +331,223 @@ async def test_unknown_tool_calls_count_toward_the_cap_and_finish_within_the_ste
     assert sorted(m.tool_call_id for m in answers) == sorted(f"u{i}" for i in range(30))
     assert sum(m.content == "도구 호출 한도" for m in answers) == 22
     assert state.values["tool_calls_used"] == 8
+
+
+class _PostingDb(MemApprovals):
+    def __init__(self, posting):
+        super().__init__()
+        self.posting = posting
+
+    async def fetchrow(self, sql, *args):
+        if "job_postings" in sql:
+            return self.posting
+        return await super().fetchrow(sql, *args)
+
+
+async def _apply_card(db, posting_id):
+    from uuid import uuid4
+
+    from app.harness.approval import create_tool_approval
+    from app.harness.personal.tools import PERSONAL_TOOLS
+
+    tool = next(spec for spec in PERSONAL_TOOLS if spec.name == "apply_to_posting")
+    event, _created = await create_tool_approval(
+        db,
+        user_id=uuid4(),
+        conversation_id=uuid4(),
+        job_id="job-1",
+        tool=tool,
+        args=tool.args_model(posting_id=posting_id),
+        tool_call_id="c1",
+    )
+    return event
+
+
+async def test_apply_card_title_names_the_posting():
+    from uuid import uuid4
+
+    event = await _apply_card(
+        _PostingDb({"company": "모아페이", "title": "백엔드 엔지니어"}), uuid4()
+    )
+    assert event["title"] == "모아페이 · 백엔드 엔지니어에 지원해요"
+    assert event["summary"] == "이 공고에 지원해요"
+
+
+async def test_apply_card_title_stays_generic_for_an_unknown_posting():
+    from uuid import uuid4
+
+    event = await _apply_card(_PostingDb(None), uuid4())
+    assert event["title"] == "이 공고에 지원해요"
+
+
+def test_resume_flow_follows_the_job_of_the_current_turn():
+    state = {"job_id": "new", "conversation_id": "c", "user_id": "u", "resume": {"job_id": "old", "status": "active"}}
+    assert _child_resume(state)["job_id"] == "new"
+
+
+def test_usage_is_billed_to_the_running_job_not_the_one_that_opened_the_gate():
+    from types import SimpleNamespace
+
+    from app.harness.status import current_run, job_of
+
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        assert job_of({"job_id": "old"}) == "new"
+    finally:
+        current_run.reset(token)
+    assert job_of({"job_id": "old"}) == "old"
+
+
+def test_billing_tools_read_the_running_job_while_keys_keep_the_gate_job():
+    from types import SimpleNamespace
+
+    from app.harness.status import current_run
+    from app.harness.tools import ToolContext
+
+    ctx = ToolContext("u", None, "c", "old", "call", None, None)
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        assert (ctx.usage_job_id, ctx.job_id) == ("new", "old")
+    finally:
+        current_run.reset(token)
+
+
+async def test_resume_fit_tool_bills_the_running_job(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.harness.personal.resume import tools as resume_tools
+    from app.harness.status import current_run
+    from app.harness.tools import ToolContext
+
+    seen = {}
+
+    async def judge(*_args, **kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(resume_tools, "judge_fit", judge)
+    ctx = ToolContext("00000000-0000-4000-8000-000000000001", None, "c", "old", "call", None, None)
+    token = current_run.set(SimpleNamespace(job_id="new"))
+    try:
+        await resume_tools._fit(ctx, resume_tools.FitArgs())
+    finally:
+        current_run.reset(token)
+    assert seen["job_id"] == "new"
+
+
+async def _phase_prompt(monkeypatch, text):
+    from types import SimpleNamespace
+
+    from app.harness.personal.resume import graph as resume_graph
+
+    async def stored_text(_db, _state):
+        return text
+
+    seen = []
+
+    class Model:
+        async def ainvoke(self, messages):
+            seen.extend(message.content for message in messages)
+            return {"text": "ok"}
+
+    monkeypatch.setattr(resume_graph, "load_document_markdown", stored_text)
+    await resume_graph._output(Model(), "craft", {"inputs": {"documentId": "d"}}, SimpleNamespace(db=None))
+    return "\n".join(seen)
+
+
+async def test_resume_phase_prompt_carries_the_text_of_the_attached_document(monkeypatch):
+    assert "페이플로우 프로덕트 매니저" in await _phase_prompt(monkeypatch, "페이플로우 프로덕트 매니저")
+
+
+async def test_resume_phase_prompt_marks_where_a_long_document_was_cut(monkeypatch):
+    from app.harness.personal.resume.graph import _RESUME_TEXT_LIMIT
+
+    prompt = await _phase_prompt(monkeypatch, "가" * _RESUME_TEXT_LIMIT + "끝")
+    assert "가" * _RESUME_TEXT_LIMIT in prompt
+    assert "끝" not in prompt
+    assert "이하 생략" in prompt
+
+
+async def test_resume_phase_prompt_keeps_a_document_at_the_limit_whole(monkeypatch):
+    from app.harness.personal.resume.graph import _RESUME_TEXT_LIMIT
+
+    prompt = await _phase_prompt(monkeypatch, "가" * _RESUME_TEXT_LIMIT)
+    assert "이하 생략" not in prompt
+
+
+async def test_resume_phase_prompt_has_no_document_text_when_the_document_is_empty(monkeypatch):
+    prompt = await _phase_prompt(monkeypatch, "")
+    assert "resume_text" not in prompt
+
+
+async def test_a_malformed_document_tree_reads_as_empty():
+    from app.harness.personal.resume.profile_document import load_document_markdown
+
+    class Db:
+        def q(self):
+            return self
+
+        async def fetchrow(self, *_args):
+            return {"content": {"type": "doc", "content": [None]}}
+
+    state = {
+        "inputs": {"documentId": "11111111-1111-4111-8111-111111111111"},
+        "user_id": "00000000-0000-4000-8000-000000000001",
+    }
+    assert await load_document_markdown(Db(), state) == ""
+
+
+def _billing_call(case, monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.harness.employer import tools as employer
+    from app.harness.personal import tools as personal
+
+    seen = {}
+
+    async def spy(*args, **kwargs):
+        seen["job_id"] = kwargs["job_id"] if "job_id" in kwargs else args[1]["job_id"]
+        return {}
+
+    user = "00000000-0000-4000-8000-000000000001"
+    if case == "employer_fit":
+        async def posting(*_args):
+            return {"requirements": [], "skills": [], "description": ""}
+
+        monkeypatch.setattr(employer, "judge_fit", spy)
+        monkeypatch.setattr("app.infrastructure.posting_fit_cache.company_posting", posting)
+        db = SimpleNamespace(q=lambda: object())
+        ctx = ToolContext(user, user, "c", "old", "call", db, None)
+        return seen, employer._fit(ctx, employer.FitArgs(posting_id=uuid4()))
+    ctx = ToolContext(user, None, "c", "old", "call", None, None)
+    if case == "personal_fit":
+        monkeypatch.setattr(personal, "judge_fit", spy)
+        return seen, personal._get_fit_score(ctx, personal.FitArgs())
+    if case == "find_postings":
+        monkeypatch.setattr("app.domain.services.posting_match.run_quick_match", spy)
+        return seen, personal._find_matching_postings(ctx, personal.MatchArgs())
+    monkeypatch.setattr("app.framework.rag.search_career_context", spy)
+    monkeypatch.setattr(personal, "_svc", lambda: SimpleNamespace(ai=object()))
+    return seen, personal._search_career(ctx, personal.CareerQuery(query="k8s"))
+
+
+@pytest.mark.parametrize("case", ["employer_fit", "personal_fit", "find_postings", "career"])
+async def test_every_billing_tool_bills_the_running_job(case, monkeypatch):
+    from app.harness.status import Run, current_run
+
+    seen, call = _billing_call(case, monkeypatch)
+    token = current_run.set(Run("new", "", False))
+    try:
+        await call
+    finally:
+        current_run.reset(token)
+    assert seen["job_id"] == "new"
+
+
+def test_craft_and_publish_prompts_name_the_key_that_holds_the_document_body():
+    from app.harness.personal.resume.graph import phase_instructions
+
+    for phase in ("craft", "publish"):
+        assert "markdown 키" in phase_instructions(phase, {})
+    assert "markdown 키" not in phase_instructions("review", {})

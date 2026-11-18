@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 import httpx
@@ -77,7 +78,11 @@ async def _flow(svc, db, applies):
     assert await _deliver(box, db, resume) == "done"
     done = db.events[RESUME_JOB][-1]
     assert done[0] == "done"
-    assert done[1]["operation"]["result"]["value"]["assistantMessage"]["text"] == "지원했어요"
+    reply = svc.messages[-1]
+    assert (reply.role, reply.text) == ("ASSISTANT", "지원했어요")
+    assert done[1]["operation"]["result"]["value"] == {"assistantMessageId": str(reply.id), "approvalIds": []}
+    frame = json.dumps(done[1], ensure_ascii=False)
+    assert reply.text not in frame and str(CONV) not in frame
 
     resume["status"] = "QUEUED"
     assert await _deliver(box, db, resume) == "done"

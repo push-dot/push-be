@@ -362,6 +362,9 @@ async def _sync_documents_db(
                 _, v = await docs.create_version(
                     user_id, doc.id, doc.revision, content, blocks,
                     "chat " + name)
+                from app.harness.sources import stamp_created_by
+
+                await stamp_created_by(svc.db, doc.id, conv.id)
                 mapping[kind] = str(doc.id)
                 changed = True
             synced.append({"document_id": doc.id, "version_id": v.id,

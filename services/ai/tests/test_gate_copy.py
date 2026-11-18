@@ -7,8 +7,9 @@ from app.harness.registry import REGISTRY
 from app.harness.tools import ToolContext
 
 
-def test_review_choice_has_template_and_photo_sections():
+def test_review_choice_has_only_the_template_section():
     choice = _choice({"conversation_id": "c", "job_id": "j"}, "review", auto=False)
+    assert len(choice["sections"]) == 1
     assert choice["sections"][0]["kind"] == "thumbnails"
     assert [item["id"] for item in choice["sections"][0]["options"]] == [
         "CLASSIC",
@@ -16,32 +17,10 @@ def test_review_choice_has_template_and_photo_sections():
         "COMPACT",
         "ATS",
     ]
-    assert choice["sections"][1] == {
-        "id": "photo",
-        "kind": "toggle",
-        "options": [
-            {
-                "id": "photo",
-                "label": "프로필 사진 넣기",
-                "desc": "마이 › 프로필 사진을 써요 · 모든 템플릿",  # noqa: RUF001
-            }
-        ],
-        "selected": ["photo"],
-    }
     assert choice["submit"]["optionLabels"]["ATS"] == "ATS로 만들기"
     assert choice["submit"]["label"] == "만들기"
     assert choice["options"][0]["id"] == "CLASSIC"
     assert choice["options"][-1]["id"] == "cancel"
-
-
-def test_quality_copy():
-    from app.harness.personal.resume.graph import _GATES
-    from app.harness.personal.resume.progress import quality_choice
-
-    assert _GATES["quality"]["title"] == "추천 수정도 반영할까요?"
-    event = quality_choice([{"label": "숫자로", "priority": "P1"}])
-    assert event["title"] == "추천 수정도 반영할까요?"
-    assert event["submit"]["label"] == "{n}개 반영하고 디자인으로"
 
 
 def test_read_failed_copy():
@@ -65,9 +44,8 @@ def test_review_gate_explains_the_pick_and_badges_the_recommended_template():
     assert all("badge" not in option for option in choice["options"][1:])
 
 
-def test_applying_warns_that_it_cannot_be_undone():
-    event = tool_action_event("a", "이 공고에 지원해요", "apply_to_posting", {})
-    assert event["foot"] == "지원하면 취소할 수 없어요"
+def test_applying_has_no_foot_line():
+    assert "foot" not in tool_action_event("a", "이 공고에 지원해요", "apply_to_posting", {})
     assert "foot" not in tool_action_event("b", "일정을 삭제해요", "delete_calendar_event", {})
 
 
@@ -99,7 +77,17 @@ async def _start(resume_state) -> dict:
     return (await tool.run(ctx, tool.args_model.model_validate({})))["choice"]
 
 
-async def test_continue_choice_names_the_draft_in_progress():
-    choice = await _start({"status": "active", "phase": "craft", "drafts": {"markdown": "# v1"}})
-    assert choice["detail"] == "작성 중인 이력서 초안(v1)이 있어요."
+async def test_the_offer_shows_the_draft_in_progress_above_its_card(monkeypatch):
+    said: list[dict] = []
+    monkeypatch.setattr("app.harness.personal.tools.emit", said.append)
+    draft = "# 김서준 · 백엔드 개발자\n- 결제 승인 API 재설계\n- Kafka 이벤트 파이프라인"
+    choice = await _start({"status": "active", "phase": "craft", "drafts": {"markdown": draft}})
+    assert [event["token"] for event in said if "token" in event] == [
+        "작성 중인 이력서 초안(v1)이 있어요.",
+        "\n# 김서준 · 백엔드 개발자\n• 결제 승인 API 재설계\n• Kafka 이벤트 파이프라인",
+    ]
+    assert "detail" not in choice
+    assert [option["label"] for option in choice["options"]] == ["이어서 작성하기", "새로 시작하기"]
+    said.clear()
     assert "detail" not in await _start({"status": "active", "phase": "intake"})
+    assert not any("token" in event for event in said)

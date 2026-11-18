@@ -18,3 +18,12 @@ class ScriptedChat:
             content=reply.get("content") or "",
             tool_calls=reply.get("tool_calls") or [],
         )
+
+
+def data_json(content: str):
+    """The JSON inside an as_data block, as a model reads it."""
+    import json
+    import re
+
+    match = re.fullmatch(r'<data source="[^"]*">\n(.*)\n</data>', content, re.DOTALL)
+    return json.loads(match.group(1) if match else content)
