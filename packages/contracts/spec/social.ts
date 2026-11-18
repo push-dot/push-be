@@ -1,7 +1,7 @@
 import type { Route, Schema } from "./shared.ts";
 import {
   get, post, patch, del, ok, okPage, obj, arr, str, int, bool, uuid, dateTime, date, nullable, ref, body, pathParam, pageParams,
-  query, enumOf, noContent,
+  query, enumOf, noContent, binary,
 } from "./shared.ts";
 
 const JOB_CATEGORY = enumOf("dev", "data", "design", "plan", "marketing", "sales", "hr", "ops");
@@ -91,9 +91,17 @@ export const routes: Route[] = [
     description: "Creates an empty profile on first access.",
     responses: { 200: ok(ref("ProfileDetail")) },
   }),
+  get("ai", "/api/v1/me/profile/pdf", {
+    tag,
+    summary: "Download my profile as a PDF",
+    description: "The profile screen as a file: name, headline, 소개, 경력 and 기술 스택, without any AI call. A section with nothing in it is left out. photo=1 stamps the avatar on the first page; any other value is ignored. Content-Disposition is an attachment named after the display name.",
+    params: [query("photo", str, "1 embeds the avatar")],
+    responses: { 200: binary("application/pdf", "Rendered PDF") },
+  }),
   patch("core", "/api/v1/me/profile", {
     tag,
     summary: "Update my profile",
+    description: "A request with an Idempotency-Key keeps the values it replaced under that key (a Bot run sends one). The response then carries changeId; see GET and POST undo under /me/profile/changes/{id}. No change, no changeId.",
     body: body(obj({
       displayName: text(1, 80),
       headline: nullable(text(0, 120)),
@@ -108,6 +116,20 @@ export const routes: Route[] = [
       resumeSourceId: { ...nullable(str), description: "UUID of a source the caller owns. Null or empty clears it. A missing source is 404." },
       contact: nullable(text(0, 200)),
     }, [])),
+    responses: { 200: ok(ref("ProfileUpdated")) },
+  }),
+  get("core", "/api/v1/me/profile/changes/{id}", {
+    tag,
+    summary: "Get a profile change",
+    description: "What a Bot run changed: the field names and whether it was put back. A reopened chat reads this from the changeId on the update_my_profile tool line. 404 for a change that is not the caller's.",
+    params: [id],
+    responses: { 200: ok(ref("ProfileChange")) },
+  }),
+  post("core", "/api/v1/me/profile/changes/{id}/undo", {
+    tag,
+    summary: "Put a profile change back",
+    description: "Writes the replaced values back; fields the change did not move stay as they are. Works once: a second call is 409 CONFLICT, so a later edit is never overwritten. Needs an Idempotency-Key like every POST.",
+    params: [id],
     responses: { 200: ok(ref("ProfileDetail")) },
   }),
   get("core", "/api/v1/me/offers", {
@@ -383,13 +405,36 @@ export const routes: Route[] = [
   get("core", "/api/v1/me/posts", {
     tag,
     summary: "List my posts",
-    params: [...pageParams],
+    description: "sort=views orders by view count and sort=comments by comment count, each then newest first. Those two ignore the cursor and answer the first limit rows with hasMore false and nextCursor null.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
     responses: { 200: okPage(ref("Post")) },
+  }),
+  get("core", "/api/v1/me/saved-posts", {
+    tag,
+    summary: "List posts I saved",
+    description: "Newest save first. sort=views and sort=comments work as on /me/posts. Posts of an author whose account is being deleted are left out.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
+    responses: { 200: okPage(ref("Post")) },
+  }),
+  post("core", "/api/v1/posts/{id}/save", {
+    tag,
+    summary: "Save a post",
+    description: "Idempotent. 404 when the post does not exist.",
+    params: [id],
+    responses: { 204: noContent },
+  }),
+  del("core", "/api/v1/posts/{id}/save", {
+    tag,
+    summary: "Remove a saved post",
+    description: "Idempotent.",
+    params: [id],
+    responses: { 204: noContent },
   }),
   get("core", "/api/v1/me/commented-posts", {
     tag,
     summary: "List posts I commented on",
-    params: [...pageParams],
+    description: "sort works as on /me/posts.",
+    params: [...pageParams, query("sort", { type: "string", enum: ["latest", "views", "comments"], default: "latest" })],
     responses: { 200: okPage(ref("Post")) },
   }),
   get("core", "/api/v1/posts", {
@@ -460,6 +505,13 @@ export const schemas: Record<string, Schema> = {
     following: bool,
     offered: bool,
   }),
+  ProfileUpdated: obj({
+    ...profileProps,
+    following: bool,
+    offered: bool,
+    changeId: { ...uuid, description: "Present only when the request had an Idempotency-Key and moved a field." },
+  }, [...Object.keys(profileProps), "following", "offered"]),
+  ProfileChange: obj({ id: uuid, fields: arr(str), undone: bool, createdAt: dateTime }),
   Offer: obj({
     id: uuid,
     sender: offerParty,
@@ -504,7 +556,7 @@ export const schemas: Record<string, Schema> = {
       type: "object",
       description: "Navigation target. Empty object when missing.",
       properties: {
-        kind: { type: "string", enum: ["offer", "post", "posting", "calendar", "activity", "conversation"], description: "activity: id is an application id" },
+        kind: { type: "string", enum: ["offer", "post", "posting", "calendar", "activity", "conversation", "bot"], description: "activity: id is an application id. bot: id is a bot id" },
         id: str,
       },
       additionalProperties: true,
@@ -536,6 +588,7 @@ export const schemas: Record<string, Schema> = {
     imageUrls: arr(str),
     commentCount: int,
     viewCount: int,
+    saved: bool,
     createdAt: dateTime,
   }),
   Comment: obj({ id: uuid, author: person, body: str, parentId: nullable(uuid), createdAt: dateTime }),

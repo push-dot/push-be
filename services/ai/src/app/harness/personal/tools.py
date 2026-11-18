@@ -7,21 +7,24 @@ from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.types import interrupt
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.domain.access_mode import AccessMode
 from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
+from app.domain.validators import validate_https_url
 from app.framework.fit_judge import judge_fit
-from app.harness.approval import approval_id_for
+from app.harness.approval import approval_id_for, site_host, user_supplied
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import enter_flow
 from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
+from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
+from app.ingest.web_page import LeftSite, fetch_page
 from app.jsonutil import to_jsonable
 
 bound_services: contextvars.ContextVar = contextvars.ContextVar(
@@ -149,6 +152,16 @@ class PrepareArgs(BaseModel):
     expected_revision: int = 0
 
 
+class PageArgs(BaseModel):
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _web(cls, value: str) -> str:
+        validate_https_url(value)
+        return value
+
+
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
     async def run(ctx: ToolContext, args):
         body = args.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(drop))
@@ -249,6 +262,48 @@ def _diff(args: EditDocumentArgs) -> dict:
     }
 
 
+def _changed_lines(hunks: list) -> int:
+    count = {"-": 0, "+": 0}
+    for h in hunks:
+        if h.get("sign") in count:
+            count[h["sign"]] += len(str(h.get("text") or "").splitlines())
+    return max(count.values())
+
+
+def _common(a: list, b: list) -> int:
+    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+
+
+async def _page_hunks(ctx: ToolContext, args: EditDocumentArgs, hunks: list) -> list:
+    """Every line of the document with the edited ones marked.
+
+    The changed block alone when the document cannot be read or `before` is not in it.
+    """
+    svc = _svc()
+    document_svc = getattr(svc, "document_svc", None) if svc else None
+    if document_svc is None or not args.before:
+        return hunks
+    user_id = UUID(ctx.user_id)
+    try:
+        version_id = args.version_id or (await document_svc.get(user_id, args.document_id)).latest_version_id
+        version = await document_svc.get_version(user_id, args.document_id, version_id)
+    except DomainError:
+        return hunks
+    lines = [line for block in version.blocks for line in block.text.splitlines()]
+    text = "\n".join(lines)
+    if args.before not in text:
+        return hunks
+    new = text.replace(args.before, args.after, 1).splitlines()
+    head = _common(lines, new)
+    tail = _common(lines[head:][::-1], new[head:][::-1])
+    return [
+        *({"line": None, "sign": "", "text": line} for line in lines[:head]),
+        *({"line": None, "sign": "-", "text": line} for line in lines[head:len(lines) - tail]),
+        *({"line": None, "sign": "+", "text": line} for line in new[head:len(new) - tail]),
+        *({"line": None, "sign": "", "text": line} for line in lines[len(lines) - tail:]),
+    ]
+
+
 def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: list) -> dict:
     # tool_call_id keeps a second edit in the same job from reusing a resolved approval.
     approval_id = str(uuid5(NAMESPACE_URL, f"push:chat-approval:{job_id}:{tool_call_id}"))
@@ -256,7 +311,8 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
         "type": "approval",
         "id": approval_id,
         "kind": "DOCUMENT_EDIT",
-        "title": "이 수정을 적용할까요?",
+        "title": "수정 적용",
+        "summary": f"{_changed_lines(hunks)}줄을 고쳤어요. 적용하면 문서에 바로 반영돼요.",
         "documentId": document_id,
         "options": [
             {"id": "apply", "label": "적용"},
@@ -267,9 +323,13 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 
 
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
-    if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE) is Decision.ASK:
+    if args.before == args.after:
+        return {"error": "NOTHING_TO_CHANGE"}
+    if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
+              exposure=ctx.exposure) is Decision.ASK:
         event = _document_event(
-            ctx.job_id, ctx.tool_call_id, str(args.document_id), _diff(args)["hunks"])
+            ctx.job_id, ctx.tool_call_id, str(args.document_id),
+            await _page_hunks(ctx, args, _diff(args)["hunks"]))
         approval_id = UUID(str(event["id"]))
         row = await ctx.db.q().fetchrow(
             "SELECT id FROM approvals WHERE id = $1", approval_id)
@@ -278,6 +338,7 @@ async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
                 ctx.db, ctx.user_id, ctx.conversation_id, event, str(args.document_id))
             await ctx.db.q().execute(
                 "UPDATE approvals SET job_id = $2 WHERE id = $1", approval_id, ctx.job_id)
+            waiting(event["id"], "confirm", CARD_LABEL["edit_document"])
             emit(event)
         answer = interrupt({
             "approval_id": event["id"],
@@ -322,12 +383,23 @@ def _resume_saved(row) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _draft_detail(saved: dict) -> str:
+def _draft_offer(saved: dict) -> list[str]:
+    """The link opens the draft's document, saved when craft ran."""
     from app.harness.personal.resume.drafts import draft_text
+    from app.harness.personal.resume.progress import draft_link, paper_event
 
-    if not draft_text(saved.get("drafts")):
-        return ""
-    return f"작성 중인 이력서 초안(v{int(saved.get('draft_version') or 1)})이 있어요."
+    text = draft_text(saved.get("drafts"))
+    doc_id = str(saved.get("profile_document_id") or "")
+    if not text:
+        return []
+    version = int(saved.get("draft_version") or 1)
+    said = [f"작성 중인 이력서 초안(v{version})이 있어요."]
+    paper = paper_event("resume", version, text)
+    if paper and (paper["heading"] or paper["lines"]):
+        head = [f"# {paper['heading']}"] if paper["heading"] else []
+        link = [f"> {draft_link(doc_id, '초안 전체 보기')} ›"] if doc_id else []
+        said.append("\n" + "\n".join([*head, *paper["lines"], *link]))
+    return said
 
 
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
@@ -341,17 +413,18 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
             "title": "이어서 작성할까요?",
             "options": [
                 {"id": "continue", "label": "이어서 작성하기"},
-                {"id": "cancel", "label": "그만하기"},
+                {"id": "cancel", "label": "새로 시작하기"},
             ],
         }
-        if detail := _draft_detail(saved):
-            choice["detail"] = detail
+        for line in _draft_offer(saved):
+            emit({"token": line})
         await insert_chat_approval(ctx.db, ctx.user_id, ctx.conversation_id, choice, None)
         await ctx.db.q().execute(
             "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
             UUID(choice["id"]),
             json.dumps({"gate": choice["gate"]}, ensure_ascii=False),
         )
+        waiting(choice["id"], "answer")
         emit(choice)
         return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}
@@ -379,9 +452,15 @@ def _user_id(ctx: ToolContext):
         return None
 
 
+async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
+    return await ctx.core.call(
+        "GET", "/api/v1/me/bookmarks", user_id=ctx.user_id, company_id=ctx.company_id,
+    )
+
+
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
     gate = current_ai_gate()
-    job_id = ctx.job_id or None
+    job_id = ctx.usage_job_id or None
     if args.posting_id is not None and ctx.db is not None:
         view = await load_fit(
             ctx.db.q(), UUID(ctx.user_id), args.posting_id,
@@ -412,7 +491,7 @@ async def _find_matching_postings(ctx: ToolContext, args: MatchArgs) -> dict:
     conditions["minFit"] = args.min_fit
     if args.document_id is not None:
         conditions["documentId"] = str(args.document_id)
-    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.job_id) or {}
+    result = await run_quick_match(ctx.db, ctx.user_id, conditions, job_id=ctx.usage_job_id) or {}
     return {"items": result.get("items") or [], "text": result.get("text") or ""}
 
 
@@ -423,15 +502,70 @@ async def _search_career(ctx: ToolContext, args: CareerQuery) -> dict:
     from app.framework.rag import search_career_context
     text = await search_career_context(
         svc,
-        {"text": args.query, "user_id": ctx.user_id, "job_id": ctx.job_id},
+        {"text": args.query, "user_id": ctx.user_id, "job_id": ctx.usage_job_id},
         set(),
     )
     return {"text": text or ""}
 
 
+async def _read_page(ctx: ToolContext, args: PageArgs) -> dict:
+    """A URL the user gave is followed wherever it leads, a short link included. A page read on
+    an approval or a site grant stays on that host: a redirect elsewhere is a new decision for the
+    model."""
+    host = site_host(args.url)
+    if ctx.supplied is not None:
+        supplied = ctx.supplied
+    else:
+        supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, args.url)
+    same_site = None if supplied else lambda hop: site_host(hop) == host
+    try:
+        page = await fetch_page(args.url, allow_hop=same_site)
+    except LeftSite as left:
+        return {"error": "REDIRECTED", "to": left.to}
+    except Exception:
+        await _mark_link_check(ctx, args.url, False)
+        raise
+    await _mark_link_check(ctx, args.url, True)
+    return {"url": page.url, "text": page.text}
+
+
+async def _mark_link_check(ctx: ToolContext, url: str, ok: bool) -> None:
+    """The only writer of a saved link's 마지막 확인. There is no link-check job."""
+    await ctx.db.q().execute(
+        "UPDATE user_links SET last_checked_at = now(), last_check_ok = $3 "
+        "WHERE user_id = $1 AND url = $2 AND deleted_at IS NULL",
+        UUID(ctx.user_id), url, ok)
+
+
+def _page_summary(args: PageArgs | None) -> str:
+    return f"{site_host(args.url)} 페이지를 읽어요" if args else "웹 페이지를 읽어요"
+
+
 def _spec(name, tier, model, run, summary, approval_kind="TOOL_ACTION"):
     return ToolSpec(name, tier, model, run, lambda _args: summary, approval_kind)
 
+
+# What a write's card is called on the status line while it waits, "{label} · 확인을 기다리는 중".
+# 지원하기 and 이력서 수정 are drawn on boards ChatPh6Apply and ChatApprove.
+CARD_LABEL = {
+    "bookmark_posting": "공고 저장",
+    "unbookmark_posting": "공고 저장 취소",
+    "create_calendar_event": "일정 추가",
+    "update_calendar_event": "일정 수정",
+    "edit_document": "이력서 수정",
+    "start_document": "서류 작성",
+    "prepare_interview": "면접 준비",
+    "apply_to_posting": "지원하기",
+    "accept_offer": "제안 수락",
+    "decline_offer": "제안 거절",
+    "send_offer_message": "제안 답장",
+    "send_offer": "커피챗 제안",
+    "create_post": "글 올리기",
+    "create_comment": "댓글 남기기",
+    "follow_user": "팔로우하기",
+    "update_my_profile": "프로필 수정",
+    "delete_calendar_event": "일정 삭제",
+}
 
 PERSONAL_TOOLS = [
     _core("search_postings", Tier.READ, SearchPostings, "공고를 찾아요", "GET",
@@ -440,8 +574,7 @@ PERSONAL_TOOLS = [
     _spec("find_matching_postings", Tier.READ, MatchArgs, _find_matching_postings, "공고를 찾아요"),
     _core("get_posting", Tier.READ, PostingId, "공고 내용을 봐요", "GET",
           lambda args: f"/api/v1/postings/{args.posting_id}", drop=("posting_id",)),
-    _core("list_bookmarks", Tier.READ, EmptyArgs, "저장한 공고를 봐요", "GET",
-          lambda _args: "/api/v1/me/bookmarks"),
+    _spec("list_bookmarks", Tier.READ, EmptyArgs, _list_bookmarks, "저장한 공고를 봐요"),
     _spec("list_applications", Tier.READ, EmptyArgs, _list_applications, "지원 현황을 봐요"),
     _spec("list_documents", Tier.READ, EmptyArgs, _list_documents, "서류를 봐요"),
     _spec("get_document", Tier.READ, DocumentId, _get_document, "서류 내용을 봐요"),
@@ -460,6 +593,7 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/posts"),
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
     _spec("search_career_context", Tier.READ, CareerQuery, _search_career, "내 경력 자료를 찾아요"),
+    ToolSpec("read_page", Tier.EXTERNAL_READ, PageArgs, _read_page, _page_summary),
     _core("bookmark_posting", Tier.SAFE_WRITE, PostingId, "공고를 저장해요", "POST",
           lambda args: f"/api/v1/postings/{args.posting_id}/bookmark",
           write=True, drop=("posting_id",)),

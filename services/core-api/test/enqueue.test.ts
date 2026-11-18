@@ -109,6 +109,16 @@ test("same idempotencyKey returns the existing jobId", async () => {
   assert.equal(calls.some((sql) => sql.includes("INSERT INTO")), false);
 });
 
+test("backpressure admits a job at exactly the plan depth and refuses the next one", async () => {
+  for (const plan of ["FREE", "BASIC", "PRO", "ULTRA"] as const) {
+    const limit = queueDepthLimit(plan);
+    const at: Query = async () => ({ rows: [{ n: limit }], rowCount: 1 });
+    const over: Query = async () => ({ rows: [{ n: limit + 1 }], rowCount: 1 });
+    assert.equal((await checkBackpressure(at, "q:chat", plan, { userId: USER })).ok, true);
+    assert.equal((await checkBackpressure(over, "q:chat", plan, { userId: USER })).ok, false);
+  }
+});
+
 test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FREE but not ULTRA", async () => {
   const depth = queueDepthLimit("FREE") + 1;
   const owned: unknown[][] = [];

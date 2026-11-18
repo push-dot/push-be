@@ -9,6 +9,7 @@ import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const JOB = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const POSTING = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW = new Date("2026-10-21T00:00:00Z");
 
@@ -28,6 +29,12 @@ const recording = (seen: Call[], rows: (sql: string, params: unknown[]) => Recor
   async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) {
+      return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO notification_dedupes") && !sql.includes("FROM bookmarks") && !sql.includes("FROM calendar_events")) {
+      return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
+    }
     if (sql.includes("user_settings") && !sql.includes("notification_dedupes")) return { rows: [{ enabled: true }], rowCount: 1 };
     if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
     const out = rows(sql, params);
@@ -44,7 +51,7 @@ test("notify enqueues instead of sending push inline", async () => {
   resetLimits();
   const seen: Call[] = [];
   const fetched: string[] = [];
-  const res = await handle(internal("/api/v1/internal/notifications/ai-done", { userId: USER, conversationId: CONV }), env(), {
+  const res = await handle(internal("/api/v1/internal/notifications/ai-done", { userId: USER, conversationId: CONV, jobId: JOB }), env(), {
     query: recording(seen),
     now: () => NOW,
     fetch: async (input, init) => {
@@ -66,7 +73,9 @@ test("notify enqueues instead of sending push inline", async () => {
     body: "",
     target: { kind: "conversation", id: CONV },
     createdAt: NOW.toISOString(),
+    conversationId: CONV,
   });
+  assert.equal(job.params[9], CONV);
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO notifications")), false);
   assert.equal(seen.some((call) => call.sql.includes("credit_reservations") && call.sql.includes("INSERT")), false);
   assert.equal(fetched.some((hit) => hit.includes("exp.host")), false);
@@ -97,7 +106,7 @@ test("postgres backend keeps the inline insert and push for rollback", async () 
   resetLimits();
   const seen: Call[] = [];
   const fetched: string[] = [];
-  const res = await handle(internal("/api/v1/internal/notifications/ai-done", { userId: USER, conversationId: CONV }), env({ QUEUE_BACKEND: "postgres" }), {
+  const res = await handle(internal("/api/v1/internal/notifications/ai-done", { userId: USER, conversationId: CONV, jobId: JOB }), env({ QUEUE_BACKEND: "postgres" }), {
     query: recording(seen),
     now: () => NOW,
     fetch: async (input) => {

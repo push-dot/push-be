@@ -6,13 +6,15 @@ import logging
 from uuid import UUID, uuid4
 
 from app.harness.personal.resume.drafts import draft_text
+from app.harness.sources import note, stamp_created_by
 from app.infrastructure.doc_render import tiptap_to_lines
 
 _TITLE = "Push 프로필"
 _SOURCE_SQL = (
     "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, "
-    "created_at, content, page_count, origin) "
-    "VALUES ($1,$2,$3,$4,$5,$6,$7,'STORED',now(),$8,$9,'AI')"
+    "created_at, content, page_count, origin, created_by_bot_id) "
+    "VALUES ($1,$2,$3,$4,$5,$6,$7,'STORED',now(),$8,$9,'AI',"
+    "(SELECT bot_id FROM conversations WHERE id = $10))"
 )
 
 
@@ -44,7 +46,10 @@ async def load_document_markdown(db, state: dict) -> str:
         return ""
     if not isinstance(content, dict):
         return ""
-    return "\n".join(line for line in tiptap_to_lines(content) if line).strip()
+    try:
+        return "\n".join(line for line in tiptap_to_lines(content) if line).strip()
+    except (AttributeError, TypeError):
+        return ""
 
 
 def _clean(value) -> str:
@@ -202,10 +207,12 @@ async def _insert_source(db, state: dict, file_name: str, pdf: bytes, pages: int
             f"db://sources/{source_id}",
             pdf,
             pages,
+            _uuid(state.get("conversation_id")),
         )
     except Exception:
         logging.getLogger(__name__).warning("source insert failed", exc_info=True)
         return False
+    note("file", str(source_id), file_name)
     return True
 
 
@@ -217,7 +224,9 @@ def _document_title(file_name: str) -> str:
 
 
 async def save_edited_file(db, state: dict, file_name: str) -> dict:
-    text = draft_text(state.get("drafts")) or file_name
+    text = draft_text(state.get("drafts"))
+    if not text:
+        return {"documentId": "", "fileName": file_name, "pageLine": "", "stored": False}
     pdf = _pdf_bytes(text, state.get("template"))
     pages = _page_count(pdf)
     document_id = await save_profile_document(state, _document_title(file_name))
@@ -228,6 +237,17 @@ async def save_edited_file(db, state: dict, file_name: str) -> dict:
         "pageLine": f"A4 {pages}쪽 · {_size_label(len(pdf))}",
         "stored": stored,
     }
+
+
+async def _draft_document(document_svc, user_id: UUID, known):
+    """The draft's existing HUB_PROFILE document, so present adds a version instead of a second document."""
+    try:
+        doc = await document_svc.get(user_id, UUID(str(known)))
+    except Exception:
+        return None
+    if doc.kind != "HUB_PROFILE" or doc.status == "ARCHIVED":
+        return None
+    return doc
 
 
 async def save_profile_document(state: dict, title: str | None = None) -> str:
@@ -243,14 +263,23 @@ async def save_profile_document(state: dict, title: str | None = None) -> str:
     except (TypeError, ValueError):
         return ""
     label = title or _TITLE
-    text = draft_text(state.get("drafts")) or label
+    text = draft_text(state.get("drafts"))
+    if not text and not title:
+        return ""
+    text = text or label
     content, blocks = md_to_doc(text)
     template = state.get("template") or "CLASSIC"
+    # The service cannot rename the craft document, so a titled save always gets its own.
+    known = None if title else state.get("profile_document_id")
+    doc = await _draft_document(document_svc, user_id, known)
     try:
-        doc = await document_svc.create(
-            user_id, None, label, "HUB_PROFILE", template, "ko")
+        if doc is None:
+            doc = await document_svc.create(
+                user_id, None, label, "HUB_PROFILE", template, "ko")
+            await stamp_created_by(getattr(svc, "db", None), doc.id, state.get("conversation_id"))
         await document_svc.create_version(
             user_id, doc.id, doc.revision, content, blocks, "resume flow")
     except Exception:
-        return ""
+        # Keep the created document's id so a retry adds a version.
+        return str(doc.id) if doc is not None else ""
     return str(doc.id)

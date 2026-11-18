@@ -55,8 +55,8 @@ export const createMailer = (env: MailEnv, fetchImpl?: typeof fetch): Mailer => 
       return;
     }
     const from = env.MAIL_FROM || "noreply@push.local";
-    // The body carries live verify/reset/invite tokens; only a development worker may print it.
-    const body = env.APP_ENV === "development" ? mail.text : "(not sent: no mail provider)";
-    console.log(`[mail] ${from} -> ${mail.to} ${mail.subject} ${body}`);
+    // The body carries live verify/reset/invite tokens and the recipient is personal data; only a development worker may print them.
+    const dev = env.APP_ENV === "development";
+    console.log(`[mail] ${from} -> ${dev ? mail.to : "(redacted)"} ${mail.subject} ${dev ? mail.text : "(not sent: no mail provider)"}`);
   },
 });

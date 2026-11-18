@@ -44,12 +44,12 @@ export const routes: Route[] = [
     tag: "documents",
     summary: "Create a document",
     body: body(closed({
-      applicationId: uuid,
+      applicationId: { ...nullable(uuid), description: "The application (posting) the document belongs to. Leave it out or null for a document that belongs to none, such as a hub profile or a portfolio. A given id must be the caller's application, else 404." },
       title: { type: "string", minLength: 1, maxLength: 300 },
       kind: documentKind,
       template: { ...templateInput, description: "CLASSIC is stored as SIMPLE, COMPACT as ATS." },
       language: str,
-    }, ["applicationId", "title", "kind", "template", "language"])),
+    }, ["title", "kind", "template", "language"])),
     responses: { 201: ok(ref("Document"), "Created") },
   }),
   get("core", "/api/v1/documents/{id}", {
@@ -358,6 +358,7 @@ export const routes: Route[] = [
   get("ai", "/api/v1/sources/{id}/profile-draft", {
     tag: "sources",
     summary: "Parse a profile draft from a source",
+    description: "422 VALIDATION_ERROR (details.field sourceId) when the source has no stored file or its PDF cannot be read. 400 when the file is neither a PDF nor text.",
     params: [id],
     responses: { 200: ok(ref("DocumentsProfileDraft")) },
   }),
@@ -654,7 +655,7 @@ export const schemas: Record<string, Schema> = {
     startsAt: dateTime,
     endsAt: dateTime,
     timeZone: str,
-    source: { type: "string", description: "LOCAL or an external calendar source" },
+    source: { type: "string", description: "LOCAL, GOOGLE, or POSTING. POSTING is a posting deadline the server added when the user bookmarked or applied: one DEADLINE event per posting, 23:59 on the deadline day (Asia/Seoul), removed on un-bookmark unless applied" },
     externalId: nullable(str),
     notes: str,
     remindAt: nullable(dateTime),

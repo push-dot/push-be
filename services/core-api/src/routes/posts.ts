@@ -1,6 +1,6 @@
 import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { queryForms, searchFields } from "../hangul.ts";
-import { asBool, codePoints, data, fieldError, jsonList, pageBody, requireUuid } from "../http.ts";
+import { asBool, codePoints, data, fieldError, jsonList, noContent, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import {
@@ -32,12 +32,12 @@ function appendTextSearch(sql: string, params: unknown[], q: string, columns: st
   const jamo = params.length - 2;
   const hangul = params.length - 1;
   const hangulJamo = params.length;
-  const parts = columns.map((column) => `${column} ILIKE '%' || $${raw} || '%'`).join(" OR ");
-  const hangulParts = columns.map((column) => `${column} ILIKE '%' || $${hangul} || '%'`).join(" OR ");
+  const parts = columns.map((column) => `${column} ILIKE '%' || $${raw} || '%' ESCAPE '\\'`).join(" OR ");
+  const hangulParts = columns.map((column) => `${column} ILIKE '%' || $${hangul} || '%' ESCAPE '\\'`).join(" OR ");
   sql += ` AND ((${parts})
-    OR ($${cho} <> '' AND search_choseong LIKE '%' || $${cho} || '%')
-    OR ($${jamo} <> '' AND search_jamo LIKE $${jamo} || '%')
-    OR ($${hangul} <> '' AND ((${hangulParts}) OR search_jamo LIKE $${hangulJamo} || '%')))`;
+    OR ($${cho} <> '' AND search_choseong LIKE '%' || $${cho} || '%' ESCAPE '\\')
+    OR ($${jamo} <> '' AND search_jamo LIKE $${jamo} || '%' ESCAPE '\\')
+    OR ($${hangul} <> '' AND ((${hangulParts}) OR search_jamo LIKE $${hangulJamo} || '%' ESCAPE '\\')))`;
   return sql;
 }
 
@@ -56,12 +56,15 @@ function postDto(row: Record<string, unknown>): Record<string, unknown> {
     imageUrls: jsonList(row.image_keys).map((key) => imageUrl(key)).filter((url) => url != null),
     commentCount: Number(row.comment_count ?? 0),
     viewCount: Number(row.view_count ?? 0),
+    saved: asBool(row.saved),
     createdAt: ts(row.created_at),
   };
 }
 
-const POST_SQL = `p.id, p.user_id, u.display_name, u.is_employer, co.name AS company_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
-  (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count
+// viewer is the SQL placeholder of the reading user; a guest id matches no post_saves row, so saved is false.
+const postSql = (viewer: string): string => `p.id, p.user_id, u.display_name, u.is_employer, co.name AS company_name, p.category, p.title, p.body, p.image_keys, p.view_count, p.created_at,
+  (SELECT count(*)::int FROM post_comments c WHERE c.post_id = p.id) AS comment_count,
+  EXISTS (SELECT 1 FROM post_saves ps WHERE ps.post_id = p.id AND ps.user_id = ${viewer}) AS saved
   FROM posts p JOIN users u ON u.id = p.user_id AND ${NOT_DELETING}
   LEFT JOIN company_members cm ON cm.user_id = u.id
   LEFT JOIN companies co ON co.id = cm.company_id`;
@@ -95,8 +98,8 @@ async function listPosts(ctx: Ctx): Promise<Response> {
   if (period !== "" && period !== "week") throw unprocessable("period", "unsupported period");
   const category = ctx.url.searchParams.get("category");
   if (category && !POST_CATEGORIES.has(category)) throw unprocessable("category", "unsupported category");
-  const params: unknown[] = [];
-  let sql = "SELECT " + POST_SQL + " WHERE 1=1";
+  const params: unknown[] = [ctx.user.id];
+  let sql = "SELECT " + postSql("$1") + " WHERE 1=1";
   if (category) {
     params.push(category);
     sql += ` AND p.category = $${params.length}`;
@@ -126,12 +129,12 @@ export async function searchPosts(ctx: Ctx, q: string): Promise<Response> {
   const page = pageOf(ctx.url);
   assertSearchCursor(ctx.url, sort);
   const forms = queryForms(q);
-  const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
-  let sql = `SELECT ${POST_SQL} WHERE (
-      p.title ILIKE '%' || $1 || '%' OR p.body ILIKE '%' || $1 || '%'
-      OR ($2 <> '' AND p.search_choseong LIKE '%' || $2 || '%')
-      OR ($3 <> '' AND p.search_jamo LIKE $3 || '%')
-      OR ($4 <> '' AND (p.title ILIKE '%' || $4 || '%' OR p.body ILIKE '%' || $4 || '%' OR p.search_jamo LIKE $5 || '%'))
+  const params: unknown[] = [forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo, ctx.user.id];
+  let sql = `SELECT ${postSql("$6")} WHERE (
+      p.title ILIKE '%' || $1 || '%' ESCAPE '\\' OR p.body ILIKE '%' || $1 || '%' ESCAPE '\\'
+      OR ($2 <> '' AND p.search_choseong LIKE '%' || $2 || '%' ESCAPE '\\')
+      OR ($3 <> '' AND p.search_jamo LIKE $3 || '%' ESCAPE '\\')
+      OR ($4 <> '' AND (p.title ILIKE '%' || $4 || '%' ESCAPE '\\' OR p.body ILIKE '%' || $4 || '%' ESCAPE '\\' OR p.search_jamo LIKE $5 || '%' ESCAPE '\\'))
     )`;
   const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
   if (page.cursor) {
@@ -174,7 +177,7 @@ async function createPost(ctx: Ctx): Promise<Response> {
     [ctx.user.id]);
   return data(201, postDto({
     id, user_id: ctx.user.id, display_name: ctx.user.displayName, category: body.category, title, body: text,
-    image_keys: keys, view_count: 0, comment_count: 0, created_at: now,
+    image_keys: keys, view_count: 0, comment_count: 0, saved: false, created_at: now,
     is_employer: author ? author.is_employer : ctx.user.accountType === "EMPLOYER",
     company_name: author?.company_name ?? null,
   }), ctx.rid);
@@ -186,7 +189,7 @@ async function getPost(ctx: Ctx, idRaw: string): Promise<Response> {
     `UPDATE posts SET view_count = view_count + 1 WHERE id = $1 RETURNING id`,
     [id]);
   if (!row) throw notFound();
-  const full = await onePost(ctx, "SELECT " + POST_SQL + " WHERE p.id = $1", [id]);
+  const full = await onePost(ctx, "SELECT " + postSql("$2") + " WHERE p.id = $1", [id, ctx.user.id]);
   if (!full) throw notFound();
   return data(200, postDto(full), ctx.rid);
 }
@@ -260,50 +263,73 @@ async function createComment(ctx: Ctx, idRaw: string): Promise<Response> {
   }, ctx.rid);
 }
 
-async function listMyPosts(ctx: Ctx): Promise<Response> {
+const MY_SORTS: Record<string, string> = {
+  latest: "p.created_at DESC, p.id DESC",
+  views: "p.view_count DESC, p.created_at DESC, p.id DESC",
+  comments: "comment_count DESC, p.created_at DESC, p.id DESC",
+};
+
+const mySortOf = (url: URL): string => {
+  const sort = url.searchParams.get("sort") || "latest";
+  if (!Object.hasOwn(MY_SORTS, sort)) throw unprocessable("sort", "unsupported sort");
+  return sort;
+};
+
+type OwnedList = { join: string; where: string; at: string };
+const OWN_POSTS: OwnedList = { join: "", where: "p.user_id = $1", at: "p.created_at" };
+const SAVED_POSTS: OwnedList = { join: "JOIN post_saves s ON s.post_id = p.id", where: "s.user_id = $1", at: "s.created_at" };
+const COMMENTED_POSTS: OwnedList = { join: "", where: "p.id IN (SELECT post_id FROM post_comments WHERE user_id = $1)", at: "p.created_at" };
+
+// shortcut: views and comments ignore the cursor and answer the first `limit` rows without a next page, since the
+// (created_at, id) cursor is not their rank. A reader has few posts; upgrade to a rank cursor if lists pass the limit of 100.
+async function listOwnedPosts(ctx: Ctx, list: OwnedList): Promise<Response> {
   const page = pageOf(ctx.url);
+  const sort = mySortOf(ctx.url);
   const params: unknown[] = [ctx.user.id];
-  let sql = "SELECT " + POST_SQL + " WHERE p.user_id = $1";
+  let sql = `SELECT ${list.at} AS cursor_at, ${postSql("$1")} ${list.join} WHERE ${list.where}`;
   const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
-  if (page.cursor) {
+  if (sort === "latest" && page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
+    sql += ` AND (${list.at}, p.id) < ($${params.length - 1}, $${params.length})`;
   }
   params.push(page.limit + 1);
-  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
+  sql += ` ORDER BY ${sort === "latest" ? `${list.at} DESC, p.id DESC` : MY_SORTS[sort]} LIMIT $${params.length}`;
   const rows = await queryPosts(ctx, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
+  const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.cursor_at, id: String(row.id) }));
+  if (sort !== "latest") return pageBody(mapped.slice(0, page.limit).map((row) => row.item), null, false, ctx.rid, total);
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
-async function listCommentedPosts(ctx: Ctx): Promise<Response> {
-  const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
-  let sql = `SELECT ${POST_SQL}
-    WHERE p.id IN (SELECT post_id FROM post_comments WHERE user_id = $1)`;
-  const total = await countWhere(ctx, sql, " FROM posts p", params.slice());
-  if (page.cursor) {
-    params.push(page.cursor.createdAt, page.cursor.id);
-    sql += ` AND (p.created_at, p.id) < ($${params.length - 1}, $${params.length})`;
-  }
-  params.push(page.limit + 1);
-  sql += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${params.length}`;
-  const rows = await queryPosts(ctx, sql, params);
-  const mapped = rows.rows.map((row) => ({ item: postDto(row), createdAt: row.created_at, id: String(row.id) }));
-  const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-  return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
+async function savePost(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  const saved = await one(ctx.deps.query,
+    `INSERT INTO post_saves (user_id, post_id, created_at) SELECT $1, p.id, $3 FROM posts p WHERE p.id = $2
+     ON CONFLICT (user_id, post_id) DO NOTHING RETURNING post_id`,
+    [ctx.user.id, id, ctx.now.toISOString()]);
+  if (!saved && !await one(ctx.deps.query, "SELECT id FROM posts WHERE id = $1", [id])) throw notFound();
+  return noContent(ctx.rid);
+}
+
+async function unsavePost(ctx: Ctx, idRaw: string): Promise<Response> {
+  const id = requireUuid(idRaw, "id");
+  await query(ctx.deps.query, "DELETE FROM post_saves WHERE user_id = $1 AND post_id = $2", [ctx.user.id, id]);
+  return noContent(ctx.rid);
 }
 
 export const dispatchPosts = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
-  if (path === "/api/v1/me/posts" && method === "GET") return listMyPosts(ctx);
-  if (path === "/api/v1/me/commented-posts" && method === "GET") return listCommentedPosts(ctx);
+  if (path === "/api/v1/me/posts" && method === "GET") return listOwnedPosts(ctx, OWN_POSTS);
+  if (path === "/api/v1/me/saved-posts" && method === "GET") return listOwnedPosts(ctx, SAVED_POSTS);
+  if (path === "/api/v1/me/commented-posts" && method === "GET") return listOwnedPosts(ctx, COMMENTED_POSTS);
   if (path === "/api/v1/posts" && method === "GET") return listPosts(ctx);
   if (path === "/api/v1/posts" && method === "POST") return createPost(ctx);
   const comments = path.match(/^\/api\/v1\/posts\/([^/]+)\/comments$/);
   if (comments && method === "GET") return listComments(ctx, comments[1]);
   if (comments && method === "POST") return createComment(ctx, comments[1]);
+  const save = path.match(/^\/api\/v1\/posts\/([^/]+)\/save$/);
+  if (save && method === "POST") return savePost(ctx, save[1]);
+  if (save && method === "DELETE") return unsavePost(ctx, save[1]);
   const post = path.match(/^\/api\/v1\/posts\/([^/]+)$/);
   if (post && method === "GET") return getPost(ctx, post[1]);
   return null;

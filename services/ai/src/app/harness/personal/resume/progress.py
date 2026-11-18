@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.domain.posting_fit import FIT_DIMENSIONS, fit_view
 
 _RESUME = ("resume", "이력서 읽기")
@@ -133,6 +135,17 @@ def _posting(analysis: dict) -> dict:
     return _dict(jobs)
 
 
+_REASON_END = re.compile(r"(이에요|예요|입니다|이다|이라서|라서)\.?$")
+
+
+def read_failed_text(reason) -> str:
+    """`reason` is a noun phrase ("로그인이 필요한 영역"); a sentence ending is stripped so it joins cleanly."""
+    text = _REASON_END.sub("", reason.strip()).strip(" .") if isinstance(reason, str) else ""
+    if not text:
+        return "“자격 요건”을 읽지 못했어요."
+    return f"“자격 요건”은 {_josa(text, '이라', '라')} 읽지 못했어요."
+
+
 def posting_line(analysis: dict, *, failed: bool = False) -> dict:
     job = _posting(analysis)
     required = (
@@ -142,16 +155,12 @@ def posting_line(analysis: dict, *, failed: bool = False) -> dict:
     title = job.get("title") or job.get("position") or job.get("role")
     target = " · ".join(str(part).strip() for part in (job.get("company"), title) if part)
     if failed:
-        reason = job.get("read_error")
-        result = "“자격 요건”을 읽지 못했어요"
-        if isinstance(reason, str) and reason.strip():
-            result = f"{result} · {reason.strip()}"
         return _line(
             "analyze_posting",
             "공고 읽기",
             "err",
             target=target or "회사 채용 페이지",
-            resultLine=result,
+            resultLine=read_failed_text(job.get("read_error")),
         )
     counts = (_count(required), _count(preferred))
     result = f"필수 {counts[0]}개 · 우대 {counts[1] or 0}개" if counts[0] else ""
@@ -199,10 +208,10 @@ def _to(word: str) -> str:
 
 def fit_band(score: float) -> str:
     if score >= 8.0:
-        return "높음 · 잘 맞아요"
+        return "높고, 잘 맞아요."
     if score >= _WEAK:
-        return "보통 · 개선 여지 있어요"
-    return "낮음 · 고칠 곳이 많아요"
+        return "보통이고, 고칠 여지가 있어요."
+    return "낮고, 고칠 곳이 많아요."
 
 
 def fit_summary(parts: dict) -> str:
@@ -229,6 +238,12 @@ def _keywords(terms: list, resume_text: str) -> list[dict]:
         if text and text not in seen:
             seen.append(text)
     return [{"label": text, "ok": text.casefold() in folded} for text in seen[:5]]
+
+
+def added_keywords(terms: list, before: str, after: str) -> list[str]:
+    """The posting keywords the new text carries and the old one did not."""
+    had = {k["label"] for k in _keywords(terms, before) if k["ok"]}
+    return [k["label"] for k in _keywords(terms, after) if k["ok"] and k["label"] not in had]
 
 
 def _projected(parts: dict, plan: str, score: float, bullets: list) -> dict | None:
@@ -279,8 +294,79 @@ def done_summary(source: str, fit_from, fit_to, bullets: list) -> dict:
     return {"summary": f"다 됐어요! {what} 고쳤어요.", "bullets": lines}
 
 
-def boost_line(cycle: int, before: float, after: float) -> dict:
-    return _line("boost", f"점수 올리기 {cycle}회", resultLine=f"{before:.1f} → {after:.1f}")
+def _raised_part(before, after) -> tuple[str, str] | None:
+    """The fit dimension this round raised most, as (key, label)."""
+    before, after = _dict(before), _dict(after)
+    rises = [
+        (float(after[key]) - float(before[key]), key, label)
+        for key, label, _weight in FIT_DIMENSIONS
+        if key in before and key in after and float(after[key]) > float(before[key])
+    ]
+    if not rises:
+        return None
+    _gain, key, label = max(rises, key=lambda item: item[0])
+    return key, label
+
+
+_CAREER_KEYS = ("experienceLink", "careerLevel")
+_BOOST_CHANGED = {
+    "techStack": "공고 기술 스택을 앞으로 옮겼어요",
+    "experienceLink": "성과를 숫자로 보여 줬어요",
+    "careerLevel": "성과를 숫자로 보여 줬어요",
+    "keyword": "키워드를 경력 문장에 넣었어요",
+    "domain": "공고 도메인에 맞춰 고쳤어요",
+}
+
+
+def boost_line(
+    cycle: int,
+    before: float,
+    after: float,
+    parts_before=None,
+    parts_after=None,
+    *,
+    added: list[str] | None = None,
+    company: str = "",
+) -> dict:
+    """One step per round, named boostN. The app reads target and resultLine for its grey line:
+    the round's target and "a → b · what changed" (ChatPh3Boost)."""
+    result = f"{before:.1f} → {after:.1f}"
+    raised = _raised_part(parts_before, parts_after)
+    target = None
+    if raised is not None:
+        key, label = raised
+        target = f"경력 · {company}" if key in _CAREER_KEYS and company else label
+        if key == "keyword" and added:
+            changed = _josa(", ".join(added[:2]), "을", "를") + " 경력 문장에 넣었어요"
+        else:
+            changed = _BOOST_CHANGED[key]
+        result = f"{result} · {changed}"
+    return _line(f"boost{cycle}", f"점수 올리기 {cycle}회", target=target, resultLine=result)
+
+
+def marked_text(head: str, items: list[str]) -> str:
+    """A bot line with the "• " list the boards draw under it."""
+    return "\n".join([head, *(f"• {item}" for item in items)])
+
+
+def quality_text(labels: list[str]) -> str:
+    return marked_text("품질 검사를 마치고 추천 수정까지 반영했어요.", labels) + "\n"
+
+
+def draft_link(document_id: str, label: str) -> str:
+    return f"[{label}](/docs/push/{document_id})"
+
+
+def craft_text(version: int, changes: list[str], document_id: str = "") -> str | None:
+    if not changes:
+        return None
+    head = f"초안(v{version})을 다시 만들었어요."
+    if version == 1:
+        head = "첫 번째 초안(v1)을 만들었어요."
+    text = marked_text(head, changes[:4])
+    if document_id:
+        text += "\n" + draft_link(document_id, f"이력서 초안 v{version}") + " · 미리보기"
+    return text
 
 
 def think_event(phase: str, seconds: float) -> dict:
@@ -344,6 +430,64 @@ def strategy_plan(output: dict) -> dict | None:
     if keywords:
         plan["keywords"] = keywords
     return plan
+
+
+_BLUEPRINT_CAP = 6
+_CONDITIONAL = ("conditional", "조건부", "⚠")
+_FAILED = ("fail", "failed", "탈락", "❌")
+
+
+def titled_projects(projects) -> list[dict]:
+    items = projects if isinstance(projects, list) else []
+    return [p for p in items if isinstance(p, dict) and str(p.get("title") or p.get("name") or "").strip()]
+
+
+def blueprints_text(output: dict) -> str | None:
+    count = len(titled_projects(output.get("projects") if isinstance(output, dict) else None))
+    return f"프로젝트 기획서 {count}개를 만들었어요." if count else None
+
+
+def _verdict_of(project: dict, verdicts: dict) -> str:
+    key = str(project.get("id") or "")
+    raw = str(verdicts.get(key) or "").strip().lower() if key else ""
+    if any(word in raw for word in _FAILED):
+        return "fail"
+    return "conditional" if any(word in raw for word in _CONDITIONAL) else "pass"
+
+
+def blueprints_plan(projects, checked: dict) -> tuple[list[dict], dict | None]:
+    """Plans that passed the check, plus the card listing them. `checked.projects` is [{id, verdict}]."""
+    found = checked.get("projects") if isinstance(checked, dict) else None
+    verdicts = {
+        str(item.get("id") or ""): item.get("verdict")
+        for item in (found if isinstance(found, list) else [])
+        if isinstance(item, dict)
+    }
+    kept: list[dict] = []
+    rows: list[dict] = []
+    for project in titled_projects(projects):
+        verdict = _verdict_of(project, verdicts)
+        if verdict == "fail":
+            continue
+        kept.append(project)
+        stack = project.get("stack")
+        stack = ", ".join(str(item).strip() for item in stack if str(item).strip()) if isinstance(stack, list) else str(stack or "").strip()
+        note = " · ".join(part for part in (str(project.get("category") or "").strip(), stack) if part)
+        rows.append({
+            "tag": "조건부" if verdict == "conditional" else "통과",
+            "label": str(project.get("title") or project.get("name")).strip(),
+            "note": note[:60],
+        })
+    if not rows:
+        return kept, None
+    rows = rows[:_BLUEPRINT_CAP]
+    return kept, {
+        "type": "plan",
+        "id": "blueprints",
+        "title": "프로젝트 기획서",
+        "meta": f"{len(rows)}개",
+        "rows": rows,
+    }
 
 
 def strategy_line(plan: dict) -> dict:
@@ -413,12 +557,12 @@ def paper_event(
 
 
 _TONE_OPTIONS = (
+    {"id": "preserve", "label": "원래 말투로"},
     {"id": "professional", "label": "전문적으로"},
     {"id": "confident", "label": "자신 있게"},
     {"id": "concise", "label": "짧게"},
     {"id": "technical", "label": "기술 중심으로"},
     {"id": "collaborative", "label": "협업 중심으로"},
-    {"id": "preserve", "label": "원래 말투로"},
 )
 
 
@@ -473,6 +617,25 @@ def _material_rows(inputs: dict, analysis: dict) -> list[dict]:
     return rows
 
 
+_MATERIAL_KEYS = {
+    "m_file": ("fileName", "file_name", "attachments", "documentId"),
+    "m_posting": ("posting", "postingId"),
+    "m_github": ("github",),
+}
+
+
+def without_materials(inputs: dict, skipped: list[str]) -> dict:
+    kept = dict(inputs)
+    for material in skipped:
+        for key in _MATERIAL_KEYS.get(material, ()):
+            kept.pop(key, None)
+    if "m_github" in skipped and "pages" in kept:
+        kept["pages"] = {
+            url: page for url, page in (kept.get("pages") or {}).items() if not _github_page(str(url))
+        }
+    return kept
+
+
 def intake_panel(inputs: dict | None, analysis: dict | None = None) -> list[dict]:
     bag = inputs if isinstance(inputs, dict) else {}
     found = analysis if isinstance(analysis, dict) else {}
@@ -495,9 +658,10 @@ def intake_panel(inputs: dict | None, analysis: dict | None = None) -> list[dict
         sections.append(
             {
                 "id": "materials",
-                "kind": "rows",
-                "title": "가져올 자료",
-                "options": rows,
+                "kind": "toggle",
+                "title": "가져올 자료를 골라 주세요",
+                "options": [{key: row[key] for key in ("id", "label", "sub", "badge") if key in row} for row in rows],
+                "selected": [row["id"] for row in rows],
             }
         )
     sections.append(
@@ -543,50 +707,6 @@ def quality_diff(auto_fixes) -> dict | None:
     if not hunks:
         return None
     return {"type": "diff", "documentId": "", "revisionId": "", "hunks": hunks}
-
-
-def quality_choice(recommendations) -> dict | None:
-    options = []
-    selected = []
-    for rec in recommendations if isinstance(recommendations, list) else []:
-        if len(options) >= 6:
-            break
-        if not isinstance(rec, dict):
-            continue
-        label = str(rec.get("label") or "").strip()
-        if not label:
-            continue
-        item = {"id": f"rec{len(options) + 1}", "label": label}
-        desc = rec.get("desc")
-        if isinstance(desc, str) and desc.strip():
-            item["desc"] = desc.strip()
-        options.append(item)
-        if rec.get("priority") == "P1":
-            selected.append(item["id"])
-    if not options:
-        return None
-    copied = [dict(item) for item in options]
-    return {
-        "type": "choice",
-        "kind": "RESUME_GATE",
-        "gate": "quality",
-        "title": "추천 수정도 반영할까요?",
-        "multiple": True,
-        "recommended": "rec1",
-        "options": options,
-        "sections": [
-            {
-                "id": "recs",
-                "kind": "toggle",
-                "options": copied,
-                "selected": selected,
-            }
-        ],
-        "submit": {
-            "label": "{n}개 반영하고 디자인으로",
-            "zeroLabel": "그대로 디자인으로",
-        },
-    }
 
 
 def apply_recommendations_line(labels: list[str]) -> dict | None:

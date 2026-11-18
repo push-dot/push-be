@@ -12,7 +12,7 @@ from app.framework.fit_judge import judge_fit
 from app.harness.policy import Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
 from app.infrastructure.posting_fit_cache import read_plan
-from app.ingest.pdf_text import extract_pdf_bytes
+from app.ingest.pdf_text import read_pdf_text
 from app.ingest.web_page import fetch_github_context, github_usernames
 
 _FINAL_MD = re.compile(r"05_final_\w+\.md")
@@ -65,7 +65,7 @@ async def _parse_attachment(ctx: ToolContext, args: AttachmentArgs) -> dict:
         return {"error": "NOT_FOUND"}
     if attachment["mime_type"] != "application/pdf":
         return {"error": "UNSUPPORTED_TYPE"}
-    text = await asyncio.to_thread(extract_pdf_bytes, bytes(attachment["content"]))
+    text = await read_pdf_text(bytes(attachment["content"]))
     return {"title": attachment["file_name"], "text": text[:_TEXT_LIMIT]}
 
 
@@ -111,7 +111,7 @@ async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
     from app.harness.personal.tools import current_ai_gate
     return await judge_fit(
         args.requirements, args.keywords, args.description, args.content, plan,
-        gate=current_ai_gate(), job_id=ctx.job_id or None, user_id=user_id)
+        gate=current_ai_gate(), job_id=ctx.usage_job_id or None, user_id=user_id)
 
 
 def _artifact_id(ctx: ToolContext, name: str) -> str:

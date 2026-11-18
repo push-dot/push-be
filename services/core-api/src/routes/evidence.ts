@@ -1,3 +1,4 @@
+import { likeContains } from "../hangul.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
@@ -76,8 +77,8 @@ export const listEvidence = async (ctx: Ctx): Promise<Response> => {
   }
   const q = ctx.url.searchParams.get("query") || "";
   if (q) {
-    params.push("%" + q + "%", "%" + q + "%");
-    where.push(`(title ILIKE $${params.length - 1} OR source_text ILIKE $${params.length})`);
+    params.push(likeContains(q), likeContains(q));
+    where.push(`(title ILIKE $${params.length - 1} ESCAPE '\\' OR source_text ILIKE $${params.length} ESCAPE '\\')`);
   }
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);

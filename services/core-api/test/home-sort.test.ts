@@ -70,8 +70,8 @@ test("home sort accepts latest, deadline, and popular, and a 7-day deadline wind
   assert.equal(Object.hasOwn(popularBody.data[0], "applicantCount"), false);
   const ordered = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("job_postings"));
   assert.ok(ordered);
-  assert.match(ordered.sql, /to_jsonb\(p\) ->> 'view_count'/);
-  assert.match(ordered.sql, /view_count'\)::int, 0\) DESC/);
+  assert.match(ordered.sql, /ORDER BY p\.view_count DESC, p\.created_at DESC, p\.id DESC/);
+  assert.doesNotMatch(ordered.sql, /to_jsonb/);
   assert.equal(ordered.params.includes("2026-10-21"), true);
   assert.equal(ordered.params.includes("2026-10-28"), true);
 

@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from app.queue.admin import FINISHED, AdminJobs
+from app.queue.admin import AdminJobs
 
 NOW = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
 JOB = UUID("99999999-9999-4999-8999-999999999999")
@@ -178,6 +178,5 @@ async def test_purge_finished_deletes_old_finished_jobs_and_dispatched_outbox():
     assert await AdminJobs(conn).purge_finished(NOW) == 7
     (_, jobs, jargs, _), (_, outbox, oargs, _) = conn.log
     cutoff = NOW - timedelta(days=30)
-    assert jobs.startswith("DELETE FROM ai_jobs") and jargs == (list(FINISHED), cutoff)
-    assert set(FINISHED) == {"DONE", "FAILED", "DEAD", "CANCELLED"}
+    assert jobs.startswith("DELETE FROM ai_jobs") and jargs == (cutoff,)
     assert "dispatched_at IS NOT NULL" in outbox and oargs == (cutoff,)

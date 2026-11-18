@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { complete, STORED } from "./fakes.ts";
 import { ownerOf } from "../src/routes/owner.ts";
 
 const CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -15,7 +16,7 @@ const env = (core: (request: Request) => Promise<Response>): FrontEnv => ({
   SSE_MAX_POLLS: "3",
 });
 
-const deps = (query: Query): Deps => ({ query, sleep: async () => {}, now: () => NOW });
+const deps = (query: Query): Deps => ({ query: complete(query), sleep: async () => {}, now: () => NOW });
 
 const send = (body: unknown = { text: "안녕", accessMode: "AUTO" }): Request =>
   new Request(`https://push-be.example/api/v1/conversations/${CONV}/messages/stream`, {
@@ -46,7 +47,7 @@ test("the gateway queues the message in core and streams that job's events", asy
   assert.equal(res.headers.get("content-type"), "text/event-stream");
   const text = await res.text();
   assert.ok(text.startsWith("retry: 400\n\n"));
-  assert.match(text, /id: 7\ndata: \{"type": "status", "text": "\\ub300\\uae30 \\uc911", "seq": 7\}/);
+  assert.ok(text.includes(`id: 7\ndata: {"type": "status", "text": "\\ub300\\uae30 \\uc911", "seq": 7, "at": "${STORED}", "turn": "${JOB}"}`));
   assert.match(text, /"type": "done", "operation": \{"id": "op-1"\}/);
   assert.deepEqual(forwarded, [{ path: `/api/v1/conversations/${CONV}/messages/stream`, body: JSON.stringify({ text: "안녕", accessMode: "AUTO" }) }]);
   assert.deepEqual(reads[0], [JOB, 0]);

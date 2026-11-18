@@ -164,32 +164,46 @@ export const getSourceContent = async (ctx: Ctx, idRaw: string): Promise<Respons
   const body = fromBase64(String(row.content || "").replace(/\s+/g, ""));
   return new Response(body as unknown as BodyInit, {
     status: 200,
-    headers: { "content-type": mime.startsWith("text/") ? mime + "; charset=utf-8" : mime, "x-request-id": ctx.rid },
+    headers: {
+      "content-type": mime.startsWith("text/") ? mime + "; charset=utf-8" : mime,
+      "x-content-type-options": "nosniff",
+      "x-request-id": ctx.rid,
+    },
   });
 };
 
 /**
- * One round trip: find, check evidence references, delete. Migration 0018 made
- * profiles.resume_source_id ON DELETE CASCADE, so deleting a pinned resume used to delete
- * the whole profile; the pointer is cleared in the same statement first.
+ * Career evidence that cites a source keeps the source. The CTE `used` counts that evidence of the
+ * caller $1 for the source $2, and a statement that removes the source does so only when `used.n = 0`.
  */
-const DELETE_SOURCE = `WITH src AS (SELECT id FROM sources WHERE id = $1::uuid AND user_id = $2),
-  used AS (SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $2 AND provenance->>'sourceId' = $1::uuid::text),
+export const CITING_EVIDENCE = "used AS (SELECT count(*)::int AS n FROM career_evidence WHERE user_id = $1 AND provenance->>'sourceId' = $2::uuid::text)";
+
+export const refuseCited = (used: unknown): void => {
+  if (Number(used) > 0) {
+    throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
+      reason: "REFERENCED_BY_EVIDENCE",
+      evidenceCount: Number(used),
+    });
+  }
+};
+
+/**
+ * One round trip: find, check evidence references, delete. Migration 0028 made
+ * profiles.resume_source_id ON DELETE SET NULL (0018 had it cascade and deleted the whole profile);
+ * the pointer is still cleared in the same statement so the profile never points at a gone source.
+ */
+const DELETE_SOURCE = `WITH src AS (SELECT id FROM sources WHERE id = $2::uuid AND user_id = $1),
+  ${CITING_EVIDENCE},
   unpinned AS (UPDATE profiles SET resume_source_id = NULL FROM src, used
-    WHERE profiles.user_id = $2 AND profiles.resume_source_id = src.id AND used.n = 0),
-  gone AS (DELETE FROM sources USING used WHERE sources.id = $1::uuid AND sources.user_id = $2 AND used.n = 0 RETURNING sources.id)
+    WHERE profiles.user_id = $1 AND profiles.resume_source_id = src.id AND used.n = 0),
+  gone AS (DELETE FROM sources USING used WHERE sources.id = $2::uuid AND sources.user_id = $1 AND used.n = 0 RETURNING sources.id)
   SELECT (SELECT count(*) FROM src)::int AS found, (SELECT n FROM used) AS used, (SELECT count(*) FROM gone)::int AS deleted`;
 
 export const deleteSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
-  const row = await one(ctx.deps.query, DELETE_SOURCE, [id, ctx.user.id]);
+  const row = await one(ctx.deps.query, DELETE_SOURCE, [ctx.user.id, id]);
   if (!Number(row?.found)) throw notFound();
-  if (Number(row?.used) > 0) {
-    throw new HttpError(409, "INVALID_TRANSITION", "source is referenced by evidence", {
-      reason: "REFERENCED_BY_EVIDENCE",
-      evidenceCount: Number(row?.used),
-    });
-  }
+  refuseCited(row?.used);
   if (!Number(row?.deleted)) throw notFound();
   return noContent(ctx.rid);
 };

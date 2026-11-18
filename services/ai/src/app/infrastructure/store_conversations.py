@@ -98,11 +98,12 @@ class ConversationStore(Store):
         """Insert the user message, or fill in the row written at enqueue.
 
         ``created_at`` stays at the enqueue time so the list order does not
-        jump when the assistant reply is stored.
+        jump when the assistant reply is stored. ``attachments`` stays too:
+        core stores them at enqueue, and the turn that ends here does not know them.
         """
         await self.q().execute(
             f"INSERT INTO messages ({_MSG_COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
-            "ON CONFLICT (id) DO UPDATE SET attachments = EXCLUDED.attachments, "
+            "ON CONFLICT (id) DO UPDATE SET "
             "operation_id = EXCLUDED.operation_id, text = EXCLUDED.text",
             m.id, m.user_id, m.conversation_id, m.role, m.text, dump(m.attachments),
             m.operation_id, m.created_at)

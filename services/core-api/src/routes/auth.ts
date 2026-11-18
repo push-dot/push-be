@@ -43,9 +43,9 @@ export const emailTaken = (row: Record<string, unknown>): HttpError => {
   return new HttpError(409, "EMAIL_TAKEN", message, { accountType });
 };
 
-const allowedRedirect = (redirect: string, origins: string | undefined): boolean => {
-  if (redirect === "push://auth/callback" || redirect === "http://localhost:5173/auth/callback") return true;
-  const local = LOCAL_CALLBACK.exec(redirect);
+const allowedRedirect = (redirect: string, origins: string | undefined, dev: boolean): boolean => {
+  if (redirect === "push://auth/callback") return true;
+  const local = dev ? LOCAL_CALLBACK.exec(redirect) : null;
   if (local) {
     const port = Number(local[1]);
     return port >= 1 && port <= 65535;
@@ -210,7 +210,7 @@ export async function oauthStart(ctx: Ctx): Promise<Response> {
   const redirect = ctx.url.searchParams.get("redirectUri") || "";
   if (method !== "S256") throw new HttpError(400, "VALIDATION_ERROR", "must be S256", { field: "codeChallengeMethod" });
   if (!challenge) throw new HttpError(400, "VALIDATION_ERROR", "required", { field: "codeChallenge" });
-  if (!allowedRedirect(redirect, ctx.env.OAUTH_REDIRECT_ORIGINS)) {
+  if (!allowedRedirect(redirect, ctx.env.OAUTH_REDIRECT_ORIGINS, ctx.env.APP_ENV === "development")) {
     throw new HttpError(400, "VALIDATION_ERROR", "not allowed", { field: "redirectUri" });
   }
   const state = randomToken();

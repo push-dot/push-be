@@ -69,11 +69,22 @@ class StreamQueue:
             DELAYED_KEY, "-inf", now.timestamp(), start=0, num=PROMOTE_BATCH)
         moved = 0
         for member in due:
+            try:
+                queue, raw = str(member).split("|", 1)
+                job_id = UUID(raw)
+            except ValueError:
+                logger.warning("dropping a malformed delayed member %r", member)
+                await self.redis.zrem(DELAYED_KEY, member)
+                continue
             # ZREM is the claim: a concurrent promoter that loses gets 0 and skips.
             if not await self.redis.zrem(DELAYED_KEY, member):
                 continue
-            queue, job_id = str(member).split("|", 1)
-            await self.add(queue, UUID(job_id))
+            try:
+                await self.add(queue, job_id)
+            except Exception:
+                # The claim already removed it from the delayed set; put it back or the job is lost.
+                await self.redis.zadd(DELAYED_KEY, {member: now.timestamp()})
+                raise
             moved += 1
         return moved
 

@@ -181,7 +181,7 @@ async def test_edit_document_always_ask_skip_leaves_the_document(monkeypatch):
 
 async def test_edit_document_always_ask_without_an_answer_is_skipped(monkeypatch):
     monkeypatch.setattr(tools, "interrupt", lambda payload: None)
-    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1"},
+    out = await _run("edit_document", {"document_id": "00000000-0000-0000-0000-0000000000d1", "after": "새 문장"},
                      ctx=_ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK"))
     assert out == {"skipped": True}
 
@@ -292,7 +292,7 @@ async def test_each_edit_in_a_job_gets_its_own_approval(monkeypatch):
     for call_id in ("call-1", "call-2"):
         ctx = _ctx(db=_Approvals(existing=True), mode="ALWAYS_ASK")
         ctx.tool_call_id = call_id
-        await _run("edit_document", {"document_id": str(uuid4())}, ctx=ctx)
+        await _run("edit_document", {"document_id": str(uuid4()), "after": "새 문장"}, ctx=ctx)
     assert asked[0]["approval_id"] != asked[1]["approval_id"]
 
 
@@ -314,3 +314,90 @@ async def test_fit_score_treats_empty_ids_as_none(monkeypatch):
         "get_fit_score",
         {"document_id": "", "requirements": ["python"], "content": "python"})
     assert isinstance(out, dict) and "error" not in out
+
+
+def _page_ctx(*texts):
+    version = SimpleNamespace(blocks=[SimpleNamespace(text=t) for t in texts])
+
+    class Docs:
+        async def get(self, user_id, doc_id):
+            return SimpleNamespace(latest_version_id=uuid4())
+
+        async def get_version(self, user_id, doc_id, version_id):
+            return version
+
+    return SimpleNamespace(document_svc=Docs())
+
+
+def _signs(hunks):
+    return [(h["sign"], h["text"]) for h in hunks]
+
+
+async def test_edit_approval_carries_the_whole_document_with_the_changed_lines_marked():
+    args = tools.EditDocumentArgs.model_validate(
+        {"document_id": str(uuid4()), "before": "결제 API 개발", "after": "결제 승인 API 재설계\nKafka 파이프라인"})
+    token = tools.bound_services.set(_page_ctx("# 김서준", "모아페이", "결제 API 개발", "장애 대응"))
+    try:
+        hunks = await tools._page_hunks(_ctx(), args, tools._diff(args)["hunks"])
+    finally:
+        tools.bound_services.reset(token)
+    assert _signs(hunks) == [
+        ("", "# 김서준"), ("", "모아페이"), ("-", "결제 API 개발"),
+        ("+", "결제 승인 API 재설계"), ("+", "Kafka 파이프라인"), ("", "장애 대응")]
+    assert tools._document_event("j", "c", "d", hunks)["summary"].startswith("2줄을 고쳤어요")
+
+
+async def test_edit_approval_marks_the_whole_line_when_only_a_part_of_it_changes():
+    args = tools.EditDocumentArgs.model_validate(
+        {"document_id": str(uuid4()), "before": "개발", "after": "재설계"})
+    token = tools.bound_services.set(_page_ctx("모아페이", "결제 API 개발 담당"))
+    try:
+        hunks = await tools._page_hunks(_ctx(), args, tools._diff(args)["hunks"])
+    finally:
+        tools.bound_services.reset(token)
+    assert _signs(hunks) == [("", "모아페이"), ("-", "결제 API 개발 담당"), ("+", "결제 API 재설계 담당")]
+
+
+@pytest.mark.parametrize("before", ["", "문서에 없는 문장"])
+async def test_edit_approval_keeps_the_changed_block_when_the_document_has_no_such_text(before):
+    args = tools.EditDocumentArgs.model_validate({"document_id": str(uuid4()), "before": before, "after": "새 문장"})
+    changed = tools._diff(args)["hunks"]
+    token = tools.bound_services.set(_page_ctx("모아페이"))
+    try:
+        assert await tools._page_hunks(_ctx(), args, changed) == changed
+    finally:
+        tools.bound_services.reset(token)
+
+
+async def test_edit_approval_keeps_the_changed_block_when_the_document_cannot_be_read():
+    from app.domain.errors import not_found
+
+    class Docs:
+        async def get(self, user_id, doc_id):
+            raise not_found()
+
+    args = tools.EditDocumentArgs.model_validate({"document_id": str(uuid4()), "before": "a", "after": "b"})
+    changed = tools._diff(args)["hunks"]
+    token = tools.bound_services.set(SimpleNamespace(document_svc=Docs()))
+    try:
+        assert await tools._page_hunks(_ctx(), args, changed) == changed
+    finally:
+        tools.bound_services.reset(token)
+
+
+async def test_resume_offer_links_the_whole_draft(emitted):
+    saved = {"status": "active", "phase": "craft", "profile_document_id": "d9",
+             "drafts": {"markdown": "# 김서준\n- 결제 API"}}
+    await _run("start_document", {}, ctx=_ctx(db=_ResumeDB({"resume_state": json.dumps(saved)})))
+    assert "> [초안 전체 보기](/docs/push/d9) ›" in emitted[0]["token"] + emitted[1]["token"]
+    saved.pop("profile_document_id")
+    emitted.clear()
+    await _run("start_document", {}, ctx=_ctx(db=_ResumeDB({"resume_state": json.dumps(saved)})))
+    assert not any("/docs/push/" in str(e) for e in emitted)
+
+
+@pytest.mark.parametrize("change", [{}, {"before": "같은 줄", "after": "같은 줄"}])
+async def test_edit_document_without_a_change_tells_the_model_and_opens_no_card(change):
+    db = SimpleNamespace(q=lambda: pytest.fail("no approval row for an edit that changes nothing"))
+    out = await _run("edit_document", {"document_id": str(uuid4()), **change}, _ctx(db, "ALWAYS_ASK"))
+    assert out == {"error": "NOTHING_TO_CHANGE"}

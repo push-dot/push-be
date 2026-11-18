@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { pkceChallenge } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { createMailer } from "../src/mail/mailer.ts";
+import { hashPassword, verifyPassword } from "../src/mail/password.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 import { TERMS_VERSION } from "../src/routes/consents.ts";
 
@@ -36,7 +37,6 @@ const post = (path: string, body: unknown, headers?: HeadersInit): Request => ne
 
 const signupBody = (extra: Record<string, unknown> = {}) => ({
   email: EMAIL,
-  password: PASSWORD,
   accountType: "EMPLOYER",
   displayName: "Ada",
   agreeTerms: true,
@@ -82,20 +82,9 @@ const createDb = () => {
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
     if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
     if (sql.startsWith("INSERT INTO email_signups")) {
-      const [id, email, passwordHash, isEmployer, displayName, consent, createdAt] = params;
-      const existing = signups.find((row) => row.email === email);
-      if (existing) {
-        Object.assign(existing, {
-          password_hash: passwordHash,
-          is_employer: isEmployer,
-          display_name: displayName,
-          consent_reference: consent,
-          created_at: createdAt,
-        });
-        return { rows: [{ id: existing.id }], rowCount: 1 };
-      }
+      const [id, email, isEmployer, displayName, consent, createdAt] = params;
       signups.push({
-        id, email, password_hash: passwordHash, is_employer: isEmployer,
+        id, email, password_hash: null, is_employer: isEmployer,
         display_name: displayName, consent_reference: consent, created_at: createdAt,
       });
       return { rows: [{ id }], rowCount: 1 };
@@ -114,9 +103,9 @@ const createDb = () => {
       }
     }
     if (sql.startsWith("DELETE FROM email_signups")) {
-      const index = signups.findIndex((row) => row.id === params[0]);
-      if (index >= 0) signups.splice(index, 1);
-      return { rows: [], rowCount: index >= 0 ? 1 : 0 };
+      const gone = signups.filter((row) => String(row.email).toLowerCase() === String(params[0]).toLowerCase());
+      for (const row of gone) signups.splice(signups.indexOf(row), 1);
+      return { rows: [], rowCount: gone.length };
     }
     if (sql.startsWith("INSERT INTO email_tokens") || sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
       tokens.push({
@@ -300,21 +289,16 @@ test("signup accepts an employer account and rejects a personal account", async 
   assert.equal(db.signups.length, 1);
   const insert = db.sqls.find((call) => call.sql.startsWith("INSERT INTO email_signups"));
   assert.ok(insert);
-  assert.match(insert.sql, /ON CONFLICT \(email\)/);
-  const stored = String(insert.params[2]);
-  const parts = stored.split("$");
-  assert.equal(parts[0], "pbkdf2");
-  assert.equal(parts[1], "210000");
-  assert.equal(Buffer.from(parts[2], "base64").length, 16);
-  assert.equal(Buffer.from(parts[3], "base64").length, 32);
+  assert.doesNotMatch(insert.sql, /password/);
+  assert.equal(db.signups[0].password_hash, null);
   const tokenInsert = db.sqls.find((call) => call.sql.includes("INSERT INTO email_tokens"));
   assert.ok(tokenInsert);
   assert.equal(tokenInsert.params[1], null);
   assert.equal(tokenInsert.params[2], db.signups[0].id);
   assert.equal(tokenInsert.params[3], "VERIFY");
   assert.equal(tokenInsert.params[5], "2026-10-22T00:00:00.000Z");
-  assert.equal(insert.params[3], true);
-  assert.equal(insert.params[5], false);
+  assert.equal(insert.params[2], true);
+  assert.equal(insert.params[4], false);
 
   resetLimits();
   const personal = await handle(
@@ -335,28 +319,40 @@ test("signup accepts an employer account and rejects a personal account", async 
   assert.equal(sent.length, 1);
 
   resetLimits();
-  const bad = await handle(
-    post("/api/v1/auth/email/signup", signupBody({ password: "short" })),
+  const sneaky = await handle(
+    post("/api/v1/auth/email/signup", signupBody({ email: "other@push.app", password: "attacker-chosen-1" })),
     env(),
     deps(db, mailer),
   );
-  const body = await bad.json() as Err;
-  assert.equal(bad.status, 400);
-  assert.equal(body.error.code, "VALIDATION_ERROR");
-  assert.equal(body.error.details?.field, "password");
-  assert.equal(sent.length, 1);
-
-  resetLimits();
-  const long = await handle(
-    post("/api/v1/auth/email/signup", signupBody({ password: "x".repeat(129) })),
-    env(),
-    deps(db, mailer),
-  );
-  assert.equal(long.status, 400);
-  assert.equal((await long.json() as Err).error.details?.field, "password");
+  assert.equal(sneaky.status, 202);
+  assert.equal(db.signups.at(-1)?.password_hash, null);
 });
 
-test("signup replaces a pending row instead of returning 409", async () => {
+test("verify takes the password from the person who opens the link and keeps the link when it is too short or long", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  const token = tokenFrom(sent[0]);
+
+  for (const password of [undefined, "short", "x".repeat(129)]) {
+    resetLimits();
+    const bad = await handle(post("/api/v1/auth/email/verify", { token, password }), env(), deps(db, mailer));
+    const body = await bad.json() as Err;
+    assert.equal(bad.status, 400, String(password));
+    assert.equal(body.error.details?.field, "password");
+    assert.equal(db.users.length, 0);
+    assert.equal(db.tokens[0].used_at ?? null, null);
+  }
+
+  resetLimits();
+  const ok = await handle(post("/api/v1/auth/email/verify", { token, password: "chosen-by-owner-1" }), env(), deps(db, mailer));
+  assert.equal(ok.status, 200);
+  assert.equal(await verifyPassword("chosen-by-owner-1", String(db.users[0].password_hash)), true);
+});
+
+test("whoever opens a link sets the password, so a second signup for the address cannot pick it", async () => {
   resetLimits();
   const sent: Mail[] = [];
   const db = createDb();
@@ -364,16 +360,35 @@ test("signup replaces a pending row instead of returning 409", async () => {
   const first = await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const second = await handle(
-    post("/api/v1/auth/email/signup", signupBody({ password: "another123", displayName: "Ada 2" })),
+    post("/api/v1/auth/email/signup", signupBody({ displayName: "Ada 2", password: "attacker-chosen-1" })),
     env(),
     deps(db, mailer),
   );
   assert.equal(first.status, 202);
   assert.equal(second.status, 202);
-  assert.equal(db.signups.length, 1);
-  assert.equal(db.signups[0].display_name, "Ada 2");
+  assert.equal(db.signups.length, 2);
   assert.equal(sent.length, 2);
-  assert.equal(db.users.length, 0);
+  const token = new URL(sent[1].text).searchParams.get("token") ?? "";
+  resetLimits();
+  const verified = await handle(post("/api/v1/auth/email/verify", { token, password: "owner-chosen-pw-1" }), env(), deps(db, mailer));
+  assert.equal(verified.status, 200);
+  assert.equal(await verifyPassword("owner-chosen-pw-1", String(db.users[0].password_hash)), true);
+  assert.equal(await verifyPassword("attacker-chosen-1", String(db.users[0].password_hash)), false);
+  assert.equal(db.signups.length, 0);
+});
+
+test("a signup row made before the password moved still verifies without one", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  db.signups[0].password_hash = await hashPassword(PASSWORD);
+
+  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+
+  assert.equal(res.status, 200);
+  assert.equal(await verifyPassword(PASSWORD, String(db.users[0].password_hash)), true);
 });
 
 test("signup reports the existing account type", async () => {
@@ -416,8 +431,7 @@ test("verify creates the email user and a second use is rejected", async () => {
     deps(db, mailer),
   );
   resetLimits();
-  const pendingHash = db.signups[0].password_hash;
-  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(res.status, 200);
   const body = await res.json() as Session;
   assert.equal(body.data.expiresIn, 900);
@@ -433,7 +447,7 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(inserted.params[6], EMAIL);
   assert.equal(inserted.params[7], NOW.toISOString());
   assert.equal(inserted.params[8], true);
-  assert.equal(inserted.params[9], pendingHash);
+  assert.equal(await verifyPassword(PASSWORD, String(inserted.params[9])), true);
   assert.equal(db.signups.length, 0);
   assert.deepEqual(db.consents, [{
     user_id: db.users[0].id, reference_data: false, updated_at: NOW.toISOString(),
@@ -443,7 +457,7 @@ test("verify creates the email user and a second use is rejected", async () => {
   assert.equal(body.data.user.id, db.users[0].id);
 
   resetLimits();
-  const again = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  const again = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(again.status, 401);
   assert.equal(db.users.length, 1);
 });
@@ -456,14 +470,14 @@ test("verify with an expired unused token is 410 TOKEN_EXPIRED with the signup e
   await handle(post("/api/v1/auth/email/signup", signupBody({ email: "Mina@Push.app" })), env(), deps(db, mailer));
   db.tokens[0].expires_at = new Date(NOW.getTime() - 1000).toISOString();
   resetLimits();
-  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(res.status, 410);
   const body = await res.json() as Err;
   assert.equal(body.error.code, "TOKEN_EXPIRED");
   assert.deepEqual(body.error.details, { email: "mina@push.app" });
   assert.equal(db.tokens[0].used_at, null);
   assert.equal(db.users.length, 0);
-  const unknown = await handle(post("/api/v1/auth/email/verify", { token: "nope" }), env(), deps(db, mailer));
+  const unknown = await handle(post("/api/v1/auth/email/verify", { token: "nope", password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(unknown.status, 401);
 });
 
@@ -479,7 +493,7 @@ test("login waits for verification and checks the password", async () => {
   assert.equal((await early.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
 
   resetLimits();
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   const wrong = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: "nope1234" }), env(), deps(db, mailer));
   assert.equal(wrong.status, 401);
@@ -504,7 +518,7 @@ test("password reset does not reveal unknown emails", async () => {
 
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   const known = await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   assert.equal(known.status, 202);
@@ -524,7 +538,7 @@ test("password reset confirm changes the password and revokes refresh tokens", a
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   const previous = db.users[0].password_hash;
@@ -576,7 +590,7 @@ test("github employer start is rejected and google stores the account type", asy
   resetLimits();
   const local = await handle(new Request(
     "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent("http://127.0.0.1:5174/auth/callback"),
-  ), env(), deps(db));
+  ), env({ APP_ENV: "development" }), deps(db));
   assert.equal(local.status, 200);
   const personal = db.sqls.filter((call) => call.sql.startsWith("INSERT INTO oauth_states")).at(-1);
   assert.equal(personal?.params[7], "PERSONAL");
@@ -592,6 +606,22 @@ test("github employer start is rejected and google stores the account type", asy
   ), env({ OAUTH_REDIRECT_ORIGINS: "https://web.example" }), deps(db));
   assert.equal(evil.status, 400);
   assert.equal((await evil.json() as Err).error.details?.field, "redirectUri");
+});
+
+test("production refuses a localhost redirectUri", async () => {
+  const start = (redirect: string, appEnv: string) => handle(new Request(
+    "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent(redirect),
+  ), env({ APP_ENV: appEnv }), deps(createDb()));
+  for (const redirect of ["http://localhost:5173/auth/callback", "http://127.0.0.1:4000/auth/callback"]) {
+    resetLimits();
+    const prod = await start(redirect, "production");
+    assert.equal(prod.status, 400, redirect);
+    assert.equal((await prod.json() as Err).error.details?.field, "redirectUri");
+    resetLimits();
+    assert.equal((await start(redirect, "development")).status, 200, redirect);
+  }
+  resetLimits();
+  assert.equal((await start("push://auth/callback", "production")).status, 200);
 });
 
 const googleFetch = (verified: boolean) => async (input: RequestInfo | URL) => {
@@ -782,7 +812,7 @@ test("auth me for an email user includes the company fields", async () => {
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
-  const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   const session = await verified.json() as Session;
   assert.equal(db.consents[0].terms_version, TERMS_VERSION);
   resetLimits();
@@ -913,6 +943,27 @@ test("a Resend error status throws and the log has the status without the key", 
   }
 });
 
+test("an unconfigured mailer logs the recipient and the link only in development", async () => {
+  const sent = { to: EMAIL, subject: "이메일 인증", text: "http://localhost:5174/auth/verify?token=live", html: "<p>x</p>" };
+  const logged = async (appEnv: string) => {
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+    try {
+      await createMailer({ APP_ENV: appEnv }).send(sent);
+    } finally {
+      console.log = original;
+    }
+    return logs.join("\n");
+  };
+  const production = await logged("production");
+  assert.equal(production.includes(EMAIL), false);
+  assert.equal(production.includes("token=live"), false);
+  const development = await logged("development");
+  assert.ok(development.includes(EMAIL));
+  assert.ok(development.includes("token=live"));
+});
+
 test("RESEND_API_KEY skips the EMAIL binding", async () => {
   resetLimits();
   const sent: { to: string }[] = [];
@@ -1007,6 +1058,33 @@ test("login is limited per email across addresses", async () => {
   assert.equal(statuses[10], 429);
 });
 
+test("a password is guessed at most 30 times an hour", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
+  resetLimits();
+  let now = NOW.getTime();
+  const query = counted(db);
+  const attempt = (password: string, ip: number) => handle(
+    post("/api/v1/auth/email/login", { email: EMAIL, password }, { "cf-connecting-ip": `10.0.0.${ip}` }),
+    env(),
+    { query, now: () => new Date(now), mailer },
+  );
+  for (let i = 0; i < 30; i++) {
+    if (i > 0 && i % 10 === 0) now += 60 * 1000;
+    assert.equal((await attempt("wrong-password-" + i, i)).status, 401, "guess " + i);
+  }
+  now += 60 * 1000;
+  const locked = await attempt(PASSWORD, 31);
+  assert.equal(locked.status, 429);
+  assert.equal((await locked.json() as Err).error.details?.retryAfterSec, 3600);
+  now += 61 * 60 * 1000;
+  assert.equal((await attempt(PASSWORD, 32)).status, 200);
+});
+
 test("signup and reset mails are limited per email", async () => {
   resetLimits();
   const sent: Mail[] = [];
@@ -1028,7 +1106,7 @@ test("a new reset link revokes the previous unused one", async () => {
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   const stale = await handle(post("/api/v1/auth/email/password-reset/confirm", { token: tokenFrom(sent[1]), password: "newpass123" }), env(), deps(db, mailer));
@@ -1059,7 +1137,7 @@ const resetSetup = async () => {
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
-  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]) }), env(), deps(db, mailer));
+  await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   await handle(post("/api/v1/auth/email/password-reset", { email: EMAIL }), env(), deps(db, mailer));
   const token = tokenFrom(sent[1]);
@@ -1171,7 +1249,7 @@ test("verification resend is 204 without saying whether the email exists", async
   const second = tokenFrom(sent[1]);
   assert.notEqual(second, first);
   assert.equal(db.tokens.some((row) => row.token_hash && row.kind === "VERIFY" && row.used_at == null), true);
-  const dead = await handle(post("/api/v1/auth/email/verify", { token: first }, { "cf-connecting-ip": "10.9.0.4" }), env(), { query, now: () => now, mailer });
+  const dead = await handle(post("/api/v1/auth/email/verify", { token: first, password: PASSWORD }, { "cf-connecting-ip": "10.9.0.4" }), env(), { query, now: () => now, mailer });
   assert.equal(dead.status, 401);
   assert.equal(db.users.length, 0);
 
@@ -1189,6 +1267,6 @@ test("verification resend is 204 without saying whether the email exists", async
   assert.equal(limitedBody.error.details?.retryAfterSec, 60);
   assert.equal(sent.length, 2);
 
-  const fresh = await handle(post("/api/v1/auth/email/verify", { token: second }, { "cf-connecting-ip": "10.9.0.8" }), env(), { query, now: () => now, mailer });
+  const fresh = await handle(post("/api/v1/auth/email/verify", { token: second, password: PASSWORD }, { "cf-connecting-ip": "10.9.0.8" }), env(), { query, now: () => now, mailer });
   assert.equal(fresh.status, 200);
 });

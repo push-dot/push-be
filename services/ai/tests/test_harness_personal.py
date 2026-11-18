@@ -34,6 +34,7 @@ _TIERS = {
     "list_posts": Tier.READ,
     "get_fit_score": Tier.READ,
     "search_career_context": Tier.READ,
+    "read_page": Tier.EXTERNAL_READ,
     "bookmark_posting": Tier.SAFE_WRITE,
     "unbookmark_posting": Tier.SAFE_WRITE,
     "create_calendar_event": Tier.SAFE_WRITE,
@@ -54,6 +55,7 @@ _TIERS = {
 }
 
 _PYTHON = {
+    "read_page",
     "list_documents",
     "get_document",
     "edit_document",
@@ -232,14 +234,14 @@ class _Approvals:
         return "INSERT 1"
 
 
-def _edit_graph(mode: str, db, core=None):
+def _edit_graph(mode: str, db, core=None, args=None):
     tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "edit_document")
     model = ScriptedChat([{
         "tool_calls": [{
             "name": "edit_document",
             "id": "c1",
             "type": "tool_call",
-            "args": {"document_id": DOC_ID, "before": "이전", "after": "이후"},
+            "args": args or {"document_id": DOC_ID, "before": "이전", "after": "이후"},
         }],
     }, {"content": "done"}])
     return build_harness_graph(
@@ -283,6 +285,13 @@ async def test_edit_document_always_ask_is_document_edit():
     ]
     assert not any(event.get("kind") == "TOOL_ACTION" for event in events)
     assert events[-1] == {"type": "done", "awaiting": "approval"}
+
+
+async def test_edit_document_without_a_change_shows_no_card():
+    db = _Approvals()
+    events = await _events(_edit_graph("ALWAYS_ASK", db, args={"document_id": DOC_ID}), "ALWAYS_ASK")
+    assert not any(event.get("type") == "approval" for event in events)
+    assert not any(event.get("awaiting") for event in events)
 
 
 EDIT_USER = "99999999-9999-4999-8999-999999999999"
@@ -377,7 +386,7 @@ async def test_start_document_marks_resume_active():
 
 
 _PHASES = (
-    "mode_select", "intake", "analyze", "strategy", "craft", "review", "present",
+    "mode_select", "intake", "analyze", "strategy", "review",
 )
 _JOB = "job-1"
 
@@ -522,7 +531,7 @@ async def test_cancel_text_returns_to_agent_same_thread(text):
     saver = MemorySaver()
     graph = _flow_graph(saver, ScriptedChat([{"content": "다른 걸 도와드릴까요?"}]), None)
     config = _flow_config("conv-text")
-    await _drain(graph, _flow_input("conv-text", "craft"), config)
+    await _drain(graph, _flow_input("conv-text", "strategy"), config)
     events = await _drain(graph, Command(resume={"text": text}), config)
     done = await graph.aget_state(config)
     assert done.next == ()
@@ -530,15 +539,15 @@ async def test_cancel_text_returns_to_agent_same_thread(text):
     assert any(event.get("token") == "다른 걸 도와드릴까요?" for event in events)
 
 
-async def test_done_returns_to_agent_same_thread():
+async def test_the_profile_save_is_not_confirmed_and_returns_to_agent_same_thread():
     saver = MemorySaver()
     graph = _flow_graph(saver, ScriptedChat([{"content": "다음을 도와드릴까요?"}]), None)
     config = _flow_config("conv-done")
-    await _drain(graph, _flow_input("conv-done", "present"), config)
-    events = await _drain(graph, Command(resume={"option_id": "done"}), config)
+    events = await _drain(graph, _flow_input("conv-done", "present"), config)
     done = await graph.aget_state(config)
     assert done.next == ()
     assert done.values["resume"]["status"] == "done"
+    assert not any(event.get("type") == "choice" and not event.get("auto") for event in events)
     assert any(event.get("token") == "다음을 도와드릴까요?" for event in events)
     assert any(
         getattr(message, "content", "") == "서류 작성을 끝냈어요."
@@ -602,3 +611,22 @@ async def test_edit_document_approval_previews_the_diff():
         {"line": None, "sign": "+", "text": "이후"},
     ]
     assert not any(event.get("type") == "diff" for event in events)
+
+
+async def test_profile_change_id_is_the_run_key_and_reaches_the_tool_line():
+    """core keeps the replaced values under the Idempotency-Key and answers changeId; the tool line carries it, so a reopened chat can offer 되돌리기."""
+    from app.harness.core_client import idempotency_key
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["idempotency-key"])
+        return httpx.Response(200, json={"data": {"headline": "시니어", "changeId": seen[0]}})
+
+    core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+    ctx = ToolContext(user_id="user-1", company_id=None, conversation_id="conv-1",
+                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+    tool = next(tool for tool in REGISTRY["personal"].tools if tool.name == "update_my_profile")
+    result = await tool.run(ctx, tool.args_model.model_validate({"headline": "시니어"}))
+    assert seen == [idempotency_key("job-1", "call-1")]
+    assert result["changeId"] == idempotency_key("job-1", "call-1")

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { complete, STORED } from "./fakes.ts";
 import { encodeCursor } from "../src/time.ts";
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
@@ -16,6 +17,7 @@ const MSG_2 = "eeeeeeee-0000-4000-8000-000000000002";
 const NOW = new Date("2026-10-18T00:00:00Z");
 const BASE = "https://push-be.example/api/v1";
 const TOKENS: Record<string, string> = { [USER_A]: "tok-a", [USER_B]: "tok-b" };
+const STAMP = { at: STORED, turn: JOB };
 
 type Seen = Array<[string, unknown[]]>;
 type Rows = Record<string, unknown>[];
@@ -29,7 +31,7 @@ const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
 });
 
 const deps = (query: Query, sleep: Deps["sleep"] = async () => {}): Deps => ({
-  query, sleep, now: () => NOW,
+  query: complete(query), sleep, now: () => NOW,
 });
 
 const userRow = (id: string, companyId: string | null = null): Record<string, unknown> => ({
@@ -158,7 +160,7 @@ test("a cached session lists only the caller's personal conversations with filte
   // ctx.user skips the shared auth read entirely
   assert.equal(seen.some(([sql]) => isShared(sql) || isAuthOnly(sql)), false);
   const [[sql, params]] = dataSeen(seen);
-  assert.match(sql, /WHERE user_id = \$1::uuid AND company_id IS NULL AND c\.archived = false/);
+  assert.match(sql, /WHERE user_id = \$1::uuid AND company_id IS NULL AND c\.bot_id IS NULL AND c\.archived = false/);
   assert.match(sql, / AND c\.application_id = \$2::uuid/);
   assert.match(sql, /\(c\.updated_at, c\.id\) < \(\$3::timestamptz, \$4::uuid\)/);
   assert.match(sql, /LIMIT \$6$/);
@@ -478,7 +480,7 @@ test("a cached session streams the active job from the after cursor", async () =
     data: withJob((params) => { reads.push(params); return [{ id: 6, type: "done", payload: "{\"awaiting\":{\"kind\":\"approval\"}}" }]; }),
   })));
   assert.equal(res.status, 200);
-  assert.deepEqual(framesOf(await res.text()), [{ type: "done", operation: null, awaiting: { kind: "approval" }, seq: 6 }]);
+  assert.deepEqual(framesOf(await res.text()), [{ type: "done", operation: null, awaiting: { kind: "approval" }, seq: 6, ...STAMP }]);
   assert.deepEqual(reads, [[JOB, 5]]);
 });
 
@@ -525,7 +527,7 @@ test("dev token streams for the seeded user and hides other users' conversations
     user: userRow(USER_A), data: withJob(() => [{ id: 3, type: "error", payload: { error: { code: "X" } } }]),
   })));
   assert.equal(ok.status, 200);
-  assert.deepEqual(framesOf(await ok.text()), [{ type: "error", error: { code: "X" }, seq: 3 }]);
+  assert.deepEqual(framesOf(await ok.text()), [{ type: "error", error: { code: "X" }, seq: 3, ...STAMP }]);
 
   resetLimits();
   const hidden = await handle(active(CONV_A, USER_B), devEnv(USER_B), deps(fake([], { user: userRow(USER_B) })));
@@ -556,7 +558,7 @@ test("when the shared stream read fails it falls back to scoped lookups", async 
     user: userRow(USER_A), shared: boom, data: withJob(() => [{ id: 2, type: "cancelled", payload: {} }]),
   })));
   assert.equal(ok.status, 200);
-  assert.deepEqual(framesOf(await ok.text()), [{ type: "cancelled", seq: 2 }]);
+  assert.deepEqual(framesOf(await ok.text()), [{ type: "cancelled", resumable: false, seq: 2, ...STAMP }]);
 
   resetLimits();
   const hidden = await handle(active(CONV_A, USER_B), env(), deps(fake([], { user: userRow(USER_B), shared: boom })));
@@ -630,7 +632,7 @@ test("polling sleeps between empty polls and stops after SSE_MAX_POLLS", async (
   }), async (ms) => { sleeps.push(ms); }));
   const text = await res.text();
   assert.ok(text.startsWith("retry: 400\n\n"));
-  assert.deepEqual(framesOf(text), [{ type: "token", text: "", seq: 4 }, { type: "custom", a: 1, seq: 5 }]);
+  assert.deepEqual(framesOf(text), [{ type: "token", text: "", seq: 4, ...STAMP }, { type: "custom", a: 1, seq: 5, ...STAMP }]);
   assert.deepEqual(reads, [[JOB, 0], [JOB, 5], [JOB, 5]]);
   assert.deepEqual(sleeps, [250, 250]);
 });

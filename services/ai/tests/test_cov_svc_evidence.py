@@ -107,8 +107,11 @@ async def test_import_explicit_text_wins_over_source():
 async def test_import_pdf_source_uses_pdf_extractor(monkeypatch):
     import app.ingest.pdf_text as pdf
     seen = []
-    monkeypatch.setattr(pdf, "extract_pdf_bytes",
-                        lambda data: seen.append(data) or "from pdf")
+    async def read(data):
+        seen.append(data)
+        return "from pdf"
+
+    monkeypatch.setattr(pdf, "read_pdf_text", read)
     s = _svc()
     src = s.sources.add(A, b"%PDF-1.4", mime="application/pdf", name="cv.pdf")
     op = await s.import_(A, src.id, "", None, "", "PDF", "RESUME", "CV")
@@ -126,15 +129,31 @@ async def test_source_text_errors():
     assert "image/png" in err.message
 
 
-async def test_source_text_outages_are_internal(monkeypatch):
+async def test_an_unreadable_pdf_is_the_callers_file_not_an_outage(monkeypatch):
     import app.ingest.pdf_text as pdf
 
-    def broken(data):
+    async def broken(data):
         raise ValueError("corrupt pdf")
-    monkeypatch.setattr(pdf, "extract_pdf_bytes", broken)
+    monkeypatch.setattr(pdf, "read_pdf_text", broken)
     s = _svc()
     src = s.sources.add(A, b"x", mime="application/pdf")
-    await _raises("INTERNAL", s._source_text(A, src.id))
+    err = await _raises("VALIDATION_ERROR", s._source_text(A, src.id))
+    assert err.status == 422
+    assert err.details == {"field": "sourceId"}
+
+
+async def test_a_source_without_its_file_is_unprocessable():
+    s = _svc()
+    for mime in ("application/pdf", "text/plain"):
+        src = s.sources.add(A, b"", mime=mime)
+        err = await _raises("VALIDATION_ERROR", s._source_text(A, src.id))
+        assert err.status == 422
+        assert err.details == {"field": "sourceId"}
+
+
+async def test_source_text_store_outages_are_internal():
+    s = _svc()
+    src = s.sources.add(A, b"x", mime="application/pdf")
     s.sources = f.Boom()
     await _raises("INTERNAL", s._source_text(A, src.id))
 

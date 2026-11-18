@@ -108,9 +108,13 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
   const quietRes = await handle(new Request("https://core.example/api/v1/internal/notifications/ai-done", {
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
-    body: JSON.stringify({ userId: USER, conversationId: CONV }),
+    body: JSON.stringify({ userId: USER, conversationId: CONV, jobId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }),
   }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
     seen.push({ sql, params });
+    if (sql.includes("FROM conversations")) {
+      return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO notification_dedupes")) return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
     if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
     if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
     return empty;
@@ -130,8 +134,12 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
   const loud = await handle(new Request("https://core.example/api/v1/internal/notifications/ai-done", {
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
-    body: JSON.stringify({ userId: USER, conversationId: CONV }),
-  }), env({ INTERNAL_JOB_TOKEN: "job-secret", EXPO_ACCESS_TOKEN: "expo-secret" }), deps(async (sql) => {
+    body: JSON.stringify({ userId: USER, conversationId: CONV, jobId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }),
+  }), env({ INTERNAL_JOB_TOKEN: "job-secret", EXPO_ACCESS_TOKEN: "expo-secret" }), deps(async (sql, params = []) => {
+    if (sql.includes("FROM conversations")) {
+      return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO notification_dedupes")) return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
     if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
     if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
     return empty;

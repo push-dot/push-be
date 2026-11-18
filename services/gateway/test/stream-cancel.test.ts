@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { complete, STORED } from "./fakes.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -17,7 +18,7 @@ const env = (): FrontEnv => ({
 });
 
 const deps = (query: Query): Deps => ({
-  query,
+  query: complete(query),
   sleep: async () => {},
   now: () => NOW,
 });
@@ -43,8 +44,8 @@ const authRow = (job: boolean): Record<string, unknown> => ({
   job_id: job ? JOB : null,
 });
 
-// The cancel is one statement: find the job, mark it, record the event.
-// The fake applies it the way Postgres would for the given job state.
+// The cancel is one statement: find the job and mark it. The job-end trigger records the event.
+// The fake applies both the way Postgres would for the given job state.
 const cancelQuery = (
   sqls: string[],
   events: Record<string, unknown>[],
@@ -55,8 +56,8 @@ const cancelQuery = (
     sqls.push(sql);
     if (sql.includes("UPDATE chat_jobs")) {
       const cancelled = selectJob && updateHits;
-      if (cancelled) events.push({ id: 4, type: "cancelled", payload: {} });
-      return [{ conversation_id: CONV, job_id: cancelled ? JOB : null }];
+      if (cancelled) events.push({ id: 4, type: "cancelled", payload: { resumable: false } });
+      return [{ conversation_id: CONV, job_id: cancelled ? JOB : null, resumable: false }];
     }
     if (sql.includes("chat_events")) return events.slice();
     if (sql.includes("access_tokens")) return [authRow(selectJob)];
@@ -81,13 +82,13 @@ test("active job cancels, records the event, and the next SSE read ends", async 
   const writes = sqls.filter((sql) => sql.includes("UPDATE chat_jobs") || sql.includes("INSERT INTO chat_events"));
   assert.equal(writes.length, 1);
   assert.match(writes[0], /UPDATE chat_jobs SET status = 'CANCELLED'.*WHERE id = \(SELECT id FROM job\) AND user_id = \$2::uuid AND status IN \('PENDING', 'RUNNING'\)/);
-  assert.match(writes[0], /INSERT INTO chat_events \(job_id, type, payload\) SELECT id, 'cancelled', '\{\}'::jsonb FROM cancelled/);
+  assert.doesNotMatch(writes[0], /INSERT INTO chat_events/);
   const stream = await handle(new Request(
     `https://push-be.example/api/v1/conversations/${CONV}/messages/stream/active`,
     { headers: { authorization: "Bearer secret-token" } },
   ), env(), deps(cancelQuery(sqls, events, true, true)));
   assert.equal(stream.status, 200);
-  assert.deepEqual(framesOf(await stream.text()), [{ type: "cancelled", seq: 4 }]);
+  assert.deepEqual(framesOf(await stream.text()), [{ type: "cancelled", resumable: false, seq: 4, at: STORED, turn: JOB }]);
   assert.equal(sqls.filter((sql) => sql.includes("FROM chat_events")).length, 1);
 });
 

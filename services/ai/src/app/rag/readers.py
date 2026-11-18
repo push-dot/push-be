@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 import httpx
 
-from app.ingest.pdf_text import extract_pdf_bytes
+from app.ingest.pdf_text import read_pdf_text
 from app.ingest.web_page import fetch_page_text
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -37,9 +37,8 @@ async def read_source(query, source_id: UUID) -> dict | None:
         return None
     mime = row["mime_type"]
     data = bytes(row["content"] or b"")
-    # CPU-bound parsing off the event loop (inline on Workers, where to_thread is patched).
     if mime == "application/pdf":
-        text = await asyncio.to_thread(extract_pdf_bytes, data)
+        text = await read_pdf_text(data)
     elif mime == DOCX:
         text = await asyncio.to_thread(docx_text, data)
     else:

@@ -1,22 +1,11 @@
 from __future__ import annotations
 
-import json
-import logging
-from uuid import uuid4
-
-logger = logging.getLogger(__name__)
-
 _EFFORTS = frozenset({"LOW", "MEDIUM", "HIGH", "MAX"})
 _DEFAULTS = {"default_effort": "MEDIUM", "confirm_before_edit": True}
 _SELECT = (
     "SELECT default_effort, confirm_before_edit "
     "FROM user_settings WHERE user_id = $1"
 )
-_INSERT = (
-    "INSERT INTO notifications (id, user_id, type, title, body, target) "
-    "VALUES ($1, $2, 'AI_DONE', $3, $4, $5::jsonb)"
-)
-_TITLE = "AI 작업이 끝났어요"
 
 
 def _stored_effort(value) -> str:
@@ -60,15 +49,3 @@ async def load_chat_settings(query, user_id) -> dict:
     if not isinstance(row, dict):
         return dict(_DEFAULTS)
     return row
-
-
-async def insert_ai_done(query, user_id, conversation_id) -> None:
-    try:
-        target = json.dumps(
-            {"kind": "conversation", "id": str(conversation_id)},
-            separators=(",", ":"),
-        )
-        await query.execute(
-            _INSERT, uuid4(), user_id, _TITLE, "", target)
-    except Exception:
-        logger.exception("AI_DONE insert failed")

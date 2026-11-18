@@ -14,7 +14,7 @@ from pydantic import BaseModel, BeforeValidator
 
 from app.domain.errors import DomainError
 from app.harness.core_client import CoreError
-from app.harness.policy import Tier
+from app.harness.policy import Exposure, Tier
 
 if TYPE_CHECKING:
     from app.harness.core_client import CoreClient
@@ -34,6 +34,20 @@ class ToolContext:
     core: CoreClient
     access_mode: str = "AUTO"
     inputs: dict = field(default_factory=dict)
+    # Whether the user gave this call's URL, when the graph already decided it for the approval.
+    supplied: bool | None = None
+    exposure: Exposure = Exposure.NONE
+
+    @property
+    def usage_job_id(self) -> str:
+        """The job to bill.
+
+        `job_id` stays the one that opened the gate, which keys the approval and the idempotency of a call.
+        """
+        # status imports emit from this module, so a top-level import would be circular.
+        from app.harness.status import job_of
+
+        return job_of({"job_id": self.job_id})
 
 
 @dataclass(frozen=True)

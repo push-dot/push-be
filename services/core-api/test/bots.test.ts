@@ -1,31 +1,46 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Query, Transaction } from "../src/db.ts";
+import type { Transaction } from "../src/db.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { uuid5Url } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
-import { encodeCursor } from "../src/time.ts";
+import { plainLine, snippetOf } from "../src/routes/bots.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const POSTING = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const BOT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const PUSH = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const NOW = new Date("2026-10-18T00:00:00Z");
 
-function env(): CoreEnv {
-  return { APP_ENV: "production", MANAGED_AI: "1" };
-}
-
-function deps(query: Deps["query"]): Deps {
-  return { query, now: () => NOW };
-}
+const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
+const deps = (query: Deps["query"]): Deps => ({ query, now: () => NOW });
 
 type Call = { sql: string; params: unknown[] };
+type Rows = Record<string, unknown>[];
 
-function authed(seen: Call[], plan: string, extra?: Deps["query"]): Deps["query"] {
-  return async (sql, params = []) => {
-    seen.push({ sql, params: params ?? [] });
+const botRow = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: BOT, kind: "company", company_id: null, company_name: "Acme", color: "teal", posting_id: POSTING, posting_url: null,
+  display_name: "Acme", avatar_key: null, mascot_key: null, notifications_muted: false, revision: 1,
+  created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
+  ...over,
+});
+
+/** A row of bot_state_v for `bot`: no thread, nothing running, nothing unread, unless `state` says so. */
+const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> = {}): Record<string, unknown> => {
+  const { id, company_id: _companyId, ...own } = bot;
+  return {
+    bot_id: id, user_id: USER, ...own, thread_id: null,
+    last_message_at: null, last_message_preview: null, last_message_from_bot: null,
+    card_id: null, card_title: null, card_kind: null, card_tool: null, card_for: null, card_at: null, card_expires_at: null,
+    job_id: null, job_at: null, job_phase: null, job_text: null, job_recent_text: null, job_ahead: null,
+    last_activity_at: bot.created_at, unread: false, outcome_kind: null, outcome_at: null,
+    ...state,
+  };
+};
+
+const authed = (seen: Call[], plan: string, answer: (sql: string, params: unknown[]) => Rows | null = () => null): Deps["query"] =>
+  async (sql, params = []) => {
+    seen.push({ sql, params });
     if (sql.includes("set_config") && sql.includes("lock_timeout")) return { rows: [{}], rowCount: 1 };
     if (sql.includes("FOR NO KEY UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
     if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
@@ -43,488 +58,423 @@ function authed(seen: Call[], plan: string, extra?: Deps["query"]): Deps["query"
       return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
     }
     if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 1 };
-    if (sql.includes("is_employer")) {
-      return { rows: [{ is_employer: false, display_name: "Ada" }], rowCount: 1 };
-    }
-    if (extra) return extra(sql, params);
-    if (sql.includes("count(*)")) return { rows: [{ total: 0, n: 0 }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
+    const rows = answer(sql, params) ?? [];
+    return { rows, rowCount: rows.length };
   };
-}
 
-const get = (path: string): Request => new Request("https://core.example" + path, {
-  headers: { authorization: "Bearer secret-token" },
-});
+type World = {
+  consent?: boolean; posting?: Record<string, unknown> | false; existing?: string; count?: number;
+  bot?: Record<string, unknown> | null; state?: Record<string, unknown>; insertWins?: boolean; hits?: Rows;
+  pushMissing?: boolean;
+};
 
-const post = (path: string, body: unknown, key?: string): Request => new Request("https://core.example" + path, {
-  method: "POST",
+const POSTING_ROW = { id: POSTING, company: "Acme", title: "Backend", deadline: "2026-11-20", career_min: 3, career_max: null, location: "Seoul" };
+
+const world = (w: World = {}) => {
+  let pushMade = w.pushMissing !== true;
+  return (sql: string): Rows | null => {
+  if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) {
+    pushMade = true;
+    return [];
+  }
+  if (!pushMade && (sql.includes("bot_state_v") || sql.includes("FROM bots b"))) return [];
+  if (sql.includes("user_consents")) return [{ reference_data: w.consent ?? true }];
+  if (sql.includes("FROM job_postings")) return w.posting === false ? [] : [{ ...POSTING_ROW, ...w.posting }];
+  if (sql.includes("WITH hits")) return w.hits ?? [{ total: 0, id: null }];
+  if (sql.includes("bot_state_v")) return w.bot === null ? [] : [stateRow(w.bot ?? botRow(), w.state)];
+  if (sql.includes("bot_company_key")) return w.existing ? [{ id: w.existing }] : [];
+  if (sql.includes("count(*)")) return [{ n: w.count ?? 0 }];
+  if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return w.insertWins === false ? [] : [{ id: BOT }];
+  if (sql.includes("UPDATE bots SET revision")) return [{ id: BOT }];
+  if (sql.includes("DELETE FROM bots")) return w.bot === null ? [] : [{ id: BOT }];
+  if (sql.includes("FROM bots b")) return w.bot === null ? [] : [w.bot ?? botRow()];
+  return null;
+  };
+};
+
+const request = (method: string, path: string, body?: unknown): Request => new Request("https://core.example" + path, {
+  method,
   headers: {
     authorization: "Bearer secret-token",
     "content-type": "application/json",
-    ...(key ? { "idempotency-key": key } : {}),
+    ...(method === "POST" ? { "idempotency-key": crypto.randomUUID() } : {}),
   },
-  body: JSON.stringify(body),
+  body: body === undefined ? undefined : JSON.stringify(body),
 });
 
-const patch = (path: string, body: unknown): Request => new Request("https://core.example" + path, {
-  method: "PATCH",
-  headers: { authorization: "Bearer secret-token", "content-type": "application/json" },
-  body: JSON.stringify(body),
-});
-
-const del = (path: string): Request => new Request("https://core.example" + path, {
-  method: "DELETE",
-  headers: { authorization: "Bearer secret-token" },
-});
-
-test("GET /api/v1/bots creates push bot lazily and lists company bots", async () => {
+const call = async (method: string, path: string, body: unknown, w: World = {}, plan = "PRO", extra: Partial<Deps> = {}) => {
   resetLimits();
   const seen: Call[] = [];
-  const res = await handle(get("/api/v1/bots"), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) return { rows: [], rowCount: 1 };
-    if (sql.includes("FROM bots b") && sql.includes("ORDER BY")) {
-      return {
-        rows: [
-          { id: PUSH, kind: "push", company_id: null, company_name: "", posting_id: null, posting_url: null,
-            display_name: "Push Bot", avatar_key: null, mascot_key: null, notifications_muted: false,
-            revision: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
-            last_message_preview: "hello", unread: true, status: "DONE" },
-        ],
-        rowCount: 1,
-      };
-    }
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { kind: string; displayName: string }[] };
-  assert.equal(body.data[0].kind, "push");
-  assert.equal(body.data[0].displayName, "Push Bot");
-  assert.equal(seen.some((c) => c.sql.includes("INSERT INTO bots")), true);
-});
-
-test("POST /api/v1/bots returns BOT_LIMIT on FREE plan", async () => {
-  resetLimits();
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme" }, "11111111-1111-4111-8111-111111111111"),
-    env(),
-    deps(authed([], "FREE", async (sql) => {
-      if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) return { rows: [], rowCount: 1 };
-      if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 3 }], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 403);
-  const body = await res.json() as { error: { code: string; details: { limit: number; plan: string } } };
-  assert.equal(body.error.code, "BOT_LIMIT");
-  assert.equal(body.error.details.limit, 3);
-  assert.equal(body.error.details.plan, "FREE");
-});
-
-test("POST /api/v1/bots creates a company bot when under limit", async () => {
-  resetLimits();
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme", displayName: "Acme coach" }, "22222222-2222-4222-8222-222222222222"),
-    env(),
-    deps(authed([], "PRO", async (sql) => {
-      if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) return { rows: [], rowCount: 1 };
-      if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 1 }], rowCount: 1 };
-      if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 201);
-  const body = await res.json() as { data: { kind: string; displayName: string } };
-  assert.equal(body.data.kind, "company");
-  assert.equal(body.data.displayName, "Acme coach");
-});
-
-test("DELETE /api/v1/bots/:id blocks the push bot", async () => {
-  resetLimits();
-  const res = await handle(del(`/api/v1/bots/${PUSH}`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("SELECT kind FROM bots")) return { rows: [{ kind: "push" }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 403);
-  const body = await res.json() as { error: { code: string } };
-  assert.equal(body.error.code, "DEFAULT_BOT_PROTECTED");
-});
-
-test("DELETE /api/v1/bots/:id soft-deletes a company bot", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(del(`/api/v1/bots/${BOT}`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("SELECT kind FROM bots")) return { rows: [{ kind: "company" }], rowCount: 1 };
-    if (sql.includes("UPDATE bots SET deleted_at")) return { rows: [{ id: BOT }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 204);
-  assert.match(seen.find((c) => c.sql.includes("UPDATE bots SET deleted_at"))!.sql, /deleted_at/);
-});
-
-test("POST /api/v1/bots/link-preview returns found for a posting URL", async () => {
-  resetLimits();
-  const res = await handle(
-    post("/api/v1/bots/link-preview", { url: `https://app.push.local/postings/${POSTING}` }, "33333333-3333-4333-8333-333333333333"),
-    env(),
-    deps(authed([], "PRO", async (sql, params) => {
-      if (sql.includes("FROM job_postings") && (params ?? []).includes(POSTING)) {
-        return { rows: [{ id: POSTING, company: "Acme", title: "Backend" }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { status: string; postingId: string } };
-  assert.equal(body.data.status, "found");
-  assert.equal(body.data.postingId, POSTING);
-});
-
-test("POST /api/v1/bots/link-preview returns not_a_posting", async () => {
-  resetLimits();
-  const res = await handle(
-    post("/api/v1/bots/link-preview", { url: "https://example.com/jobs/1" }, "44444444-4444-4444-8444-444444444444"),
-    env(),
-    deps(authed([], "PRO", async () => ({ rows: [], rowCount: 0 }))),
-  );
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { status: string } };
-  assert.equal(body.data.status, "not_a_posting");
-});
-
-test("GET /api/v1/bots/companies/search returns open posting counts", async () => {
-  resetLimits();
-  const res = await handle(get("/api/v1/bots/companies/search?q=ac"), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("GROUP BY p.company")) {
-      return { rows: [{ name: "Acme", open_posting_count: 4 }], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { name: string; openPostingCount: number }[] };
-  assert.deepEqual(body.data[0], { name: "Acme", openPostingCount: 4 });
-});
-
-test("POST /api/v1/bots/:id/conversations creates a conversation with bot_id", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(
-    post(`/api/v1/bots/${BOT}/conversations`, { title: "첫 채팅" }, "55555555-5555-4555-8555-555555555555"),
-    env(),
-    deps(authed(seen, "PRO", async (sql) => {
-      if (sql.includes("FROM bots b") && sql.includes("deleted_at IS NULL")) {
-        return { rows: [{ id: BOT, kind: "company", company_id: null, company_name: "Acme", posting_id: POSTING, revision: 1 }], rowCount: 1 };
-      }
-      if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-      if (sql.includes("INSERT INTO conversations") && sql.includes("bot_id")) return { rows: [], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 201);
-  const insert = seen.find((c) => c.sql.includes("INSERT INTO conversations"))!;
-  assert.ok(insert.sql.includes("bot_id"));
-});
-
-test("GET /api/v1/bots/:id/conversations lists conversations", async () => {
-  resetLimits();
-  const res = await handle(get(`/api/v1/bots/${BOT}/conversations`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) {
-      return { rows: [{ id: BOT, kind: "company", display_name: "Acme", revision: 1 }], rowCount: 1 };
-    }
-    if (sql.includes("FROM conversations") && sql.includes("bot_id")) {
-      return {
-        rows: [{ id: CONV, revision: 1, application_id: null, title: "t", pinned: false, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
-        rowCount: 1,
-      };
-    }
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { id: string }[] };
-  assert.equal(body.data[0].id, CONV);
-});
-
-test("POST /api/v1/bots/:id/read upserts a read marker", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(
-    post(`/api/v1/bots/${BOT}/read`, {}, "66666666-6666-4666-8666-666666666666"),
-    env(),
-    deps(authed(seen, "PRO", async (sql) => {
-      if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-      if (sql.includes("bot_read_markers")) return { rows: [], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 200);
-  assert.match(seen.find((c) => c.sql.includes("bot_read_markers"))!.sql, /INSERT INTO bot_read_markers/);
-});
-
-test("GET /api/v1/bots/:id returns one bot", async () => {
-  resetLimits();
-  const res = await handle(get(`/api/v1/bots/${BOT}`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("FROM bots b") && sql.includes("AND b.id")) {
-      return {
-        rows: [{
-          id: BOT, kind: "company", company_id: null, company_name: "Acme", posting_id: null, posting_url: null,
-          display_name: "Acme", avatar_key: null, mascot_key: null, notifications_muted: false, revision: 1,
-          created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
-          last_message_preview: "", unread: false, status: "DONE",
-        }],
-        rowCount: 1,
-      };
-    }
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { id: string } };
-  assert.equal(body.data.id, BOT);
-});
-
-test("PATCH /api/v1/bots/:id updates name and mute flag", async () => {
-  resetLimits();
-  const res = await handle(patch(`/api/v1/bots/${BOT}`, { expectedRevision: 1, displayName: "New", notificationsMuted: true }), env(),
-    deps(authed([], "PRO", async (sql) => {
-      if (sql.includes("FROM bots b") && !sql.includes("UPDATE")) {
-        return {
-          rows: [{
-            id: BOT, kind: "company", company_id: null, company_name: "Acme", posting_id: null, posting_url: null,
-            display_name: "Old", notifications_muted: false, avatar_key: null, mascot_key: null, revision: 1,
-            created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
-          }],
-          rowCount: 1,
-        };
-      }
-      if (sql.includes("UPDATE bots SET revision")) {
-        return {
-          rows: [{
-            id: BOT, kind: "company", company_id: null, company_name: "Acme", posting_id: null, posting_url: null,
-            display_name: "New", notifications_muted: true, avatar_key: null, mascot_key: null, revision: 2,
-            created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
-          }],
-          rowCount: 1,
-        };
-      }
-      return { rows: [], rowCount: 0 };
-    })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as { data: { displayName: string; notificationsMuted: boolean } };
-  assert.equal(body.data.displayName, "New");
-  assert.equal(body.data.notificationsMuted, true);
-});
-
-test("POST /api/v1/bots runs limit check inside deps.transaction", async () => {
-  resetLimits();
-  const txCalls: Call[] = [];
-  const transaction: Transaction = async (work) => work(async (sql, params = []) => {
-    txCalls.push({ sql, params: params ?? [] });
-    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
-    if (sql.includes("FOR NO KEY UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
-    if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  });
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme" }, "77777777-7777-4777-8777-777777777777"),
-    env(),
-    { ...deps(authed([], "PRO", async () => ({ rows: [], rowCount: 0 }))), transaction },
-  );
-  assert.equal(res.status, 201);
-  const order = txCalls.map((c) => {
-    if (c.sql.includes("set_config")) return "set_config";
-    if (c.sql.includes("FOR NO KEY UPDATE")) return "lock";
-    if (c.sql.includes("count(*)")) return "count";
-    if (c.sql.includes("INSERT INTO bots")) return "insert";
-    return "other";
-  }).filter((x) => x !== "other");
-  assert.deepEqual(order.slice(0, 4), ["set_config", "lock", "count", "insert"]);
-  assert.equal(txCalls.some((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'company'")), true);
-});
-
-test("POST /api/v1/bots on ULTRA skips lock and company count", async () => {
-  resetLimits();
-  const txCalls: Call[] = [];
-  const transaction: Transaction = async (work) => work(async (sql, params = []) => {
-    txCalls.push({ sql, params: params ?? [] });
-    if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  });
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme" }, "88888888-8888-4888-8888-888888888888"),
-    env(),
-    { ...deps(authed([], "ULTRA", async () => ({ rows: [], rowCount: 0 }))), transaction },
-  );
-  assert.equal(res.status, 201);
-  assert.equal(txCalls.some((c) => c.sql.includes("FOR NO KEY UPDATE")), false);
-  assert.equal(txCalls.some((c) => c.sql.includes("count(*)") && c.sql.includes("kind = 'company'")), false);
-  assert.equal(txCalls.some((c) => c.sql.includes("INSERT INTO bots")), true);
-});
-
-test("POST /api/v1/bots allows PRO create when count is 19", async () => {
-  resetLimits();
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme" }, "99999999-9999-4999-8999-999999999999"),
-    env(),
-    deps(authed([], "PRO", async (sql) => {
-      if (sql.includes("INSERT INTO bots") && sql.includes("'push'")) return { rows: [], rowCount: 1 };
-      if (sql.includes("count(*)") && sql.includes("kind = 'company'")) return { rows: [{ n: 19 }], rowCount: 1 };
-      if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return { rows: [], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    })),
-  );
-  assert.equal(res.status, 201);
-});
-
-test("POST /api/v1/bots returns 429 RATE_LIMITED on lock timeout", async () => {
-  resetLimits();
-  const transaction: Transaction = async (work) => work(async (sql) => {
-    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
-    const err = Object.assign(new Error("lock timeout"), { code: "55P03" });
-    throw err;
-  });
-  const res = await handle(
-    post("/api/v1/bots", { companyName: "Acme" }, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01"),
-    env(),
-    { ...deps(authed([], "FREE", async () => ({ rows: [], rowCount: 0 }))), transaction },
-  );
-  assert.equal(res.status, 429);
-  const body = await res.json() as { error: { code: string; details: { retryAfterSec: number } } };
-  assert.equal(body.error.code, "RATE_LIMITED");
-  assert.equal(body.error.details.retryAfterSec, 1);
-});
-
-test("GET /api/v1/bots/:id/library returns three sections for an owned bot", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(get(`/api/v1/bots/${BOT}/library`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("FROM bots b WHERE b.id = $1 AND b.user_id = $2")) {
-      return { rows: [{ id: BOT, kind: "company", display_name: "Acme", revision: 1 }], rowCount: 1 };
-    }
-    if (sql.includes("FROM conversations c") && sql.includes("last_message_preview")) {
-      return {
-        rows: [{
-          id: CONV, revision: 1, application_id: null, title: "첫 채팅", pinned: false,
-          created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
-          last_message_preview: "hello", status: "DONE",
-        }],
-        rowCount: 1,
-      };
-    }
-    if (sql.includes("FROM sources") && sql.includes("SOURCE', 'FILE'")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM user_links ul")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const body = await res.json() as {
-    data: {
-      conversations: { items: unknown[]; nextCursor: null; hasMore: boolean };
-      files: { items: unknown[] };
-      links: { items: unknown[] };
-    };
+  const res = await handle(request(method, path, body), env(), { ...deps(authed(seen, plan, world(w))), ...extra });
+  const json = res.status === 204 ? null : await res.json() as {
+    data?: Record<string, unknown> & Record<string, unknown>[];
+    limit?: Record<string, unknown>;
+    page?: Record<string, unknown>;
+    error?: { code: string; details: Record<string, unknown> };
   };
-  assert.ok(body.data.conversations);
-  assert.ok(body.data.files);
-  assert.ok(body.data.links);
-  assert.equal(body.data.conversations.items[0] && (body.data.conversations.items[0] as { lastMessagePreview: string }).lastMessagePreview, "hello");
-  assert.match(seen.find((c) => c.sql.includes("NOT c.archived"))!.sql, /NOT c\.archived/);
-  assert.match(seen.find((c) => c.sql.includes("NEEDS_APPROVAL"))!.sql, /NEEDS_APPROVAL/);
+  return { res, json, seen };
+};
+
+const wrote = (seen: Call[], marker: string): boolean => seen.some((c) => c.sql.includes(marker));
+
+test("GET /bots makes the Push Bot on first use and lists it", async () => {
+  const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }), pushMissing: true });
+  assert.equal(res.status, 200);
+  assert.equal(json!.data![0].kind, "push");
+  assert.equal(json!.data![0].color, null);
+  assert.ok(wrote(seen, "INSERT INTO bots"));
 });
 
-test("GET /api/v1/bots/:id/library returns 404 for a missing bot", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(get(`/api/v1/bots/${BOT}/library`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 404);
-  assert.equal(seen.some((c) => c.sql.includes("FROM user_links")), false);
+test("GET /bots on an account that already has its Push Bot writes nothing and reads once", async () => {
+  const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }) });
+  assert.equal(res.status, 200);
+  assert.equal(json!.data![0].kind, "push");
+  assert.ok(!wrote(seen, "INSERT INTO bots"));
+  assert.equal(seen.filter((c) => c.sql.includes("bot_state_v")).length, 1);
 });
 
-test("GET /api/v1/bots/:id/library section=files skips conversation and link queries", async () => {
+test("GET /bots says how many company bots the plan allows and how many exist", async () => {
+  const table = { FREE: 3, PRO: 20, ULTRA: null };
+  for (const [plan, limit] of [
+    ["FREE", { plan: "FREE", max: 3, used: 1, table }],
+    ["ULTRA", { plan: "ULTRA", max: null, used: 1, table }],
+    ["", { plan: "FREE", max: 3, used: 1, table }],
+  ] as const) {
+    assert.deepEqual((await call("GET", "/api/v1/bots", undefined, {}, plan)).json!.limit, limit, plan);
+  }
+  const push = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push" }) }, "FREE");
+  assert.equal(push.json!.limit!.used, 0, "the Push Bot is not counted");
+});
+
+test("GET /bots?postingId= answers the caller's bot for that posting's company, or nothing, and no limit", async () => {
+  const found = await call("GET", `/api/v1/bots?postingId=${POSTING}`, undefined, { existing: BOT });
+  assert.deepEqual([found.res.status, found.json!.data!.map((bot) => bot.id), found.json!.limit], [200, [BOT], undefined]);
+  assert.ok(!wrote(found.seen, "INSERT INTO bots"));
+  for (const w of [{}, { posting: false }, { existing: BOT, posting: { company: "   " } }] as World[]) {
+    assert.deepEqual((await call("GET", `/api/v1/bots?postingId=${POSTING}`, undefined, w)).json, { data: [] });
+  }
+  const bad = await call("GET", "/api/v1/bots?postingId=nope", undefined);
+  assert.deepEqual([bad.res.status, bad.json!.error!.details.field], [400, "postingId"]);
+});
+
+test("a bot's activity is its open card, else what its run is doing, else nothing", async () => {
+  const at = "2026-10-18T00:01:00Z";
+  const card = { card_id: POSTING, card_title: "수정 적용", card_kind: "DOCUMENT_EDIT", card_for: "confirm", card_at: at, card_expires_at: null };
+  const run = (phase: string, more: Record<string, unknown> = {}) => ({ job_id: POSTING, job_at: at, job_phase: phase, ...more });
+  const waiting = { phase: "waiting", since: at, for: "confirm", cardId: POSTING, cardTitle: "이 변경을 이력서에 반영할까요?", expiresAt: null };
+  for (const [name, state, activity, status] of [
+    ["idle", {}, null, "DONE"],
+    ["queued", run("queued", { job_ahead: 2 }), { phase: "queued", since: at, ahead: 2 }, "RUNNING"],
+    ["thinking", run("thinking"), { phase: "thinking", since: at, label: null }, "RUNNING"],
+    ["thinking after a working step", run("thinking", { job_text: "생각 중", job_recent_text: "공고 요건을 살펴보는 중" }), { phase: "thinking", since: at, label: "공고 요건을 살펴보는 중" }, "RUNNING"],
+    ["working", run("working", { job_text: "경력 섹션 고치는 중", job_recent_text: "경력 섹션 고치는 중" }), { phase: "working", since: at, label: "경력 섹션 고치는 중" }, "RUNNING"],
+    ["card", card, waiting, "NEEDS_APPROVAL"],
+    ["card and a run", { ...card, ...run("working", { job_text: "x" }) }, waiting, "NEEDS_APPROVAL"],
+    ["edit card", { ...card, card_title: "수정 적용", card_kind: "DOCUMENT_EDIT" }, waiting, "NEEDS_APPROVAL"],
+    ["page card", { ...card, card_title: "채용 페이지 열기", card_kind: "TOOL_ACTION", card_tool: "read_page" }, { ...waiting, cardTitle: "이 사이트를 열어도 될까요?" }, "NEEDS_APPROVAL"],
+    ["other tool card keeps its title", { ...card, card_title: "이 공고에 지원해요", card_kind: "TOOL_ACTION", card_tool: "apply_to_posting" }, { ...waiting, cardTitle: "이 공고에 지원해요" }, "NEEDS_APPROVAL"],
+    ["answer card", { ...card, card_for: "answer", card_expires_at: "2026-10-18T00:11:00Z" }, { ...waiting, for: "answer", expiresAt: "2026-10-18T00:11:00Z" }, "NEEDS_APPROVAL"],
+  ] as const) {
+    const { json } = await call("GET", `/api/v1/bots/${BOT}`, undefined, { state });
+    assert.deepEqual(json!.data!.activity, activity, name);
+    assert.equal(json!.data!.status, status, name);
+  }
+});
+
+test("a bot carries its last message, unread flag and last activity", async () => {
+  const quiet = (await call("GET", `/api/v1/bots/${BOT}`, undefined)).json!.data!;
+  assert.deepEqual(
+    [quiet.lastMessage, quiet.lastMessagePreview, quiet.unread, quiet.lastActivityAt],
+    [null, "", false, "2026-10-18T00:00:00Z"]);
+  const spoke = (await call("GET", `/api/v1/bots/${BOT}`, undefined, { state: {
+    last_message_at: "2026-10-18T00:02:00Z", last_message_preview: "초안을 만들었어요", last_message_from_bot: true,
+    last_activity_at: "2026-10-18T00:02:00Z", unread: true,
+  } })).json!.data!;
+  assert.deepEqual(
+    [spoke.lastMessage, spoke.lastMessagePreview, spoke.unread, spoke.lastActivityAt],
+    [{ preview: "초안을 만들었어요", at: "2026-10-18T00:02:00Z", fromBot: true }, "초안을 만들었어요", true, "2026-10-18T00:02:00Z"]);
+});
+
+test("GET /bots/{id} adds the posting and the newest fit score, or null for each", async () => {
+  const bare = (await call("GET", `/api/v1/bots/${BOT}`, undefined)).json!.data!;
+  assert.deepEqual([bare.posting, bare.fit], [null, null]);
+  const full = (await call("GET", `/api/v1/bots/${BOT}`, undefined, { state: {
+    posting_title: "Backend", posting_deadline: "2026-11-20", posting_closed: false, fit_score: "8.1",
+  } })).json!.data!;
+  assert.deepEqual(
+    [full.posting, full.fit],
+    [{ id: POSTING, title: "Backend", deadline: "2026-11-20", closed: false }, { score: 8.1 }]);
+});
+
+test("POST /bots creates a company bot from a posting", async () => {
+  const { res, json, seen } = await call("POST", "/api/v1/bots", { postingId: POSTING, displayName: "Acme coach", color: "violet" });
+  assert.equal(res.status, 201);
+  assert.equal(json!.data!.id, BOT);
+  const insert = seen.find((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'company'"))!;
+  assert.deepEqual(insert.params.slice(2, 6), ["Acme", POSTING, "Acme coach", "violet"]);
+  assert.ok(!insert.sql.includes("company_id"));
+});
+
+test("a bot never gets a blank name", async () => {
+  const spaced = await call("POST", "/api/v1/bots", { postingId: POSTING, displayName: "  Acme coach " }, { posting: { company: "  Acme \u3000" } });
+  assert.equal(spaced.res.status, 201);
+  const insert = spaced.seen.find((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'company'"))!;
+  assert.deepEqual(insert.params.slice(2, 5), ["Acme", POSTING, "Acme coach"]);
+
+  const unnamed = await call("POST", "/api/v1/bots", { postingId: POSTING }, { posting: { company: " \u3000 " } });
+  assert.equal(unnamed.res.status, 404, "a posting whose company is blank makes no bot");
+  assert.ok(!wrote(unnamed.seen, "INSERT INTO bots"));
+
+  for (const [method, path, body] of [
+    ["POST", "/api/v1/bots", { postingId: POSTING, displayName: "   " }],
+    ["PATCH", `/api/v1/bots/${BOT}`, { expectedRevision: 1, displayName: " \u3000 " }],
+  ] as const) {
+    const { res, json, seen } = await call(method, path, body);
+    assert.deepEqual([res.status, json!.error!.details.field], [400, "displayName"], method);
+    assert.ok(!wrote(seen, "INSERT INTO bots") && !wrote(seen, "UPDATE bots"), method);
+  }
+  const renamed = await call("PATCH", `/api/v1/bots/${BOT}`, { expectedRevision: 1, displayName: " New " });
+  assert.equal(renamed.seen.find((c) => c.sql.includes("UPDATE bots SET revision"))!.params[2], "New");
+});
+
+test("POST /bots answers 200 with the bot the caller already has for that company", async () => {
+  const { res, json, seen } = await call("POST", "/api/v1/bots", { postingId: POSTING }, { existing: BOT, count: 3 }, "FREE");
+  assert.equal(res.status, 200);
+  assert.equal(json!.data!.id, BOT);
+  assert.ok(!wrote(seen, "INSERT INTO bots"));
+});
+
+test("POST /bots answers 200 when a parallel create for the same company won", async () => {
+  let lookups = 0;
   resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=files`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    if (sql.includes("FROM sources")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
+  const res = await handle(request("POST", "/api/v1/bots", { postingId: POSTING }), env(), deps(authed([], "ULTRA", (sql) => {
+    if (sql.includes("bot_company_key")) return lookups++ === 0 ? [] : [{ id: BOT }];
+    return world({ insertWins: false })(sql);
   })));
   assert.equal(res.status, 200);
-  assert.equal(seen.some((c) => c.sql.includes("last_message_preview")), false);
-  assert.equal(seen.some((c) => c.sql.includes("FROM user_links")), false);
-  assert.match(seen.find((c) => c.sql.includes("SOURCE', 'FILE'"))!.sql, /SOURCE', 'FILE'/);
 });
 
-test("GET /api/v1/bots/:id/library rejects invalid section", async () => {
-  resetLimits();
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=nope`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 400);
-  const body = await res.json() as { error: { details: { field: string } } };
-  assert.equal(body.error.details.field, "section");
+test("POST /bots answers BOT_LIMIT at the plan limit", async () => {
+  const { res, json } = await call("POST", "/api/v1/bots", { postingId: POSTING }, { count: 3 }, "FREE");
+  assert.equal(res.status, 403);
+  assert.equal(json!.error!.code, "BOT_LIMIT");
+  assert.deepEqual(json!.error!.details, { limit: 3, plan: "FREE" });
+  assert.equal((await call("POST", "/api/v1/bots", { postingId: POSTING }, { count: 19 })).res.status, 201);
 });
 
-test("GET /api/v1/bots/:id/library rejects limit=0", async () => {
-  resetLimits();
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?limit=0`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 400);
-  const body = await res.json() as { error: { details: { field: string } } };
-  assert.equal(body.error.details.field, "limit");
+test("POST /bots refuses every body key but postingId, displayName and color", async () => {
+  for (const [field, body] of Object.entries({
+    companyName: { postingId: POSTING, companyName: "Acme" },
+    companyId: { postingId: POSTING, companyId: BOT },
+    postingUrl: { postingId: POSTING, postingUrl: "https://example.com/jobs/1" },
+    postingId: { displayName: "Acme" },
+    color: { postingId: POSTING, color: "magenta" },
+    displayName: { postingId: POSTING, displayName: "" },
+  })) {
+    const { res, json, seen } = await call("POST", "/api/v1/bots", body);
+    assert.equal(res.status, 400, field);
+    assert.equal(json!.error!.details.field, field);
+    assert.ok(!wrote(seen, "INSERT INTO bots"));
+  }
 });
 
-test("GET /api/v1/bots/:id/library filters markdown uploads", async () => {
-  resetLimits();
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=files`), env(), deps(authed([], "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    if (sql.includes("FROM sources")) {
-      return {
-        rows: [{
-          id: crypto.randomUUID(), file_name: "notes.md", mime_type: "text/plain", size: 1,
-          page_count: null, origin: "UPLOAD", created_at: NOW.toISOString(), doc_kind: null,
-        }],
-        rowCount: 1,
-      };
-    }
-    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  })));
+test("POST /bots needs reference-data consent and an existing posting", async () => {
+  const refused = await call("POST", "/api/v1/bots", { postingId: POSTING }, { consent: false });
+  assert.equal(refused.res.status, 403);
+  assert.equal(refused.json!.error!.code, "CONSENT_REQUIRED");
+  assert.ok(!wrote(refused.seen, "INSERT INTO bots"));
+  const missing = await call("POST", "/api/v1/bots", { postingId: POSTING }, { posting: false });
+  assert.equal(missing.res.status, 404);
+});
+
+test("POST /bots answers 429 RATE_LIMITED on a lock timeout", async () => {
+  const transaction: Transaction = async (work) => work(async (sql) => {
+    if (sql.includes("FROM job_postings")) return { rows: [POSTING_ROW], rowCount: 1 };
+    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
+    throw Object.assign(new Error("lock timeout"), { code: "55P03" });
+  });
+  const { res, json } = await call("POST", "/api/v1/bots", { postingId: POSTING }, {}, "FREE", { transaction });
+  assert.equal(res.status, 429);
+  assert.equal(json!.error!.code, "RATE_LIMITED");
+  assert.equal(json!.error!.details.retryAfterSec, 1);
+});
+
+test("the literal id push addresses the caller's Push Bot on every bot route", async () => {
+  const pushId = await uuid5Url(`push:bot:${USER}`);
+  const push = botRow({ id: pushId, kind: "push", display_name: "Push Bot", company_name: "" });
+  for (const [method, path, body, status] of [
+    ["GET", "/api/v1/bots/push", undefined, 200],
+    ["PATCH", "/api/v1/bots/push", { expectedRevision: 1, notificationsMuted: true }, 200],
+    ["POST", "/api/v1/bots/push/read", {}, 200],
+    ["DELETE", "/api/v1/bots/push/transcript", undefined, 204],
+    ["DELETE", "/api/v1/bots/push", undefined, 403],
+  ] as const) {
+    const existing = await call(method, path, body, { bot: push });
+    assert.equal(existing.res.status, status, `${method} ${path}`);
+    assert.ok(!wrote(existing.seen, "INSERT INTO bots"), `${method} ${path} writes nothing for an existing Push Bot`);
+    const { res, seen } = await call(method, path, body, { bot: push, pushMissing: true });
+    assert.equal(res.status, status, `${method} ${path}`);
+    const ensured = seen.find((c) => c.sql.includes("INSERT INTO bots") && c.sql.includes("'push'"));
+    assert.equal(ensured?.params[0], pushId, `${method} ${path} makes the Push Bot when it is missing`);
+    assert.ok(seen.some((c) => c.sql.includes("FROM bots b WHERE b.id = $1") && c.params[0] === pushId));
+  }
+});
+
+test("DELETE /bots/{id} deletes a company bot's row and protects the Push Bot", async () => {
+  const company = await call("DELETE", `/api/v1/bots/${BOT}`, undefined);
+  assert.equal(company.res.status, 204);
+  assert.deepEqual(company.seen.find((c) => c.sql.includes("DELETE FROM bots"))!.params, [BOT, USER]);
+  const push = await call("DELETE", `/api/v1/bots/${BOT}`, undefined, { bot: botRow({ kind: "push" }) });
+  assert.equal(push.res.status, 403);
+  assert.equal(push.json!.error!.code, "DEFAULT_BOT_PROTECTED");
+  assert.ok(!wrote(push.seen, "DELETE FROM bots"));
+  assert.equal((await call("DELETE", `/api/v1/bots/${BOT}`, undefined, { bot: null })).res.status, 404);
+});
+
+test("DELETE /bots/{id}/transcript deletes the bot's thread and keeps the bot", async () => {
+  const { res, seen } = await call("DELETE", `/api/v1/bots/${BOT}/transcript`, undefined);
+  assert.equal(res.status, 204);
+  assert.deepEqual(seen.find((c) => c.sql.includes("DELETE FROM conversations"))!.params, [BOT, USER]);
+  assert.ok(!wrote(seen, "DELETE FROM bots"));
+  assert.equal((await call("DELETE", `/api/v1/bots/${BOT}/transcript`, undefined, { bot: null })).res.status, 404);
+});
+
+test("PATCH /bots/{id} changes name, mute and colour", async () => {
+  const { res, json, seen } = await call("PATCH", `/api/v1/bots/${BOT}`, { expectedRevision: 1, displayName: "New", notificationsMuted: true, color: "coral" });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { files: { items: unknown[] } } };
-  assert.equal(body.data.files.items.length, 0);
+  assert.equal(json!.data!.id, BOT);
+  assert.deepEqual(seen.find((c) => c.sql.includes("UPDATE bots SET revision"))!.params.slice(2, 5), ["New", true, "coral"]);
 });
 
-test("GET /api/v1/bots/:id/library links query uses strpos and excludes empty url", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?section=links`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    if (sql.includes("FROM user_links ul")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  })));
-  assert.equal(res.status, 200);
-  const linkSql = seen.find((c) => c.sql.includes("FROM user_links ul"))!.sql;
-  assert.match(linkSql, /ul\.url <> ''/);
-  assert.match(linkSql, /strpos/);
+test("PATCH /bots/{id} refuses image keys, an unknown colour, a stale revision, and a rename of the Push Bot", async () => {
+  for (const [field, body] of Object.entries({
+    avatarKey: { expectedRevision: 1, avatarKey: "a.png" },
+    mascotKey: { expectedRevision: 1, mascotKey: "violet" },
+    color: { expectedRevision: 1, color: "magenta" },
+  })) {
+    const { res, json } = await call("PATCH", `/api/v1/bots/${BOT}`, body);
+    assert.equal(res.status, 400, field);
+    assert.equal(json!.error!.details.field, field);
+  }
+  const stale = await call("PATCH", `/api/v1/bots/${BOT}`, { expectedRevision: 4 });
+  assert.equal(stale.res.status, 409);
+  assert.deepEqual(stale.json!.error!.details, { currentRevision: 1 });
+  for (const body of [{ expectedRevision: 1, displayName: "Mine" }, { expectedRevision: 1, color: "sky" }]) {
+    const { res, seen } = await call("PATCH", `/api/v1/bots/${BOT}`, body, { bot: botRow({ kind: "push" }) });
+    assert.equal(res.status, 400);
+    assert.ok(!wrote(seen, "UPDATE bots"));
+  }
 });
 
-test("GET /api/v1/bots/:id/library conversation cursor compares updated_at", async () => {
-  resetLimits();
-  const seen: Call[] = [];
-  const cursor = encodeCursor("2026-10-17T00:00:00.000Z", CONV);
-  const res = await handle(get(`/api/v1/bots/${BOT}/library?conversationCursor=${cursor}`), env(), deps(authed(seen, "PRO", async (sql) => {
-    if (sql.includes("FROM bots b")) return { rows: [{ id: BOT, kind: "company", revision: 1 }], rowCount: 1 };
-    if (sql.includes("FROM conversations c")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM sources")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM documents d")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM user_links")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  })));
+test("POST /bots/{id}/read upserts a read marker", async () => {
+  const { res, json, seen } = await call("POST", `/api/v1/bots/${BOT}/read`, {});
   assert.equal(res.status, 200);
-  assert.match(seen.find((c) => c.sql.includes("c.updated_at"))!.sql, /c\.updated_at/);
+  assert.equal(json!.data!.readAt, NOW.toISOString());
+  assert.ok(wrote(seen, "INSERT INTO bot_read_markers"));
+  assert.equal((await call("POST", `/api/v1/bots/${BOT}/read`, {}, { bot: null })).res.status, 404);
+});
+
+test("POST /bots/link-preview resolves a posting URL to the posting's facts and the link's host, and nothing else", async () => {
+  const found = await call("POST", "/api/v1/bots/link-preview", { url: `https://App.Push.local/postings/${POSTING}?ref=1` });
+  assert.deepEqual(found.json!.data, {
+    status: "found", postingId: POSTING, company: "Acme", title: "Backend",
+    deadline: "2026-11-20", careerMin: 3, careerMax: null, location: "Seoul", host: "app.push.local",
+  });
+  const sparse = await call("POST", "/api/v1/bots/link-preview", { url: "https://careers.acme.example/jobs/1042" },
+    { posting: { company: " Acme ", deadline: null, career_min: 0, career_max: 5, location: "" } });
+  assert.deepEqual(sparse.json!.data, {
+    status: "found", postingId: POSTING, company: "Acme", title: "Backend",
+    deadline: null, careerMin: 0, careerMax: 5, location: null, host: "careers.acme.example",
+  });
+  for (const w of [{ posting: false }, { posting: { company: "  " } }] as World[]) {
+    assert.deepEqual((await call("POST", "/api/v1/bots/link-preview", { url: "https://example.com/jobs/1" }, w)).json!.data, { status: "not_a_posting" });
+  }
+  assert.equal((await call("POST", "/api/v1/bots/link-preview", { url: "ftp://example.com/jobs/1" })).res.status, 400);
+});
+
+test("GET /bots/search answers bots with a line and message hits with a snippet", async () => {
+  const hit = (id: string, text: string) => ({
+    total: 3, id, created_at: "2026-10-17T00:00:00Z", role: "ASSISTANT", text, bot_id: BOT, kind: "company", display_name: "Acme", color: "teal",
+  });
+  const { res, json } = await call("GET", "/api/v1/bots/search?q=acme&limit=2", undefined, {
+    state: { posting_title: "Backend" },
+    hits: [hit(POSTING, "Acme 공고 마감이 이번 주 금요일이에요"), hit(BOT, "two"), hit(USER, "three")],
+  });
+  assert.equal(res.status, 200);
+  const found = json!.data as unknown as { bots: Record<string, unknown>[]; botTotal: number; messages: unknown[]; messageTotal: number };
+  assert.deepEqual([found.bots.map((bot) => [bot.id, bot.line]), found.botTotal], [[[BOT, "Acme · Backend"]], 1]);
+  assert.deepEqual(found.messages[0], {
+    bot: { id: BOT, kind: "company", displayName: "Acme", color: "teal" },
+    messageId: POSTING, at: "2026-10-17T00:00:00Z", role: "ASSISTANT", snippet: "Acme 공고 마감이 이번 주 금요일이에요",
+  });
+  assert.deepEqual([found.messages.length, found.messageTotal, json!.page!.hasMore, typeof json!.page!.nextCursor], [2, 3, true, "string"]);
+
+  const none = await call("GET", "/api/v1/bots/search?q=zzz", undefined, { bot: null });
+  assert.deepEqual([none.json!.data, none.json!.page], [{ bots: [], botTotal: 0, messages: [], messageTotal: 0 }, { nextCursor: null, hasMore: false }]);
+  const lone = await call("GET", "/api/v1/bots/search?q=push", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "", posting_id: null }) });
+  assert.equal((lone.json!.data as unknown as { bots: Record<string, unknown>[] }).bots[0].line, "Push Bot");
+});
+
+test("GET /bots/search refuses a missing, blank or too long q and a bad page", async () => {
+  for (const query of ["", "?q=", "?q=%20%20", `?q=${"가".repeat(201)}`]) {
+    const { res, json, seen } = await call("GET", `/api/v1/bots/search${query}`, undefined);
+    assert.deepEqual([res.status, json!.error!.details.field], [400, "q"], query);
+    assert.ok(!wrote(seen, "bot_state_v"));
+  }
+  assert.equal((await call("GET", `/api/v1/bots/search?q=${"가".repeat(200)}`, undefined)).res.status, 200);
+  for (const [query, field] of [["?q=a&limit=0", "limit"], ["?q=a&cursor=nope", "cursor"]]) {
+    const { res, json } = await call("GET", `/api/v1/bots/search${query}`, undefined);
+    assert.deepEqual([res.status, json!.error!.details.field], [400, field], query);
+  }
+});
+
+test("an empty ?limit= on /bots/search pages like a missing one", async () => {
+  const pageSize = async (query: string): Promise<unknown> =>
+    (await call("GET", `/api/v1/bots/search?q=acme${query}`, undefined)).seen.find((c) => c.sql.includes("LIMIT $5"))!.params[4];
+  assert.equal(await pageSize(""), 21);
+  assert.equal(await pageSize("&limit="), 21);
+  assert.equal(await pageSize("&limit=7"), 8);
+});
+
+test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {
+  const collations = async (q: string): Promise<boolean[]> => {
+    const { seen } = await call("GET", `/api/v1/bots/search?q=${encodeURIComponent(q)}`, undefined);
+    return seen.filter((c) => c.sql.includes("ILIKE")).map((c) => c.sql.includes('COLLATE "C"'));
+  };
+  for (const q of ["acme", "모아페이", "100%", "AWS 경력"]) assert.deepEqual(await collations(q), [true, true], q);
+  for (const q of ["résumé", "Ünal", "я"]) assert.deepEqual(await collations(q), [false, false], q);
+});
+
+test("a search snippet is the match with up to 30 characters before it and 60 after", () => {
+  const before = "가".repeat(40);
+  const after = "나".repeat(80);
+  assert.equal(snippetOf(`${before}모아페이${after}`, "모아페이"), `…${"가".repeat(30)}모아페이${"나".repeat(60)}`);
+  assert.equal(snippetOf("모아페이 공고 마감이 이번 주 금요일이에요", "모아"), "모아페이 공고 마감이 이번 주 금요일이에요");
+  assert.equal(snippetOf(`${"a".repeat(31)}MoaPay`, "moapay"), `…${"a".repeat(30)}MoaPay`, "letter case does not matter");
+  assert.equal(snippetOf(`${"a".repeat(31)}(c++)?`, "(c++)?"), `…${"a".repeat(30)}(c++)?`, "q is plain text");
+  assert.equal(snippetOf(`${"😀".repeat(31)}모아`, "모아"), `…${"😀".repeat(30)}모아`, "a character outside the basic plane is one character");
+  assert.equal(snippetOf("a".repeat(100), "zzz"), "a".repeat(60), "no match starts at the beginning");
+});
+
+test("the removed bot routes answer 404", async () => {
+  for (const [method, path] of [
+    ["GET", `/api/v1/bots/${BOT}/conversations`],
+    ["POST", `/api/v1/bots/${BOT}/conversations`],
+    ["GET", `/api/v1/bots/${BOT}/library`],
+    ["GET", "/api/v1/bots/companies/search?q=ac"],
+  ] as const) {
+    const { res, seen } = await call(method, path, method === "POST" ? { title: "t" } : undefined);
+    assert.equal(res.status, 404, `${method} ${path}`);
+    assert.ok(!wrote(seen, "INSERT INTO conversations"));
+  }
+});
+
+test("a row's line is plain text: markdown marks and line breaks go", () => {
+  assert.equal(plainLine("# 초안 v2\n**자기소개서**를 만들었어요.\n- 첫째\n- 둘째"), "초안 v2 자기소개서를 만들었어요. 첫째 둘째");
+  assert.equal(plainLine("[이력서 초안 v1](/docs/push/d1) · 미리보기"), "이력서 초안 v1 · 미리보기");
+  assert.equal(plainLine("`kotlin`  코드\n\n\n끝"), "kotlin 코드 끝");
+  assert.equal(plainLine("1. 하나\n2. 둘"), "하나 둘");
+  assert.equal(plainLine("2024. 11. 입사 후 결제 팀에서 일했어요."), "2024. 11. 입사 후 결제 팀에서 일했어요.");
+  assert.equal(plainLine("11. 5. 마감이에요.\n2. 둘째"), "11. 5. 마감이에요. 둘째");
+  assert.equal(plainLine("그대로인 문장이에요."), "그대로인 문장이에요.");
 });

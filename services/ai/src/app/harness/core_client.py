@@ -29,10 +29,11 @@ def idempotency_key(job_id: str, tool_call_id: str) -> str:
 
 
 class CoreClient:
-    def __init__(self, origin: str, secret: str, transport: httpx.BaseTransport | None = None):
+    def __init__(self, origin: str, secret: str, transport: httpx.BaseTransport | None = None, job_token: str | None = None):
         self.origin = origin.rstrip("/")
         self.secret = secret
         self._transport = transport
+        self.job_token = job_token
 
     async def call(
         self,
@@ -56,6 +57,8 @@ class CoreClient:
             headers["Idempotency-Key"] = idempotency_key
         if approval_id:
             headers["x-push-approval"] = approval_id
+        if self.job_token:
+            headers["authorization"] = "Bearer " + self.job_token
         async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as client:
             response = await client.request(method, self.origin + path, headers=headers, json=json)
         if response.status_code == 204:

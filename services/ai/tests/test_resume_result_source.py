@@ -14,8 +14,8 @@ _STEM = "김서준_모아페이_백엔드"
 _COMPANY = "도토리증권"
 _APPLY = f"{_COMPANY}에 바로 지원하기"
 _SAVED = "내 서류에 자동 저장됨"
-_FILE_GATE = "내 서류에 저장했어요. 결과를 확인할까요?"
-_FILE_GATE_FAILED = "내 서류에 저장하지 못했어요. 결과를 확인할까요?"
+_FILE_GATE = "결과를 확인할까요?"
+_FILE_GATE_FAILED = _FILE_GATE
 _TASK_FILE = "이력서 수정 · 올린 파일 · 경력"
 _TASK_PROFILE = "프로필 수정 · Push 프로필 · 경력"
 _FILE_STEPS = (
@@ -166,7 +166,7 @@ async def test_external_file_is_saved_and_the_card_names_the_file():
     assert result["pageLine"].endswith("KB") or result["pageLine"].endswith("MB")
     assert " · " in result["pageLine"]
     assert result["savedLine"] == _SAVED
-    assert result["cardMeta"] == f"{result['pageLine']} · {_SAVED}"
+    assert result["cardMeta"] == result["pageLine"]
     assert "company" not in result
     assert result["documentId"]
     assert result["actions"] == [
@@ -224,7 +224,8 @@ async def test_profile_result_is_the_profile_card_without_a_pdf_step():
     assert doc.title == "Push 프로필"
     assert result["documentId"] == str(doc.id)
     choice = _one(events, "choice")
-    assert choice["note"] == "PDF는 Push 프로필에서 내보낼 수 있어요."
+    assert choice["auto"] is True
+    assert "note" not in choice
     assert any(event.get("token") == "Push 프로필에 저장하는 중…" for event in events)
     assert not [event for event in events if event.get("type") == "file"]
 
@@ -337,7 +338,7 @@ async def test_external_present_title_is_the_saved_file():
     assert "note" not in choice
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
 
 
@@ -485,7 +486,7 @@ async def test_failed_insert_choice_does_not_claim_the_save():
     assert "note" not in choice
     assert choice["options"] == [
         {"id": "done", "label": "확인했어요"},
-        {"id": "cancel", "label": "그만하기"},
+        {"id": "cancel", "label": "닫기"},
     ]
 
 
@@ -562,3 +563,103 @@ def test_edited_pdf_name_sanitizes_and_skips_empty_parts():
     assert len(capped[:-4]) == 80
     unsafe = {"inputs": {"fileName": "김:테스트/이력서?.pdf"}}
     assert edited_pdf_name(unsafe, "") == "김테스트이력서_수정본.pdf"
+
+
+async def test_present_without_a_draft_claims_no_success():
+    events, _kept = await _present(
+        _DB(), None,
+        document_svc=_NoDocs(),
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    assert not [event for event in events if event.get("type") == "result"]
+
+
+async def _present_announced(*args, **extra):
+    from app.harness.status import Run, current_run
+
+    token = current_run.set(Run("job-1", "", True))
+    try:
+        return await _present(*args, **extra)
+    finally:
+        current_run.reset(token)
+
+
+def _saves(events):
+    texts = [event.get("text") or event.get("token") for event in events]
+    return [text for text in texts if text in ("Push 프로필에 저장하는 중…", "Push 프로필에 저장하는 중")]
+
+
+async def test_present_without_a_draft_says_nothing_is_being_saved():
+    events, kept = await _present_announced(
+        _DB(), None,
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    assert not _saves(events)
+    assert not [event for event in events if event.get("type") == "status" and event.get("phase") == "working"
+                and "저장" in event.get("text", "")]
+    assert not kept.docs
+
+
+async def test_present_with_a_craft_document_but_no_draft_still_shows_the_profile_card():
+    document_id = str(uuid4())
+    events, kept = await _present(
+        _DB(), None,
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        profile_document_id=document_id,
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    result = _one(events, "result")
+    assert result["source"] == "profile"
+    assert result["documentId"] == document_id
+    assert not kept.docs
+
+
+async def test_an_uploaded_file_without_a_draft_saves_nothing_and_shows_no_card():
+    db = _DB()
+    events, kept = await _present(
+        db, None,
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        inputs={"attachments": [{"fileName": _FILE, "mimeType": "application/pdf"}]},
+    )
+    assert not [event for event in events if event.get("type") == "result"]
+    assert not kept.docs
+    assert not any("INSERT INTO sources" in sql for sql, _args in db.calls)
+
+
+async def test_save_edited_file_without_a_draft_saves_neither_pdf_nor_document():
+    from app.harness.personal.resume.profile_document import save_edited_file
+
+    db = _DB()
+    docs, kept = _services(None)
+    token = bound_services.set(SimpleNamespace(document_svc=docs))
+    try:
+        saved = await save_edited_file(db, {"user_id": str(uuid4()), "drafts": {}}, _FILE)
+    finally:
+        bound_services.reset(token)
+    assert saved == {"documentId": "", "fileName": _FILE, "pageLine": "", "stored": False}
+    assert not kept.docs
+    assert not db.calls
+
+
+async def test_present_with_only_a_craft_document_streams_no_save_status():
+    events, _kept = await _present_announced(
+        _DB(), None,
+        phase="present",
+        user_id=str(uuid4()),
+        drafts={},
+        profile_document_id=str(uuid4()),
+        inputs={"documentId": "11111111-1111-4111-8111-111111111111", "name": "김서준"},
+    )
+    assert not _saves(events)
+    assert not [event for event in events if event.get("type") == "status" and "저장" in event.get("text", "")]
+    assert _one(events, "result")["source"] == "profile"

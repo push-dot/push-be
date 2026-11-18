@@ -424,7 +424,7 @@ export interface paths {
         put?: never;
         /**
          * Email signup (sends verification link)
-         * @description Employer accounts only. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
+         * @description Employer accounts only. The password is chosen when the link is opened (POST /auth/email/verify), not here; a password field in the body is ignored. 429 RATE_LIMITED (details.retryAfterSec 60) after 3 mails per minute for that email. The mail bucket is shared with password reset and verification resend. 409 EMAIL_TAKEN (details.accountType) if a user already has the email.
          */
         post: operations["postAuthEmailSignup"];
         delete?: never;
@@ -444,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Verify email and create the account
-         * @description 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
+         * @description The person who opens the mailed link chooses the password. A password of 8 to 128 characters is required (400 VALIDATION_ERROR, details.field password, and the link stays usable); a signup made before this change may omit it and keeps the password it was made with. 409 EMAIL_TAKEN (details.accountType) if a user already has that email. 410 TOKEN_EXPIRED (details.email, the signup email) when the token is unused and past expiry. Unknown or used token is 401 UNAUTHENTICATED.
          */
         post: operations["postAuthEmailVerify"];
         delete?: never;
@@ -504,7 +504,7 @@ export interface paths {
         put?: never;
         /**
          * Log out (revoke refresh token)
-         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted.
+         * @description Deletes this device's push token (pushToken). Without pushToken every push token of the user is deleted. With `x-csrf: 1` and no refreshToken in the body, the `push_rt` cookie is the token, and it is cleared.
          */
         post: operations["postAuthLogout"];
         delete?: never;
@@ -564,7 +564,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a phone code and sign in
-         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: 409 PHONE_ALREADY_REGISTERED (details.existingProviders) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
          */
         post: operations["postAuthPhoneVerify"];
         delete?: never;
@@ -584,7 +584,7 @@ export interface paths {
         put?: never;
         /**
          * Rotate refresh token
-         * @description Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED.
+         * @description Reusing a revoked refresh token revokes every session of the user. An expired refresh token is 401 TOKEN_EXPIRED. Web: a request with the header `x-csrf: 1` keeps the refresh token in the HttpOnly cookie `push_rt` (Path /api/v1/auth, Secure, SameSite=Lax): the sign-in and refresh responses leave refreshToken out of the body and set the cookie, and a body without refreshToken reads it from the cookie (a refused refresh and a logout clear it). Without the header (the mobile app) the token stays in the body.
          */
         post: operations["postAuthRefresh"];
         delete?: never;
@@ -642,7 +642,7 @@ export interface paths {
         };
         /**
          * Billing status and credit balance
-         * @description EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them.
+         * @description EMPLOYER accounts get the company plan and balance (404 without a company). When a Stripe webhook holds the billing row for more than 3 s, the read skips writing this month's plan credits and answers without them; the next read or job writes them. creditsRefillAt is the date to show for the next plan credits; a client must not derive it from the calendar.
          */
         get: operations["getBilling"];
         put?: never;
@@ -761,33 +761,16 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List bots for the signed-in user
-         * @description Ensures the default Push bot exists. Push bot is listed first. Includes last message preview, unread flag, and aggregate status when cheap.
+         * List the caller's bots, or find the bot of a posting's company
+         * @description Without postingId: every bot, the Push Bot first and then by lastActivityAt, newest first. Not paged. limit says how many company bots the plan allows and how many exist. Makes the Push Bot when it is missing. With postingId: zero or one bot, the caller's company bot for that posting's company, compared as POST /bots compares it, and no limit. An unknown or draft posting gives an empty list.
          */
         get: operations["getBots"];
         put?: never;
         /**
-         * Create a company bot
-         * @description 403 BOT_LIMIT when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count.
+         * Open the company bot of a posting, creating it when the caller has none for that company
+         * @description One bot per company: the company is the posting's company name, compared without case and outer spaces. 201 when created. 200 with the existing bot when the caller already has one for that company; displayName and color are ignored then. Any other body key is 400. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off. 403 BOT_LIMIT, on the create path only, when the personal plan cap is reached (FREE 3, PRO 20, ULTRA unlimited). Push bot does not count. 404 when the posting does not exist, is a draft, or has a blank company name.
          */
         post: operations["postBots"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/bots/companies/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Search companies by name with open posting counts */
-        get: operations["getBotsCompaniesSearch"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -803,8 +786,31 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve a job posting URL before creating a bot */
+        /**
+         * Resolve a job posting URL before creating a bot
+         * @description Resolves only a posting Push already has, by the id in the url or by the posting's source url. No page is fetched. A draft posting and a posting with a blank company are not_a_posting, as POST /bots answers 404 for them.
+         */
         post: operations["postBotsLinkPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search the caller's bots and the messages of their chats
+         * @description bots holds every bot whose display name, company name or posting title contains q, in list order. messages holds the messages of the caller's bot chats whose text contains q, newest first, and page pages them. Matching ignores letter case. % and _ in q are plain characters. 400 when q is missing, blank, or longer than 200 characters.
+         */
+        get: operations["getBotsSearch"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -823,45 +829,73 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Delete a company bot
-         * @description 403 DEFAULT_BOT_PROTECTED for the Push bot.
+         * Delete a company bot and erase its chat
+         * @description Deletes the bot with its thread, messages, jobs, events, cards, workspace files, work-done notifications and read marker. Usage rows stay. 403 DEFAULT_BOT_PROTECTED for the Push bot.
          */
         delete: operations["deleteBotsById"];
         options?: never;
         head?: never;
-        /** Update a bot */
+        /**
+         * Update a bot
+         * @description The Push bot accepts notificationsMuted only. Any other body key is 400.
+         */
         patch: operations["patchBotsById"];
         trace?: never;
     };
-    "/api/v1/bots/{id}/conversations": {
+    "/api/v1/bots/{id}/approvals/{approvalId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List conversations under a bot */
-        get: operations["getBotsByIdConversations"];
+        get?: never;
         put?: never;
-        /** Start a conversation under a bot */
-        post: operations["postBotsByIdConversations"];
+        /**
+         * Answer a card of the bot's thread
+         * @description The answer rules of POST /conversations/{id}/approvals/{approvalId}. 202 when the answer resumes the run; follow GET /bots/{id}/stream. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, because an answer starts a run. 404 for a bot with no thread or a card of another thread. 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED, 402 INSUFFICIENT_CREDITS.
+         */
+        post: operations["postBotsByIdApprovalsByApprovalId"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/bots/{id}/library": {
+    "/api/v1/bots/{id}/approvals/{approvalId}/retry": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List bot library conversations, files, and links */
-        get: operations["getBotsByIdLibrary"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Ask an expired card again
+         * @description 다시 요청 on an expired tool card of the bot's thread. The card is PENDING again, and its openedAt and expiresAt both move to now, so its lifetime stays the same on every retry. The run still waits on this card, so the next answer to it resumes the run (POST /bots/{id}/approvals/{approvalId}). Nothing is queued by the retry. 200 with the card's current times when it is still open. 409 APPROVAL_SUPERSEDED when the user sent a message after the card, or the card was answered and its run moved on. 409 APPROVAL_ALREADY_RESOLVED when it was closed with reject. 404 for a card that is not a tool card with a lifetime in this bot's thread.
+         */
+        post: operations["postBotsByIdApprovalsByApprovalIdRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/messages/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a message to a bot and stream the reply
+         * @description Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.
+         */
+        post: operations["postBotsByIdMessagesStream"];
         delete?: never;
         options?: never;
         head?: never;
@@ -879,6 +913,130 @@ export interface paths {
         put?: never;
         /** Mark a bot read */
         post: operations["postBotsByIdRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/site-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the sites a bot may read without asking
+         * @description The hosts the user answered 항상 허용 for on a page-read card of this bot, by host name. Deleting the bot deletes its grants. Clearing its chat keeps them.
+         */
+        get: operations["getBotsByIdSiteGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/site-grants/{host}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Take back 항상 허용 for one site
+         * @description From the bot's next page read on, this host asks again. No confirm: 204 also when the bot holds no grant for the host.
+         */
+        delete: operations["deleteBotsByIdSiteGrantsByHost"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow the bot's active run
+         * @description Streams the events of the bot's queued or running job after the given seq. 204 when nothing runs, also for a bot with no thread: the run is over and the newest transcript page holds its terminal event. The frames of the conversation stream (POST /conversations/{id}/messages/stream), addressed by bot. No frame holds the id of the conversation that stores the thread. turn equals the id of the turn in GET /bots/{id}/transcript. Every status has a phase: a stored status row without one, from before phases or from a run of the AI service that does not write them yet, is not sent here. The conversation stream sends that row with text only. The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.
+         */
+        get: operations["getBotsByIdStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/stream/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop the bot's active run
+         * @description 409 CONFLICT when nothing runs. The open stream receives a cancelled event with the same resumable, written with the cancel itself.
+         */
+        post: operations["postBotsByIdStreamCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a bot's chat, newest turn first
+         * @description One item per chat job of the bot's thread, with its messages and its stored frames, so a reopened chat draws what the stream showed. A bot with no thread, and push before the Push Bot exists, has no turns. No body holds the id of the conversation that stores the thread. Turns stay until the bot is deleted or its chat is cleared. 404 for an unknown bot.
+         */
+        get: operations["getBotsByIdTranscript"];
+        put?: never;
+        post?: never;
+        /**
+         * Erase a bot's chat and keep the bot
+         * @description Deletes the thread with its messages, jobs, events, cards, workspace files and work-done notifications. The bot, its settings and its read marker stay. 204 when the bot has no thread.
+         */
+        delete: operations["deleteBotsByIdTranscript"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/transcript/matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find text in a bot's chat
+         * @description Messages of the thread that contain q, case-insensitive, newest first. total counts every match; items holds at most 200. A bot with no thread has none.
+         */
+        get: operations["getBotsByIdTranscriptMatches"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1226,7 +1384,7 @@ export interface paths {
         put?: never;
         /**
          * Create a conversation
-         * @description audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.
+         * @description audience=EMPLOYER creates a company conversation. postingId and applicationId are allowed; a missing posting or an application outside the company is 404. Unknown keys are rejected. A personal create checks reference-data consent and allowAiReadMyFiles first and is 403 CONSENT_REQUIRED until it is on, before any other check. An employer create skips that check. No company, or a company with no verified_at, is 403 BUSINESS_NOT_VERIFIED.
          */
         post: operations["postConversations"];
         delete?: never;
@@ -1294,7 +1452,7 @@ export interface paths {
         put?: never;
         /**
          * Answer a chat approval or choice card
-         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.
+         * @description Send optionId, or optionIds when more than one choice is selected. Every id must be one of the card's stored options. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Zero picks is [submit], not []. 400 VALIDATION_ERROR (field optionId or optionIds), 404, 409 APPROVAL_ALREADY_RESOLVED, 410 APPROVAL_EXPIRED past the card's expiresAt. Past expiresAt, reject still closes the card: 200 {status REJECTED} and nothing resumes. Returns 202 {id, status APPROVED, optionId, optionIds?, jobId} when the answer resumes the chat job (TOOL_ACTION, RESUME_GATE, or job-bound cards), else 200 without jobId.
          */
         post: operations["postConversationsByIdApprovalsByApprovalId"];
         delete?: never;
@@ -1398,7 +1556,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message (queue a chat job)
-         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. context.documentId must be one of the caller's documents (404 NOT_FOUND otherwise) and not archived (409 INVALID_TRANSITION). On a personal conversation, missing reference-data consent is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's). Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request.
+         * @description Stores the USER message, rejects pending approval cards, and queues an AI job. Follow the reply via GET .../messages/stream/active. A missing conversation is 404. context.documentId must be one of the caller's documents (404 NOT_FOUND otherwise) and not archived (409 INVALID_TRANSITION). On a personal conversation, missing reference-data consent, or allowAiReadMyFiles off, is 403 CONSENT_REQUIRED before credits, plan, or FEATURE_DISABLED, including when monthly credits are already used up. Employer conversations skip that consent check. 403 FEATURE_DISABLED when the monthly AI credit is used up or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI is off. A company conversation with no verified_at is 403 BUSINESS_NOT_VERIFIED. Intent interview below PRO is 403 PLAN_REQUIRED with details.requiredPlan. When QUEUE_BACKEND is redis, a short balance is 402 INSUFFICIENT_CREDITS and a full queue is 429 QUEUE_BUSY with details.retryAfterSec and details.ahead (the caller's own queued jobs: the company's for employer chat, else the user's). Also 429 QUEUE_BUSY with details.reason BILLING_LOCKED and retryAfterSec 5 when a Stripe webhook holds the owner's billing row for more than 3 s; nothing was written, retry the same request.
          */
         post: operations["postConversationsByIdMessages"];
         delete?: never;
@@ -1418,7 +1576,7 @@ export interface paths {
         put?: never;
         /**
          * Send a message and stream the reply
-         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
+         * @description Same body and checks as POST .../messages; a non-202 result from core is returned as is. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. The intake materials are a toggle section whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a rows section are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, sends the choice with auto true and no note, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.
          */
         post: operations["postConversationsByIdMessagesStream"];
         delete?: never;
@@ -1436,7 +1594,7 @@ export interface paths {
         };
         /**
          * Replay the active chat stream
-         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. Row ids (m_file, m_posting, m_github) are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option.
+         * @description Streams events of the newest PENDING/RUNNING chat job after the given seq; 204 when no job is running. Frames are `id: <seq>` + `data: <json>` with no `event:` line; the event name is the JSON `type` field. The stream starts with `retry: 400`. An idle poll sends the SSE comment `: ping`; clients ignore it. The stream closes after done, error, or cancelled. Every job ends with one of the three: a job that ends without writing its own gets one from the database with the status change, error JOB_FAILED when it died and cancelled on every cancel path. Every stored frame carries at and turn. cancelled carries resumable. After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. Every field added after the first release is optional; a client that ignores it keeps working. A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. The intake materials are a toggle section whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a rows section are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, sends the choice with auto true and no note, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.
          */
         get: operations["getConversationsByIdMessagesStreamActive"];
         put?: never;
@@ -1478,7 +1636,7 @@ export interface paths {
         put?: never;
         /**
          * Cancel the active chat job
-         * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event.
+         * @description 409 CONFLICT when no job is running. The open stream receives a cancelled event, written with the cancel itself.
          */
         post: operations["postConversationsByIdStreamCancel"];
         delete?: never;
@@ -2299,6 +2457,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's materials
+         * @description Files and Push documents (doc), bookmarked postings (bookmark), and saved links (link), each newest first. A file is sorted by when it was saved, a document by its last edit. tab=all gives the first 4 docs, 3 bookmarks and 3 links with no cursor. Another tab gives that section, paged. q keeps materials whose name contains it, without letter case: a file's name, a document's title or its application's company, a posting's company or title, a link's title or url. bot keeps the materials that bot made or that were attached in its chat. 404 when bot is not the caller's.
+         */
+        get: operations["getMaterials"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/materials/{kind}/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one material with the bots that used it
+         * @description 404 for a deleted material.
+         */
+        get: operations["getMaterialsByKindById"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a material
+         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Messages keep the title they were sent with. 409 INVALID_TRANSITION with details.reason REFERENCED_BY_EVIDENCE and details.evidenceCount when career evidence cites the file. A material that is deleted already, by an earlier or a concurrent request, answers 204 again and is not changed. 404 when the caller has no such material, live or kept.
+         */
+        delete: operations["deleteMaterialsByKindById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/materials/{kind}/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo the delete of a material
+         * @description A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back. Answers the material as it is listed. A material that is not deleted is answered as it is. 404 once it was erased.
+         */
+        post: operations["postMaterialsByKindByIdRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -2407,7 +2629,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List posts I commented on */
+        /**
+         * List posts I commented on
+         * @description sort works as on /me/posts.
+         */
         get: operations["getMeCommentedPosts"];
         put?: never;
         post?: never;
@@ -2879,7 +3104,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List my posts */
+        /**
+         * List my posts
+         * @description sort=views orders by view count and sort=comments by comment count, each then newest first. Those two ignore the cursor and answer the first limit rows with hasMore false and nextCursor null.
+         */
         get: operations["getMePosts"];
         put?: never;
         post?: never;
@@ -2906,8 +3134,91 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update my profile */
+        /**
+         * Update my profile
+         * @description A request with an Idempotency-Key keeps the values it replaced under that key (a Bot run sends one). The response then carries changeId; see GET and POST undo under /me/profile/changes/{id}. No change, no changeId.
+         */
         patch: operations["patchMeProfile"];
+        trace?: never;
+    };
+    "/api/v1/me/profile/changes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a profile change
+         * @description What a Bot run changed: the field names and whether it was put back. A reopened chat reads this from the changeId on the update_my_profile tool line. 404 for a change that is not the caller's.
+         */
+        get: operations["getMeProfileChangesById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/profile/changes/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Put a profile change back
+         * @description Writes the replaced values back; fields the change did not move stay as they are. Works once: a second call is 409 CONFLICT, so a later edit is never overwritten. Needs an Idempotency-Key like every POST.
+         */
+        post: operations["postMeProfileChangesByIdUndo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/profile/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download my profile as a PDF
+         * @description The profile screen as a file: name, headline, 소개, 경력 and 기술 스택, without any AI call. A section with nothing in it is left out. photo=1 stamps the avatar on the first page; any other value is ignored. Content-Disposition is an attachment named after the display name.
+         */
+        get: operations["getMeProfilePdf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/saved-posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List posts I saved
+         * @description Newest save first. sort=views and sort=comments work as on /me/posts. Posts of an author whose account is being deleted are left out.
+         */
+        get: operations["getMeSavedPosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/me/settings": {
@@ -3337,6 +3648,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/posts/{id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save a post
+         * @description Idempotent. 404 when the post does not exist.
+         */
+        post: operations["postPostsByIdSave"];
+        /**
+         * Remove a saved post
+         * @description Idempotent.
+         */
+        delete: operations["deletePostsByIdSave"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/profiles": {
         parameters: {
             query?: never;
@@ -3639,7 +3974,7 @@ export interface paths {
         };
         /**
          * Result counts per search type
-         * @description Counts are raw ILIKE matches, not the list filters. Whitespace-only q is 400. Over 200 code points is 400.
+         * @description Each count is the page.total of GET /search for that type, so it equals the full list: private profiles, the caller and non-matching hangul forms are left out. Guests get 0 for people and posts, as /search refuses them. Does not record the term. Whitespace-only q is 400. Over 200 code points is 400.
          */
         get: operations["getSearchCounts"];
         put?: never;
@@ -3766,7 +4101,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Parse a profile draft from a source */
+        /**
+         * Parse a profile draft from a source
+         * @description 422 VALIDATION_ERROR (details.field sourceId) when the source has no stored file or its PDF cannot be read. 400 when the file is neither a PDF nor text.
+         */
         get: operations["getSourcesByIdProfileDraft"];
         put?: never;
         post?: never;
@@ -4043,6 +4381,11 @@ export interface components {
             /** @enum {string} */
             audience: "PERSONAL" | "EMPLOYER";
             balanceMicroCredits: number;
+            /**
+             * Format: date-time
+             * @description When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.
+             */
+            creditsRefillAt?: string;
             monthlyMicroCredits: number;
             /** @description False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it. */
             paymentsEnabled: boolean;
@@ -4054,6 +4397,13 @@ export interface components {
             spentMicroCredits: number;
             /** @enum {string} */
             subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
+            /** @description PERSONAL only: this UTC month's settled usage of each Bot, from the jobs that ran in its thread, biggest first. Usage outside a Bot thread and deleted Bots are not listed, so the sum can be below spentMicroCredits. Empty when no Bot used credits. */
+            usageByBot?: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+                usedMicroCredits: number;
+            }[];
         };
         BlockedUser: {
             /** Format: date-time */
@@ -4064,7 +4414,47 @@ export interface components {
             };
         };
         Bot: {
+            /** @description null when nothing runs and no card is open. */
+            activity: ({
+                /** @description The caller's own chat runs that started before this one and are not finished. */
+                ahead: number;
+                /** @constant */
+                phase: "queued";
+                /** Format: date-time */
+                since: string;
+            } | {
+                /** @description The newest working sentence of this run. */
+                label: string | null;
+                /** @constant */
+                phase: "thinking";
+                /** Format: date-time */
+                since: string;
+            } | {
+                label: string;
+                /** @constant */
+                phase: "working";
+                /** Format: date-time */
+                since: string;
+            } | {
+                /** Format: uuid */
+                cardId: string;
+                cardTitle: string;
+                expiresAt: string | null;
+                /** @enum {string} */
+                for: "answer" | "confirm";
+                /** @constant */
+                phase: "waiting";
+                /** Format: date-time */
+                since: string;
+            }) | null;
+            /** @deprecated */
             avatarKey: string | null;
+            /** @description null exactly when kind is push. */
+            color: components["schemas"]["BotColor"] | null;
+            /**
+             * @deprecated
+             * @description Always null.
+             */
             companyId: string | null;
             companyName: string;
             /** Format: date-time */
@@ -4074,56 +4464,134 @@ export interface components {
             id: string;
             /** @enum {string} */
             kind: "push" | "company";
+            /**
+             * Format: date-time
+             * @description The newest of: the bot was made, its newest message, its open card. The list is ordered by it.
+             */
+            lastActivityAt: string;
+            lastMessage: {
+                /** Format: date-time */
+                at: string;
+                fromBot: boolean;
+                preview: string;
+            } | null;
+            /**
+             * @deprecated
+             * @description lastMessage.preview, or an empty string.
+             */
             lastMessagePreview: string;
+            /** @deprecated */
             mascotKey: string | null;
             notificationsMuted: boolean;
+            /** @description How the last run ended while nothing runs and no card is open: expired when the newest card ran out unanswered, failed when the newest chat run failed. A later message, card or run replaces it. null otherwise. */
+            outcome: {
+                /**
+                 * Format: date-time
+                 * @description expired: when the card ran out. failed: when the run ended.
+                 */
+                at: string;
+                /** @enum {string} */
+                kind: "expired" | "failed";
+            } | null;
             postingId: string | null;
+            /** @deprecated */
             postingUrl: string | null;
             revision: number;
-            /** @enum {string} */
+            /**
+             * @deprecated
+             * @description NEEDS_APPROVAL for a waiting activity, RUNNING for any other activity, else DONE.
+             * @enum {string}
+             */
             status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
+            /** @description The bot wrote a message or asked a card after the caller last read it. */
             unread: boolean;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @deprecated
+             */
             updatedAt: string;
         };
-        BotCompanyHit: {
-            name: string;
-            openPostingCount: number;
-        };
-        BotLibrary: {
-            conversations: {
-                hasMore: boolean;
-                items: components["schemas"]["BotLibraryConversation"][];
-                nextCursor: string | null;
-            };
-            files: {
-                hasMore: boolean;
-                items: components["schemas"]["DocumentsLibraryItem"][];
-                nextCursor: string | null;
-            };
-            links: {
-                hasMore: boolean;
-                items: components["schemas"]["ProfileLink"][];
-                nextCursor: string | null;
-            };
-        };
-        BotLibraryConversation: {
-            applicationId: string | null;
+        /** @description What the bot's thread is doing. since is the run's start for queued, thinking and working, and the card's asking time for waiting. */
+        BotActivity: {
+            /** @description The caller's own chat runs that started before this one and are not finished. */
+            ahead: number;
+            /** @constant */
+            phase: "queued";
             /** Format: date-time */
-            createdAt: string;
+            since: string;
+        } | {
+            /** @description The newest working sentence of this run. */
+            label: string | null;
+            /** @constant */
+            phase: "thinking";
+            /** Format: date-time */
+            since: string;
+        } | {
+            label: string;
+            /** @constant */
+            phase: "working";
+            /** Format: date-time */
+            since: string;
+        } | {
+            /** Format: uuid */
+            cardId: string;
+            cardTitle: string;
+            expiresAt: string | null;
+            /** @enum {string} */
+            for: "answer" | "confirm";
+            /** @constant */
+            phase: "waiting";
+            /** Format: date-time */
+            since: string;
+        };
+        BotCardAnswer: {
             /** Format: uuid */
             id: string;
-            lastMessagePreview: string;
-            pinned: boolean;
-            revision: number;
+            optionId: string;
+            optionIds?: string[];
             /** @enum {string} */
-            status: "DONE" | "RUNNING" | "NEEDS_APPROVAL";
-            title: string;
-            /** Format: date-time */
-            updatedAt: string;
+            status: "APPROVED" | "REJECTED";
+        };
+        /** @enum {string} */
+        BotColor: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
+        BotDetail: components["schemas"]["Bot"] & {
+            /** @description The newest fit score computed for this posting, 0 to 10. null until one exists. */
+            fit: {
+                score: number;
+            } | null;
+            /** @description The bot's materials: made by it or attached in its chat. GET /materials?bot= lists them. */
+            materialCount: number;
+            /** @description null for the Push Bot and when the posting is gone. */
+            posting: {
+                closed: boolean;
+                deadline: string | null;
+                /** Format: uuid */
+                id: string;
+                title: string;
+            } | null;
+        };
+        BotLimit: {
+            /** @description null is unlimited. */
+            max: number | null;
+            /** @enum {string} */
+            plan: "FREE" | "PRO" | "ULTRA";
+            table: {
+                FREE: number;
+                PRO: number;
+                /** @description null is unlimited. */
+                ULTRA: number | null;
+            };
+            /** @description The caller's company bots. The Push Bot is not counted. */
+            used: number;
         };
         BotLinkPreview: {
+            careerMax: number | null;
+            careerMin: number;
             company: string;
+            deadline: string | null;
+            /** @description The host of the url that was sent. */
+            host: string;
+            location: string | null;
             /** Format: uuid */
             postingId: string;
             /** @constant */
@@ -4132,6 +4600,737 @@ export interface components {
         } | {
             /** @constant */
             status: "not_a_posting";
+        };
+        BotList: {
+            data: components["schemas"]["Bot"][];
+            limit?: components["schemas"]["BotLimit"];
+        };
+        BotOutcome: {
+            /**
+             * Format: date-time
+             * @description expired: when the card ran out. failed: when the run ended.
+             */
+            at: string;
+            /** @enum {string} */
+            kind: "expired" | "failed";
+        };
+        BotRef: {
+            color: components["schemas"]["BotColor"] | null;
+            displayName: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "push" | "company";
+        };
+        BotSearch: {
+            botTotal: number;
+            bots: (components["schemas"]["Bot"] & {
+                /** @description Company and posting title joined by a middle dot, or the display name when the bot has no posting. */
+                line: string;
+            })[];
+            messageTotal: number;
+            messages: {
+                /** Format: date-time */
+                at: string;
+                bot: components["schemas"]["BotRef"];
+                /** Format: uuid */
+                messageId: string;
+                /** @enum {string} */
+                role: "USER" | "ASSISTANT";
+                /** @description Up to 30 characters before the first match and 60 after it. Starts with an ellipsis when the text before it was cut. */
+                snippet: string;
+            }[];
+        };
+        BotSendBody: {
+            /**
+             * @description Defaults to the saved user setting
+             * @enum {string}
+             */
+            accessMode?: "ALWAYS_ASK" | "AUTO" | "BYPASS";
+            ai?: {
+                /**
+                 * @description Ignored. The plan sets it: personal FREE LOW, PRO MEDIUM, ULTRA HIGH; employer BASIC MEDIUM, PRO HIGH, ULTRA MAX.
+                 * @enum {string}
+                 */
+                effort?: "LOW" | "MEDIUM" | "HIGH" | "MAX";
+                model: string;
+                models?: {
+                    [key: string]: unknown;
+                };
+                /**
+                 * @description Model family. Every model call goes through OpenRouter (OPENROUTER_API_KEY only). There is no OpenAI key.
+                 * @enum {string}
+                 */
+                provider: "OPENAI" | "OPENROUTER" | "CLAUDE" | "GEMINI" | "GROK";
+                /** @description Requires the ULTRA plan */
+                ultraResume?: boolean;
+                webSearch?: boolean;
+            } | null;
+            /** @description Each is a material of the caller, or any posting that is not a draft. The message stores each with its title at send time. */
+            attachments?: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "file" | "document" | "posting" | "link";
+            }[];
+            /** @enum {string} */
+            intent?: "match_posting" | "fit" | "gaps" | "experience" | "boost" | "find_postings" | "deadline_postings" | "applications" | "calendar" | "hub_profile" | "offer_reply" | "coffee_chat" | "career_post";
+            text: string;
+        };
+        BotSiteGrant: {
+            /**
+             * Format: date-time
+             * @description When 항상 허용 was answered for this host.
+             */
+            grantedAt: string;
+            /** @description Lowercase, without a leading www. */
+            host: string;
+            /**
+             * @description What the page granted was, as the server knew it then: posting is a posting page (the bot's posting or one Push has, 채용 공고), company is a page of the bot's company site (회사 소개), other is anything else and has no label.
+             * @enum {string}
+             */
+            kind: "posting" | "company" | "other";
+        };
+        BotTurn: {
+            answer: {
+                /** Format: uuid */
+                approvalId: string;
+                optionId: string | null;
+                optionIds?: string[];
+            } | null;
+            /** @description The bot's reply. null while it runs and for a turn that ended on a card or failed before replying. */
+            assistant: {
+                /** Format: uuid */
+                messageId: string;
+                sources: {
+                    /** Format: uuid */
+                    id: string;
+                    /** @enum {string} */
+                    kind: "file" | "document" | "posting" | "link";
+                    title: string;
+                }[];
+                text: string;
+            } | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description The frames the bot stream sent, in seq order, without done. Tokens with nothing but status between them are one event, stored at its last row's seq and at. A tool, think, card, or any other frame between two tokens keeps two events. Only the first terminal event (error or cancelled) is kept. A PENDING or RUNNING turn keeps every status; a finished turn keeps only waiting ones. */
+            events: ({
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                text: string;
+                /** @enum {string} */
+                type: "token";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it. */
+                phase: string;
+                /** @description How long the model step took. Nearest second, then at least 1. No text and no chain-of-thought. */
+                seconds: number;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "think";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                heading: string;
+                /** @description draft-{target}-v{version}, e.g. draft-resume-v1. A new version is a new card. The same id replaces the card. */
+                id: string;
+                /** @description 이력서 초안 v1, 포트폴리오 초안 v1, or 자기소개서 초안 v1 */
+                label: string;
+                /** @description Up to 6 preview lines, markdown stripped, each at most 120 characters */
+                lines: string[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "paper";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                documentId: string;
+                hunks: {
+                    line: number | null;
+                    /** @enum {string} */
+                    sign: "+" | "-" | "";
+                    text: string;
+                }[];
+                revisionId: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "diff";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
+                band?: string;
+                /** @description Boost card: signed change from from, e.g. +1.4 */
+                delta?: string;
+                /** @description Boost card: the score before the first boost cycle */
+                from?: number;
+                /** @description Up to 5 posting terms; ok when the resume text contains the term */
+                keywords?: {
+                    label: string;
+                    ok: boolean;
+                }[];
+                /** @description Boost card: 적합도 6.9 → 8.3 (+1.4) */
+                note?: string;
+                /** @description Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars). */
+                parts?: {
+                    careerLevel?: number;
+                    domain?: number;
+                    experienceLink?: number;
+                    keyword?: number;
+                    techStack?: number;
+                };
+                /** @enum {string} */
+                plan?: "FREE" | "PRO" | "ULTRA";
+                /** @description ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes */
+                projected?: {
+                    bullets: string[];
+                    label: string;
+                    score: number;
+                };
+                score: number;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요. */
+                summary?: string;
+                topGap?: string;
+                /** @enum {string} */
+                type: "fit";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Empty string when the document was not synced */
+                documentId: string;
+                /** @description Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name} */
+                downloadUrl: string;
+                fileId: string;
+                /** @description Never text/markdown. */
+                mime: string;
+                /** @description Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event. */
+                name: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "file";
+            } | ({
+                actions: {
+                    /** @enum {string} */
+                    id: "apply" | "convert" | "view";
+                    label: string;
+                    method?: string;
+                    path?: string;
+                }[];
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+                bullets?: string[];
+                cardMeta: string;
+                checklist: string[];
+                company?: string;
+                documentId: string;
+                /** @description Edited PDF. Each part drops /\:*?"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서. */
+                fileName: string;
+                /** @description Fit before any edit; present only when the fit rose */
+                fitFrom?: number;
+                /** @description Fit after the last boost cycle; present only when the fit rose */
+                fitTo?: number;
+                pageLine: string;
+                savedLine?: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                source: "external";
+                /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+                summary?: string;
+                taskLine: string;
+                /** @enum {string} */
+                type: "result";
+            } | {
+                actions: {
+                    /** @enum {string} */
+                    id: "apply" | "convert" | "view";
+                    label: string;
+                    method?: string;
+                    path?: string;
+                }[];
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+                bullets?: string[];
+                checklist: string[];
+                company?: string;
+                documentId: string;
+                /** @description Fit before any edit; present only when the fit rose */
+                fitFrom?: number;
+                /** @description Fit after the last boost cycle; present only when the fit rose */
+                fitTo?: number;
+                headline: string;
+                name: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                source: "profile";
+                subtitle: string;
+                /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+                summary?: string;
+                taskLine: string;
+                title: string;
+                /** @enum {string} */
+                type: "result";
+            }) | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                error: {
+                    /**
+                     * @description NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is "managed AI is not configured"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq). JOB_FAILED: the job ended without writing its own terminal event, for example its worker died; the database wrote this one.
+                     * @enum {string}
+                     */
+                    code: "NOT_CONFIGURED" | "PROVIDER_ERROR" | "INTERNAL" | "JOB_FAILED";
+                    details?: {
+                        [key: string]: unknown;
+                    } | null;
+                    message: string;
+                };
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "error";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+                text: string;
+                /** @enum {string} */
+                type: "notice";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @enum {string} */
+                id: "strategy" | "feedback";
+                /** @description Strategy card only. Up to 6, without a leading + */
+                keywords?: string[];
+                /** @description 섹션 4개 or 3개 */
+                meta: string;
+                rows: {
+                    label: string;
+                    note: string;
+                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
+                    tag: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                title: string;
+                /** @enum {string} */
+                type: "plan";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Detail lines the client folds as +N줄 */
+                extra?: string[];
+                name: string;
+                result?: {
+                    [key: string]: unknown;
+                };
+                /** @description One-line outcome shown under the tool line */
+                resultLine?: string;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /**
+                 * @description run is sent just before the tool executes, then ok or err. wait is the approval pause.
+                 * @enum {string}
+                 */
+                state: "run" | "ok" | "err" | "wait";
+                summary: string;
+                /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
+                target?: string;
+                /** @enum {string} */
+                tier?: "READ" | "SAFE_WRITE" | "RISKY_WRITE";
+                /** @enum {string} */
+                type: "tool";
+                /** @description Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry) */
+                warning?: string;
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze. */
+                id?: string;
+                items: {
+                    /** @description True for a step added after the list was first shown */
+                    added?: boolean;
+                    id: string;
+                    /** @enum {string} */
+                    state: "todo" | "now" | "done";
+                    text: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "todo";
+            } | {
+                /** @description In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere */
+                ahead: number;
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @enum {string} */
+                phase: "queued";
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /**
+                 * Format: date-time
+                 * @description When the run was queued. For waiting: when the card asked.
+                 */
+                since: string;
+                text: string;
+                /** @enum {string} */
+                type: "status";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @enum {string} */
+                phase: "thinking" | "working";
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /**
+                 * Format: date-time
+                 * @description When the run was queued. For waiting: when the card asked.
+                 */
+                since: string;
+                text: string;
+                /** @enum {string} */
+                type: "status";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** Format: uuid */
+                cardId: string;
+                /** @enum {string} */
+                for: "answer" | "confirm";
+                /** @enum {string} */
+                phase: "waiting";
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /**
+                 * Format: date-time
+                 * @description When the run was queued. For waiting: when the card asked.
+                 */
+                since: string;
+                text: string;
+                /** @enum {string} */
+                type: "status";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
+                resumable: boolean;
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @enum {string} */
+                type: "cancelled";
+            } | {
+                args?: {
+                    [key: string]: unknown;
+                };
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                documentId?: string;
+                /** @description null when the card waits until it is answered */
+                expiresAt: string | null;
+                /** @description Warning under the options, e.g. a hint a tool card shows under its options */
+                foot?: string;
+                /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
+                hunks?: {
+                    line: number | null;
+                    /** @enum {string} */
+                    sign: "+" | "-" | "";
+                    text: string;
+                }[];
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "DOCUMENT_EDIT" | "TOOL_ACTION";
+                /**
+                 * Format: date-time
+                 * @description When the card asked. A card asked again has the new time.
+                 */
+                openedAt: string;
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                /** @description How the card was answered. A card with no stored row, a gate the server answered itself (auto), is APPROVED with optionId null. */
+                resolution: {
+                    optionId: string | null;
+                    /** @description Present when more than one option was picked */
+                    optionIds?: string[];
+                    /** @enum {string} */
+                    status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+                };
+                /** @description True for a tool card with a lifetime while no newer chat job of the thread exists */
+                retryable: boolean;
+                /** @description change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools. */
+                rows?: {
+                    from: string;
+                    initial?: string;
+                    name: string;
+                    to: string;
+                }[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                summary?: string;
+                title: string;
+                toolName?: string;
+                /** @enum {string} */
+                type: "approval";
+            } | {
+                /**
+                 * Format: date-time
+                 * @description When the event was stored. A joined token has the time of its last row.
+                 */
+                at: string;
+                /** @description Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections. */
+                auto?: boolean;
+                /** @description Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress */
+                detail?: string;
+                /** @description Present gate: the saved profile document, when there is one */
+                documentId?: string;
+                /** @description null when the card waits until it is answered */
+                expiresAt: string | null;
+                gate?: string;
+                id: string;
+                /** @enum {string} */
+                kind?: "RESUME_GATE" | "EMPLOYER_GATE";
+                /** @description Present and true when more than one option may be selected */
+                multiple?: boolean;
+                /** @description Profile present gate: where the PDF can be exported */
+                note?: string;
+                /**
+                 * Format: date-time
+                 * @description When the card asked. A card asked again has the new time.
+                 */
+                openedAt: string;
+                /** @description Old-client fallback. A client that does not read sections answers from this list. */
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                recommended?: string;
+                /** @description How the card was answered. A card with no stored row, a gate the server answered itself (auto), is APPROVED with optionId null. */
+                resolution: {
+                    optionId: string | null;
+                    /** @description Present when more than one option was picked */
+                    optionIds?: string[];
+                    /** @enum {string} */
+                    status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+                };
+                /** @description True for a tool card with a lifetime while no newer chat job of the thread exists */
+                retryable: boolean;
+                /** @description Present → render these instead of options. Row sections are display only. */
+                sections?: ({
+                    id: string;
+                    /** @enum {string} */
+                    kind: "chips";
+                    /** @description Present and true when every chip in the section may be selected */
+                    multiple?: boolean;
+                    options: {
+                        /**
+                         * @description Material rows only. Opens the material picker. This id is not an answer.
+                         * @enum {string}
+                         */
+                        action?: "change";
+                        /** @description Short tag such as 추천, or the company initial on a material row */
+                        badge?: string;
+                        /** @description Second line under the label */
+                        desc?: string;
+                        id: string;
+                        label: string;
+                        /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                        sub?: string;
+                    }[];
+                    /** @description Default ids. Applied only when the answer contains submit and the section has no pick. */
+                    selected: string[];
+                    title?: string;
+                } | {
+                    id: string;
+                    /** @enum {string} */
+                    kind: "rows";
+                    options: {
+                        /**
+                         * @description Material rows only. Opens the material picker. This id is not an answer.
+                         * @enum {string}
+                         */
+                        action?: "change";
+                        /** @description Short tag such as 추천, or the company initial on a material row */
+                        badge?: string;
+                        /** @description Second line under the label */
+                        desc?: string;
+                        id: string;
+                        label: string;
+                        /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                        sub?: string;
+                    }[];
+                    title?: string;
+                } | {
+                    id: string;
+                    /** @enum {string} */
+                    kind: "toggle";
+                    options: {
+                        /**
+                         * @description Material rows only. Opens the material picker. This id is not an answer.
+                         * @enum {string}
+                         */
+                        action?: "change";
+                        /** @description Short tag such as 추천, or the company initial on a material row */
+                        badge?: string;
+                        /** @description Second line under the label */
+                        desc?: string;
+                        id: string;
+                        label: string;
+                        /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                        sub?: string;
+                    }[];
+                    /** @description Default on. With submit, an id is on only when it is in optionIds. Without submit, a toggle section that was not touched keeps selected. */
+                    selected: string[];
+                    title?: string;
+                } | {
+                    id: string;
+                    /** @enum {string} */
+                    kind: "thumbnails";
+                    options: {
+                        /**
+                         * @description Material rows only. Opens the material picker. This id is not an answer.
+                         * @enum {string}
+                         */
+                        action?: "change";
+                        /** @description Short tag such as 추천, or the company initial on a material row */
+                        badge?: string;
+                        /** @description Second line under the label */
+                        desc?: string;
+                        id: string;
+                        label: string;
+                        /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                        sub?: string;
+                    }[];
+                    selected: string[];
+                    title?: string;
+                })[];
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description Present → the answer is the button, not a tapped option. Send optionId submit and optionIds [submit, …picked ids]. */
+                submit?: {
+                    /** @description Confirm button. {n} is the number of selected ids in toggle sections. */
+                    label: string;
+                    /** @description Thumbnails: button label for the selected option id. CLASSIC → 클래식으로 만들기. */
+                    optionLabels?: {
+                        [key: string]: string;
+                    };
+                    /** @description Button label when {n} would be 0 */
+                    zeroLabel?: string;
+                };
+                title?: string;
+                /** @enum {string} */
+                type: "choice";
+            })[];
+            /** @description Opaque. Equals turn on the frames of this run's stream. */
+            id: string;
+            /** @enum {string} */
+            status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED";
+            /** @description The message that started the turn, with the attachments stored at send. null for a card answer. */
+            user: {
+                attachments: {
+                    /** Format: uuid */
+                    id: string;
+                    /** @enum {string} */
+                    kind: "file" | "document" | "posting" | "link";
+                    title: string;
+                }[];
+                /** Format: uuid */
+                messageId: string;
+                text: string;
+            } | null;
         };
         CalendarEvent: {
             applicationId: string | null;
@@ -4146,7 +5345,7 @@ export interface components {
             notes: string;
             remindAt: string | null;
             revision: number;
-            /** @description LOCAL or an external calendar source */
+            /** @description LOCAL, GOOGLE, or POSTING. POSTING is a posting deadline the server added when the user bookmarked or applied: one DEADLINE event per posting, 23:59 on the deadline day (Asia/Seoul), removed on un-bookmark unless applied */
             source: string;
             /** Format: date-time */
             startsAt: string;
@@ -4156,6 +5355,22 @@ export interface components {
             type: "INTERVIEW" | "DEADLINE" | "FOLLOW_UP" | "CUSTOM" | "COFFEE_CHAT";
             /** Format: date-time */
             updatedAt: string;
+        };
+        CardRetry: {
+            /**
+             * Format: date-time
+             * @description openedAt plus the card's whole lifetime, so a second retry gives the same span.
+             */
+            expiresAt: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description When the card asks again: the time of this retry.
+             */
+            openedAt: string;
+            /** @enum {string} */
+            status: "PENDING";
         };
         /** @description Client provider and model are ignored; the plan selects the managed model. */
         CareerAiOptions: {
@@ -4444,8 +5659,11 @@ export interface components {
                 /** @enum {string} */
                 type: "think";
             } | {
-                /** @description strategy (수정 전략) or feedback (고칠 점). A later plan with the same id replaces the card. */
-                id: string;
+                /**
+                 * @description strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.
+                 * @enum {string}
+                 */
+                id: "strategy" | "feedback" | "blueprints";
                 /** @description Strategy card only. Up to 6, without a leading + */
                 keywords?: string[];
                 /** @description 섹션 4개 or 3개 */
@@ -4453,7 +5671,7 @@ export interface components {
                 rows: {
                     label: string;
                     note: string;
-                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. */
+                    /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
                     tag: string;
                 }[];
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -4477,7 +5695,10 @@ export interface components {
                 /** @description Detail lines the client folds as +N줄 */
                 extra?: string[];
                 name: string;
-                result?: unknown;
+                /** @description What the tool returned: an object, with error when it failed */
+                result?: {
+                    [key: string]: unknown;
+                };
                 /** @description One-line outcome shown under the tool line */
                 resultLine?: string;
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
@@ -4490,7 +5711,8 @@ export interface components {
                 summary: string;
                 /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
                 target?: string;
-                tier?: string;
+                /** @enum {string} */
+                tier?: "READ" | "EXTERNAL_READ" | "SAFE_WRITE" | "RISKY_WRITE";
                 /** @enum {string} */
                 type: "tool";
                 /** @description Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry) */
@@ -4501,7 +5723,7 @@ export interface components {
                 items: {
                     /** @description True for a step added after the list was first shown */
                     added?: boolean;
-                    id: unknown;
+                    id: string;
                     /** @enum {string} */
                     state: "todo" | "now" | "done";
                     text: string;
@@ -4528,7 +5750,12 @@ export interface components {
                     [key: string]: unknown;
                 };
                 documentId?: string;
-                /** @description Warning under the options, e.g. 지원하면 취소할 수 없어요 for apply_to_posting */
+                /**
+                 * Format: date-time
+                 * @description TOOL_ACTION only: when the card stops taking any answer but reject. null for a card that waits until it is answered, which is every card the server asks now; only a card asked before then carries a time.
+                 */
+                expiresAt?: string;
+                /** @description Warning under the options, e.g. a hint a tool card shows under its options */
                 foot?: string;
                 /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
                 hunks?: {
@@ -4724,7 +5951,7 @@ export interface components {
                 /** @enum {string} */
                 type: "choice";
             } | {
-                /** @description e.g. 보통 · 개선 여지 있어요 (8.0+ 높음, 6.0+ 보통, else 낮음) */
+                /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
                 band?: string;
                 /** @description Boost card: signed change from from, e.g. +1.4 */
                 delta?: string;
@@ -4911,10 +6138,10 @@ export interface components {
             }) | {
                 error: {
                     /**
-                     * @description NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is "managed AI is not configured"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq).
+                     * @description NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is "managed AI is not configured"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq). JOB_FAILED: the job ended without writing its own terminal event, for example its worker died; the database wrote this one.
                      * @enum {string}
                      */
-                    code: "NOT_CONFIGURED" | "PROVIDER_ERROR" | "INTERNAL";
+                    code: "NOT_CONFIGURED" | "PROVIDER_ERROR" | "INTERNAL" | "JOB_FAILED";
                     details?: {
                         [key: string]: unknown;
                     } | null;
@@ -4925,6 +6152,15 @@ export interface components {
                 /** @enum {string} */
                 type: "error";
             } | {
+                /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+                seq: number;
+                /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+                text: string;
+                /** @enum {string} */
+                type: "notice";
+            } | {
+                /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
+                resumable?: boolean;
                 /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
                 seq: number;
                 /** @enum {string} */
@@ -5043,6 +6279,13 @@ export interface components {
             /** @description Operation result.value */
             payload: unknown;
             sequence: number;
+        };
+        CreateBotBody: {
+            color?: components["schemas"]["BotColor"];
+            /** @description Outer spaces are dropped. A name of spaces only is 400. */
+            displayName?: string;
+            /** Format: uuid */
+            postingId: string;
         };
         Device: {
             /** @enum {string} */
@@ -5223,7 +6466,7 @@ export interface components {
         };
         Error: {
             error: {
-                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, PHONE_ALREADY_REGISTERED, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, BOT_LIMIT, DEFAULT_BOT_PROTECTED, ... */
+                /** @description VALIDATION_ERROR, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CONSENT_REQUIRED, FEATURE_DISABLED, BUSINESS_NOT_VERIFIED, PLAN_REQUIRED, NOT_FOUND, CONFLICT, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, APPROVAL_ALREADY_RESOLVED, APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_STALE, UNSUPPORTED_CLAIM, INVALID_TRANSITION, ALREADY_SUBSCRIBED, ADMIN_TRANSFER_REQUIRED, EMAIL_NOT_VERIFIED, EMAIL_TAKEN, COMPANY_EXISTS, INTEGRATION_REQUIRED, DOCUMENT_NOT_FINALIZED, RATE_LIMITED, QUEUE_BUSY, PAYLOAD_TOO_LARGE, INSUFFICIENT_CREDITS, PHONE_CODE_INVALID, PHONE_CODE_EXPIRED, PHONE_TAKEN, NOT_CONFIGURED, PROVIDER_ERROR, TOKEN_EXPIRED, BLOCKED, INTERNAL, BOT_LIMIT, DEFAULT_BOT_PROTECTED, ... */
                 code: string;
                 details: {
                     [key: string]: unknown;
@@ -5338,6 +6581,94 @@ export interface components {
             /** @description PURCHASE; REFUND: a refunded credit top-up, negative, at most the credits still unspent, its referenceId is the purchase's; or WRITE_OFF: positive, the credits an AI job used past its hold and the balance, not charged (referenceId writeoff:<jobId>, then writeoff:<jobId>:<n> for a retried job written off again). Not a payment: amountUsd is null. */
             type: string;
         };
+        /** @description A material of the caller. doc is file and document, bookmark is posting, link is link. */
+        Material: {
+            /** @description The bot that made it. null when the user made it, or when that bot was deleted. */
+            createdBy: components["schemas"]["BotRef"] | null;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "file";
+            mimeType: string;
+            /** @enum {string} */
+            origin: "UPLOAD" | "AI";
+            pageCount: number | null;
+            size: number;
+            title: string;
+            /**
+             * Format: date-time
+             * @description When the file was saved.
+             */
+            updatedAt: string;
+        } | {
+            /** @description The bot that made it. null when the user made it, or when that bot was deleted. */
+            createdBy: components["schemas"]["BotRef"] | null;
+            docKind: string;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "document";
+            /** @enum {string} */
+            origin: "UPLOAD" | "AI";
+            title: string;
+            /**
+             * Format: date-time
+             * @description The document's last edit.
+             */
+            updatedAt: string;
+        } | {
+            /** Format: date-time */
+            bookmarkedAt: string;
+            careerMax: number | null;
+            careerMin: number | null;
+            /** @description The posting no longer takes applications. */
+            closed: boolean;
+            company: string;
+            deadline: string | null;
+            employmentType: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "posting";
+            location: string | null;
+            title: string;
+        } | {
+            /** Format: date-time */
+            addedAt: string;
+            /** @description The url's host name in lower case. The app marks a linkedin.com link from it: LinkedIn is not a link kind. */
+            host: string;
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            kind: "link";
+            /** @description Whether that open succeeded. */
+            lastCheckOk: boolean | null;
+            /** @description When a bot last opened the link. null until one has. */
+            lastCheckedAt: string | null;
+            /** @enum {string} */
+            linkKind: "job" | "github" | "portfolio" | "blog" | "other";
+            /** @description The saved title, or the url when the title is empty. */
+            title: string;
+            url: string;
+        };
+        MaterialDetail: components["schemas"]["Material"] & {
+            /** @description The bot that made it first, then the bots whose chat it was attached in, most recent first. */
+            usedBy: components["schemas"]["BotRef"][];
+        };
+        MaterialsPage: {
+            /** @description Every section, after q and bot. */
+            counts: {
+                bookmark: number;
+                doc: number;
+                link: number;
+            };
+            sections: {
+                items: components["schemas"]["Material"][];
+                nextCursor: string | null;
+                /** @enum {string} */
+                section: "doc" | "bookmark" | "link";
+            }[];
+        };
         Message: {
             attachments: components["schemas"]["ConversationsMessageAttachment"][];
             /** Format: uuid */
@@ -5362,10 +6693,10 @@ export interface components {
             target: {
                 id?: string;
                 /**
-                 * @description activity: id is an application id
+                 * @description activity: id is an application id. bot: id is a bot id
                  * @enum {string}
                  */
-                kind?: "offer" | "post" | "posting" | "calendar" | "activity" | "conversation";
+                kind?: "offer" | "post" | "posting" | "calendar" | "activity" | "conversation" | "bot";
             } & {
                 [key: string]: unknown;
             };
@@ -5480,6 +6811,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             imageUrls: string[];
+            saved: boolean;
             title: string;
             viewCount: number;
         };
@@ -5579,6 +6911,14 @@ export interface components {
             /** Format: uuid */
             userId: string;
         };
+        ProfileChange: {
+            /** Format: date-time */
+            createdAt: string;
+            fields: string[];
+            /** Format: uuid */
+            id: string;
+            undone: boolean;
+        };
         ProfileDetail: {
             avatarUrl: string | null;
             careerStatus: ("satisfied" | "seeking" | "feedback") | null;
@@ -5614,6 +6954,34 @@ export interface components {
             status: string;
             title: string;
             url: string;
+        };
+        ProfileUpdated: {
+            avatarUrl: string | null;
+            careerStatus: ("satisfied" | "seeking" | "feedback") | null;
+            careers: components["schemas"]["SocialProfileCareer"][];
+            /**
+             * Format: uuid
+             * @description Present only when the request had an Idempotency-Key and moved a field.
+             */
+            changeId?: string;
+            contact: string | null;
+            displayName: string;
+            followerCount: number;
+            following: boolean;
+            followingCount: number;
+            headline: string;
+            intro: string;
+            jobCategory: ("dev" | "data" | "design" | "plan" | "marketing" | "sales" | "hr" | "ops") | null;
+            offered: boolean;
+            openToOffers: boolean;
+            postCount: number;
+            resumeSourceId: string | null;
+            skills: string[];
+            tenureYears: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: uuid */
+            userId: string;
         };
         Project: {
             /** Format: uuid */
@@ -5711,6 +7079,686 @@ export interface components {
             sha256: string;
             size: number;
             status: string;
+        };
+        /** @description A frame of a bot stream */
+        StreamEvent: ({
+            /** @description In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere */
+            ahead: number;
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @enum {string} */
+            phase: "queued";
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /**
+             * Format: date-time
+             * @description When the run was queued. For waiting: when the card asked.
+             */
+            since: string;
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "status";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @enum {string} */
+            phase: "thinking" | "working";
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /**
+             * Format: date-time
+             * @description When the run was queued. For waiting: when the card asked.
+             */
+            since: string;
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "status";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** Format: uuid */
+            cardId: string;
+            /** @enum {string} */
+            for: "answer" | "confirm";
+            /** @enum {string} */
+            phase: "waiting";
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /**
+             * Format: date-time
+             * @description When the run was queued. For waiting: when the card asked.
+             */
+            since: string;
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "status";
+        }) | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "token";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it. */
+            phase: string;
+            /** @description How long the model step took. Nearest second, then at least 1. No text and no chain-of-thought. */
+            seconds: number;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "think";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /**
+             * @description strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card.
+             * @enum {string}
+             */
+            id: "strategy" | "feedback" | "blueprints";
+            /** @description Strategy card only. Up to 6, without a leading + */
+            keywords?: string[];
+            /** @description 섹션 4개 or 3개 */
+            meta: string;
+            rows: {
+                label: string;
+                note: string;
+                /** @description 전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부. */
+                tag: string;
+            }[];
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            title: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "plan";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            heading: string;
+            /** @description draft-{target}-v{version}, e.g. draft-resume-v1. A new version is a new card. The same id replaces the card. */
+            id: string;
+            /** @description 이력서 초안 v1, 포트폴리오 초안 v1, or 자기소개서 초안 v1 */
+            label: string;
+            /** @description Up to 6 preview lines, markdown stripped, each at most 120 characters */
+            lines: string[];
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "paper";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Detail lines the client folds as +N줄 */
+            extra?: string[];
+            name: string;
+            /** @description What the tool returned: an object, with error when it failed */
+            result?: {
+                [key: string]: unknown;
+            };
+            /** @description One-line outcome shown under the tool line */
+            resultLine?: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /**
+             * @description run is sent just before the tool executes, then ok or err. wait is the approval pause.
+             * @enum {string}
+             */
+            state: "run" | "ok" | "err" | "wait";
+            summary: string;
+            /** @description What the tool worked on, e.g. a file name or 회사 · 직무 */
+            target?: string;
+            /** @enum {string} */
+            tier?: "READ" | "EXTERNAL_READ" | "SAFE_WRITE" | "RISKY_WRITE";
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "tool";
+            /** @description Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry) */
+            warning?: string;
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze. */
+            id?: string;
+            items: {
+                /** @description True for a step added after the list was first shown */
+                added?: boolean;
+                id: string;
+                /** @enum {string} */
+                state: "todo" | "now" | "done";
+                text: string;
+            }[];
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "todo";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            documentId: string;
+            hunks: {
+                line: number | null;
+                /** @enum {string} */
+                sign: "+" | "-" | "";
+                text: string;
+            }[];
+            revisionId: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "diff";
+        } | {
+            args?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            documentId?: string;
+            /**
+             * Format: date-time
+             * @description TOOL_ACTION only: when the card stops taking any answer but reject. null for a card that waits until it is answered, which is every card the server asks now; only a card asked before then carries a time.
+             */
+            expiresAt?: string;
+            /** @description Warning under the options, e.g. a hint a tool card shows under its options */
+            foot?: string;
+            /** @description DOCUMENT_EDIT: the proposed change, sent before it is applied */
+            hunks?: {
+                line: number | null;
+                /** @enum {string} */
+                sign: "+" | "-" | "";
+                text: string;
+            }[];
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "DOCUMENT_EDIT" | "TOOL_ACTION";
+            options: {
+                /**
+                 * @description Material rows only. Opens the material picker. This id is not an answer.
+                 * @enum {string}
+                 */
+                action?: "change";
+                /** @description Short tag such as 추천, or the company initial on a material row */
+                badge?: string;
+                /** @description Second line under the label */
+                desc?: string;
+                id: string;
+                label: string;
+                /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                sub?: string;
+            }[];
+            /** @description GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null. */
+            resolution?: {
+                optionId: string | null;
+                /** @description Present when more than one option was picked */
+                optionIds?: string[];
+                /** @enum {string} */
+                status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+            };
+            /** @description change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools. */
+            rows?: {
+                from: string;
+                initial?: string;
+                name: string;
+                to: string;
+            }[];
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            summary?: string;
+            title: string;
+            toolName?: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "approval";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections. */
+            auto?: boolean;
+            /** @description Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress */
+            detail?: string;
+            /** @description Present gate: the saved profile document, when there is one */
+            documentId?: string;
+            gate?: string;
+            id: string;
+            /** @enum {string} */
+            kind?: "RESUME_GATE" | "EMPLOYER_GATE";
+            /** @description Present and true when more than one option may be selected */
+            multiple?: boolean;
+            /** @description Profile present gate: where the PDF can be exported */
+            note?: string;
+            /** @description Old-client fallback. A client that does not read sections answers from this list. */
+            options: {
+                /**
+                 * @description Material rows only. Opens the material picker. This id is not an answer.
+                 * @enum {string}
+                 */
+                action?: "change";
+                /** @description Short tag such as 추천, or the company initial on a material row */
+                badge?: string;
+                /** @description Second line under the label */
+                desc?: string;
+                id: string;
+                label: string;
+                /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                sub?: string;
+            }[];
+            recommended?: string;
+            /** @description GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null. */
+            resolution?: {
+                optionId: string | null;
+                /** @description Present when more than one option was picked */
+                optionIds?: string[];
+                /** @enum {string} */
+                status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+            };
+            /** @description Present → render these instead of options. Row sections are display only. */
+            sections?: ({
+                id: string;
+                /** @enum {string} */
+                kind: "chips";
+                /** @description Present and true when every chip in the section may be selected */
+                multiple?: boolean;
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                /** @description Default ids. Applied only when the answer contains submit and the section has no pick. */
+                selected: string[];
+                title?: string;
+            } | {
+                id: string;
+                /** @enum {string} */
+                kind: "rows";
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                title?: string;
+            } | {
+                id: string;
+                /** @enum {string} */
+                kind: "toggle";
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                /** @description Default on. With submit, an id is on only when it is in optionIds. Without submit, a toggle section that was not touched keeps selected. */
+                selected: string[];
+                title?: string;
+            } | {
+                id: string;
+                /** @enum {string} */
+                kind: "thumbnails";
+                options: {
+                    /**
+                     * @description Material rows only. Opens the material picker. This id is not an answer.
+                     * @enum {string}
+                     */
+                    action?: "change";
+                    /** @description Short tag such as 추천, or the company initial on a material row */
+                    badge?: string;
+                    /** @description Second line under the label */
+                    desc?: string;
+                    id: string;
+                    label: string;
+                    /** @description Source line on a material row, e.g. 마이 › 서류. Row ids are not answers. */
+                    sub?: string;
+                }[];
+                selected: string[];
+                title?: string;
+            })[];
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Present → the answer is the button, not a tapped option. Send optionId submit and optionIds [submit, …picked ids]. */
+            submit?: {
+                /** @description Confirm button. {n} is the number of selected ids in toggle sections. */
+                label: string;
+                /** @description Thumbnails: button label for the selected option id. CLASSIC → 클래식으로 만들기. */
+                optionLabels?: {
+                    [key: string]: string;
+                };
+                /** @description Button label when {n} would be 0 */
+                zeroLabel?: string;
+            };
+            title?: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "choice";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고) */
+            band?: string;
+            /** @description Boost card: signed change from from, e.g. +1.4 */
+            delta?: string;
+            /** @description Boost card: the score before the first boost cycle */
+            from?: number;
+            /** @description Up to 5 posting terms; ok when the resume text contains the term */
+            keywords?: {
+                label: string;
+                ok: boolean;
+            }[];
+            /** @description Boost card: 적합도 6.9 → 8.3 (+1.4) */
+            note?: string;
+            /** @description Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars). */
+            parts?: {
+                careerLevel?: number;
+                domain?: number;
+                experienceLink?: number;
+                keyword?: number;
+                techStack?: number;
+            };
+            /** @enum {string} */
+            plan?: "FREE" | "PRO" | "ULTRA";
+            /** @description ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes */
+            projected?: {
+                bullets: string[];
+                label: string;
+                score: number;
+            };
+            score: number;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요. */
+            summary?: string;
+            topGap?: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "fit";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Empty string when the document was not synced */
+            documentId: string;
+            /** @description Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name} */
+            downloadUrl: string;
+            fileId: string;
+            /** @description Never text/markdown. */
+            mime: string;
+            /** @description Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event. */
+            name: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "file";
+        } | ({
+            actions: {
+                /** @enum {string} */
+                id: "apply" | "convert" | "view";
+                label: string;
+                method?: string;
+                path?: string;
+            }[];
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+            bullets?: string[];
+            cardMeta: string;
+            checklist: string[];
+            company?: string;
+            documentId: string;
+            /** @description Edited PDF. Each part drops /\:*?"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서. */
+            fileName: string;
+            /** @description Fit before any edit; present only when the fit rose */
+            fitFrom?: number;
+            /** @description Fit after the last boost cycle; present only when the fit rose */
+            fitTo?: number;
+            pageLine: string;
+            savedLine?: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @enum {string} */
+            source: "external";
+            /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+            summary?: string;
+            taskLine: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "result";
+        } | {
+            actions: {
+                /** @enum {string} */
+                id: "apply" | "convert" | "view";
+                label: string;
+                method?: string;
+                path?: string;
+            }[];
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description Up to 3 changes: the draft's changes, else the analysis improvements */
+            bullets?: string[];
+            checklist: string[];
+            company?: string;
+            documentId: string;
+            /** @description Fit before any edit; present only when the fit rose */
+            fitFrom?: number;
+            /** @description Fit after the last boost cycle; present only when the fit rose */
+            fitTo?: number;
+            headline: string;
+            name: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @enum {string} */
+            source: "profile";
+            subtitle: string;
+            /** @description 다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile) */
+            summary?: string;
+            taskLine: string;
+            title: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "result";
+        }) | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @enum {string} */
+            awaiting?: "approval" | "choice";
+            operation: components["schemas"]["Operation"] | null;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Materials this turn read or saved, first use, at most 5. Omitted when empty. A link title is the page read after redirects. */
+            sources?: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "file" | "document" | "posting" | "link";
+                title: string;
+            }[];
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "done";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at?: string;
+            error: {
+                /**
+                 * @description NOT_CONFIGURED: OPENROUTER_API_KEY is missing (message is "managed AI is not configured"); the job fails once and is not retried. PROVIDER_ERROR: the model call failed or the answer was unreadable; the job fails once and is not retried. INTERNAL: the tool loop hit its step limit (stored, not retried) or the gateway poll failed (that frame has no seq). JOB_FAILED: the job ended without writing its own terminal event, for example its worker died; the database wrote this one.
+                 * @enum {string}
+                 */
+                code: "NOT_CONFIGURED" | "PROVIDER_ERROR" | "INTERNAL" | "JOB_FAILED";
+                details?: {
+                    [key: string]: unknown;
+                } | null;
+                message: string;
+            };
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq?: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn?: string;
+            /** @enum {string} */
+            type: "error";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요 */
+            text: string;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "notice";
+        } | {
+            /**
+             * Format: date-time
+             * @description When the event was stored
+             */
+            at: string;
+            /** @description True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it. */
+            resumable: boolean;
+            /** @description chat_events id; send back as ?after= or Last-Event-ID to resume */
+            seq: number;
+            /** @description Opaque. Every frame of one run has the same value. */
+            turn: string;
+            /** @enum {string} */
+            type: "cancelled";
+        };
+        Transcript: {
+            data: components["schemas"]["BotTurn"][];
+            /** @description First page only, while the newest turn is PENDING or RUNNING. Follow GET /bots/{id}/stream?after=lastSeq. */
+            live: {
+                lastSeq: number;
+                turnId: string;
+            } | null;
+            page: {
+                hasMore: boolean;
+                nextCursor: string | null;
+            };
+        };
+        TranscriptMatch: {
+            /** Format: date-time */
+            at: string;
+            /** Format: uuid */
+            messageId: string;
+            /** @description The turn that holds the message. Page GET /bots/{id}/transcript until it is loaded. */
+            turnId: string;
+        };
+        UpdateBotBody: {
+            color?: components["schemas"]["BotColor"];
+            /** @description Outer spaces are dropped. A name of spaces only is 400. */
+            displayName?: string;
+            expectedRevision: number;
+            notificationsMuted?: boolean;
         };
         UploadedImage: {
             key: string;
@@ -6600,8 +8648,6 @@ export interface operations {
                     displayName: string;
                     /** Format: email */
                     email: string;
-                    /** @description 8 to 128 code points */
-                    password: string;
                 };
             };
         };
@@ -6633,6 +8679,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description 8 to 128 code points */
+                    password?: string;
                     token: string;
                 };
             };
@@ -6722,7 +8770,7 @@ export interface operations {
             content: {
                 "application/json": {
                     pushToken?: string;
-                    refreshToken: string;
+                    refreshToken?: string;
                 };
             };
         };
@@ -6858,7 +8906,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    refreshToken: string;
+                    refreshToken?: string;
                 };
             };
         };
@@ -7131,7 +9179,10 @@ export interface operations {
     };
     getBots: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A posting id. Narrows the list to the caller's bot for that posting's company. */
+                postingId?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7144,9 +9195,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        data: components["schemas"]["Bot"][];
-                    };
+                    "application/json": components["schemas"]["BotList"];
                 };
             };
             default: components["responses"]["Error"];
@@ -7164,18 +9213,12 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    companyId: string | null;
-                    companyName: string;
-                    displayName: string;
-                    postingId: string | null;
-                    postingUrl: string | null;
-                };
+                "application/json": components["schemas"]["CreateBotBody"];
             };
         };
         responses: {
-            /** @description Created */
-            201: {
+            /** @description The caller already has a bot for that company */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7185,34 +9228,14 @@ export interface operations {
                     };
                 };
             };
-            default: components["responses"]["Error"];
-        };
-    };
-    getBotsCompaniesSearch: {
-        parameters: {
-            query?: {
-                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
-                limit?: number;
-                /** @description Opaque cursor from page.nextCursor */
-                cursor?: string;
-                /** @description Required company name substring */
-                q?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["BotCompanyHit"][];
-                        page: components["schemas"]["Page"];
+                        data: components["schemas"]["Bot"];
                     };
                 };
             };
@@ -7251,6 +9274,36 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getBotsSearch: {
+        parameters: {
+            query: {
+                q: string;
+                /** @description Message hits per page. A larger integer is clamped to 50. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSearch"];
+                        page: components["schemas"]["Page"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getBotsById: {
         parameters: {
             query?: never;
@@ -7269,7 +9322,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["Bot"];
+                        data: components["schemas"]["BotDetail"];
                     };
                 };
             };
@@ -7308,13 +9361,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    avatarKey?: string | null;
-                    displayName?: string;
-                    expectedRevision: number;
-                    mascotKey?: string | null;
-                    notificationsMuted?: boolean;
-                };
+                "application/json": components["schemas"]["UpdateBotBody"];
             };
         };
         responses: {
@@ -7332,38 +9379,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getBotsByIdConversations: {
-        parameters: {
-            query?: {
-                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
-                limit?: number;
-                /** @description Opaque cursor from page.nextCursor */
-                cursor?: string;
-            };
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        data: components["schemas"]["Conversation"][];
-                        page: components["schemas"]["Page"];
-                    };
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    postBotsByIdConversations: {
+    postBotsByIdApprovalsByApprovalId: {
         parameters: {
             query?: never;
             header: {
@@ -7372,49 +9388,54 @@ export interface operations {
             };
             path: {
                 id: string;
+                approvalId: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
                 "application/json": {
-                    applicationId?: string | null;
-                    title: string;
+                    optionId?: string;
+                    optionIds?: string[];
                 };
             };
         };
         responses: {
-            /** @description Created */
-            201: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["Conversation"];
+                        data: components["schemas"]["BotCardAnswer"];
+                    };
+                };
+            };
+            /** @description Accepted; the run resumed */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotCardAnswer"];
                     };
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getBotsByIdLibrary: {
+    postBotsByIdApprovalsByApprovalIdRetry: {
         parameters: {
-            query?: {
-                /** @description Page size (default 50, max 100) */
-                limit?: number;
-                /** @description When set, only that section is populated */
-                section?: "conversations" | "files" | "links";
-                /** @description Cursor for the conversations section */
-                conversationCursor?: string;
-                /** @description Cursor for the files section */
-                fileCursor?: string;
-                /** @description Cursor for the links section */
-                linkCursor?: string;
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
-            header?: never;
             path: {
                 id: string;
+                approvalId: string;
             };
             cookie?: never;
         };
@@ -7427,8 +9448,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: components["schemas"]["BotLibrary"];
+                        data: components["schemas"]["CardRetry"];
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsByIdMessagesStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BotSendBody"];
+            };
+        };
+        responses: {
+            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, notice, cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
             default: components["responses"]["Error"];
@@ -7458,6 +9506,200 @@ export interface operations {
                         data: {
                             /** Format: date-time */
                             readAt: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdSiteGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSiteGrant"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsByIdSiteGrantsByHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                host: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdStream: {
+        parameters: {
+            query?: {
+                /** @description Resume after this seq; the Last-Event-ID header is used when absent */
+                after?: number;
+            };
+            header?: {
+                "Last-Event-ID"?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bot reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, result, done, error, notice, cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Nothing runs */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsByIdStreamCancel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            resumable: boolean;
+                            /** @enum {string} */
+                            status: "CANCELLED";
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdTranscript: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Transcript"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsByIdTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdTranscriptMatches: {
+        parameters: {
+            query?: {
+                /** @description Required. 1 to 200 characters. */
+                q?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["TranscriptMatch"][];
+                            total: number;
                         };
                     };
                 };
@@ -8675,7 +10917,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8703,7 +10945,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, cancelled. */
+            /** @description Chat reply stream. Events: status, token, think, plan, paper, tool, todo, diff, approval, choice, fit, file, employer_research, posting_draft, review_report, interview_kit, result, done, error, notice, cancelled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8897,8 +11139,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** Format: uuid */
-                    applicationId: string;
+                    /** @description The application (posting) the document belongs to. Leave it out or null for a document that belongs to none, such as a hub profile or a portfolio. A given id must be the caller's application, else 404. */
+                    applicationId?: string | null;
                     /** @enum {string} */
                     kind: "RESUME" | "PORTFOLIO" | "COVER_LETTER" | "CAREER_STATEMENT" | "HUB_PROFILE";
                     language: string;
@@ -10564,6 +12806,116 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getMaterials: {
+        parameters: {
+            query?: {
+                tab?: "all" | "doc" | "bookmark" | "link";
+                /** @description Outer spaces are dropped. Empty is no filter. */
+                q?: string;
+                /** @description A bot id, or push for the caller's Push Bot. */
+                bot?: string;
+                /** @description Rows per page of a section tab. A larger integer is clamped to 100. */
+                limit?: number;
+                /** @description Opaque cursor from the section's nextCursor */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["MaterialsPage"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMaterialsByKindById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["MaterialDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMaterialsByKindById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMaterialsByKindByIdRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                kind: "file" | "document" | "posting" | "link";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Material"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     deleteMe: {
         parameters: {
             query?: never;
@@ -10730,6 +13082,7 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
+                sort?: "latest" | "views" | "comments";
             };
             header?: never;
             path?: never;
@@ -11556,6 +13909,7 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque cursor from page.nextCursor */
                 cursor?: string;
+                sort?: "latest" | "views" | "comments";
             };
             header?: never;
             path?: never;
@@ -11636,7 +13990,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        data: components["schemas"]["ProfileUpdated"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeProfileChangesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ProfileChange"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeProfileChangesByIdUndo: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
                         data: components["schemas"]["ProfileDetail"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeProfilePdf: {
+        parameters: {
+            query?: {
+                /** @description 1 embeds the avatar */
+                photo?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rendered PDF */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeSavedPosts: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100. A larger integer is clamped to 100. Zero or a non-integer is 400. */
+                limit?: number;
+                /** @description Opaque cursor from page.nextCursor */
+                cursor?: string;
+                sort?: "latest" | "views" | "comments";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Post"][];
+                        page: components["schemas"]["Page"];
                     };
                 };
             };
@@ -12589,6 +15050,51 @@ export interface operations {
                         data: components["schemas"]["Comment"];
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postPostsByIdSave: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deletePostsByIdSave: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };

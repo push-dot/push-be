@@ -1,4 +1,4 @@
-import { isMissingRelation, isUndefinedColumn, isUnique, one, query } from "../db.ts";
+import { isMissingRelation, isUndefinedColumn, isUnique, namesUndefinedColumn, one, query, withCalendar, type QueryResult } from "../db.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { queryForms, searchFields } from "../hangul.ts";
 import {
@@ -7,6 +7,7 @@ import {
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { stageEnteredAt } from "./applications.ts";
+import { DEADLINE_EVENT_COLS, ON_DEADLINE_EVENT, deadlineEventSelect } from "./calendar.ts";
 import {
   JOB_CATEGORIES,
   GUEST_ID,
@@ -69,6 +70,14 @@ function plainList(url: URL, name: string, maxLen: number, field: string): strin
   return values;
 }
 
+// Counts, facets and skill tallies read the same rows for every caller; $1 is only a placeholder, so the key leaves it out.
+// A free-text search is as varied as its text and is never cached.
+const sharedRows = (ctx: Ctx, sql: string, params: unknown[]): Promise<QueryResult> => {
+  const run = (): Promise<QueryResult> => query(ctx.deps.query, sql, params);
+  if (!ctx.deps.cache || ctx.url.searchParams.get("q")) return run();
+  return ctx.deps.cache.get(`${sql}\u0000${JSON.stringify(params.slice(1))}`, ctx.now.getTime(), run);
+};
+
 function appendPostingFilters(
   sql: string,
   params: unknown[],
@@ -87,12 +96,12 @@ function appendPostingFilters(
     const hangul = params.length - 1;
     const hangulJamo = params.length;
     sql += ` AND (
-      p.title ILIKE '%' || $${raw} || '%' OR p.company ILIKE '%' || $${raw} || '%'
-      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%')
-      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%')
+      p.title ILIKE '%' || $${raw} || '%' ESCAPE '\\' OR p.company ILIKE '%' || $${raw} || '%' ESCAPE '\\'
+      OR ($${cho} <> '' AND p.search_choseong LIKE '%' || $${cho} || '%' ESCAPE '\\')
+      OR ($${jamo} <> '' AND p.search_jamo LIKE $${jamo} || '%' ESCAPE '\\')
       OR ($${hangul} <> '' AND (
-        p.title ILIKE '%' || $${hangul} || '%' OR p.company ILIKE '%' || $${hangul} || '%'
-        OR p.search_jamo LIKE $${hangulJamo} || '%'
+        p.title ILIKE '%' || $${hangul} || '%' ESCAPE '\\' OR p.company ILIKE '%' || $${hangul} || '%' ESCAPE '\\'
+        OR p.search_jamo LIKE $${hangulJamo} || '%' ESCAPE '\\'
       ))
     )`;
   }
@@ -184,7 +193,7 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     where = appendPostingFilters(where, params, ctx.url, true);
     where = deadlineWindow(ctx, params, where);
     // $1 (the user) is only used by the row flags; Postgres rejects a bind with unused parameters, so reference it.
-    const counted = one(ctx.deps.query, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
+    const counted = sharedRows(ctx, "SELECT count(*)::int AS total" + where + " AND $1::uuid IS NOT NULL", params.slice());
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")}` + where;
     // shortcut: deadline and popular ignore the cursor; (created_at, id) is not their rank
@@ -196,11 +205,11 @@ async function listPostings(ctx: Ctx): Promise<Response> {
     const order = sort === "deadline"
       ? "p.deadline ASC NULLS LAST, p.created_at DESC, p.id DESC"
       : sort === "popular"
-        ? "COALESCE((to_jsonb(p) ->> 'view_count')::int, 0) DESC, p.created_at DESC, p.id DESC"
+        ? "p.view_count DESC, p.created_at DESC, p.id DESC"
         : "p.created_at DESC, p.id DESC";
     sql += ` ORDER BY ${order} LIMIT $${params.length}`;
     const [count, rows] = await Promise.all([counted, query(ctx.deps.query, sql, params)]);
-    return { total: Number(count?.total ?? 0), rows, page };
+    return { total: Number(count.rows[0]?.total ?? 0), rows, page };
   });
   const mapped = loaded.rows.rows.map((row) => ({ item: postingDto(row, false), createdAt: row.created_at, id: String(row.id) }));
   const paged = pageResult(mapped, loaded.page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
@@ -230,7 +239,7 @@ const careerFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]> =
     const selects = CAREER_BUCKETS.map((bucket) => `count(*) FILTER (WHERE ${bucket.where})::int AS ${bucket.alias}`).join(", ");
     let sql = `SELECT ${selects}` + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { career: true });
-    return one(ctx.deps.query, sql, params);
+    return (await sharedRows(ctx, sql, params)).rows[0] ?? null;
   });
   return CAREER_BUCKETS.map((bucket) => ({ id: bucket.id, count: Number(row?.[bucket.alias] ?? 0) }));
 };
@@ -241,7 +250,7 @@ const categoryFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
     let sql = "SELECT p.job_category AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { category: true });
     sql += " GROUP BY p.job_category";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
   return [...JOB_CATEGORIES].map((id) => ({ id, count: counts.get(id) ?? 0 }));
@@ -253,7 +262,7 @@ const employmentFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[
     let sql = "SELECT p.employment_type AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, true, { employment: true });
     sql += " GROUP BY p.employment_type";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   const counts = new Map(rows.rows.map((item) => [String(item.id ?? ""), Number(item.count ?? 0)]));
   return [...EMPLOYMENT].map((id) => ({ id, count: counts.get(id) ?? 0 }));
@@ -265,7 +274,7 @@ const locationFacet = async (ctx: Ctx): Promise<{ id: string; count: number }[]>
     let sql = "SELECT p.location AS id, count(*)::int AS count" + facetWhere(withStatus);
     sql = appendPostingFilters(sql, params, ctx.url, false);
     sql += " GROUP BY p.location ORDER BY count DESC, p.location ASC";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   return rows.rows
     .filter((item) => Number(item.count ?? 0) > 0)
@@ -278,7 +287,7 @@ export const skillRows = async (ctx: Ctx, filtered: boolean): Promise<{ id: stri
     let sql = `SELECT sk AS id, count(*)::int AS count FROM job_postings p, jsonb_array_elements_text(COALESCE(p.skills, '[]'::jsonb)) sk WHERE ${openClause(withStatus)} AND $1::uuid IS NOT NULL`;
     if (filtered) sql = appendPostingFilters(sql, params, ctx.url, true, { skills: true });
     sql += " GROUP BY sk ORDER BY count DESC, sk ASC";
-    return query(ctx.deps.query, sql, params);
+    return sharedRows(ctx, sql, params);
   });
   return rows.rows
     .filter((row) => Number(row.count ?? 0) > 0)
@@ -393,7 +402,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
   }
   const draftSource = body.draftSource == null ? null : String(body.draftSource);
   const account = await verifiedCompany(ctx);
-  const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200);
+  const company = body.company == null ? account.name : textOf(body.company, "company", 1, 200).trim();
   if (!company) throw fieldError("company", "company must be 1-200 characters");
   const fields = searchFields(`${title} ${company}`);
   const id = crypto.randomUUID();
@@ -418,6 +427,7 @@ async function createPosting(ctx: Ctx): Promise<Response> {
       if (!isUndefinedColumn(err) || at === tiers.length - 1) throw err;
     }
   }
+  ctx.deps.cache?.clear();
   await enqueueIngest(ctx, { postingId: id });
   return data(201, postingDto({
     id, company, title, job_category: body.jobCategory, image_key: imageKey, skills, career_min: careerMin,
@@ -437,11 +447,22 @@ async function requireOpenPosting(ctx: Ctx, idRaw: string): Promise<string> {
   return id;
 }
 
+const BOOKMARK_INSERT = "INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3::timestamptz) ON CONFLICT (user_id, posting_id) DO NOTHING";
+
+const bookmarkSql = (calendar: boolean): string => calendar ? `WITH bk AS (${BOOKMARK_INSERT})
+  INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
+  ${deadlineEventSelect("$1::uuid", "NULL::uuid", "$3::timestamptz")}
+  FROM job_postings p WHERE p.id = $2 AND p.deadline >= ($3::timestamptz AT TIME ZONE 'Asia/Seoul')::date
+  ${ON_DEADLINE_EVENT} DO NOTHING` : BOOKMARK_INSERT;
+
+const unbookmarkSql = (calendar: boolean): string => calendar
+  ? `WITH bk AS (DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2)
+  DELETE FROM calendar_events WHERE user_id = $1 AND posting_id = $2 AND application_id IS NULL`
+  : "DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2";
+
 async function bookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = await requireOpenPosting(ctx, idRaw);
-  await query(ctx.deps.query,
-    "INSERT INTO bookmarks (user_id, posting_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, posting_id) DO NOTHING",
-    [ctx.user.id, id, ctx.now.toISOString()]);
+  await withCalendar((calendar) => query(ctx.deps.query, bookmarkSql(calendar), [ctx.user.id, id, ctx.now.toISOString()]));
   return noContent(ctx.rid);
 }
 
@@ -449,7 +470,7 @@ async function unbookmarkPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [id]);
   if (!row) throw notFound();
-  await query(ctx.deps.query, "DELETE FROM bookmarks WHERE user_id = $1 AND posting_id = $2", [ctx.user.id, id]);
+  await withCalendar((calendar) => query(ctx.deps.query, unbookmarkSql(calendar), [ctx.user.id, id]));
   return noContent(ctx.rid);
 }
 
@@ -500,7 +521,9 @@ const idList = (value: unknown, field: string): string[] => {
  * when the caller has no application for the posting yet, which closes most of the double-apply window.
  */
 
-const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
+type ApplyTier = { calendar: boolean; stamp: boolean; snapshot: boolean };
+
+const applySql = ({ calendar, stamp, snapshot }: ApplyTier): string => `WITH job AS (
     INSERT INTO jobs (id, user_id, revision, company, title, source_kind, source_url, source_text, requirements, preferred, keywords, risks, deadline, language, archived, created_at, updated_at, source_posting_id, search_choseong, search_jamo)
     SELECT $1, $2, 1, $4, $5, 'TEXT', NULL, $6, $7::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, $8, '', false, $9, $9, $3, $10, $11
     WHERE NOT EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.user_id = $2 AND j.source_posting_id = $3)
@@ -518,7 +541,12 @@ const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
       ) FROM profiles p WHERE p.user_id = $2
     )` : ""} FROM job
     RETURNING id
-  ), ev AS (
+  )${calendar ? `, cal AS (
+    INSERT INTO calendar_events (${DEADLINE_EVENT_COLS})
+    ${deadlineEventSelect("$2::uuid", "app.id", "$9::timestamptz")}
+    FROM app JOIN job_postings p ON p.id = $3 WHERE p.deadline IS NOT NULL
+    ${ON_DEADLINE_EVENT} DO UPDATE SET application_id = EXCLUDED.application_id, revision = calendar_events.revision + 1, updated_at = EXCLUDED.updated_at
+  )` : ""}, ev AS (
     INSERT INTO application_events (id, user_id, application_id, type, payload, created_at)
     SELECT gen_random_uuid(), $2, app.id, 'APPLIED', $13::jsonb, $9 FROM app
   ), snaps AS (
@@ -532,15 +560,6 @@ const applySql = (stamp: boolean, snapshot: boolean): string => `WITH job AS (
     FROM app, jsonb_array_elements_text($15::jsonb) AS r(id) JOIN sources s ON s.id = r.id::uuid AND s.user_id = $2
   )
   SELECT id FROM app`;
-
-const APPLY_SQL = applySql(true, true);
-const APPLY_SQL_STAMP = applySql(true, false);
-const APPLY_SQL_BARE = applySql(false, false);
-
-const namesUndefinedColumn = (err: unknown, column: string): boolean => {
-  const e = err as { message?: string };
-  return isUndefinedColumn(err) && `${e?.message ?? ""} ${String(err)}`.includes(column);
-};
 
 async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
@@ -593,18 +612,17 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
       throw err;
     }
   };
-  try {
-    created = await runApply(APPLY_SQL);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
-    // Snapshot is newer than stage_entered_at. A database that lacks only the snapshot
-    // keeps the stamp. One that lacks the stamp (the error names that column) uses the bare insert.
-    const next = namesUndefinedColumn(err, "applicant_snapshot") ? APPLY_SQL_STAMP : APPLY_SQL_BARE;
+  let tier: ApplyTier = { calendar: true, stamp: true, snapshot: true };
+  for (;;) {
     try {
-      created = await runApply(next);
-    } catch (err2) {
-      if (!isUndefinedColumn(err2) || next === APPLY_SQL_BARE) throw err2;
-      created = await runApply(APPLY_SQL_BARE);
+      created = await runApply(applySql(tier));
+      break;
+    } catch (err) {
+      if (!isUndefinedColumn(err)) throw err;
+      if (tier.calendar && namesUndefinedColumn(err, "posting_id")) tier = { ...tier, calendar: false };
+      else if (tier.snapshot && namesUndefinedColumn(err, "applicant_snapshot")) tier = { ...tier, snapshot: false };
+      else if (tier.stamp || tier.snapshot) tier = { ...tier, stamp: false, snapshot: false };
+      else throw err;
     }
   }
   if (!created) {
@@ -652,7 +670,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   if (Number(current.revision) !== expected) throw revisionConflict(Number(current.revision));
   const next = { ...current };
   if ("title" in body) next.title = textOf(body.title, "title", 1, 300);
-  if ("company" in body) next.company = textOf(body.company, "company", 1, 200);
+  if ("company" in body) next.company = textOf(body.company, "company", 1, 200).trim();
   if ("jobCategory" in body) {
     if (typeof body.jobCategory !== "string" || !JOB_CATEGORIES.has(body.jobCategory)) {
       throw unprocessable("jobCategory", "unsupported jobCategory");
@@ -705,6 +723,7 @@ const patchPosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     if (!again) throw notFound();
     throw revisionConflict(Number(again.revision));
   }
+  ctx.deps.cache?.clear();
   return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true, true), ctx.rid);
 };
 
@@ -730,6 +749,7 @@ const closePosting = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     if (!again) throw notFound();
     throw revisionConflict(Number(again.revision));
   }
+  ctx.deps.cache?.clear();
   return data(200, postingDto({ ...updated, bookmarked: false, applied: false }, true, true), ctx.rid);
 };
 
@@ -1086,10 +1106,10 @@ export async function searchPostings(ctx: Ctx, q: string): Promise<Response> {
     const params: unknown[] = [ctx.user.id, forms.raw, forms.choseong, forms.jamo, forms.hangul, forms.hangulJamo];
     const cols = withStatus ? `${POSTING_COLS}, p.status` : POSTING_COLS;
     let sql = `SELECT ${cols}, ${postingFlags("$1")} FROM job_postings p WHERE ${openClause(withStatus)} AND (
-        p.title ILIKE '%' || $2 || '%' OR p.company ILIKE '%' || $2 || '%'
-        OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%')
-        OR ($4 <> '' AND p.search_jamo LIKE $4 || '%')
-        OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' OR p.company ILIKE '%' || $5 || '%' OR p.search_jamo LIKE $6 || '%'))
+        p.title ILIKE '%' || $2 || '%' ESCAPE '\\' OR p.company ILIKE '%' || $2 || '%' ESCAPE '\\'
+        OR ($3 <> '' AND p.search_choseong LIKE '%' || $3 || '%' ESCAPE '\\')
+        OR ($4 <> '' AND p.search_jamo LIKE $4 || '%' ESCAPE '\\')
+        OR ($5 <> '' AND (p.title ILIKE '%' || $5 || '%' ESCAPE '\\' OR p.company ILIKE '%' || $5 || '%' ESCAPE '\\' OR p.search_jamo LIKE $6 || '%' ESCAPE '\\'))
       )`;
     const total = await countWhere(ctx, sql, " FROM job_postings p", params.slice());
     if (page.cursor) {
