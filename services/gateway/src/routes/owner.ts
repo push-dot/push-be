@@ -81,6 +81,7 @@ function isCore(method: string, path: string): boolean {
     || path === "/api/v1/billing/iap/verify"
     || path === "/api/v1/billing/webhook/app-store"
     || path === "/api/v1/billing/webhook/google-play"
+    || /^\/api\/v1\/billing\/toss\/(billing-auth|billing-confirm|topup|topup-confirm|cancel)$/.test(path)
   ) {
     return method === "POST";
   }
