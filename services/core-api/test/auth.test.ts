@@ -186,3 +186,70 @@ test("logout deletes the caller's push token, or all of the user's when none is 
   assert.equal(calls[0].params[2], "ExponentPushToken[a]");
   assert.equal(calls[1].params[2], null);
 });
+
+const reauthDeps = (loginAt: string | null | "none") => {
+  const sqls: string[] = [];
+  const stripeCalls: string[] = [];
+  const query: Deps["query"] = async (sql) => {
+    sqls.push(sql);
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("FROM access_tokens t JOIN users u")) {
+      return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "FREE", subscription_status: "NONE", stripe_customer_id: null, period_ends_at: null, created_at: NOW.toISOString(), token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
+    }
+    if (sql.includes("r.login_at")) return loginAt === "none" ? { rows: [], rowCount: 0 } : { rows: [{ login_at: loginAt }], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    stripeCalls.push(`${init?.method} ${String(input)}`);
+    return Response.json({ data: [] });
+  };
+  const call = () => handle(
+    new Request("https://core.example/api/v1/me", { method: "DELETE", headers: { authorization: "Bearer session-token" } }),
+    { APP_ENV: "production", MANAGED_AI: "1" } as CoreEnv,
+    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+  );
+  return { sqls, stripeCalls, call };
+};
+
+test("DELETE /me within 10 minutes of sign-in is allowed", async () => {
+  resetLimits();
+  const d = reauthDeps(new Date(NOW.getTime() - 9 * 60 * 1000).toISOString());
+  assert.equal((await d.call()).status, 204);
+});
+
+for (const [name, loginAt] of [["older than 10 minutes", new Date(NOW.getTime() - 11 * 60 * 1000).toISOString()], ["unknown", null], ["missing", "none"]] as const) {
+  test(`DELETE /me is REAUTH_REQUIRED when the sign-in time is ${name}`, async () => {
+    resetLimits();
+    const d = reauthDeps(loginAt);
+    const res = await d.call();
+    assert.equal(res.status, 403);
+    assert.equal(((await res.json()) as { error: { code: string } }).error.code, "REAUTH_REQUIRED");
+    assert.deepEqual(d.stripeCalls, []);
+    assert.equal(d.sqls.some((s) => s.includes("deletion_requested_at")), false);
+  });
+}
+
+test("refresh keeps the original sign-in time", async () => {
+  resetLimits();
+  const loginAt = "2026-10-20T23:55:00.000Z";
+  let inserted: unknown[] = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("FROM refresh_tokens WHERE token_hash")) {
+      return { rows: [{ id: "r1", user_id: "u1", expires_at: "2099-01-01T00:00:00Z", revoked_at: null, login_at: new Date(loginAt) }], rowCount: 1 };
+    }
+    if (sql.includes("WITH revoked AS (UPDATE refresh_tokens")) return { rows: [{ id: "r1" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO refresh_tokens")) inserted = params;
+    if (sql.includes("FROM users WHERE id")) {
+      return { rows: [{ id: "u1", display_name: "a", locale: "ko", created_at: NOW.toISOString() }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 1 };
+  };
+  const res = await handle(
+    new Request("https://core.example/api/v1/auth/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: "t" }) }),
+    { APP_ENV: "production", MANAGED_AI: "1" } as CoreEnv,
+    { query, now: () => NOW },
+  );
+  assert.equal(res.status, 200);
+  assert.equal(inserted[8], loginAt);
+});

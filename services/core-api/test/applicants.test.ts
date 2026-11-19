@@ -1562,3 +1562,27 @@ test("posting facets run their five counts in parallel", async () => {
 });
 }
 
+
+test("a viewer on a free-mail address is still hidden from a candidate who hides from the viewer's company", async () => {
+  resetLimits();
+  const seen: Call[] = [];
+  const sameCompany = { ...hubProfile, email_domain: "other.com", same_company_as_viewer: true };
+  const list = (row: Record<string, unknown>, calls: Call[]) => handle(
+    new Request("https://core.example/api/v1/profiles", { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(calls, false, async (sql) => {
+      if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };
+      if (sql.includes("FROM profiles")) return { rows: [row], rowCount: 1 };
+      return empty;
+    })),
+  );
+  const hidden = await (await list(sameCompany, seen)).json() as { data: { careerStatus: string | null }[] };
+  assert.equal(hidden.data[0].careerStatus, null);
+  const sql = seen.find((call) => call.sql.includes("same_company_as_viewer"))!.sql;
+  assert.match(sql, /company_members vm JOIN companies vc/);
+  assert.match(sql, /career ->> 'endedOn' IS NULL/);
+
+  resetLimits();
+  const shown = await (await list({ ...sameCompany, same_company_as_viewer: false }, [])).json() as { data: { careerStatus: string | null }[] };
+  assert.equal(shown.data[0].careerStatus, "seeking");
+});

@@ -16,6 +16,8 @@
     // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
     "PAYMENTS_ENABLED": "0",
     "MANAGED_AI": "1",
+    // Comma list of user ids allowed to buy with App Store Sandbox / Google test purchases in production. Must include the Apple App Review demo account.
+    "STORE_SANDBOX_USER_IDS": "",
     // Web origins Stripe Checkout may return employers to (comma list, first is the default).
     "STRIPE_RETURN_ORIGINS": "https://push.devcyjoon.tech",
     // Web origins OAuth login may return to at <origin>/auth/callback (comma list).

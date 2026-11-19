@@ -1,5 +1,5 @@
 import { isUnique, one, query } from "../db.ts";
-import { HttpError, asBool, data, fieldError, noContent, randomToken, sha256Hex } from "../http.ts";
+import { HttpError, clientIp, asBool, data, fieldError, noContent, randomToken, sha256Hex } from "../http.ts";
 import { createMailer, type Mailer } from "../mail/mailer.ts";
 import { hashPassword, verifyPassword } from "../mail/password.ts";
 import { allow } from "../ratelimit.ts";
@@ -15,12 +15,13 @@ const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 const LOGIN_PER_MINUTE = 10;
 const LOGIN_PER_HOUR = 30;
+const LOGIN_IP_PER_MINUTE = 20;
 const MAIL_PER_MINUTE = 3;
 
 let decoy: string | null = null;
 const decoyHash = async (): Promise<string> => (decoy ??= await hashPassword(crypto.randomUUID()));
 
-const limitEmail = async (ctx: Ctx, kind: "login" | "login-h" | "mail", email: string, limit: number, windowMinutes = 1): Promise<void> => {
+const limitEmail = async (ctx: Ctx, kind: "login" | "login-h" | "login-ip" | "mail", email: string, limit: number, windowMinutes = 1): Promise<void> => {
   if (!(await allow(ctx.deps.query, kind, email, limit, ctx.now.getTime(), 1, windowMinutes))) {
     throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: windowMinutes * 60 });
   }
@@ -205,22 +206,21 @@ const login = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const email = requireEmail(body.email);
   const password = typeof body.password === "string" ? body.password : "";
-  await limitEmail(ctx, "login", email, LOGIN_PER_MINUTE);
-  await limitEmail(ctx, "login-h", email, LOGIN_PER_HOUR, 60);
+  const ip = clientIp(ctx.request);
+  const pair = `${ip}|${email}`;
+  await limitEmail(ctx, "login-ip", ip, LOGIN_IP_PER_MINUTE);
+  await limitEmail(ctx, "login", pair, LOGIN_PER_MINUTE);
+  await limitEmail(ctx, "login-h", pair, LOGIN_PER_HOUR, 60);
   const user = await one(ctx.deps.query,
     "SELECT id, password_hash, email_verified_at, is_employer FROM users WHERE lower(email) = lower($1)",
     [email]);
-  if (!user) {
-    await verifyPassword(password, await decoyHash());
-    const pending = await one(ctx.deps.query, "SELECT id FROM email_signups WHERE lower(email) = lower($1)", [email]);
-    if (pending) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
-    throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
-  }
-  if (user.email_verified_at == null) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
-  const stored = user.password_hash == null ? "" : String(user.password_hash);
+  const pending = user ? null : await one(ctx.deps.query, "SELECT password_hash FROM email_signups WHERE lower(email) = lower($1) ORDER BY created_at DESC LIMIT 1", [email]);
+  const source = user ?? pending;
+  const stored = source?.password_hash == null ? "" : String(source.password_hash);
   if (!(await verifyPassword(password, stored || await decoyHash())) || !stored) {
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   }
+  if (!user || user.email_verified_at == null) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
   await clearDeletion(ctx, String(user.id));
   return data(200, await issue(ctx, String(user.id)), ctx.rid);
 };
