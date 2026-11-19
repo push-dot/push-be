@@ -39,6 +39,7 @@ export interface CoreEnv {
   STRIPE_PRICE_TOPUP?: string;
   STRIPE_RETURN_ORIGINS?: string;
   STRIPE_PORTAL_RETURN_URL?: string;
+  TOSS_SECRET_KEY?: string;
   MAIL_FROM?: string;
   RESEND_API_KEY?: string;
   EXPO_ACCESS_TOKEN?: string;

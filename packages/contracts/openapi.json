@@ -887,9 +887,20 @@
           "balanceMicroCredits": {
             "type": "integer"
           },
+          "canceled": {
+            "description": "EMPLOYER: true when the Toss subscription stops at the end of the period.",
+            "type": "boolean"
+          },
           "creditsRefillAt": {
             "description": "When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.",
             "format": "date-time",
+            "type": "string"
+          },
+          "currency": {
+            "description": "EMPLOYER only: currency of prices.",
+            "enum": [
+              "KRW"
+            ],
             "type": "string"
           },
           "monthlyMicroCredits": {
@@ -927,6 +938,49 @@
               }
             ]
           },
+          "prices": {
+            "description": "EMPLOYER only: KRW per month for each plan, and per 1,500-credit pack.",
+            "properties": {
+              "BASIC": {
+                "type": "integer"
+              },
+              "PRO": {
+                "type": "integer"
+              },
+              "ULTRA": {
+                "type": "integer"
+              },
+              "pack": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "BASIC",
+              "PRO",
+              "ULTRA",
+              "pack"
+            ],
+            "type": "object"
+          },
+          "provider": {
+            "description": "EMPLOYER only: the web payment provider.",
+            "enum": [
+              "toss"
+            ],
+            "type": "string"
+          },
+          "renewsAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "EMPLOYER on a Toss subscription: the next charge. Null when canceled or there is no Toss subscription."
+          },
           "reservedMicroCredits": {
             "type": "integer"
           },
@@ -935,6 +989,7 @@
               {
                 "enum": [
                   "STRIPE",
+                  "TOSS",
                   "APP_STORE",
                   "GOOGLE_PLAY"
                 ],
@@ -953,7 +1008,8 @@
             "enum": [
               "NONE",
               "ACTIVE",
-              "CANCELED"
+              "CANCELED",
+              "PAST_DUE"
             ],
             "type": "string"
           },
@@ -8765,6 +8821,10 @@
       },
       "LedgerEntry": {
         "properties": {
+          "amountKrw": {
+            "description": "Present only on a Toss Payments charge: the amount in KRW, with currency KRW. amountUsd is null then.",
+            "type": "integer"
+          },
           "amountMicroCredits": {
             "type": "integer"
           },
@@ -8784,6 +8844,13 @@
           },
           "createdAt": {
             "format": "date-time",
+            "type": "string"
+          },
+          "currency": {
+            "description": "Present only with amountKrw.",
+            "enum": [
+              "KRW"
+            ],
             "type": "string"
           },
           "description": {
@@ -16352,6 +16419,380 @@
           }
         },
         "summary": "Create Stripe credit top-up checkout session",
+        "tags": [
+          "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/billing/toss/billing-auth": {
+      "post": {
+        "description": "EMPLOYER company ADMIN only (403 otherwise), 503 PAYMENTS_DISABLED while payments are closed, 503 NOT_CONFIGURED without TOSS_SECRET_KEY. Returns the company's customerKey (created once, reused) and the price for the Toss SDK requestBillingAuth. Charges nothing.",
+        "operationId": "postBillingTossBillingAuth",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "planId": {
+                    "enum": [
+                      "BASIC",
+                      "PRO",
+                      "ULTRA"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "planId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "amount": {
+                          "type": "integer"
+                        },
+                        "customerKey": {
+                          "type": "string"
+                        },
+                        "orderName": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "enum": [
+                            "BASIC",
+                            "PRO",
+                            "ULTRA"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "customerKey",
+                        "planId",
+                        "amount",
+                        "orderName"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Start a Toss Payments card registration",
+        "tags": [
+          "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/billing/toss/billing-confirm": {
+      "post": {
+        "description": "EMPLOYER company ADMIN only. customerKey must be the company's own (403 FORBIDDEN otherwise; 409 INVALID_TRANSITION before billing-auth). Issues the billing key from authKey, charges the plan price now, sets the plan with a one-month period, grants that plan's credits and schedules the next charge at the period end. A plan change charges the new plan at once and restarts the period (no proration). 402 PAYMENT_FAILED (details.code) when Toss declines, 502 PROVIDER_ERROR when Toss fails.",
+        "operationId": "postBillingTossBillingConfirm",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "authKey": {
+                    "type": "string"
+                  },
+                  "customerKey": {
+                    "type": "string"
+                  },
+                  "planId": {
+                    "enum": [
+                      "BASIC",
+                      "PRO",
+                      "ULTRA"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authKey",
+                  "customerKey",
+                  "planId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "amount": {
+                          "type": "integer"
+                        },
+                        "plan": {
+                          "enum": [
+                            "BASIC",
+                            "PRO",
+                            "ULTRA"
+                          ],
+                          "type": "string"
+                        },
+                        "receiptUrl": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "plan",
+                        "amount",
+                        "receiptUrl"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Issue a Toss billing key and charge the first month",
+        "tags": [
+          "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/billing/toss/cancel": {
+      "post": {
+        "description": "EMPLOYER company ADMIN only. The plan stays until the period end, then the hourly renewal job removes it. 409 INVALID_TRANSITION without an active Toss subscription.",
+        "operationId": "postBillingTossCancel",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Stop Toss subscription renewal",
+        "tags": [
+          "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/billing/toss/topup": {
+      "post": {
+        "description": "EMPLOYER company ADMIN only. One pack is 1,500 credits for 14,000 KRW; 1 to 20 packs (400 VALIDATION_ERROR, field packs, otherwise). Creates a PENDING order for the Toss SDK requestPayment.",
+        "operationId": "postBillingTossTopup",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "packs": {
+                    "maximum": 20,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "packs"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "amount": {
+                          "type": "integer"
+                        },
+                        "customerKey": {
+                          "type": "string"
+                        },
+                        "orderId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "orderName": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "orderId",
+                        "amount",
+                        "orderName",
+                        "customerKey"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Create a Toss credit top-up order",
+        "tags": [
+          "billing"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/billing/toss/topup-confirm": {
+      "post": {
+        "description": "EMPLOYER company ADMIN only. 404 NOT_FOUND when the order is not the company's, 400 VALIDATION_ERROR (field amount) when amount differs from the order. Confirms the payment with Toss and grants the credits once per orderId: repeating a confirmed order returns the same result without a second charge or grant. 402 PAYMENT_FAILED, 502 PROVIDER_ERROR.",
+        "operationId": "postBillingTossTopupConfirm",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "amount": {
+                    "type": "integer"
+                  },
+                  "orderId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "paymentKey": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "paymentKey",
+                  "orderId",
+                  "amount"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "creditsAdded": {
+                          "type": "integer"
+                        },
+                        "receiptUrl": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "creditsAdded",
+                        "receiptUrl"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Confirm a Toss top-up payment",
         "tags": [
           "billing"
         ],
