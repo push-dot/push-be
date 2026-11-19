@@ -13,8 +13,8 @@
   "placement": { "mode": "targeted", "region": "aws:ap-southeast-1" },
   "vars": {
     "APP_ENV": "production",
-    // "1" opens checkout, top-up and IAP verify. Off until 사업자등록 (약관 4조·11조7항).
-    "PAYMENTS_ENABLED": "0",
+    // "1" opens checkout, top-up and IAP verify. 사업자 정보가 약관 4조에 표시돼 있어 켬 (약관 11조7항).
+    "PAYMENTS_ENABLED": "1",
     // Secrets, set with `wrangler secret put` (never here): TOSS_SECRET_KEY, the Toss Payments secret key of the employer web payments.
     // Billing keys are encrypted at rest with TOKEN_ENCRYPTION_KEY.
     "MANAGED_AI": "1",
