@@ -37,7 +37,13 @@ export default {
       method: "POST",
       headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
     });
-    ctx.waitUntil(handle(request, env, { query: queryOf(env) }).then(() => undefined, () => undefined));
+    const deps = { query: queryOf(env), ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : {}) };
+    const renewal = new Request("https://core.internal/api/v1/internal/billing/toss-renew", {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
+    });
+    ctx.waitUntil(handle(request, env, deps).then(() => undefined, () => undefined));
+    ctx.waitUntil(handle(renewal, env, deps).then(() => undefined, () => undefined));
   },
 };
 

@@ -6,6 +6,7 @@ import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh
 import { dispatchAppleAuth } from "./routes/apple-auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
+import { dispatchToss, runTossRenewals } from "./routes/toss-billing.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
 import { archiveConversation, createConversation, deleteConversation, getArtifact, patchConversation, postAttachment, postMessage, resolveApproval, withApprovalAnswerKey } from "./routes/conversations.ts";
@@ -38,7 +39,11 @@ import { dispatchMaterials } from "./routes/materials.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
 import { giveRefreshCookie, takeRefreshCookie } from "./web-session.ts";
 
-const PAYMENT_PATHS = new Set(["/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify"]);
+const PAYMENT_PATHS = new Set([
+  "/api/v1/billing/checkout", "/api/v1/billing/topup", "/api/v1/billing/iap/verify",
+  "/api/v1/billing/toss/billing-auth", "/api/v1/billing/toss/billing-confirm", "/api/v1/billing/toss/topup",
+  "/api/v1/billing/toss/topup-confirm", "/api/v1/billing/toss/cancel",
+]);
 
 const PUBLIC = new Set([
   "/api/v1/auth/exchange",
@@ -101,6 +106,9 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
       const ctx = base(request, env, deps, rid, url, now, anonymous());
       const job = await dispatchNotificationJobs(ctx, path);
       if (job) return job;
+    }
+    if (request.method === "POST" && path === "/api/v1/internal/billing/toss-renew") {
+      return await runTossRenewals(base(request, env, deps, rid, url, now, anonymous()));
     }
     const acted = await actAs(request, env, deps.query);
     if (acted) {
@@ -204,6 +212,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
     throw new HttpError(503, "PAYMENTS_DISABLED", "payments are not open yet");
   }
   if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
+  const toss = await dispatchToss(ctx, path);
+  if (toss) return toss;
   if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
   if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
   if (method === "POST" && path === "/api/v1/billing/portal") return portal(ctx);

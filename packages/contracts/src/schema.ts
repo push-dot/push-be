@@ -753,6 +753,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/toss/billing-auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a Toss Payments card registration
+         * @description EMPLOYER company ADMIN only (403 otherwise), 503 PAYMENTS_DISABLED while payments are closed, 503 NOT_CONFIGURED without TOSS_SECRET_KEY. Returns the company's customerKey (created once, reused) and the price for the Toss SDK requestBillingAuth. Charges nothing.
+         */
+        post: operations["postBillingTossBillingAuth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/toss/billing-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a Toss billing key and charge the first month
+         * @description EMPLOYER company ADMIN only. customerKey must be the company's own (403 FORBIDDEN otherwise; 409 INVALID_TRANSITION before billing-auth). Issues the billing key from authKey, charges the plan price now, sets the plan with a one-month period, grants that plan's credits and schedules the next charge at the period end. A plan change charges the new plan at once and restarts the period (no proration). 402 PAYMENT_FAILED (details.code) when Toss declines, 502 PROVIDER_ERROR when Toss fails.
+         */
+        post: operations["postBillingTossBillingConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/toss/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Toss subscription renewal
+         * @description EMPLOYER company ADMIN only. The plan stays until the period end, then the hourly renewal job removes it. 409 INVALID_TRANSITION without an active Toss subscription.
+         */
+        post: operations["postBillingTossCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/toss/topup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a Toss credit top-up order
+         * @description EMPLOYER company ADMIN only. One pack is 1,500 credits for 14,000 KRW; 1 to 20 packs (400 VALIDATION_ERROR, field packs, otherwise). Creates a PENDING order for the Toss SDK requestPayment.
+         */
+        post: operations["postBillingTossTopup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/toss/topup-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a Toss top-up payment
+         * @description EMPLOYER company ADMIN only. 404 NOT_FOUND when the order is not the company's, 400 VALIDATION_ERROR (field amount) when amount differs from the order. Confirms the payment with Toss and grants the credits once per orderId: repeating a confirmed order returns the same result without a second charge or grant. 402 PAYMENT_FAILED, 502 PROVIDER_ERROR.
+         */
+        post: operations["postBillingTossTopupConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots": {
         parameters: {
             query?: never;
@@ -4385,22 +4485,43 @@ export interface components {
             /** @enum {string} */
             audience: "PERSONAL" | "EMPLOYER";
             balanceMicroCredits: number;
+            /** @description EMPLOYER: true when the Toss subscription stops at the end of the period. */
+            canceled?: boolean;
             /**
              * Format: date-time
              * @description When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.
              */
             creditsRefillAt?: string;
+            /**
+             * @description EMPLOYER only: currency of prices.
+             * @enum {string}
+             */
+            currency?: "KRW";
             monthlyMicroCredits: number;
             /** @description False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it. */
             paymentsEnabled: boolean;
             periodEndsAt: string | null;
             plan: ("FREE" | "PRO" | "ULTRA" | "BASIC") | null;
+            /** @description EMPLOYER only: KRW per month for each plan, and per 1,500-credit pack. */
+            prices?: {
+                BASIC: number;
+                PRO: number;
+                ULTRA: number;
+                pack: number;
+            };
+            /**
+             * @description EMPLOYER only: the web payment provider.
+             * @enum {string}
+             */
+            provider?: "toss";
+            /** @description EMPLOYER on a Toss subscription: the next charge. Null when canceled or there is no Toss subscription. */
+            renewsAt?: string | null;
             reservedMicroCredits: number;
-            source: ("STRIPE" | "APP_STORE" | "GOOGLE_PLAY") | null;
+            source: ("STRIPE" | "TOSS" | "APP_STORE" | "GOOGLE_PLAY") | null;
             /** @description Settled usage this UTC month, less what was written off (WRITE_OFF rows), so what was charged */
             spentMicroCredits: number;
             /** @enum {string} */
-            subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED";
+            subscriptionStatus: "NONE" | "ACTIVE" | "CANCELED" | "PAST_DUE";
             /** @description PERSONAL only: this UTC month's settled usage of each Bot, from the jobs that ran in its thread, biggest first. Usage outside a Bot thread and deleted Bots are not listed, so the sum can be below spentMicroCredits. Empty when no Bot used credits. */
             usageByBot?: {
                 /** Format: uuid */
@@ -6569,12 +6690,19 @@ export interface components {
             supportedFields: string[];
         };
         LedgerEntry: {
+            /** @description Present only on a Toss Payments charge: the amount in KRW, with currency KRW. amountUsd is null then. */
+            amountKrw?: number;
             amountMicroCredits: number;
             /** @description Amount in USD (cents / 100), negative for a refund to the Stripe balance. Null when the row is not a Stripe payment or the payment was not in USD. */
             amountUsd: number | null;
             balanceAfter: number;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * @description Present only with amountKrw.
+             * @enum {string}
+             */
+            currency?: "KRW";
             /** @description Payment label: {Plan} 월 구독, 크레딧 구매, 크레딧 구매 환불, or 요금제 변경 환급. Null for credit grants and rows written before 2026-11. */
             description: string | null;
             /** Format: uuid */
@@ -9174,6 +9302,183 @@ export interface operations {
                     "application/json": {
                         data: {
                             url: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTossBillingAuth: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    planId: "BASIC" | "PRO" | "ULTRA";
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            amount: number;
+                            customerKey: string;
+                            orderName: string;
+                            /** @enum {string} */
+                            planId: "BASIC" | "PRO" | "ULTRA";
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTossBillingConfirm: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    authKey: string;
+                    customerKey: string;
+                    /** @enum {string} */
+                    planId: "BASIC" | "PRO" | "ULTRA";
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            amount: number;
+                            /** @enum {string} */
+                            plan: "BASIC" | "PRO" | "ULTRA";
+                            receiptUrl: string | null;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTossCancel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTossTopup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    packs: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            amount: number;
+                            customerKey: string;
+                            /** Format: uuid */
+                            orderId: string;
+                            orderName: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBillingTossTopupConfirm: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    amount: number;
+                    /** Format: uuid */
+                    orderId: string;
+                    paymentKey: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            creditsAdded: number;
+                            receiptUrl: string | null;
                         };
                     };
                 };
