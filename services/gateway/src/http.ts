@@ -5,6 +5,7 @@
 
 import { pyJson } from "./time.ts";
 import { weakEtag } from "./middleware/cache.ts";
+import type { FrontEnv } from "./types.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -35,10 +36,10 @@ export function clientIp(request: Request): string {
     || "";
 }
 
-export function corsHeaders(request: Request): Headers {
+export function corsHeaders(request: Request, env: FrontEnv): Headers {
   const headers = new Headers();
   const origin = request.headers.get("origin") || "";
-  if (origin && (ALLOWED_ORIGINS.has(origin) || ORIGIN_RE.test(origin))) {
+  if (origin && (ALLOWED_ORIGINS.has(origin) || (env.APP_ENV === "development" && ORIGIN_RE.test(origin)))) {
     headers.set("access-control-allow-origin", origin);
     headers.set("access-control-allow-credentials", "true");
   }
@@ -47,10 +48,10 @@ export function corsHeaders(request: Request): Headers {
   return headers;
 }
 
-export function withCors(request: Request, response: Response): Response {
+export function withCors(request: Request, env: FrontEnv, response: Response): Response {
   try {
     const headers = new Headers(response.headers);
-    for (const [k, v] of corsHeaders(request)) {
+    for (const [k, v] of corsHeaders(request, env)) {
       if (k.toLowerCase() === "vary") {
         const existing = headers.get("vary");
         if (!existing) headers.set("vary", v);
@@ -152,8 +153,8 @@ export function pageLimit(url: URL, rid: string): { limit: number } | Response {
   if (!/^[1-9]\d*$/.test(raw)) return fieldError("limit", "must be a positive integer", rid);
   return { limit: Math.min(Number(raw), 100) };
 }
-export function preflight(request: Request): Response {
-  const headers = corsHeaders(request);
+export function preflight(request: Request, env: FrontEnv): Response {
+  const headers = corsHeaders(request, env);
   const requested = (request.headers.get("access-control-request-headers") || "")
     .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
   const allowHeaders = requested.filter((h) => ALLOWED_HEADERS.has(h));

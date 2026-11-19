@@ -31,17 +31,17 @@ export async function handle(request: Request, env: FrontEnv, deps: Deps): Promi
   const path = url.pathname;
   if (request.method === "OPTIONS") {
     try {
-      return withCors(request, preflight(request));
+      return withCors(request, env, preflight(request, env));
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
   }
   try {
     const response = await route(request, env, deps, url, path, rid);
-    return withCors(request, response);
+    return withCors(request, env, response);
   } catch {
     try {
-      return withCors(request, errorResponse(500, "INTERNAL", "internal error", rid));
+      return withCors(request, env, errorResponse(500, "INTERNAL", "internal error", rid));
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
