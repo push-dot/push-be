@@ -5,7 +5,8 @@ import { test } from "node:test";
 import { pkceChallenge } from "../src/crypto.ts";
 import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
 import { resetLimits } from "../src/ratelimit.ts";
-import { resetAppleJwks } from "../src/routes/apple-auth.ts";
+import { resetAppleJwks, revokeAppleGrant } from "../src/routes/apple-auth.ts";
+import type { Ctx } from "../src/types.ts";
 
 const NOW = new Date("2026-10-21T00:00:00.000Z");
 const CLIENT_ID = "com.push.web";
@@ -418,4 +419,24 @@ test("an identity token logs in once", async () => {
   const replay = await login();
   assert.equal(replay.status, 401);
   assert.equal((await replay.json() as { error: { code: string } }).error.code, "UNAUTHENTICATED");
+});
+
+test("account deletion revokes the apple grant with the bundle id", async () => {
+  const calls: { url: string; form: URLSearchParams }[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const form = new URLSearchParams(String(init?.body ?? ""));
+    calls.push({ url: String(input), form });
+    if (String(input).endsWith("/auth/token")) return Response.json({ refresh_token: "rt-1", access_token: "at-1" });
+    return new Response(null, { status: 200 });
+  };
+  const ctx = { env: env(), deps: { query: async () => ({ rows: [], rowCount: 0 }), fetch: fetchImpl }, now: NOW } as unknown as Ctx;
+  await revokeAppleGrant(ctx, "auth-code");
+  assert.deepEqual(calls.map((call) => call.url), ["https://appleid.apple.com/auth/token", "https://appleid.apple.com/auth/revoke"]);
+  assert.equal(calls[0]!.form.get("client_id"), BUNDLE_ID);
+  assert.equal(calls[0]!.form.get("code"), "auth-code");
+  assert.equal(calls[1]!.form.get("token"), "rt-1");
+  assert.equal(calls[1]!.form.get("token_type_hint"), "refresh_token");
+  assert.equal(calls[1]!.form.get("client_secret")!.split(".").length, 3);
+
+  await assert.rejects(revokeAppleGrant({ ...ctx, env: env({ APPLE_PRIVATE_KEY: "" }) } as Ctx, "auth-code"), /not configured/);
 });

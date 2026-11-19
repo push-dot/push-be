@@ -9,6 +9,7 @@ const NATIVE_PATH = "/api/v1/auth/apple/native";
 const APPLE_ISS = "https://appleid.apple.com";
 const APPLE_KEYS = "https://appleid.apple.com/auth/keys";
 const APPLE_TOKEN = "https://appleid.apple.com/auth/token";
+const APPLE_REVOKE = "https://appleid.apple.com/auth/revoke";
 const SKEW_MS = 60_000;
 const SECRET_S = 300;
 
@@ -243,6 +244,35 @@ export const appleNative = async (ctx: Ctx): Promise<Response> => {
     display_name: "user",
     account_type: "PERSONAL",
   });
+};
+
+const postForm = async (ctx: Ctx, url: string, form: Record<string, string>): Promise<Response> =>
+  (ctx.deps.fetch ?? fetch)(url, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form),
+  });
+
+// App Store guideline 5.1.1(v): deleting an account revokes the Sign in with Apple grant the app made.
+// The app sends a fresh authorization code, so no Apple token is stored.
+export const revokeAppleGrant = async (ctx: Ctx, code: string): Promise<void> => {
+  const clientId = ctx.env.APPLE_BUNDLE_ID || "";
+  const teamId = ctx.env.APPLE_TEAM_ID || "";
+  const keyId = ctx.env.APPLE_KEY_ID || "";
+  const privateKey = ctx.env.APPLE_PRIVATE_KEY || "";
+  if (!clientId || !teamId || !keyId || !privateKey) throw new HttpError(503, "NOT_CONFIGURED", "apple revoke is not configured");
+  const secret = await clientSecret(ctx, { clientId, teamId, keyId, privateKey });
+  const tokenRes = await postForm(ctx, APPLE_TOKEN, { client_id: clientId, client_secret: secret, code, grant_type: "authorization_code" });
+  const tokens = await tokenRes.json().catch(() => ({})) as { refresh_token?: string; access_token?: string };
+  const token = tokens.refresh_token || tokens.access_token || "";
+  if (!tokenRes.ok || !token) throw new HttpError(502, "PROVIDER_ERROR", "apple code exchange failed");
+  const res = await postForm(ctx, APPLE_REVOKE, {
+    client_id: clientId,
+    client_secret: secret,
+    token,
+    token_type_hint: tokens.refresh_token ? "refresh_token" : "access_token",
+  });
+  if (!res.ok) throw new HttpError(502, "PROVIDER_ERROR", "apple revoke failed");
 };
 
 export const dispatchAppleAuth = async (ctx: Ctx, path: string): Promise<Response | null> => {
