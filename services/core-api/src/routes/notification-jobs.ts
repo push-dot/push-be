@@ -15,7 +15,7 @@ const sameSecret = async (left: string, right: string): Promise<boolean> => {
   return diff === 0;
 };
 
-const requireJob = async (ctx: Ctx): Promise<void> => {
+export const requireJob = async (ctx: Ctx): Promise<void> => {
   const expected = ctx.env.INTERNAL_JOB_TOKEN?.trim() ?? "";
   if (!expected) throw new HttpError(503, "NOT_CONFIGURED", "internal job token is not configured");
   const header = ctx.request.headers.get("authorization") || "";

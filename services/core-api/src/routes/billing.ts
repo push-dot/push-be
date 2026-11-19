@@ -7,12 +7,13 @@ import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
 import { readObject } from "./recruiting-shared.ts";
+import { TOSS_PRICES } from "../billing/toss.ts";
 
 const PLANS = new Set(["FREE", "PRO", "ULTRA"]);
-const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
+export const EMPLOYER_PLANS = new Set(["BASIC", "PRO", "ULTRA"]);
 const TOLERANCE = 300;
-const PACK_MICRO = 1500 * DISPLAY_MICRO;
-const MAX_PACKS = 20;
+export const PACK_MICRO = 1500 * DISPLAY_MICRO;
+export const MAX_PACKS = 20;
 const LIVE = new Set(["active", "trialing"]);
 const CANCELLABLE = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
@@ -74,7 +75,7 @@ const usageByBot = async (ctx: Ctx, monthStart: string, monthEnd: string): Promi
   return rows.rows.map((row) => ({ id: String(row.id), name: String(row.display_name), usedMicroCredits: Number(row.used) }));
 };
 
-const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
+export const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
   const plan = value == null ? "" : String(value);
   if (plan === "BASIC" || plan === "PRO" || plan === "ULTRA") return plan;
   return null;
@@ -86,17 +87,17 @@ const userLedger = async (ctx: Ctx, userId: string, amount: number, referenceId:
     [crypto.randomUUID(), userId, amount, referenceId, ctx.now.toISOString(), type]);
 };
 
-type Payment = { description: string | null; amountUsdCents: number | null; receiptUrl: string | null };
+export type Payment = { description: string | null; amountUsdCents: number | null; receiptUrl: string | null; amountKrw?: number | null };
 
-const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment, type = "PURCHASE"): Promise<void> => {
+export const companyLedger = async (ctx: Ctx, companyId: string, amount: number, referenceId: string, payment: Payment, type = "PURCHASE"): Promise<void> => {
   await query(ctx.deps.query,
-    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url) SELECT $1, NULL, $2, $9::text, $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
-    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl, type]);
+    "INSERT INTO billing_ledger (id, user_id, company_id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url, amount_krw) SELECT $1, NULL, $2, $9::text, $3::bigint, (SELECT COALESCE(SUM(amount_micro_credits), 0)::bigint FROM billing_ledger WHERE company_id = $2 AND user_id IS NULL) + $3::bigint, $4, $5, $6::text, $7::integer, $8::text, $10::integer ON CONFLICT (company_id, type, reference_id) WHERE company_id IS NOT NULL DO NOTHING",
+    [crypto.randomUUID(), companyId, amount, referenceId, ctx.now.toISOString(), payment.description, payment.amountUsdCents, payment.receiptUrl, type, payment.amountKrw ?? null]);
 };
 
-const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
-const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
-const TOPUP_DESCRIPTION = "크레딧 구매";
+export const PLAN_LABEL = { BASIC: "Basic", PRO: "Pro", ULTRA: "Ultra" } as const;
+export const planDescription = (plan: "BASIC" | "PRO" | "ULTRA"): string => PLAN_LABEL[plan] + " 월 구독";
+export const TOPUP_DESCRIPTION = "크레딧 구매";
 const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
 
 // A refunded top-up takes its credits back, at most what is still unspent, so the balance stops at 0 (D18).
@@ -179,10 +180,19 @@ const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: s
 };
 
 // In-memory test fakes have no transactions.
-const inTransactionOf = (ctx: Ctx): Transaction => ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
+export const inTransactionOf = (ctx: Ctx): Transaction => ctx.deps.transaction ?? ((work) => work(ctx.deps.query));
 
 // Same switch as the payment gate in handler.ts: apps hide buy buttons while it is off, since a store charges before verify.
 const paymentsEnabled = (ctx: Ctx): boolean => ctx.env.PAYMENTS_ENABLED === "1";
+
+const tossStatus = async (ctx: Ctx, companyId: string): Promise<Record<string, unknown> | null> => {
+  try {
+    return await one(ctx.deps.query, "SELECT plan, period_end, next_charge_at, canceled_at, failures FROM toss_billing WHERE company_id = $1", [companyId]);
+  } catch (err) {
+    if (isMissingRelation(err)) return null;
+    throw err;
+  }
+};
 
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
@@ -197,16 +207,24 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       availableMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId),
       reservedMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId),
     ]);
+    const toss = await tossStatus(ctx, ctx.user.companyId);
+    const tossActive = toss?.plan != null && plan != null;
+    const tossRenewal = tossActive && toss.next_charge_at != null && toss.canceled_at == null;
     return data(200, {
-      subscriptionStatus: plan ? "ACTIVE" : "NONE",
+      subscriptionStatus: plan ? (tossActive && Number(toss.failures) > 0 ? "PAST_DUE" : "ACTIVE") : "NONE",
       plan,
-      periodEndsAt: null,
+      periodEndsAt: tossActive ? ts(toss.period_end) : null,
       balanceMicroCredits: Number(available),
       reservedMicroCredits: Number(reserved),
       monthlyMicroCredits: monthlyMicro("EMPLOYER", plan),
       spentMicroCredits,
       audience: "EMPLOYER",
-      source: plan ? "STRIPE" : null,
+      source: plan ? (tossActive ? "TOSS" : "STRIPE") : null,
+      provider: "toss",
+      currency: "KRW",
+      prices: TOSS_PRICES,
+      renewsAt: tossRenewal ? ts(toss.next_charge_at) : null,
+      canceled: tossActive && toss.canceled_at != null,
       paymentsEnabled: paymentsEnabled(ctx),
       ...creditsRefill(ctx.now, { plan, periodStart: company.credit_period_start }),
     }, ctx.rid);
@@ -347,7 +365,7 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   if (employer && !ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
   const page = pageOf(ctx.url);
   const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
-  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url FROM billing_ledger WHERE "
+  let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url, amount_krw FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
   // Commit order (seq), as balance_after runs: a row that waited for the owner lock can carry an earlier created_at.
   // The cursor keeps its (createdAt, id) shape; only its id is used.
@@ -369,6 +387,7 @@ export async function ledger(ctx: Ctx): Promise<Response> {
       description: row.description == null ? null : String(row.description),
       amountUsd: row.amount_usd_cents == null ? null : Number(row.amount_usd_cents) / 100,
       receiptUrl: row.receipt_url == null ? null : String(row.receipt_url),
+      ...(row.amount_krw == null ? {} : { amountKrw: Number(row.amount_krw), currency: "KRW" }),
     },
     createdAt: row.created_at,
     id: String(row.id),
