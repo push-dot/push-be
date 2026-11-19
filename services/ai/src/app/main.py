@@ -135,10 +135,9 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         resume_workflow = ResumeWorkflowService(
             db, applications, jobs_svc, documents, evidence_svc, approvals)
         view = ConfigView(
-            google_configured=bool(cfg.google.client_id
-                                   and cfg.google.client_secret),
+            google_configured=cfg.google_configured,
             gmail_beta=cfg.gmail_beta, managed_ai=bool(cfg.managed_ai_key),
-            stripe_configured=bool(cfg.stripe_secret),
+            stripe_configured=cfg.stripe_configured,
             job_site_adapters=cfg.job_site_adapters)
         app.state.deps = Deps(
             auth=auths, evidence=evidence_svc, jobs=jobs_svc,
