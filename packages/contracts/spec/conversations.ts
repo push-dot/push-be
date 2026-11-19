@@ -612,9 +612,16 @@ export const routes: Route[] = [
   post("ai", "/api/v1/conversations/{id}/share", {
     tag: "conversations",
     summary: "Create a share link",
-    description: "Issues a new token; any previous token for the conversation stops working.",
+    description: "Issues a new token; any previous token for the conversation stops working. The link expires at expiresAt.",
     params: [id],
-    responses: { 200: ok(obj({ token: str, path: str })) },
+    responses: { 200: ok(obj({ token: str, path: str, expiresAt: dateTime })) },
+  }),
+  del("ai", "/api/v1/conversations/{id}/share", {
+    tag: "conversations",
+    summary: "Revoke the share link",
+    description: "The current token stops working. Owner only.",
+    params: [id],
+    responses: { 200: ok(obj({ revoked: bool })) },
   }),
   get("ai", "/api/v1/conversations/shared/{token}", {
     tag: "conversations",
