@@ -223,11 +223,20 @@ async def test_reserve_rechecks_allowance_under_the_user_lock():
     assert chat.got == {} and g.usage.items == []
 
 
-async def test_redis_backend_without_job_reserves_nothing(monkeypatch):
+async def test_redis_backend_without_job_still_meters(monkeypatch):
     monkeypatch.setenv("QUEUE_BACKEND", "redis")
     g = _gate()
     c = await g.complete(uuid4(), _ai(), "", "hi")
-    assert c.usage_id is None and g.usage.items == []
+    (row,) = g.usage.items
+    assert c.usage_id == row.id and row.status == ent.USAGE_SETTLED
+
+
+async def test_redis_backend_without_job_rechecks_allowance(monkeypatch):
+    monkeypatch.setenv("QUEUE_BACKEND", "redis")
+    chat = StubChatCompleter(text="never")
+    g = _gate(chat=chat, usage=_RacingUsage())
+    err = await _code(g.complete(uuid4(), _ai(), "", "hi"))
+    assert err.code == "FEATURE_DISABLED" and chat.got == {}
 
 
 async def test_redis_backend_reserves_once_per_job(monkeypatch):
@@ -370,13 +379,14 @@ async def test_stream_failure_releases_the_reservation(err, code):
     assert row.status == ent.USAGE_RELEASED and row.cost_micro_credits == 0
 
 
-async def test_stream_failure_without_reservation(monkeypatch):
+async def test_redis_stream_without_job_releases_on_failure(monkeypatch):
     monkeypatch.setenv("QUEUE_BACKEND", "redis")
     g = _gate(chat=StubChatCompleter(err=RuntimeError("x")))
     usage = {}
     assert (await _code(_drain(g.stream(uuid4(), _ai(), "", "hi", usage)))
             ).code == "PROVIDER_ERROR"
-    assert "usage_ids" not in usage and g.usage.items == []
+    (row,) = g.usage.items
+    assert usage["usage_ids"] == [row.id] and row.status == ent.USAGE_RELEASED
 
 
 # ---- AIService.generate ---------------------------------------------------

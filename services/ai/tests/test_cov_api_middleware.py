@@ -136,10 +136,18 @@ def test_core_owned_paths_are_not_public_here(path):
     assert not _is_public(path, "POST")
 
 
-def test_client_ip_prefers_cloudflare_then_forwarded_then_peer():
-    assert _client_ip({"headers": [(b"cf-connecting-ip", b" 1.1.1.1 ")]}) == "1.1.1.1"
-    assert _client_ip({"headers": [(b"x-forwarded-for", b"2.2.2.2, 3.3.3.3")]}) == "2.2.2.2"
-    assert _client_ip({"headers": [], "client": ("4.4.4.4", 5)}) == "4.4.4.4"
+def test_client_ip_trusts_cloudflare_header_only_with_the_gateway_secret(monkeypatch):
+    forged = [(b"cf-connecting-ip", b" 1.1.1.1 "), (b"x-forwarded-for", b"2.2.2.2, 3.3.3.3")]
+    monkeypatch.delenv("AI_SHARED_SECRET", raising=False)
+    assert _client_ip({"headers": forged, "client": ("4.4.4.4", 5)}) == "4.4.4.4"
+    monkeypatch.setenv("AI_SHARED_SECRET", "s3cret")
+    assert _client_ip({"headers": forged, "client": ("4.4.4.4", 5)}) == "4.4.4.4"
+    wrong = forged + [(b"x-push-ai-secret", b"nope")]
+    assert _client_ip({"headers": wrong, "client": ("4.4.4.4", 5)}) == "4.4.4.4"
+    right = forged + [(b"x-push-ai-secret", b"s3cret")]
+    assert _client_ip({"headers": right, "client": ("4.4.4.4", 5)}) == "1.1.1.1"
+    only_xff = [(b"x-forwarded-for", b"2.2.2.2"), (b"x-push-ai-secret", b"s3cret")]
+    assert _client_ip({"headers": only_xff, "client": ("4.4.4.4", 5)}) == "4.4.4.4"
     assert _client_ip({"headers": []}) == ""
 
 

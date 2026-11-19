@@ -4,10 +4,12 @@ import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import { pageOf, ts } from "../page.ts";
 import { encodeCursor, parseUtc } from "../time.ts";
 import type { Ctx } from "../types.ts";
-import { declaredTooLarge } from "./images.ts";
+import { assertUploadQuota, declaredTooLarge } from "./images.ts";
 import { readObject, textOf } from "./recruiting-shared.ts";
 
 const MAX_SOURCE_BYTES = 20 << 20;
+export const SOURCE_QUOTA = { files: 100, bytes: 300 << 20 };
+const SOURCE_USAGE = "SELECT count(*)::int AS files, COALESCE(sum(size), 0)::bigint AS bytes FROM sources WHERE user_id = $1";
 
 const ALLOWED_SOURCE_MIME = new Set([
   "application/pdf",
@@ -39,6 +41,7 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
   if (bytes.length > MAX_SOURCE_BYTES) throw tooLarge();
   const mime = file.type || "application/octet-stream";
   if (!ALLOWED_SOURCE_MIME.has(mime)) throw fieldError("file", "unsupported file type " + mime);
+  await assertUploadQuota(ctx, SOURCE_USAGE, SOURCE_QUOTA, bytes.length);
   const sha = hex(await crypto.subtle.digest("SHA-256", bytes));
   const id = crypto.randomUUID();
   const docKind = kind.trim().slice(0, 40) || null;

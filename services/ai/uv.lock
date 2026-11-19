@@ -2185,15 +2185,6 @@ wheels = [
 ]
 
 [[package]]
-name = "opendataloader-pdf"
-version = "2.5.22"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/df/f7/7f9c6325f2632b9b5ec69a5b23486b8250bbdb9643db1bf4f76c0f7b0a82/opendataloader_pdf-2.5.22.tar.gz", hash = "sha256:42918083e4bb2770b76f2aff26f73c82c3e153510dd037647d2d48568751306c", size = 22756045, upload-time = "2026-11-12T08:58:05.296Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/12/5d709c3536d3e0fb4e60fc1898078ffa0b57356e6c6bf4b06d85353f0611/opendataloader_pdf-2.5.22-py3-none-any.whl", hash = "sha256:841c0c6a8beb8d11f9f22d96483fea9f7ff115f89c386994df975d37199fb1f6", size = 22766691, upload-time = "2026-11-12T08:58:01.179Z" },
-]
-
-[[package]]
 name = "opentelemetry-api"
 version = "1.45.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2712,7 +2703,6 @@ local = [
     { name = "langgraph-checkpoint-postgres" },
     { name = "llama-index-core" },
     { name = "llama-index-vector-stores-postgres" },
-    { name = "opendataloader-pdf" },
     { name = "playwright" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "reportlab" },
@@ -2756,7 +2746,6 @@ requires-dist = [
     { name = "llama-index-core", marker = "extra == 'local'", specifier = ">=0.12,<0.13" },
     { name = "llama-index-core", marker = "extra == 'test'", specifier = ">=0.12,<0.13" },
     { name = "llama-index-vector-stores-postgres", marker = "extra == 'local'", specifier = ">=0.4,<0.5" },
-    { name = "opendataloader-pdf", marker = "extra == 'local'", specifier = ">=2.5.22,<3" },
     { name = "playwright", marker = "extra == 'local'", specifier = ">=1.65.1,<2" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'local'", specifier = ">=3.3.9" },
     { name = "pydantic", specifier = ">=2.14.3" },

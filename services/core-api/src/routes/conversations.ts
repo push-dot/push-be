@@ -127,7 +127,7 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
   }
   const companyId = String(member.company_id);
   const [posting, application] = await Promise.all([
-    postingId ? one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1", [postingId]) : null,
+    postingId ? one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1 AND (status <> 'DRAFT' OR company_id = $2)", [postingId, companyId]) : null,
     applicationId ? one(ctx.deps.query, COMPANY_APPLICATION, [applicationId, companyId]) : null,
   ]);
   if ((postingId && !posting) || (applicationId && !application)) throw new HttpError(404, "NOT_FOUND", "resource not found");

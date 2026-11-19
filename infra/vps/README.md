@@ -104,7 +104,7 @@ develop에 push하면 테스트 서버가 배포된다. main은 지금처럼 운
 | 모델 | 요금제별 | 모든 요금제 `anthropic/claude-sonnet-5-5` |
 | 로그인 | OAuth, 전화 | 위에 더해 `DEV_AUTH_TOKEN`, 전화 인증번호는 문자 대신 core 로그(`wrangler tail --env staging`) |
 
-- 테스트 AI는 운영 Traefik과 운영 `embed`를 함께 쓴다. 그래서 운영을 먼저 배포해야 하고, 서비스 이름은 `staging-` 접두사로 운영과 겹치지 않게 했다.
+- 테스트 AI는 운영 Traefik과 운영 `embed`를 함께 쓴다. 그래서 운영을 먼저 배포해야 한다. 운영 프로젝트가 만드는 전용 네트워크 `push-ai_staging-edge`(프록시만 연결)와 `push-ai_embed-shared`(`embed`만 연결)로만 이어지고, 운영 `edge`·`push-internal`에는 붙지 않는다. Redis와 워커는 테스트 프로젝트 자체 `internal` 네트워크에 있다.
 - GitHub 환경 `staging`이 `DATABASE_URL`, `REDIS_PASSWORD`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `TOKEN_ENCRYPTION_KEY`, `DEV_AUTH_TOKEN`과 변수 `AI_HOST`, `DISPATCH_HOST`, `CORE_ORIGIN`을 덮어쓴다. 나머지는 저장소 값을 쓴다.
 - 운영 프록시가 테스트 호스트를 받으려면 저장소 변수 `STAGING_AI_HOST`, `STAGING_DISPATCH_HOST`가 있어야 한다.
 - 마이그레이션은 `gh workflow run migrate.yml --ref develop -f transport=tcp -f environment=staging`으로 돌린다.

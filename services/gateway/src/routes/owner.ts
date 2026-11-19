@@ -40,7 +40,7 @@ function isPython(method: string, path: string): boolean {
   if (path === "/api/v1/approvals") return method === "GET" || method === "POST";
   if (method === "GET" && /^\/api\/v1\/approvals\/[^/]+$/.test(path)) return true;
   if (method === "POST" && /^\/api\/v1\/approvals\/[^/]+\/decision$/.test(path)) return true;
-  if (method === "POST" && /^\/api\/v1\/conversations\/[^/]+\/share$/.test(path)) return true;
+  if ((method === "POST" || method === "DELETE") && /^\/api\/v1\/conversations\/[^/]+\/share$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/shared\/[^/]+$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/artifacts$/.test(path)) return true;
   if (method === "GET" && /^\/api\/v1\/conversations\/[^/]+\/turns$/.test(path)) return true;

@@ -166,9 +166,8 @@ class AIGate:
     async def _reserve(self, user_id: UUID, ai: ent.AiOptions,
                        system: str, user: str, job_id=None,
                        purpose: str = "chat") -> UsageHold | None:
-        if queue_backend() == "redis":
-            if not job_id:
-                return None
+        # Only queue jobs reserve against their job; a jobless call (e.g. /ai/generate) takes the locked path so the allowance still caps it.
+        if queue_backend() == "redis" and job_id:
             now = utcnow()
             est_in = code_point_len(system + user) // 4
             row = ent.AiUsage(

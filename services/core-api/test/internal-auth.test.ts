@@ -134,7 +134,7 @@ test("act-as apply, offer accept and stage change need the approved card for tha
   for (const [method, path, tool, target] of cases) {
     const asked: unknown[][] = [];
     const query = (approved: boolean) => async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("FROM approvals")) {
+      if (sql.includes("UPDATE approvals")) {
         asked.push(params);
         return approved ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
       }
@@ -161,7 +161,7 @@ test("act-as apply, offer accept and stage change need the approved card for tha
     const unapproved = await call({ "x-push-approval": approval }, false);
     assert.equal(unapproved.status, 403, `${tool} with a card that is not approved for this target`);
     assert.equal(await code(unapproved), "APPROVAL_REQUIRED");
-    assert.deepEqual(asked[0], [approval, USER, tool, JSON.stringify(target)]);
+    assert.deepEqual(asked[0], [approval, USER, tool, JSON.stringify(target), "61616161-6161-4161-8161-616161616161"]);
 
     const approved = await call({ "x-push-approval": approval }, true);
     assert.notEqual(await code(approved), "APPROVAL_REQUIRED", `${tool} with the approved card`);
@@ -176,9 +176,42 @@ test("act-as writes outside the approval list need no card", async () => {
     method: "POST",
     headers: { "idempotency-key": "71717171-7171-4171-8171-717171717171", "x-push-internal-secret": SECRET, "x-push-act-as": USER },
   }), env(), deps(async (sql, params) => {
-    if (sql.includes("FROM approvals")) asked.push(sql);
+    if (sql.includes("approvals")) asked.push(sql);
     return queryFor(null)(sql, params);
   }));
   assert.notEqual((await res.json() as { error?: { code: string } }).error?.code, "APPROVAL_REQUIRED");
   assert.deepEqual(asked, []);
+});
+
+test("an approval card is consumed once, and only the same idempotency key may retry it", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const sqls: string[] = [];
+  let consumedKey: unknown;
+  let consumed = false;
+  const query = async (sql: string, params: unknown[] = []) => {
+    if (!sql.includes("UPDATE approvals")) return queryFor(COMPANY)(sql, params);
+    sqls.push(sql);
+    if (consumed && consumedKey !== params[4]) return empty;
+    consumed = true;
+    consumedKey = params[4];
+    return { rows: [{ id: approval }], rowCount: 1 };
+  };
+  const apply = (key: string) => {
+    resetLimits();
+    return handle(new Request(`https://core.example/api/v1/postings/${posting}/apply`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-approval": approval,
+      },
+      body: "{}",
+    }), env(), deps(query));
+  };
+  const code = async (res: Response) => (await res.json() as { error?: { code: string } }).error?.code;
+  const first = "61616161-6161-4161-8161-616161616161";
+  assert.notEqual(await code(await apply(first)), "APPROVAL_REQUIRED");
+  assert.notEqual(await code(await apply(first)), "APPROVAL_REQUIRED", "same key retries");
+  assert.equal(await code(await apply("62626262-6262-4262-8262-626262626262")), "APPROVAL_REQUIRED", "replay with a new key");
+  assert.match(sqls[0], /consumed_at IS NULL OR consumed_key = \$5::uuid/);
 });

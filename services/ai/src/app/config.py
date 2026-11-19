@@ -9,6 +9,9 @@ from uuid import UUID
 DEFAULT_DEV_USER_ID: Final = UUID("00000000-0000-4000-8000-000000000001")
 
 
+_TRUE: Final = frozenset({"1", "true"})
+
+
 def env(key: str, default: str = "") -> str:
     return os.environ.get(key) or default
 
@@ -44,6 +47,9 @@ class Config:
     ai_base_url: str = "https://openrouter.ai/api/v1"
     token_encryption_key: str = ""
     stripe_secret: str = ""
+    # Flags let a container report "configured" without holding the secret.
+    stripe_configured: bool = False
+    google_configured: bool = False
     stripe_webhook_secret: str = ""
     stripe_price_pro: str = ""
     stripe_price_ultra: str = ""
@@ -60,6 +66,11 @@ class Config:
     model_employer_ultra: str = "anthropic/claude-fable-5-1"
     core_origin: str = ""
     internal_api_secret: str = ""
+
+    def __post_init__(self) -> None:
+        self.stripe_configured = self.stripe_configured or bool(self.stripe_secret)
+        self.google_configured = self.google_configured or bool(
+            self.google.client_id and self.google.client_secret)
 
 
 def load_config() -> Config:
@@ -85,6 +96,8 @@ def load_config() -> Config:
         ai_base_url=env("AI_BASE_URL", "https://openrouter.ai/api/v1"),
         token_encryption_key=os.environ.get("TOKEN_ENCRYPTION_KEY", ""),
         stripe_secret=os.environ.get("STRIPE_SECRET_KEY", ""),
+        stripe_configured=env("STRIPE_CONFIGURED") in _TRUE,
+        google_configured=env("GOOGLE_OAUTH_CONFIGURED") in _TRUE,
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
         stripe_price_pro=os.environ.get("STRIPE_PRICE_PRO", ""),
         stripe_price_ultra=os.environ.get("STRIPE_PRICE_ULTRA", ""),

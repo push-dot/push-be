@@ -56,6 +56,7 @@ export interface CoreEnv {
   IAP_PRODUCT_ULTRA?: string;
   IAP_PRODUCT_TOPUP?: string;
   IAP_TOPUP_CREDITS?: string;
+  STORE_SANDBOX_USER_IDS?: string;
   APPLE_BUNDLE_ID?: string;
   APPLE_ROOT_PEM?: string;
   APPLE_IAP_KEY?: string;

@@ -29,3 +29,14 @@ def test_bad_dev_user_id_and_experiments_fall_back(monkeypatch):
     cfg = load_config()
     assert str(cfg.dev_user_id) == "00000000-0000-4000-8000-000000000001"
     assert cfg.experiments == []
+
+
+def test_configured_flags_work_without_secrets(monkeypatch):
+    for k in ("STRIPE_SECRET_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_config()
+    assert not cfg.stripe_configured and not cfg.google_configured
+    monkeypatch.setenv("STRIPE_CONFIGURED", "1")
+    monkeypatch.setenv("GOOGLE_OAUTH_CONFIGURED", "true")
+    cfg = load_config()
+    assert cfg.stripe_configured and cfg.google_configured and not cfg.stripe_secret
