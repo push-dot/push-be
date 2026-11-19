@@ -1,4 +1,5 @@
-const ITERATIONS = 210000;
+// Cloudflare Workers rejects PBKDF2 above 100000 iterations, so this is the maximum it allows.
+const ITERATIONS = 100000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 

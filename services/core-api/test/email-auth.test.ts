@@ -1152,7 +1152,7 @@ test("a new reset link revokes the previous unused one", async () => {
 test("an unknown email still pays the password hash cost", async () => {
   resetLimits();
   const db = createDb();
-  db.users.push(userRow({ password_hash: "pbkdf2$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }));
+  db.users.push(userRow({ password_hash: "pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }));
   const time = async (email: string): Promise<number> => {
     const start = performance.now();
     await handle(post("/api/v1/auth/email/login", { email, password: "wrong1234" }), env(), deps(db));
