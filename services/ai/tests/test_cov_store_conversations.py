@@ -25,7 +25,7 @@ async def test_get_allows_owner_or_company_member_only():
     assert (await s.get(USER, r["id"])).id == r["id"]
     _, sql, args = conn.last
     assert_scoped(conn.last, USER)
-    assert "company_members WHERE user_id = $2" in sql and args == (r["id"], USER)
+    assert "m.company_id = conversations.company_id" in sql and args == (r["id"], USER)
     with pytest.raises(NotFoundError):
         await s.get(OTHER, r["id"])
 
@@ -110,13 +110,17 @@ async def test_evidence_lookups_are_scoped():
 
 async def test_share_queries():
     conv = uuid4()
-    db, conn = fake_db(None, {"conversation_id": conv, "title": "t"}, [{"role": "USER"}])
+    db, conn = fake_db(None, None, {"conversation_id": conv, "title": "t"}, [{"role": "USER"}])
     s = ConversationStore(db)
-    await s.put_share(conv, "h")
-    assert conn.last[2] == (conv, "h")
-    assert await s.share_by_hash("h") == {"conversation_id": conv, "title": "t"}
-    assert await s.list_share_messages(conv) == [{"role": "USER"}]
+    await s.put_share(conv, "h", NOW, NOW)
+    assert conn.last[2] == (conv, "h", NOW, NOW)
+    await s.delete_share(conv)
     assert conn.last[2] == (conv,)
+    assert await s.share_by_hash("h", NOW) == {"conversation_id": conv, "title": "t"}
+    assert "expires_at > $2" in conn.last[1]
+    assert await s.list_share_messages(conv, NOW) == [{"role": "USER"}]
+    assert conn.last[2] == (conv, NOW)
+    assert "created_at <= $2" in conn.last[1]
     inner, outer = conn.last[1].split(") recent ", 1)
     assert inner.endswith("ORDER BY created_at DESC, id DESC LIMIT 500")
     assert outer == "ORDER BY created_at ASC, id ASC"

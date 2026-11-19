@@ -256,7 +256,8 @@ async def test_a_stored_answer_has_no_image_or_link_that_carries_user_data():
     stored = svc.messages[-1].text
     assert EXFIL_HOST not in stored
     assert SECRET not in stored
-    assert "[posting](https://jobs.example/p/1)" in stored
+    assert "https://jobs.example/p/1" not in stored
+    assert "posting" in stored
     assert "details" in stored
 
 

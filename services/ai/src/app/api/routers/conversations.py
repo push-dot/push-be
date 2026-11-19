@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 
@@ -29,25 +30,46 @@ async def _visible_conversation(request: Request, id_: str):
         raise not_found()
 
 
+SHARE_TTL = timedelta(days=30)
+
+
+async def _owned_conversation(request: Request, id_: str):
+    conversation = await _visible_conversation(request, id_)
+    if conversation.user_id != current_user(request).id:
+        raise not_found()
+    return conversation
+
+
 @router.post("/conversations/{id}/share")
 async def share_conversation(id: str, request: Request):
-    conversation = await _visible_conversation(request, id)
+    conversation = await _owned_conversation(request, id)
     token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + SHARE_TTL
     await _shares(request).put_share(
-        conversation.id, hashlib.sha256(token.encode()).hexdigest())
+        conversation.id, hashlib.sha256(token.encode()).hexdigest(), now, expires_at)
     return data(200, {
         "token": token,
         "path": "/api/v1/conversations/shared/" + token,
+        "expiresAt": expires_at,
     })
+
+
+@router.delete("/conversations/{id}/share")
+async def revoke_conversation_share(id: str, request: Request):
+    conversation = await _owned_conversation(request, id)
+    await _shares(request).delete_share(conversation.id)
+    return data(200, {"revoked": True})
 
 
 @router.get("/conversations/shared/{token}")
 async def get_shared_conversation(token: str, request: Request):
     store = _shares(request)
-    row = await store.share_by_hash(hashlib.sha256(token.encode()).hexdigest())
+    row = await store.share_by_hash(
+        hashlib.sha256(token.encode()).hexdigest(), datetime.now(timezone.utc))
     if row is None:
         raise not_found()
-    messages = await store.list_share_messages(row["conversation_id"])
+    messages = await store.list_share_messages(row["conversation_id"], row["shared_at"])
     return data(200, {
         "title": row["title"],
         "messages": [

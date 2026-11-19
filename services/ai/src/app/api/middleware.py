@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Final
@@ -13,6 +14,7 @@ from starlette.types import Message, Receive, Scope, Send
 from app.domain.entities import IdempotencyRecord
 from app.domain.errors import DomainError
 from app.api.errors import error_body, redact
+from app.api.gateway_secret import secrets_match
 from app.ratelimit import SlidingWindow, allow_redis, redis_configured
 
 # Everything else under /api/v1 needs a bearer token. Auth, OAuth callbacks,
@@ -35,13 +37,17 @@ def _is_public(path: str, method: str = "GET") -> bool:
 
 
 def _client_ip(scope: Scope) -> str:
+    """Callers reach this service as gateway (Cloudflare Worker) -> Traefik -> here. Only the
+    gateway holds AI_SHARED_SECRET, so cf-connecting-ip, which Cloudflare sets and the gateway
+    passes on, is believed only on a request that proves it came through the gateway. Anyone else
+    gets the peer address. x-forwarded-for is never read: its left side is client text and its
+    right side is the proxy, not the client."""
     headers = dict(scope.get("headers") or [])
-    forwarded = headers.get(b"cf-connecting-ip", b"").decode(errors="replace").strip()
-    if forwarded:
-        return forwarded
-    chain = headers.get(b"x-forwarded-for", b"").decode(errors="replace")
-    if chain.strip():
-        return chain.split(",")[0].strip()
+    expected = os.environ.get("AI_SHARED_SECRET", "")
+    if expected and secrets_match(headers.get(b"x-push-ai-secret", b""), expected):
+        forwarded = headers.get(b"cf-connecting-ip", b"").decode(errors="replace").strip()
+        if forwarded:
+            return forwarded
     return (scope.get("client") or ("", 0))[0] or ""
 
 
