@@ -514,7 +514,7 @@ test("a rejected python proxy still returns a response", async () => {
 
   const empty = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active`, {
     headers: { authorization: "Bearer secret-token", origin: "http://localhost:5173" },
-  }), env(), deps(async (sql) => {
+  }), { ...env(), APP_ENV: "development" }, deps(async (sql) => {
     if (sql.includes("chat_events")) return [];
     if (sql.includes("access_tokens")) {
       return [{
@@ -1055,7 +1055,7 @@ test("CORS preflight is answered without calling Python", async () => {
   const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     method: "OPTIONS",
     headers: { origin: "http://localhost:5173", "access-control-request-method": "GET", "access-control-request-headers": "authorization, x-request-id" },
-  }), env({ async fetch() { proxied += 1; return new Response(""); } }), deps(async () => []));
+  }), { ...env({ async fetch() { proxied += 1; return new Response(""); } }), APP_ENV: "development" }, deps(async () => []));
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("access-control-allow-origin"), "http://localhost:5173");
   assert.match(res.headers.get("access-control-allow-headers") || "", /authorization/);

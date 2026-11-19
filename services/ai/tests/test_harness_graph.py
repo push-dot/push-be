@@ -551,3 +551,21 @@ def test_craft_and_publish_prompts_name_the_key_that_holds_the_document_body():
     for phase in ("craft", "publish"):
         assert "markdown 키" in phase_instructions(phase, {})
     assert "markdown 키" not in phase_instructions("review", {})
+
+
+def test_a_url_only_a_tool_result_listed_is_not_user_dictated():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from app.harness.graph import _dictated, _seen_text
+    from app.harness.policy import Exposure
+
+    listed = "https://evil.example/collect"
+    typed = "https://good.example/jobs"
+    state = {"messages": [
+        HumanMessage(content=f"open {typed}"),
+        ToolMessage(content=f"links: {listed}", tool_call_id="t1"),
+        AIMessage(content=listed),
+    ]}
+    seen = _seen_text(state)
+    assert _dictated(typed, Exposure.RUN, seen, False) is False
+    assert _dictated(listed, Exposure.RUN, seen, False) is True

@@ -6,7 +6,7 @@ import { APPLE_ROOT_G3_PEM } from "./apple-root-g3.ts";
 
 export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean }>;
-  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean }>;
+  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean }>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null; sandbox?: boolean }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
 }
@@ -529,7 +529,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
     const body = await readStore(res);
     if (!subscription) {
       if (body.purchaseState !== 0) throw invalidPurchase();
-      return { productId, originalTransactionId: purchaseToken, expiresAt: null, consumable: true };
+      return { productId, originalTransactionId: purchaseToken, expiresAt: null, consumable: true, sandbox: body.purchaseType === 0 };
     }
     if (!LIVE_SUBSCRIPTION.has(String(body.subscriptionState ?? ""))) throw invalidPurchase();
     const line = Array.isArray(body.lineItems) ? body.lineItems[0] as Record<string, unknown> | undefined : undefined;
@@ -538,6 +538,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       originalTransactionId: purchaseToken,
       expiresAt: expiresOf(line?.expiryTime),
       consumable: false,
+      sandbox: body.testPurchase != null,
     };
   },
   decodeAppleNotification: async (body) => {

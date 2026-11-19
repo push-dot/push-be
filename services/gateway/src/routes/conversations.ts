@@ -2,13 +2,13 @@ import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp,
 import type { Deps, FrontEnv } from "../types.ts";
 import {
   asBool, conditional, errorResponse, fieldError, freshRead, jsonResponse, jsonRows,
-  pageLimit, parseUuid, USER_CACHE_CONTROL,
+  pageLimit, parseUuid, sha256Hex, USER_CACHE_CONTROL,
 } from "../http.ts";
 import { proxy } from "./proxy.ts";
 import { interpretAuth, rememberBag, revalidateAuth, requireUser, tokenContext } from "../middleware/auth.ts";
 import {
   conversationRowSelect, employerOwnerPc, LIST_SQL, MESSAGE_ROWS, MESSAGES_SQL,
-  personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL, tsText,
+  openStream, personalOwnerPc, queryToleratingCompany, rateParams, STREAM_SQL, tsText,
 } from "../middleware/ratelimit.ts";
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
@@ -477,7 +477,7 @@ export const streamBotActive = async (request: Request, env: FrontEnv, deps: Dep
   }
   if (!present(row?.bot_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
   if (!present(row?.job_id)) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
-  return jobEvents(String(row?.job_id), resumeSeq(request, url), env, deps, rid, true);
+  return jobEvents(request, String(row?.job_id), resumeSeq(request, url), env, deps, rid, true);
 };
 
 export async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
@@ -525,7 +525,7 @@ export async function streamActive(request: Request, env: FrontEnv, deps: Deps, 
     }
   }
   if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
-  return jobEvents(jobId, resumeSeq(request, url), env, deps, rid);
+  return jobEvents(request, jobId, resumeSeq(request, url), env, deps, rid);
 }
 
 /** Queues the send in core and streams its job. `bot` is true for a send addressed by bot. */
@@ -540,7 +540,7 @@ export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps,
     jobId = "";
   }
   if (!parseUuid(jobId)) return errorResponse(500, "INTERNAL", "internal error", rid);
-  return jobEvents(jobId, 0, env, deps, rid, bot);
+  return jobEvents(request, jobId, 0, env, deps, rid, bot);
 };
 
 // Each poll is a Neon read. Idle polls back off to MAX_POLL_MS; a full
@@ -552,7 +552,9 @@ const EVENT_PAGE = 200;
 const EVENTS_SQL = "SELECT id, type, payload, " + tsText("created_at") + " AS created_at FROM chat_events "
   + `WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`;
 
-const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string, bot = false): Response => {
+const jobEvents = async (request: Request, jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string, bot = false): Promise<Response> => {
+  const release = openStream(await sha256Hex(request.headers.get("authorization") || ""));
+  if (!release) return errorResponse(429, "RATE_LIMITED", "too many open streams", rid);
   let after = start;
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -596,10 +598,11 @@ const jobEvents = (jobId: string, start: number, env: FrontEnv, deps: Deps, rid:
           error: { code: "INTERNAL", message: "internal error", details: null },
         }) + "\n\n");
       }
+      release();
       try { controller.close(); }
       catch { /* the client already hung up */ }
     },
-    cancel() { open = false; },
+    cancel() { open = false; release(); },
   });
   return new Response(stream, {
     status: 200,

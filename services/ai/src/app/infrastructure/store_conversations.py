@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -56,8 +57,9 @@ class ConversationStore(Store):
     async def get(self, user_id: UUID, id_: UUID) -> Conversation:
         return to_model(Conversation, await self.one(
             f"SELECT {_CONV_COLS} FROM conversations WHERE id = $1 AND ("
-            "user_id = $2 OR (company_id IS NOT NULL AND company_id = "
-            "(SELECT company_id FROM company_members WHERE user_id = $2)))",
+            "user_id = $2 OR (company_id IS NOT NULL AND EXISTS ("
+            "SELECT 1 FROM company_members m WHERE m.user_id = $2 "
+            "AND m.company_id = conversations.company_id)))",
             id_, user_id))
 
     async def list(self, user_id: UUID, application_id: Optional[UUID], page) -> Page:
@@ -145,29 +147,38 @@ class ConversationStore(Store):
             "AND a->>'type' = 'EVIDENCE' AND a->>'id' = $3",
             user_id, conversation_id, str(evidence_id))
 
-    async def put_share(self, conversation_id: UUID, token_hash: str) -> None:
+    async def put_share(self, conversation_id: UUID, token_hash: str,
+                        shared_at: datetime, expires_at: datetime) -> None:
         await self.q().execute(
-            "INSERT INTO conversation_shares (conversation_id, token_hash) "
-            "VALUES ($1, $2) "
+            "INSERT INTO conversation_shares "
+            "(conversation_id, token_hash, shared_at, expires_at) "
+            "VALUES ($1, $2, $3, $4) "
             "ON CONFLICT (conversation_id) DO UPDATE SET "
-            "token_hash = EXCLUDED.token_hash",
-            conversation_id, token_hash)
+            "token_hash = EXCLUDED.token_hash, shared_at = EXCLUDED.shared_at, "
+            "expires_at = EXCLUDED.expires_at",
+            conversation_id, token_hash, shared_at, expires_at)
 
-    async def share_by_hash(self, token_hash: str):
+    async def delete_share(self, conversation_id: UUID) -> None:
+        await self.q().execute(
+            "DELETE FROM conversation_shares WHERE conversation_id = $1",
+            conversation_id)
+
+    async def share_by_hash(self, token_hash: str, now: datetime):
         return await self.q().fetchrow(
-            "SELECT s.conversation_id, c.title FROM conversation_shares s "
+            "SELECT s.conversation_id, s.shared_at, c.title "
+            "FROM conversation_shares s "
             "JOIN conversations c ON c.id = s.conversation_id "
-            "WHERE s.token_hash = $1",
-            token_hash)
+            "WHERE s.token_hash = $1 AND s.expires_at > $2",
+            token_hash, now)
 
-    async def list_share_messages(self, conversation_id: UUID):
+    async def list_share_messages(self, conversation_id: UUID, shared_at: datetime):
         return await self.q().fetch(
             "SELECT role, text, created_at, id FROM ("
             "SELECT role, text, created_at, id FROM messages "
-            "WHERE conversation_id = $1 "
+            "WHERE conversation_id = $1 AND created_at <= $2 "
             "ORDER BY created_at DESC, id DESC LIMIT 500"
             ") recent ORDER BY created_at ASC, id ASC",
-            conversation_id)
+            conversation_id, shared_at)
 
     async def list_artifacts(self, conversation_id: UUID) -> list[dict]:
         rows = await self.q().fetch(

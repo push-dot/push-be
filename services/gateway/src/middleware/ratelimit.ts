@@ -48,6 +48,23 @@ interface Lease {
   cap: number;
 }
 export const leases = new Map<string, Lease>();
+
+// shortcut: counts open SSE streams per isolate and per bearer token, so the cap is MAX_STREAMS per isolate per token, not global per user; move the count to a Durable Object or a Neon row when exact per-user limits matter.
+export const MAX_STREAMS = 3;
+const streams = new Map<string, number>();
+export const openStream = (key: string): (() => void) | null => {
+  const open = streams.get(key) ?? 0;
+  if (open >= MAX_STREAMS) return null;
+  streams.set(key, open + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (streams.get(key) ?? 1) - 1;
+    if (left > 0) streams.set(key, left);
+    else streams.delete(key);
+  };
+};
 export const isolate = createIsolateCache();
 
 // A cold isolate claims 1. The batch doubles only after that grant is used
@@ -285,6 +302,7 @@ export function resetLimits(): void {
   hits.clear();
   remoteHits.clear();
   leases.clear();
+  streams.clear();
   isolate.reset();
 }
 

@@ -482,6 +482,7 @@ test("a missing posting id is 404 and a posting from another company still creat
   assert.equal(inserted, false);
 
   let postingSql = "";
+  let postingParams: unknown[] = [];
   const other = await handle(post("/api/v1/conversations", JSON.stringify({
     audience: "EMPLOYER",
     title: "참고 공고",
@@ -496,6 +497,7 @@ test("a missing posting id is 404 and a posting from another company still creat
     if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
     if (sql.includes("FROM job_postings")) {
       postingSql = sql;
+      postingParams = next ?? [];
       return { rows: [{ id: POSTING }], rowCount: 1 };
     }
     if (sql.includes("company_members")) {
@@ -508,8 +510,33 @@ test("a missing posting id is 404 and a posting from another company still creat
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(other.status, 201);
-  assert.match(postingSql, /FROM job_postings/);
-  assert.doesNotMatch(postingSql, /company_id/);
+  assert.match(postingSql, /status <> 'DRAFT' OR company_id = \$2/);
+  assert.deepEqual(postingParams, [POSTING, COMPANY]);
+});
+
+test("another company's draft posting cannot be attached to an employer conversation", async () => {
+  resetLimits();
+  let inserted = false;
+  const res = await handle(post("/api/v1/conversations", JSON.stringify({
+    audience: "EMPLOYER",
+    title: "참고 공고",
+    postingId: POSTING,
+  }), {
+    "content-type": "application/json",
+    "idempotency-key": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeee9",
+  }), env(), deps(async (sql) => {
+    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
+    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-draft" }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("company_members")) {
+      return { rows: [{ company_id: COMPANY, verified_at: NOW.toISOString(), plan: "PRO", role: "MEMBER" }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO conversations")) inserted = true;
+    return { rows: [], rowCount: 0 };
+  }));
+  assert.equal(res.status, 404);
+  assert.equal(inserted, false);
 });
 
 test("a missing application id on employer create is 404", async () => {

@@ -3,6 +3,32 @@
 -- Everything runs in one transaction that is rolled back.
 BEGIN;
 
+-- Columns added by 0069 (approvals single use), 0071 (share expiry) and 0072 (refresh login time).
+DO $$
+DECLARE bad text;
+BEGIN
+    SELECT string_agg(format('%s.%s', w.t, w.c), ', ') INTO bad
+    FROM (VALUES
+        ('approvals', 'consumed_at', 'timestamp with time zone', 'YES'),
+        ('approvals', 'consumed_key', 'uuid', 'YES'),
+        ('conversation_shares', 'shared_at', 'timestamp with time zone', 'NO'),
+        ('conversation_shares', 'expires_at', 'timestamp with time zone', 'NO'),
+        ('refresh_tokens', 'login_at', 'timestamp with time zone', 'YES')
+    ) AS w(t, c, ty, nullable)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns i
+        WHERE i.table_schema = 'public' AND i.table_name = w.t AND i.column_name = w.c
+          AND i.data_type = w.ty AND i.is_nullable = w.nullable);
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'columns missing or wrong type/nullability: %', bad;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'conversation_shares' AND column_name = 'shared_at'
+                     AND column_default LIKE 'now()%') THEN
+        RAISE EXCEPTION 'conversation_shares.shared_at must default to now()';
+    END IF;
+END $$;
+
 -- Account purge deletes users rows. Every FK that leads back to users (directly or
 -- through rows a user owns) must CASCADE or SET NULL, or the purge fails.
 DO $$

@@ -489,8 +489,8 @@ test("login waits for verification and checks the password", async () => {
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const early = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
-  assert.equal(early.status, 403);
-  assert.equal((await early.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
+  assert.equal(early.status, 401);
+  assert.equal((await early.json() as Err).error.code, "INVALID_CREDENTIALS");
 
   resetLimits();
   await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
@@ -1045,17 +1045,55 @@ const counted = (db: ReturnType<typeof createDb>): Deps["query"] => {
   };
 };
 
-test("login is limited per email across addresses", async () => {
+const loginFrom = (query: Deps["query"], ip: string, email: string, password: string, now = NOW) => handle(
+  post("/api/v1/auth/email/login", { email, password }, { "cf-connecting-ip": ip }),
+  env(),
+  { query, now: () => now },
+);
+
+test("login failures are limited per address and email, so another address is not locked out", async () => {
   resetLimits();
-  const db = createDb();
-  const query = counted(db);
+  const query = counted(createDb());
   const statuses: number[] = [];
-  for (let i = 0; i < 11; i++) {
-    const res = await handle(post("/api/v1/auth/email/login", { email: "Victim@push.app", password: "guess" + i }, { "cf-connecting-ip": `10.0.0.${i}` }), env(), { query, now: () => NOW });
-    statuses.push(res.status);
-  }
+  for (let i = 0; i < 11; i++) statuses.push((await loginFrom(query, "10.0.0.1", "Victim@push.app", "wrong-password-" + i)).status);
   assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
   assert.equal(statuses[10], 429);
+  assert.equal((await loginFrom(query, "10.0.0.2", "victim@push.app", "wrong-password-x")).status, 401);
+});
+
+test("one address is limited across emails", async () => {
+  resetLimits();
+  const query = counted(createDb());
+  const statuses: number[] = [];
+  for (let i = 0; i < 21; i++) statuses.push((await loginFrom(query, "10.0.0.9", `user${i}@push.app`, "wrong-password")).status);
+  assert.deepEqual(statuses.slice(0, 20), Array(20).fill(401));
+  assert.equal(statuses[20], 429);
+});
+
+test("an unverified account answers EMAIL_NOT_VERIFIED only after the right password", async () => {
+  resetLimits();
+  const db = createDb();
+  db.users.push(userRow({ email_verified_at: null, password_hash: await hashPassword(PASSWORD) }));
+  const query = counted(db);
+  const wrong = await loginFrom(query, "10.0.0.1", EMAIL, "wrong-password-1");
+  assert.equal(wrong.status, 401);
+  assert.equal((await wrong.json() as Err).error.code, "INVALID_CREDENTIALS");
+  const right = await loginFrom(query, "10.0.0.1", EMAIL, PASSWORD);
+  assert.equal(right.status, 403);
+  assert.equal((await right.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
+});
+
+test("a pending signup looks like an unknown email to login", async () => {
+  resetLimits();
+  const sent: Mail[] = [];
+  const db = createDb();
+  const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
+  await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
+  const query = counted(db);
+  const pending = await (await loginFrom(query, "10.0.0.1", EMAIL, PASSWORD)).json() as Err;
+  const unknown = await (await loginFrom(query, "10.0.0.1", "nobody@push.app", PASSWORD)).json() as Err;
+  assert.equal(pending.error.code, "INVALID_CREDENTIALS");
+  assert.equal(pending.error.message, unknown.error.message);
 });
 
 test("a password is guessed at most 30 times an hour", async () => {
@@ -1068,21 +1106,17 @@ test("a password is guessed at most 30 times an hour", async () => {
   resetLimits();
   let now = NOW.getTime();
   const query = counted(db);
-  const attempt = (password: string, ip: number) => handle(
-    post("/api/v1/auth/email/login", { email: EMAIL, password }, { "cf-connecting-ip": `10.0.0.${ip}` }),
-    env(),
-    { query, now: () => new Date(now), mailer },
-  );
+  const attempt = (password: string) => loginFrom(query, "10.0.0.1", EMAIL, password, new Date(now));
   for (let i = 0; i < 30; i++) {
     if (i > 0 && i % 10 === 0) now += 60 * 1000;
-    assert.equal((await attempt("wrong-password-" + i, i)).status, 401, "guess " + i);
+    assert.equal((await attempt("wrong-password-" + i)).status, 401, "guess " + i);
   }
   now += 60 * 1000;
-  const locked = await attempt(PASSWORD, 31);
+  const locked = await attempt(PASSWORD);
   assert.equal(locked.status, 429);
   assert.equal((await locked.json() as Err).error.details?.retryAfterSec, 3600);
   now += 61 * 60 * 1000;
-  assert.equal((await attempt(PASSWORD, 32)).status, 200);
+  assert.equal((await attempt(PASSWORD)).status, 200);
 });
 
 test("signup and reset mails are limited per email", async () => {

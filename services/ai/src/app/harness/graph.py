@@ -199,10 +199,11 @@ def _dictated(url: str, exposure: Exposure, seen: str, granted: bool) -> bool:
 
 
 def _seen_text(state: dict) -> str:
-    """What the user and the tools put in the thread. A URL the model built is not in it."""
+    """What the user typed. Tool results and model output are untrusted: a URL on an external page
+    must not count as one the user dictated."""
     return "\n".join(
         _content(message) for message in state.get("messages") or []
-        if not isinstance(message, AIMessage))
+        if isinstance(message, HumanMessage))
 
 
 def leave_flow(summary: str, **update) -> Command:

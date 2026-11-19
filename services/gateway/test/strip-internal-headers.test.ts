@@ -299,3 +299,25 @@ test("a chunked body over 20 MB is not forwarded", async () => {
   assert.equal(fits.status, 200);
   assert.equal(read, 20 * MB);
 });
+
+test("the AI proxy drops a client x-forwarded-for and passes only the edge cf-connecting-ip", async () => {
+  resetLimits();
+  const seen: Headers[] = [];
+  const deps = {
+    query: async () => [],
+    fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return new Response("{}", { status: 202 });
+    },
+  } as Deps;
+  const env = { APP_ENV: "production", AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv;
+  const post = (extra: Record<string, string>) => new Request("https://push-be.example/api/v1/ai/generate", {
+    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "6.6.6.6", ...extra }, body: "{}",
+  });
+  await handle(post({ "cf-connecting-ip": "203.0.113.7" }), env, deps);
+  await handle(post({}), env, deps);
+  assert.equal(seen[0].get("cf-connecting-ip"), "203.0.113.7");
+  assert.equal(seen[0].get("x-forwarded-for"), null);
+  assert.equal(seen[1].get("cf-connecting-ip"), null);
+  assert.equal(seen[1].get("x-forwarded-for"), null);
+});

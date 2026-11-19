@@ -2,10 +2,12 @@
 # `push-deploy staging ...` as compose project push-ai-staging next to the production
 # project push-ai. It has its own Redis and data volume and points at the Neon branch
 # in /opt/push-be-staging/.env. It has no proxy and no embed: the production Traefik
-# routes STAGING_AI_HOST / STAGING_DISPATCH_HOST here (traefik/dynamic.yml), and
-# ingest uses the production TEI embed, so both projects share push-ai's networks.
-# Service names carry a staging- prefix so DNS on the shared networks never resolves
-# a production name (ai-worker, dispatcher, redis) to a staging container.
+# routes STAGING_AI_HOST / STAGING_DISPATCH_HOST here over push-ai_staging-edge
+# (traefik/dynamic.yml), and ai-worker/ingest use the production TEI embed over
+# push-ai_embed-shared (embed only). Redis and the workers sit on this project's own
+# internal network; nothing here joins push-ai_edge or push-ai_push-internal, so staging
+# cannot reach production's ai-worker, dispatcher or Redis. The staging- prefix keeps
+# Traefik's service names distinct.
 # Every plan runs on Sonnet 5.5 here, and APP_ENV=development turns on DEV_AUTH_TOKEN.
 
 x-hardened: &hardened
@@ -55,10 +57,6 @@ x-ai-env: &ai-env
   MODEL_ULTRA: anthropic/claude-sonnet-5-5
   MODEL_EMPLOYER_ULTRA: anthropic/claude-sonnet-5-5
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
-  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
   EMBEDDING_PROVIDER: tei
   TEI_EMBED_URL: http://embed:80
   RERANK_PROVIDER: similarity
@@ -86,8 +84,8 @@ services:
     depends_on:
       - staging-redis
     networks:
-      - edge
-      - push-internal
+      - staging-edge
+      - internal
     expose:
       - "8091"
     healthcheck:
@@ -109,14 +107,19 @@ services:
       <<: *ai-env
       SERVE_API: "1"
       QUEUE_GROUP: ai
+      # Flags only: the Stripe key and OAuth client secrets never enter this container
+      # (Chromium runs untrusted pages here). Compose turns "set" into 1 from the host env file.
+      STRIPE_CONFIGURED: ${STRIPE_SECRET_KEY:+1}
+      GOOGLE_OAUTH_CONFIGURED: ${GOOGLE_CLIENT_ID:+${GOOGLE_CLIENT_SECRET:+1}}
       QUEUE_CONCURRENCY: "2"
     volumes:
       - staging-ai-data:/data
     depends_on:
       - staging-redis
     networks:
-      - edge
-      - push-internal
+      - staging-edge
+      - internal
+      - embed-shared
     expose:
       - "8080"
 
@@ -135,7 +138,8 @@ services:
     depends_on:
       - staging-redis
     networks:
-      - push-internal
+      - internal
+      - embed-shared
 
   staging-notify-worker:
     <<: *ai-image
@@ -153,7 +157,7 @@ services:
     depends_on:
       - staging-redis
     networks:
-      - push-internal
+      - internal
 
   staging-redis:
     <<: *hardened
@@ -176,7 +180,7 @@ services:
     volumes:
       - staging-redis-data:/data
     networks:
-      - push-internal
+      - internal
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -187,11 +191,15 @@ volumes:
   staging-ai-data:
   staging-redis-data:
 
-# Created by the production project (push-ai); deploy production first.
+# staging-edge and embed-shared are created by the production project (push-ai); deploy
+# production first. The internal network belongs to this project: Redis and the workers
+# here cannot see production's Redis, ai-worker or dispatcher.
 networks:
-  edge:
-    name: push-ai_edge
+  internal:
+    driver: bridge
+  staging-edge:
+    name: push-ai_staging-edge
     external: true
-  push-internal:
-    name: push-ai_push-internal
+  embed-shared:
+    name: push-ai_embed-shared
     external: true

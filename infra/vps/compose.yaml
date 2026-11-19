@@ -54,14 +54,6 @@ x-ai-env: &ai-env
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
-  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-  STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
-  STRIPE_PRICE_ULTRA: ${STRIPE_PRICE_ULTRA:-}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-tei}
   EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
   EMBEDDING_API_MODEL: ${EMBEDDING_API_MODEL:-openai/text-embedding-3-small}
@@ -119,6 +111,7 @@ services:
         condition: service_completed_successfully
     networks:
       - edge
+      - staging-edge
 
   dispatcher:
     <<: *ai-image
@@ -168,6 +161,10 @@ services:
       <<: *ai-env
       SERVE_API: "1"
       QUEUE_GROUP: ai
+      # Flags only: the Stripe key and OAuth client secrets never enter this container
+      # (Chromium runs untrusted pages here). Compose turns "set" into 1 from the host env file.
+      STRIPE_CONFIGURED: ${STRIPE_SECRET_KEY:+1}
+      GOOGLE_OAUTH_CONFIGURED: ${GOOGLE_CLIENT_ID:+${GOOGLE_CLIENT_SECRET:+1}}
       QUEUE_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-10}
       # One pool slot per concurrent job; an explicit DB_POOL_MAX_SIZE below the concurrency would starve jobs.
       DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-${AI_WORKER_CONCURRENCY:-10}}
@@ -273,6 +270,7 @@ services:
         condition: service_completed_successfully
     networks:
       - push-internal
+      - embed-shared
     expose:
       - "80"
 
@@ -318,3 +316,13 @@ networks:
   # (Neon, Expo, link fetches); the host firewall limits that egress.
   push-internal:
     driver: bridge
+  # Test server only: proxy <-> staging-ai-worker, staging-dispatcher (compose.staging.yaml
+  # joins it as external). Keeps staging off `edge`, so it cannot reach production's
+  # ai-worker or dispatcher.
+  staging-edge:
+    driver: bridge
+  # embed alone, so the test server's workers can use the production TEI embed without
+  # joining push-internal (Redis, production workers). No other service attaches here.
+  embed-shared:
+    driver: bridge
+    internal: true

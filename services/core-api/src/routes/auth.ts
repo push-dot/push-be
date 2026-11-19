@@ -11,6 +11,7 @@ const ACCESS_TTL = 900;
 const REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const STATE_MS = 10 * 60 * 1000;
 const EXCHANGE_MS = 60 * 1000;
+const REAUTH_MS = 10 * 60 * 1000;
 const LOCAL_CALLBACK = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d{1,5})\/auth\/callback$/;
 const USER_BY_ID_BASE = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, email, provider FROM users WHERE id = $1";
 const USER_BY_ID = "SELECT id, display_name, locale, plan, subscription_status, stripe_customer_id, period_ends_at, created_at, is_employer, email, provider, (SELECT company_id FROM company_members WHERE company_members.user_id = users.id) AS company_id, (SELECT role FROM company_members WHERE company_members.user_id = users.id) AS company_role FROM users WHERE id = $1";
@@ -171,7 +172,7 @@ function sessionBody(access: string, refresh: string, user: UserRow): Record<str
   };
 }
 
-export async function issue(ctx: Ctx, userId: string): Promise<Record<string, unknown>> {
+export async function issue(ctx: Ctx, userId: string, loginAt?: string): Promise<Record<string, unknown>> {
   const access = randomToken();
   const refresh = randomToken();
   const accessHash = await sha256Hex(access);
@@ -183,8 +184,8 @@ export async function issue(ctx: Ctx, userId: string): Promise<Record<string, un
   const created = ctx.now.toISOString();
   const [, row] = await Promise.all([
     query(ctx.deps.query,
-      "WITH rt AS (INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at) VALUES ($1,$2,$3,$4,NULL,$5) RETURNING id) INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, created_at) SELECT $6,$2,$7,rt.id,$8,$5 FROM rt",
-      [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp]),
+      "WITH rt AS (INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at, login_at) VALUES ($1,$2,$3,$4,NULL,$5,$9) RETURNING id) INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at, created_at) SELECT $6,$2,$7,rt.id,$8,$5 FROM rt",
+      [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp, loginAt ?? created]),
     userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [userId]),
   ]);
   if (!row) throw new HttpError(500, "INTERNAL", "internal error");
@@ -422,7 +423,7 @@ export async function refresh(ctx: Ctx): Promise<Response> {
   const token = requireString(body, "refreshToken");
   const hash = await sha256Hex(token);
   const rec = await one(ctx.deps.query,
-    "SELECT id, user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1",
+    "SELECT id, user_id, expires_at, revoked_at, login_at FROM refresh_tokens WHERE token_hash = $1",
     [hash]);
   if (!rec) throw new HttpError(401, "UNAUTHENTICATED", "invalid refresh token");
   if (rec.revoked_at != null) {
@@ -437,7 +438,7 @@ export async function refresh(ctx: Ctx): Promise<Response> {
     await revokeAll(ctx, String(rec.user_id));
     throw new HttpError(401, "UNAUTHENTICATED", "refresh token revoked");
   }
-  return data(200, await issue(ctx, String(rec.user_id)), ctx.rid);
+  return data(200, await issue(ctx, String(rec.user_id), rec.login_at == null ? undefined : new Date(rec.login_at as string | Date).toISOString()), ctx.rid);
 }
 
 export async function logout(ctx: Ctx): Promise<Response> {
@@ -460,7 +461,18 @@ const companyMembership = async (ctx: Ctx): Promise<Record<string, unknown> | nu
   }
 };
 
+const SESSION_LOGIN = "SELECT r.login_at FROM access_tokens a JOIN refresh_tokens r ON r.id = a.refresh_token_id WHERE a.token_hash = $1";
+
+const requireRecentLogin = async (ctx: Ctx): Promise<void> => {
+  const token = (ctx.request.headers.get("authorization") || "").slice(7);
+  if (ctx.env.APP_ENV === "development" && ctx.env.DEV_AUTH_TOKEN && token === ctx.env.DEV_AUTH_TOKEN) return;
+  const session = await one(ctx.deps.query, SESSION_LOGIN, [await sha256Hex(token)]);
+  const loginAt = session?.login_at == null ? Number.NaN : new Date(session.login_at as string | Date).getTime();
+  if (!(ctx.now.getTime() - loginAt <= REAUTH_MS)) throw new HttpError(403, "REAUTH_REQUIRED", "sign in again to delete the account");
+};
+
 export async function deleteAccount(ctx: Ctx): Promise<Response> {
+  await requireRecentLogin(ctx);
   const membership = await companyMembership(ctx);
   const soleAdmin = membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) === 0;
   if (membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) > 0) {

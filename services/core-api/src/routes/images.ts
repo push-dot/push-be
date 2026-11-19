@@ -3,6 +3,7 @@ import { HttpError, data, fieldError } from "../http.ts";
 import type { Ctx } from "../types.ts";
 
 const MAX_IMAGE_BYTES = 10 << 20;
+export const IMAGE_QUOTA = { files: 300, bytes: 200 << 20 };
 const ALIASES: Record<string, string> = { "image/jpg": "image/jpeg", "image/pjpeg": "image/jpeg", "image/heif": "image/heic" };
 const EXT: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic" };
 const KEY = /^[0-9a-f]{32}\.(jpg|png|webp|heic)$/;
@@ -13,6 +14,22 @@ const tooLarge = (): HttpError => new HttpError(413, "PAYLOAD_TOO_LARGE", "reque
 // Multipart framing adds a few hundred bytes; 64 KiB of slack keeps a file at the limit acceptable.
 export const declaredTooLarge = (request: Request, maxFileBytes: number): boolean =>
   Number(request.headers.get("content-length") || 0) > maxFileBytes + (64 << 10);
+
+export const assertUploadQuota = async (
+  ctx: Ctx,
+  usageSql: string,
+  quota: { files: number; bytes: number },
+  incomingBytes: number,
+): Promise<void> => {
+  const row = await one(ctx.deps.query, usageSql, [ctx.user.id]);
+  const files = Number(row?.files ?? 0);
+  const bytes = Number(row?.bytes ?? 0);
+  if (files >= quota.files || bytes + incomingBytes > quota.bytes) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "upload quota exceeded", { reason: "UPLOAD_QUOTA", maxFiles: quota.files, maxBytes: quota.bytes });
+  }
+};
+
+const IMAGE_USAGE = "SELECT count(*)::int AS files, COALESCE(sum(octet_length(content)), 0)::bigint AS bytes FROM upload_images WHERE user_id = $1";
 
 const ascii = (bytes: Uint8Array, from: number, to: number): string => String.fromCharCode(...bytes.subarray(from, to));
 
@@ -53,6 +70,7 @@ export const uploadImage = async (ctx: Ctx): Promise<Response> => {
   const declared = normalizeType(file.type || "");
   const sniffed = sniff(bytes);
   if (sniffed === null || !(declared in EXT) || declared !== sniffed) throw fieldError("file", "unsupported image type");
+  await assertUploadQuota(ctx, IMAGE_USAGE, IMAGE_QUOTA, bytes.length);
   const key = crypto.randomUUID().replaceAll("-", "") + EXT[sniffed];
   await query(ctx.deps.query,
     "INSERT INTO upload_images (key, user_id, mime_type, content, created_at) VALUES ($1, $2, $3, decode($4, 'base64'), $5)",

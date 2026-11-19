@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -25,6 +25,7 @@ EV_ID = UUID("00000000-0000-4000-8000-0000000000e1")
 EV_DOC_ATT = UUID("00000000-0000-4000-8000-0000000000e3")
 EV_DOC = UUID("00000000-0000-4000-8000-0000000000e2")
 MSG_LATE = UUID("00000000-0000-4000-8000-000000000003")
+MSG_LATE_2 = UUID("00000000-0000-4000-8000-000000000004")
 MSG_EARLY = UUID("00000000-0000-4000-8000-000000000001")
 MSG_MID_HI = UUID("00000000-0000-4000-8000-000000000012")
 MSG_MID_LO = UUID("00000000-0000-4000-8000-000000000011")
@@ -59,6 +60,7 @@ class _Mem:
         self.conversations = {}
         self.members = {}
         self.shares = {}
+        self.share_times = {}
         self.messages = []
         self.calls = []
 
@@ -69,7 +71,7 @@ class _Mem:
         self.calls.append((sql, args))
         text = " ".join(sql.lower().split())
         if "conversation_shares" in text:
-            return self._share_row(args[0])
+            return self._share_row(args[0], args[1])
         if "from conversations" in text:
             return self._conversation(text, args)
         return None
@@ -79,7 +81,8 @@ class _Mem:
         text = " ".join(sql.lower().split())
         if "messages" not in text:
             return []
-        rows = [dict(m) for m in self.messages if m["conversation_id"] == args[0]]
+        rows = [dict(m) for m in self.messages if m["conversation_id"] == args[0]
+                and (len(args) < 2 or m["created_at"] <= args[1])]
         if "order by created_at" in text and "id" in text:
             rows.sort(key=lambda m: (m["created_at"], m["id"]))
         return rows
@@ -87,8 +90,12 @@ class _Mem:
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
         text = " ".join(sql.lower().split())
-        if "conversation_shares" in text:
+        if "delete from conversation_shares" in text:
+            self.shares.pop(args[0], None)
+            self.share_times.pop(args[0], None)
+        elif "conversation_shares" in text:
             self.shares[args[0]] = args[1]
+            self.share_times[args[0]] = (args[2], args[3])
         return "INSERT 1"
 
     def _conversation(self, text, args):
@@ -105,14 +112,15 @@ class _Mem:
             return dict(conv)
         return None
 
-    def _share_row(self, token_hash):
+    def _share_row(self, token_hash, now):
         for conversation_id, stored in self.shares.items():
-            if stored == token_hash:
+            shared_at, expires_at = self.share_times[conversation_id]
+            if stored == token_hash and expires_at > now:
                 conv = self.conversations[conversation_id]
                 return {
                     "conversation_id": conversation_id,
                     "title": conv["title"],
-                    "token_hash": stored,
+                    "shared_at": shared_at,
                 }
         return None
 
@@ -189,7 +197,7 @@ def test_create_returns_token_and_path():
     token = body["token"]
     assert re.fullmatch(r"[A-Za-z0-9_-]+", token)
     assert body["path"] == f"/api/v1/conversations/shared/{token}"
-    assert set(body) == {"token", "path"}
+    assert set(body) == {"token", "path", "expiresAt"}
 
 
 def test_stored_value_is_sha256_hex_not_the_raw_token():
@@ -298,8 +306,38 @@ def test_other_user_is_404():
     assert str(DOC_ATT) not in artifacts.text
 
 
-def test_company_member_can_share():
+def test_company_member_cannot_share_a_colleagues_conversation():
     db = _db(company_id=COMPANY_ID, members={MEMBER_ID: COMPANY_ID})
     res = _share(_client(db, MEMBER_ID))
-    assert res.status_code == 200
+    assert res.status_code == 404
+    assert db.shares == {}
+
+
+def test_share_expires_after_thirty_days():
+    db = _db(_ordered_messages())
+    token = _share(_client(db, USER_ID)).json()["data"]["token"]
+    shared_at, expires_at = db.share_times[CONV_ID]
+    assert expires_at - shared_at == timedelta(days=30)
+    db.share_times[CONV_ID] = (shared_at, shared_at - timedelta(seconds=1))
+    res = _client(db, None).get(f"/api/v1/conversations/shared/{token}")
+    assert res.status_code == 404
+
+
+def test_revoke_kills_the_link_and_only_the_owner_can():
+    db = _db(_ordered_messages(), company_id=COMPANY_ID, members={MEMBER_ID: COMPANY_ID})
+    token = _share(_client(db, USER_ID)).json()["data"]["token"]
+    url = f"/api/v1/conversations/{CONV_ID}/share"
+    assert _client(db, MEMBER_ID).delete(url).status_code == 404
     assert CONV_ID in db.shares
+    assert _client(db, USER_ID).delete(url).status_code == 200
+    assert _client(db, None).get(f"/api/v1/conversations/shared/{token}").status_code == 404
+
+
+def test_messages_after_sharing_are_not_exposed():
+    db = _db(_ordered_messages())
+    token = _share(_client(db, USER_ID)).json()["data"]["token"]
+    shared_at, _ = db.share_times[CONV_ID]
+    db.messages.append(_message(MSG_LATE_2, shared_at + timedelta(seconds=5), "USER", "secret"))
+    res = _client(db, None).get(f"/api/v1/conversations/shared/{token}")
+    assert "secret" not in res.text
+    assert len(res.json()["data"]["messages"]) == 4

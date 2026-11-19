@@ -69,3 +69,22 @@ test("core errors come back as JSON before any stream", async () => {
 test("chat stream messages are owned by core", () => {
   assert.equal(ownerOf("POST", `/api/v1/conversations/${CONV}/messages/stream`), "core");
 });
+
+test("a token holds at most three open streams; closing one frees a slot", async () => {
+  resetLimits();
+  const core = async () => new Response(JSON.stringify({ data: { id: JOB, status: "QUEUED", result: { kind: "CHAT_MESSAGE", value: { jobId: JOB } } } }),
+    { status: 202, headers: { "content-type": "application/json" } });
+  const quiet = { ...deps(async () => []), sleep: () => new Promise<void>(() => {}) };
+  const open = [];
+  for (let i = 0; i < 3; i++) {
+    const res = await handle(send(), env(core), quiet);
+    assert.equal(res.status, 200);
+    open.push(res);
+  }
+  const over = await handle(send(), env(core), quiet);
+  assert.equal(over.status, 429);
+  assert.equal((await over.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+  await open[0].body!.cancel();
+  assert.equal((await handle(send(), env(core), quiet)).status, 200);
+  await Promise.all(open.slice(1).map((r) => r.body!.cancel()));
+});

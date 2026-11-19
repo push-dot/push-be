@@ -50,8 +50,11 @@ const bodyFields = async (request: Request, keys: readonly string[]): Promise<Re
   return Object.fromEntries(keys.map((key) => [key, body?.[key] ?? null]));
 };
 
-const APPROVED_TOOL = `SELECT 1 FROM approvals WHERE id = $1 AND user_id = $2 AND kind = 'TOOL_ACTION'
-  AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve' AND tool_args @> $4::jsonb`;
+const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $5::uuid
+  WHERE id = $1 AND user_id = $2 AND kind = 'TOOL_ACTION'
+  AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve' AND tool_args @> $4::jsonb
+  AND (consumed_at IS NULL OR consumed_key = $5::uuid)
+  RETURNING id`;
 
 const requireApproval = async (request: Request, path: string, userId: string, query: Query): Promise<void> => {
   for (const [method, pattern, tool, keys, bodyKeys] of APPROVAL_ROUTES) {
@@ -62,7 +65,8 @@ const requireApproval = async (request: Request, path: string, userId: string, q
       ...Object.fromEntries(keys.map((key, i) => [key, decodeURIComponent(match[i + 1])])),
       ...await bodyFields(request, bodyKeys),
     };
-    if (!approvalId || !(await one(query, APPROVED_TOOL, [approvalId, userId, tool, JSON.stringify(target)]))) {
+    const retryKey = parseUuid(request.headers.get("idempotency-key") || "");
+    if (!approvalId || !(await one(query, CONSUME_APPROVAL, [approvalId, userId, tool, JSON.stringify(target), retryKey]))) {
       throw new HttpError(403, "APPROVAL_REQUIRED", "the user has not approved this action");
     }
   }

@@ -79,7 +79,12 @@ export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, r
   if (!secret || !origin.startsWith("https://")) return errorResponse(500, "INTERNAL", "internal error", rid);
   const init = forwardInit(request, rid, false);
   if (init instanceof Response) return init;
-  (init.headers as Headers).set("x-push-ai-secret", secret);
+  const outHeaders = init.headers as Headers;
+  outHeaders.set("x-push-ai-secret", secret);
+  outHeaders.delete("x-forwarded-for");
+  const edgeIp = request.headers.get("cf-connecting-ip")?.trim();
+  if (edgeIp) outHeaders.set("cf-connecting-ip", edgeIp);
+  else outHeaders.delete("cf-connecting-ip");
   const url = new URL(request.url);
   const fetchImpl = deps.fetch ?? fetch;
   // Concatenate, never resolve: ownerOf already refused `//`, so the host stays the origin's.

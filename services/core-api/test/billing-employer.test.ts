@@ -1189,6 +1189,7 @@ test("apple verify follows the signed environment and marks sandbox", async () =
   const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signing.privateKey));
   const apiKey = `-----BEGIN PRIVATE KEY-----\n${b64std(pkcs8)}\n-----END PRIVATE KEY-----`;
   const env = envOf({
+    STORE_SANDBOX_USER_IDS: USER,
     APPLE_ROOT_PEM: chain.rootPem,
     APPLE_BUNDLE_ID: "com.push.app",
     APPLE_IAP_KEY: apiKey,
@@ -1262,7 +1263,7 @@ test("a sandbox app store notification is marked sandbox", async () => {
     }, chain.privateKey);
     return jws({ notificationType: "DID_RENEW", data: { bundleId: BUNDLE_ID, environment, signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
   };
-  const env = envOf({ APPLE_ROOT_PEM: chain.rootPem });
+  const env = envOf({ APPLE_ROOT_PEM: chain.rootPem, STORE_SANDBOX_USER_IDS: USER });
   const sand = await handle(storeHook("/api/v1/billing/webhook/app-store", await note("Sandbox", "tx-note-sand")), env, { query, now: () => NOW });
   assert.equal(sand.status, 200);
   const sandUpdate = seen.find((call) => call.sql.includes("UPDATE iap_subscriptions") && call.params[0] === "tx-note-sand");

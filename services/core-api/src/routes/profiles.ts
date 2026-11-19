@@ -88,12 +88,30 @@ function visibleContact(row: Record<string, unknown>, self: boolean, following: 
   return shown ? value : null;
 }
 
+const normalizedCompany = (expr: string): string =>
+  `regexp_replace(regexp_replace(lower(COALESCE(${expr}, '')), '주식회사|\\(주\\)|㈜|\\y(inc|corp|co|ltd|llc)\\y', '', 'g'), '[^0-9a-z가-힣]', '', 'g')`;
+
+const SAME_COMPANY_AS_VIEWER = `EXISTS (
+      SELECT 1 FROM company_members vm JOIN companies vc ON vc.id = vm.company_id
+      WHERE vm.user_id = $1 AND (
+        EXISTS (SELECT 1 FROM company_members cm WHERE cm.user_id = p.user_id AND cm.company_id = vm.company_id)
+        OR (${normalizedCompany("vc.name")} <> '' AND EXISTS (
+          SELECT 1 FROM jsonb_path_query(p.careers, 'lax $[*]') career
+          WHERE career ->> 'endedOn' IS NULL AND ${normalizedCompany("career ->> 'company'")} = ${normalizedCompany("vc.name")}))
+      ))`;
+
+const HIDDEN_FROM_VIEWER_COMPANY = `COALESCE(s.hide_from_current_company, false) AND (
+        ($2 <> '' AND $3 = false AND split_part(lower(COALESCE(u.email, '')), '@', 2) = $2)
+        OR ${SAME_COMPANY_AS_VIEWER}
+      )`;
+
 function profileSelect(extra: string): string {
   return `SELECT ${PROFILE_COLS},
     COALESCE(s.career_status_visibility, 'everyone') AS career_status_visibility,
     COALESCE(s.profile_public, true) AS profile_public,
     COALESCE(s.hide_from_current_company, false) AS hide_from_current_company,
     split_part(lower(COALESCE(u.email, '')), '@', 2) AS email_domain,
+    ${SAME_COMPANY_AS_VIEWER} AS same_company_as_viewer,
     EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id) AS following,
     (SELECT count(*)::int FROM follows f WHERE f.followee_id = p.user_id) AS follower_count,
     (SELECT count(*)::int FROM follows f WHERE f.follower_id = p.user_id) AS following_count,
@@ -119,7 +137,7 @@ const viewerCompanyOf = async (ctx: Ctx): Promise<ViewerCompany> => {
 const sameCompanyHidden = (row: Record<string, unknown>, viewerId: string, viewer: ViewerCompany): boolean => {
   if (String(row.user_id) === viewerId) return false;
   if (!asBool(row.hide_from_current_company) && !asBool(row.hide_career_from_viewer)) return false;
-  if (asBool(row.hide_career_from_viewer)) return true;
+  if (asBool(row.hide_career_from_viewer) || asBool(row.same_company_as_viewer)) return true;
   if (!viewer.domain || viewer.freeMail) return false;
   return String(row.email_domain ?? "") === viewer.domain;
 };
@@ -144,11 +162,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
   }
   const viewer = await viewerCompanyOf(ctx);
   const params: unknown[] = [ctx.user.id, viewer.domain, viewer.freeMail];
-  let sql = profileSelect(`, (
-        COALESCE(s.hide_from_current_company, false)
-        AND $2 <> '' AND $3 = false
-        AND split_part(lower(COALESCE(u.email, '')), '@', 2) = $2
-      ) AS hide_career_from_viewer`) + `
+  let sql = profileSelect(`, (${HIDDEN_FROM_VIEWER_COMPANY}) AS hide_career_from_viewer`) + `
     WHERE COALESCE(s.profile_public, true) = true
       AND p.user_id <> $1`;
   if (categories.length) {
@@ -172,11 +186,7 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
         OR (COALESCE(s.career_status_visibility, 'everyone') = 'followers'
             AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.user_id))
       )
-      AND NOT (
-        COALESCE(s.hide_from_current_company, false)
-        AND $2 <> '' AND $3 = false
-        AND split_part(lower(COALESCE(u.email, '')), '@', 2) = $2
-      )`;
+      AND NOT (${HIDDEN_FROM_VIEWER_COMPANY})`;
   }
   if (explore === "recommended") {
     sql += " AND p.job_category IS NOT NULL AND p.job_category = (SELECT job_category FROM profiles WHERE user_id = $1)";

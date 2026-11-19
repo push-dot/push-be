@@ -781,6 +781,12 @@ const productKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP"
   return "UNKNOWN";
 };
 
+const sandboxAllowed = (ctx: Ctx, userId: string): boolean => {
+  if (ctx.env.APP_ENV === "development") return true;
+  const allowed = ctx.env.STORE_SANDBOX_USER_IDS ?? "";
+  return allowed.split(",").some((id) => id.trim() === userId);
+};
+
 const storePort = (ctx: Ctx): StoreReceipts => ctx.deps.stores ?? createStoreReceipts(ctx.env, ctx.deps.fetch ?? fetch, ctx.now);
 
 // A store transaction belongs to the first account that verifies it; replaying it from another account is refused.
@@ -864,6 +870,9 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   const receipt = platform === "APP_STORE"
     ? await stores.verifyApple(String(body.signedTransaction))
     : await stores.verifyGoogle(String(body.purchaseToken), body.productId, kind !== "TOPUP");
+  if (receipt.sandbox === true && !sandboxAllowed(ctx, ctx.user.id)) {
+    throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
+  }
   if (requireKind(ctx.env, receipt.productId) !== kind) {
     throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
   }
@@ -952,6 +961,7 @@ const storeNote = async (
     [transactionId]);
   if (!row) return;
   const userId = String(row.user_id);
+  if (sandbox && !sandboxAllowed(ctx, userId)) return;
   await lockUser(ctx, userId);
   if (kind === "TOPUP") {
     await userLedger(ctx, userId, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
@@ -987,6 +997,7 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   }
   const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
   let expiresAt = note.expiresAt;
+  let sandbox = false;
   const pushed = googlePlayPubsub(body);
   const sub = pushed?.subscriptionNotification && typeof pushed.subscriptionNotification === "object"
     ? pushed.subscriptionNotification as Record<string, unknown> : null;
@@ -994,9 +1005,11 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
     const upper = String(note.notificationType).toUpperCase();
     const grant = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
     if (grant && note.purchaseToken && note.productId) {
-      expiresAt = (await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true)).expiresAt;
+      const verified = await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true);
+      expiresAt = verified.expiresAt;
+      sandbox = verified.sandbox === true;
     }
   }
-  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, expiresAt);
+  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, expiresAt, sandbox);
   return data(200, { received: true }, ctx.rid);
 };

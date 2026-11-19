@@ -64,3 +64,17 @@ test("a cursor timestamp is sent to Postgres in canonical ISO form", async () =>
   assert.equal(res.status, 200);
   assert.equal(seen[0][8], "2026-03-01T00:00:00Z");
 });
+
+test("localhost origins get CORS credentials only when APP_ENV is development", async () => {
+  const deps = { query: async () => [] } as Deps;
+  const ask = (e: FrontEnv, origin: string) => handle(new Request("https://push-be.example/api/v1/auth/me", {
+    method: "OPTIONS", headers: { origin, "access-control-request-method": "GET" },
+  }), e, deps);
+  for (const origin of ["http://localhost:5173", "http://127.0.0.1:3000"]) {
+    const prod = await ask(env, origin);
+    assert.equal(prod.headers.get("access-control-allow-origin"), null, origin);
+    assert.equal(prod.headers.get("access-control-allow-credentials"), null, origin);
+    const dev = await ask({ APP_ENV: "development" } as FrontEnv, origin);
+    assert.equal(dev.headers.get("access-control-allow-origin"), origin, origin);
+  }
+});
