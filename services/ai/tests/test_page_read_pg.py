@@ -19,7 +19,6 @@ from langchain_core.messages import ToolMessage
 from app.harness.approval import site_page
 from app.harness.registry import REGISTRY
 from app.harness.runtime import HarnessRuntime, _pending
-from app.infrastructure.store_turns import TurnStore
 from app.queue.admin import AdminJobs
 from tests.fakes import data_json
 from tests.harness_fakes import ScriptedLC, managed_ai, run, service
@@ -527,7 +526,11 @@ async def test_an_unanswered_card_stays_open_through_every_sweep_and_still_resum
     parked = await state(c)
     assert _pending(parked)["approval_id"] == card["id"] and parked.next == ("tools",)
     assert await results(c) == [] and fetched == []
-    (stored,) = await TurnStore(db).cards(c.thread, [card["id"]])
+    stored = await db.q().fetchrow(
+        "SELECT status, expires_at, approval_retryable(a) AS retryable "
+        "FROM approvals a WHERE id = $1",
+        card["id"],
+    )
     assert (stored["status"], stored["expires_at"], stored["retryable"]) == ("PENDING", None, False)
 
     await turn(c, resume={"approvalId": card["id"], "optionId": "approve"})
