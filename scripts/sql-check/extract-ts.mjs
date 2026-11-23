@@ -8,6 +8,12 @@ import { appendFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import ts from "typescript";
 
+// String.raw`...` with no substitutions is constant text; its value is the raw source, escapes kept.
+const isRawTemplate = (node) => ts.isTaggedTemplateExpression(node) && ts.isNoSubstitutionTemplateLiteral(node.template)
+  && ts.isPropertyAccessExpression(node.tag) && ts.isIdentifier(node.tag.expression)
+  && node.tag.expression.text === "String" && node.tag.name.text === "raw";
+const literalText = (node) => (node.parent && isRawTemplate(node.parent) ? node.rawText : node.text);
+
 const SQL = /^\s*(WITH|SELECT|INSERT|UPDATE|DELETE)\b[\s\S]*\b(FROM|INTO|SET|VALUES|AS|RETURNING)\b/i;
 const MAX = 32;
 
@@ -31,7 +37,8 @@ for (const program of programs) {
   const fold = (node, seen = new Set()) => {
     if (!node || seen.has(node)) {return null;}
     seen = new Set(seen).add(node);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {return [node.text];}
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {return [literalText(node)];}
+    if (isRawTemplate(node)) {return [literalText(node.template)];}
     if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)
       || ts.isNonNullExpression(node)) {return fold(node.expression, seen);}
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
@@ -165,7 +172,7 @@ for (const program of programs) {
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) {continue;}
     const visit = (node) => {
-      const pieces = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? [node.text]
+      const pieces = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? [literalText(node)]
         : ts.isTemplateExpression(node) ? [node.head.text, ...node.templateSpans.map((s) => s.literal.text)] : [];
       for (const text of pieces) {
         if (!INVENTORY.test(text)) {continue;}
