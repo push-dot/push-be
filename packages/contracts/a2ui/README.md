@@ -9,7 +9,7 @@ the stored card payload in `services/ai/src/app/domain/a2ui.py`. The LLM never w
 | `push-catalog.json` | The v0.9.1 catalog |
 | `push-catalog.v1.json` | The 1.0 catalog: the same components and props in the 1.0 catalog format |
 | `spec/` | Vendored A2UI v0.9.1 schemas; `spec/v1.0/` the 1.0 ones (see `spec/README.md`) |
-| `fixtures/*.json` | v0.9.1: one exact wire frame per case, written by `services/ai/tests/test_a2ui.py` |
+| `fixtures/*.json` | v0.9.1: one exact wire frame per case, checked by `services/ai/tests/test_a2ui.py` (`A2UI_WRITE_FIXTURES=1` rewrites them) |
 | `fixtures/v1.0/*.json` | 1.0: the same cases, same file names |
 
 ## Version: the `A2UI-Version` request header

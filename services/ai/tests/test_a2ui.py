@@ -1,11 +1,12 @@
 """Card payloads as A2UI surfaces: valid v0.9.1 and 1.0 messages of the Push catalog, the same
-live and on replay. Every case also writes its wire frame to packages/contracts/a2ui/fixtures/
-<case>.json (v0.9.1) and fixtures/v1.0/<case>.json (1.0), which the frontend mocks and renderer
-tests import."""
+live and on replay. Every case's wire frame must equal packages/contracts/a2ui/fixtures/<case>.json
+(v0.9.1) and fixtures/v1.0/<case>.json (1.0), which the frontend mocks and renderer tests import.
+A2UI_WRITE_FIXTURES=1 rewrites them from the converter instead."""
 
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from app.harness.personal.resume.progress import (
 
 A2UI = Path(__file__).resolve().parents[3] / "packages" / "contracts" / "a2ui"
 FIXTURES = {V091: A2UI / "fixtures", V1: A2UI / "fixtures" / "v1.0"}
+WRITE_FIXTURES = os.environ.get("A2UI_WRITE_FIXTURES") == "1"
 CARD = "00000000-0000-4000-8000-00000000c0de"
 JOB = "00000000-0000-4000-8000-00000000a001"
 SID = "00000000-0000-4000-8000-0000000051d0"
@@ -388,9 +390,13 @@ def test_every_case_is_a_valid_full_snapshot_of_the_push_catalog(name, version):
     wire = {**frame(kind, projection), "seq": 1, "at": AT, "turn": JOB}
     path = FIXTURES[version] / f"{name}.json"
     text = json.dumps(wire, ensure_ascii=False, indent=2) + "\n"
-    if not path.exists() or path.read_text() != text:
+    if WRITE_FIXTURES:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+    assert path.exists() and path.read_text() == text, (
+        f"{path.relative_to(A2UI)} differs from the converter's output; "
+        "rerun with A2UI_WRITE_FIXTURES=1 and commit the fixtures if the change is intended"
+    )
 
 
 @pytest.mark.parametrize("version", VERSIONS)
