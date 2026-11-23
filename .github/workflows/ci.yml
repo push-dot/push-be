@@ -576,6 +576,8 @@ jobs:
               echo "::error::$url did not return 200"
               cat /tmp/healthz >&2 || true
               ssh_vps "${stage_arg[@]}" ps || true
+              # A crash-looping container only shows why in its logs.
+              ssh_vps "${stage_arg[@]}" logs || true
               exit 1
             fi
             echo "$url ok"
