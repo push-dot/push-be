@@ -48,6 +48,10 @@ export interface CoreEnv {
   APP_WEB_ORIGIN?: string;
   OAUTH_REDIRECT_ORIGINS?: string;
   PHONE_SMS_MODE?: string;
+  SENS_ACCESS_KEY?: string;
+  SENS_SECRET_KEY?: string;
+  SENS_SERVICE_ID?: string;
+  SMS_FROM?: string;
   PHONE_CODE_COOLDOWN_SEC?: string;
   PHONE_CODE_TTL_SEC?: string;
   PHONE_CODE_MAX_ATTEMPTS?: string;

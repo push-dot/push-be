@@ -586,6 +586,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENS_ACCESS_KEY: ${{ secrets.SENS_ACCESS_KEY }}
+          SENS_SECRET_KEY: ${{ secrets.SENS_SECRET_KEY }}
           DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
@@ -595,6 +597,8 @@ jobs:
           STRIPE_PRICE_EMPLOYER_PRO: ${{ vars.STRIPE_PRICE_EMPLOYER_PRO }}
           STRIPE_PRICE_EMPLOYER_ULTRA: ${{ vars.STRIPE_PRICE_EMPLOYER_ULTRA }}
           STRIPE_PRICE_TOPUP: ${{ vars.STRIPE_PRICE_TOPUP }}
+          SENS_SERVICE_ID: ${{ vars.SENS_SERVICE_ID }}
+          SMS_FROM: ${{ vars.SMS_FROM }}
         run: |
           set -euo pipefail
           umask 077
@@ -605,7 +609,7 @@ jobs:
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
                     GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA,
                     STRIPE_PRICE_EMPLOYER_BASIC, STRIPE_PRICE_EMPLOYER_PRO, STRIPE_PRICE_EMPLOYER_ULTRA,
-                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN}
+                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN, SENS_ACCESS_KEY, SENS_SECRET_KEY, SENS_SERVICE_ID, SMS_FROM}
                  | with_entries(select((.value // "") != ""))' >"$file"
           npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"
